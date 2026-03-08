@@ -31,18 +31,18 @@ This project provides integration of the Anycubic ACE PRO with the Snapmaker U1 
         ```bash
         touch /oem/.debug
         ```
-    *   > [!NOTE]
-        > This mode allows user files to persist after a reboot.
-    *   > [!WARNING]
-        > Enabling debug mode will reset your Wi-Fi settings. You will need to reconnect to your Wi-Fi network after the printer reboots.
+> [!NOTE]
+> This mode allows user files to persist after a reboot.
+> [!WARNING]
+> Enabling debug mode will reset your Wi-Fi settings. You will need to reconnect to your Wi-Fi network after the printer reboots.
 3.  **Install Extra Modules:**
     *   Copy `ace.py` and `filament_feed.py` from this repository to `/home/lava/klipper/klippy/extras/` on your printer.
-    *   > [!IMPORTANT]
-        > Rename the stock `filament_feed.py` to `filament_feed_stock.py` before copying the new one.
+> [!IMPORTANT]
+> Rename the stock `filament_feed.py` to `filament_feed_stock.py` before copying the new one.
 4.  **Install Kinematics Module:**
     *   Copy `extruder.py` from this repository to `/home/lava/klipper/klippy/kinematics/`.
-    *   > [!IMPORTANT]
-        > Rename the stock `extruder.py` to `extruder_stock.py` before copying the new one.
+> [!IMPORTANT]
+> Rename the stock `extruder.py` to `extruder_stock.py` before copying the new one.
 5.  **Configure Klipper:**
     *   Copy `ace.cfg` (if provided) to the custom config directory: `/config/extended/klipper/`.
 6.  **Calibrate Feeding Length:**
