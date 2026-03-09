@@ -19,9 +19,6 @@ This project provides integration of the Anycubic ACE PRO with the Snapmaker U1 
 
 <img src="./.github/img/pinout.png" alt="drawing" width="70%"/>
 
-> [!IMPORTANT]
->VCC (24 V) for logic is NOT required — ACE powers itself. Connect via USB to a regular port.
-
 ## Installation Instructions
 
 1.  **Custom Firmware:** Install the latest [Paxx12](https://github.com/paxx12/SnapmakerU1-Extended-Firmware) custom firmware to gain SSH access to your Snapmaker U1.

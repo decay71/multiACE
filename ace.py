@@ -278,7 +278,10 @@ class BunnyAce:
         try:
             self._serial.write(data)
         except Exception:
-            logging.exception("ACE: Error writing to serial")
+            self.log_error("ACE: Error writing to serial")
+            self.log_warning("Try reconnecting")
+            self._serial_disconnect()
+            self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
 
     def _pre_load(self, gate):
         self.log_always('Wait ACE preload')
@@ -350,16 +353,16 @@ class BunnyAce:
             crc_data = packet[4 + payload_len:4 + payload_len + 2]
             tail = packet[-1]
 
-            if tail != 0xFE:
-                self.gcode.respond_info(f"Invalid tail byte from ACE: {tail:02X}, dropping sync bytes")
-                self.read_buffer = self.read_buffer[2:]  # Drop current sync bytes and continue searching
-                continue
-
-            calc_crc = struct.pack('<H', self._calc_crc(payload))
-            if crc_data != calc_crc:
-                self.gcode.respond_info('Invalid CRC from ACE PRO, dropping sync bytes')
-                self.read_buffer = self.read_buffer[2:]  # Drop current sync bytes and continue searching
-                continue
+            # if tail != 0xFE:
+            #     self.gcode.respond_info(f"Invalid tail byte from ACE: {tail:02X}, dropping sync bytes")
+            #     self.read_buffer = self.read_buffer[2:]  # Drop current sync bytes and continue searching
+            #     continue
+            #
+            # calc_crc = struct.pack('<H', self._calc_crc(payload))
+            # if crc_data != calc_crc:
+            #     self.gcode.respond_info('Invalid CRC from ACE PRO, dropping sync bytes')
+            #     self.read_buffer = self.read_buffer[2:]  # Drop current sync bytes and continue searching
+            #     continue
 
             # Packet is valid, consume it from buffer
             self.read_buffer = self.read_buffer[total_len:]
