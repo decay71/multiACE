@@ -5,7 +5,7 @@
 
 Multi-ACE Pro integration for the Snapmaker U1 3D printer. Connect up to 4 Anycubic ACE Pro units for expanded filament management - auto-detected, hot-swappable, no reboot required.
 
-> ⚠️ **Beta Software** — This project is in active development. Use at your own risk. While it has been tested successfully, it may cause unexpected behavior. Always backup your original files before installation. See [Installation Step 3](#3-backup-original-files).
+> ⚠️ **Beta Software** - This project is in active development. Use at your own risk. While it has been tested successfully, it may cause unexpected behavior. Always backup your original files before installation. See [Installation Step 3](#3-backup-original-files).
 
 Based on [SnapAce by BlackFrogKok](https://github.com/BlackFrogKok/SnapAce).
 
@@ -19,7 +19,7 @@ Based on [SnapAce by BlackFrogKok](https://github.com/BlackFrogKok/SnapAce).
 - Supports up to 4 ACE Pro units (expandable via USB hubs or daisy chain)
 
 **Improved Filament Handling**
-- Reactive sensor polling during preload — stops feeding immediately when filament reaches toolhead sensor
+- Reactive sensor polling during preload - stops feeding immediately when filament reaches toolhead sensor
 - Per-toolhead configurable feed lengths (different PTFE tube lengths per head)
 - Load retry with mini-retract if filament doesn't reach the sensor
 - Unload retry with full toolhead re-heat cycle if filament is stuck
@@ -41,9 +41,9 @@ The ACE Pro connects to the Snapmaker U1 via USB using a Molex Micro-Fit 3.0 con
 
 ### What You Need
 
-- **1x Molex Micro-Fit 3.0 Male 2x3 connector with pre-crimped wires** ([AliExpress](https://de.aliexpress.com) — search for "Micro-Fit Molex MX3.0 43025 43020 Male 2x3 20AWG")
-- **1x USB Type-A breakout or USB extension cable** (to cut and strip) — [Amazon example](https://amzn.to/4bC72pK)
-- Alternatively: a screw terminal USB adapter — [Amazon example](https://amzn.to/4uZ61jo)
+- **1x Molex Micro-Fit 3.0 Male 2x3 connector with pre-crimped wires** ([AliExpress](https://de.aliexpress.com) - search for "Micro-Fit Molex MX3.0 43025 43020 Male 2x3 20AWG")
+- **1x USB Type-A breakout or USB extension cable** (to cut and strip) - [Amazon example](https://amzn.to/4bC72pK)
+- Alternatively: a screw terminal USB adapter - [Amazon example](https://amzn.to/4uZ61jo)
 
 ### Pinout
 
@@ -52,15 +52,15 @@ Connect the following pins from the ACE Pro Molex connector to USB:
 ```
 ACE Pro Molex (2x3)          USB Type-A
 ┌─────────────────┐
-│  1   2   3      │          Pin 1 (VCC)  — NOT CONNECTED
-│  4   5   6      │          Pin 2 (D-)   — ACE D-
-└─────────────────┘          Pin 3 (D+)   — ACE D+
-                             Pin 4 (GND)  — ACE GND
+│  1   2   3      │          Pin 1 (VCC)  - NOT CONNECTED
+│  4   5   6      │          Pin 2 (D-)   - ACE D-
+└─────────────────┘          Pin 3 (D+)   - ACE D+
+                             Pin 4 (GND)  - ACE GND
 ```
 
 Refer to the [original SnapAce pinout diagram](https://github.com/BlackFrogKok/SnapAce/blob/main/.github/img/pinout.png) for the exact Molex pin positions.
 
-> **Important:** VCC is not needed — the ACE Pro has its own power supply.
+> **Important:** VCC is not needed - the ACE Pro has its own power supply.
 
 ### Assembly
 
@@ -68,7 +68,7 @@ Refer to the [original SnapAce pinout diagram](https://github.com/BlackFrogKok/S
 2. **Twist D+ and D- wires together** (2-3 twists per cm) to reduce electromagnetic interference
 3. If using a cut USB cable: wrap the exposed section with aluminum foil overlapping the cable shield to maintain shielding
 4. Connect to the Snapmaker U1 via a USB extension cable
-5. Additional ACE Pro units connect via the **daisy chain** cable (included with ACE Pro) — no additional USB cables needed
+5. Additional ACE Pro units connect via the **daisy chain** cable (included with ACE Pro) - no additional USB cables needed
 
 ### Recommended Setup
 
@@ -128,7 +128,7 @@ Add the following line to your `printer.cfg`:
 
 ### 6. Calibrate
 
-Measure the PTFE tube length from each ACE Pro gate to each toolhead. Set `retract_length` to the full tube length. Set `feed_length` and `load_length` to approximately 3/4 of the tube length — the reactive sensor polling handles the remaining distance automatically.
+Measure the PTFE tube length from each ACE Pro gate to each toolhead. Set `retract_length` to the full tube length. Set `feed_length` and `load_length` to approximately 3/4 of the tube length - the reactive sensor polling handles the remaining distance automatically.
 
 > **Tested setup:** The default config values below were tested with ACE Pro stock PTFE tubes, ~5cm cable directly at the Snapmaker U1 entrance, and Bambu-style splitters.
 
@@ -153,7 +153,7 @@ ACE_LIST
 filename: /home/lava/printer_data/config/extended/mUlt1ACE/ace_vars.cfg
 
 [ace]
-# serial: not needed — auto-detected via USB Vendor/Product ID
+# serial: not needed - auto-detected via USB Vendor/Product ID
 # Only set this as fallback if auto-detection fails:
 # serial: /dev/serial/by-path/platform-fed00000.usb-usb-0:1.3.3:1.0
 baud: 115200
@@ -161,11 +161,11 @@ baud: 115200
 # --- Feed & Retract ---
 feed_speed: 80              # ACE feed speed (mm/s)
 retract_speed: 80           # ACE retract speed (mm/s)
-retract_length: 1950        # Full retract distance — set to full PTFE tube length (mm)
-feed_length: 1500           # Preload feed distance — approx. 3/4 of tube length (mm)
+retract_length: 1950        # Full retract distance - set to full PTFE tube length (mm)
+feed_length: 1500           # Preload feed distance - approx. 3/4 of tube length (mm)
 
 # --- Load Phase (used by filament_feed.py) ---
-load_length: 1500           # Load feed distance — approx. 3/4 of tube length (mm)
+load_length: 1500           # Load feed distance - approx. 3/4 of tube length (mm)
 load_retry: 3               # Number of retries if sensor not reached
 load_retry_retract: 50      # Mini-retract before retry (mm)
 
@@ -222,17 +222,17 @@ On startup, mUlt1ACE scans `/dev/serial/by-path/` and identifies ACE Pro devices
 
 ### Reactive Sensor Polling
 
-Unlike the original SnapAce which feeds a fixed distance blindly, mUlt1ACE uses `how_wait=0` to start the feed and then polls the toolhead filament sensor every 0.105 seconds. When filament is detected, `_stop_feeding()` is called immediately — minimizing overshoot regardless of PTFE tube length.
+Unlike the original SnapAce which feeds a fixed distance blindly, mUlt1ACE uses `how_wait=0` to start the feed and then polls the toolhead filament sensor every 0.105 seconds. When filament is detected, `_stop_feeding()` is called immediately - minimizing overshoot regardless of PTFE tube length.
 
 ### ACE Switch with AUTOLOAD
 
 When `ACE_SWITCH TARGET=2 AUTOLOAD=1` is called:
 
-1. **Unload Phase** — For each toolhead: checks the filament sensor. If filament is in the head, runs the full Snapmaker unload sequence (heat, extract, retract). If not, skips.
-2. **Disconnect** — Closes serial connection to current ACE.
-3. **Connect** — Opens serial connection to new ACE, waits for heartbeat.
-4. **RFID Push** — Sends new ACE's RFID spool data to the touchscreen display.
-5. **Load Phase** — For each gate with filament: runs the full Snapmaker load sequence.
+1. **Unload Phase** - For each toolhead: checks the filament sensor. If filament is in the head, runs the full Snapmaker unload sequence (heat, extract, retract). If not, skips.
+2. **Disconnect** - Closes serial connection to current ACE.
+3. **Connect** - Opens serial connection to new ACE, waits for heartbeat.
+4. **RFID Push** - Sends new ACE's RFID spool data to the touchscreen display.
+5. **Load Phase** - For each gate with filament: runs the full Snapmaker load sequence.
 
 ### Persistent Selection
 
@@ -259,11 +259,11 @@ The active ACE device path is saved to `ace_vars.cfg` using Klipper's `save_vari
 
 **ACE not detected after reboot**
 - Check USB cable connection
-- Verify with `ls /dev/serial/by-path/` — ACE devices should be listed
+- Verify with `ls /dev/serial/by-path/` - ACE devices should be listed
 - Check `dmesg | tail -20` for USB errors
 
 **"Invalid JSON/UTF-8 from ACE PRO" messages**
-- USB signal integrity issue — twist D+ and D- wires, improve cable shielding
+- USB signal integrity issue - twist D+ and D- wires, improve cable shielding
 - Try a shorter USB extension cable
 
 **Load timeout on first attempt, works on second**
@@ -271,7 +271,7 @@ The active ACE device path is saved to `ace_vars.cfg` using Klipper's `save_vari
 - Check klippy.log for `feed_loading` entries
 
 **"Filament Unloading Anomaly" on display**
-- Should be fixed in mUlt1ACE — machine state is reset after unload
+- Should be fixed in mUlt1ACE - machine state is reset after unload
 - If still occurring, check if the issue happens with stock load/unload (touchscreen) as well
 
 **File changes lost after reboot**
@@ -280,9 +280,9 @@ The active ACE device path is saved to `ace_vars.cfg` using Klipper's `save_vari
 
 ## Credits
 
-- [BlackFrogKok/SnapAce](https://github.com/BlackFrogKok/SnapAce) — Original ACE Pro integration for Snapmaker U1
-- [paxx12/SnapmakerU1-Extended-Firmware](https://github.com/paxx12/SnapmakerU1-Extended-Firmware) — Custom firmware with SSH access
-- [agrloki/ValgACE](https://github.com/agrloki/ValgACE) — ACE Pro Klipper driver for Creality (protocol reference)
+- [BlackFrogKok/SnapAce](https://github.com/BlackFrogKok/SnapAce) - Original ACE Pro integration for Snapmaker U1
+- [paxx12/SnapmakerU1-Extended-Firmware](https://github.com/paxx12/SnapmakerU1-Extended-Firmware) - Custom firmware with SSH access
+- [agrloki/ValgACE](https://github.com/agrloki/ValgACE) - ACE Pro Klipper driver for Creality (protocol reference)
 - Snapmaker community on Discord (#u1-printer channel)
 
 ## License
