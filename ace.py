@@ -3,6 +3,7 @@ import json
 import struct
 import queue
 import traceback
+import os              # [mUlt1ACE] Added for auto-detection filesystem access
 import serial
 from serial import SerialException
 
@@ -18,6 +19,7 @@ GATE_AVAILABLE = 1  # Available to load from either buffer or spool
 
 class BunnyAce:
     VARS_ACE_REVISION = 'ace__revision'
+    VARS_ACE_ACTIVE_DEVICE = 'ace__active_device'  # [mUlt1ACE] Persists active ACE selection across reboots
 
     def __init__(self, config):
         self._connected = False
@@ -44,15 +46,33 @@ class BunnyAce:
         else:
             config.error("There is no [save_variables] in the config. Check installation guide")
 
-
-        self.serial_id = config.get('serial', '/dev/ttyACM0')
+        # [mUlt1ACE] serial defaults to '' to enable auto-detection (original: '/dev/ttyACM0')
+        self.serial_id = config.get('serial', '')
         self.baud = config.getint('baud', 115200)
+        self._ace_devices = []              # [mUlt1ACE] List of auto-detected ACE device paths
+        self._active_device_index = 0       # [mUlt1ACE] Index into _ace_devices for active unit
 
         self.feed_speed = config.getint('feed_speed', 50)
         self.retract_speed = config.getint('retract_speed', 50)
         self.retract_length = config.getint('retract_length', 100)
         self.feed_length = config.getint('feed_length', 100)
+        # [mUlt1ACE] New parameters for load phase in filament_feed.py
+        self.load_length = config.getint('load_length', 2000)         # Max feed distance during load
+        self.load_retry = config.getint('load_retry', 3)              # Number of retries if sensor not reached
+        self.load_retry_retract = config.getint('load_retry_retract', 50)  # Mini-retract before retry (mm)
         self.max_dryer_temperature = config.getint('max_dryer_temperature', 55)
+
+        # [mUlt1ACE] Per-toolhead overrides (optional, fallback to global defaults)
+        # Allows different PTFE tube lengths per toolhead, e.g. feed_length_0: 1800
+        self.head_feed_length = {}
+        self.head_load_length = {}
+        self.head_load_retry = {}
+        self.head_load_retry_retract = {}
+        for i in range(4):
+            self.head_feed_length[i] = config.getint('feed_length_%d' % i, self.feed_length)
+            self.head_load_length[i] = config.getint('load_length_%d' % i, self.load_length)
+            self.head_load_retry[i] = config.getint('load_retry_%d' % i, self.load_retry)
+            self.head_load_retry_retract[i] = config.getint('load_retry_retract_%d' % i, self.load_retry_retract)
 
         self._callback_map = {}
         self._feed_assist_index = -1
@@ -134,12 +154,74 @@ class BunnyAce:
         self.gcode.register_command(
             'ACE_RETRACT', self.cmd_ACE_RETRACT,
             desc=self.cmd_ACE_RETRACT_help)
+        # [mUlt1ACE] New GCode commands for multi-ACE management
+        self.gcode.register_command(
+            'ACE_SWITCH', self.cmd_ACE_SWITCH,
+            desc=self.cmd_ACE_SWITCH_help)
+        self.gcode.register_command(
+            'ACE_LIST', self.cmd_ACE_LIST,
+            desc=self.cmd_ACE_LIST_help)
 
+    # [mUlt1ACE] New method: Scans USB bus for ACE Pro devices via sysfs vendor/product ID
+    # Returns list of /dev/serial/by-path/ paths for all connected ACE units
+    # Uses USB IDs (vendor=28e9, product=018a) to positively identify ACE Pro hardware
+    def _scan_ace_devices(self):
+        ace_devices = []
+        by_path_dir = '/dev/serial/by-path/'
+
+        if not os.path.exists(by_path_dir):
+            return ace_devices
+
+        for entry in sorted(os.listdir(by_path_dir)):
+            full_path = os.path.join(by_path_dir, entry)
+            real_dev = os.path.basename(os.path.realpath(full_path))
+
+            # Check USB vendor/product ID via sysfs
+            try:
+                sysfs_base = '/sys/class/tty/%s/device/../' % real_dev
+                with open(os.path.join(sysfs_base, 'idVendor'), 'r') as f:
+                    vendor = f.read().strip()
+                with open(os.path.join(sysfs_base, 'idProduct'), 'r') as f:
+                    product = f.read().strip()
+
+                # ACE Pro: vendor 28e9, product 018a
+                if vendor == '28e9' and product == '018a':
+                    ace_devices.append(full_path)
+                    logging.info('ACE: Found device %s (%s) vendor=%s product=%s' % (full_path, real_dev, vendor, product))
+            except (IOError, OSError):
+                continue
+
+        return ace_devices
+
+    # [mUlt1ACE] Rewritten: Original only connected to configured serial port.
+    # Now auto-detects all ACE devices, restores last active selection from
+    # saved variables, and falls back to configured serial if no devices found.
     def _handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
 
+        # Auto-detect ACE devices
+        self._ace_devices = self._scan_ace_devices()
+
+        if self._ace_devices:
+            logging.info('ACE: Found %d device(s): %s' % (len(self._ace_devices), str(self._ace_devices)))
+            self.log_always('ACE: Found %d device(s)' % len(self._ace_devices))
+
+            # Restore last active device from saved variables
+            saved_device = self.save_variables.allVariables.get(self.VARS_ACE_ACTIVE_DEVICE, None)
+            if saved_device and saved_device in self._ace_devices:
+                self._active_device_index = self._ace_devices.index(saved_device)
+                logging.info('ACE: Restored active device %d: %s' % (self._active_device_index + 1, saved_device))
+            else:
+                self._active_device_index = 0
+
+            self.serial_id = self._ace_devices[self._active_device_index]
+        elif self.serial_id:
+            logging.info('ACE: No devices auto-detected, using configured serial: %s' % self.serial_id)
+        else:
+            self.log_error('ACE: No devices found and no serial configured!')
+            return
+
         logging.info(f'ACE: Connecting to {self.serial_id}')
-        # We can catch timing where ACE reboots itself when no data is available from host. We're avoiding it with this hack
         self._connected = False
         self._queue = queue.Queue()
         self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
@@ -294,10 +376,33 @@ class BunnyAce:
             self._serial_disconnect()
             self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
 
+    # [mUlt1ACE] Rewritten: Original blindly fed feed_length mm without sensor check.
+    # Now uses reactive sensor polling (how_wait=0) during the feed — polls the
+    # toolhead filament sensor every 0.105s and calls _stop_feeding() immediately
+    # when filament is detected. Uses per-toolhead feed_length overrides.
     def _pre_load(self, gate):
         self.log_always('Wait ACE preload')
         self.wait_ace_ready()
-        self._feed(gate, self.feed_length, self.feed_speed, 0)
+
+        feed_length = self.head_feed_length[gate]
+
+        sensor = self.printer.lookup_object(
+            'filament_motion_sensor e%d_filament' % gate, None)
+
+        # Reactive feed with sensor polling
+        self._feed(gate, feed_length, self.feed_speed, 0)
+
+        while not self.is_ace_ready():
+            self.reactor.pause(self.reactor.monotonic() + 0.105)
+            if sensor and sensor.get_status(0)['filament_detected']:
+                self._stop_feeding(gate)
+                self.wait_ace_ready()
+                self.log_always('Filament detected during preload')
+                break
+
+        if not sensor or not sensor.get_status(0)['filament_detected']:
+            self.log_warning('Filament not detected after preload (%dmm)' % feed_length)
+
         self.log_always("Select AutoLoad from the menu")
 
     def _periodic_heartbeat_event(self, eventtime):
@@ -591,12 +696,186 @@ class BunnyAce:
             request={"method": "stop_feed_filament", "params": {"index": index}},
             callback=callback)
 
+    # [mUlt1ACE] New GCode command
+    cmd_ACE_SWITCH_help = 'Switch active ACE unit (supports up to 4). AUTOLOAD=1 for full unload/load cycle.'
+
+    # [mUlt1ACE] Mapping of extruder index to Snapmaker FEED_AUTO parameters.
+    # Determined by observing touchscreen FEED_AUTO commands in klippy.log.
+    EXTRUDER_MAP = {
+        0: ('left', 1),
+        1: ('left', 0),
+        2: ('right', 0),
+        3: ('right', 1),
+    }
+
+    # [mUlt1ACE] New method: Forces RFID data from current ACE to the Snapmaker display.
+    # Called after ACE switch to update filament type/color/brand on the touchscreen.
+    # The heartbeat normally only pushes RFID data when it changes (rfid == 2 transition),
+    # so after switching ACE units we need to manually push the new ACE's spool info.
+    def _push_rfid_info(self):
+        """Force push RFID data from current ACE to display"""
+        for i in range(4):
+            slot = self._info['slots'][i]
+            if slot.get('rfid', 0) == 2:
+                self.gcode.run_script_from_command(
+                    'SET_PRINT_FILAMENT_CONFIG '
+                    'CONFIG_EXTRUDER=%d '
+                    'FILAMENT_TYPE="%s" '
+                    'FILAMENT_COLOR_RGBA=%s '
+                    'VENDOR="%s" '
+                    'FILAMENT_SUBTYPE=""' % (
+                        i,
+                        slot.get('type', 'PLA'),
+                        self.rgb2hex(*slot.get('color', (0, 0, 0))),
+                        slot.get('brand', 'Generic')))
+
+    # [mUlt1ACE] New: Hot-swaps between ACE units without reboot.
+    # Unload: only toolheads where sensor detects filament in head.
+    # Load: only gates where ACE has filament (GATE_AVAILABLE).
+    # Resets machine state after unload to prevent "Unloading Anomaly".
+    # Pushes RFID info after switch. Saves selection to ace_vars.cfg.
+    def cmd_ACE_SWITCH(self, gcmd):
+        target = gcmd.get_int('TARGET')
+        autoload = gcmd.get_int('AUTOLOAD', 0)
+
+        if not self._ace_devices:
+            raise gcmd.error('No ACE devices detected')
+
+        if target < 1 or target > len(self._ace_devices):
+            raise gcmd.error('TARGET must be between 1 and %d (found %d ACE devices)' % (len(self._ace_devices), len(self._ace_devices)))
+
+        target_index = target - 1
+        switching_ace = target_index != self._active_device_index
+
+        if not switching_ace and not autoload:
+            self.log_always('ACE %d is already active' % target)
+            return
+
+        if not switching_ace and autoload:
+            self.log_always('ACE %d already active, loading available filaments...' % target)
+            # Skip unload/switch, jump to load phase
+        else:
+            # Disable feed assist before switching
+            if self._feed_assist_index != -1:
+                self._disable_feed_assist()
+                self.wait_ace_ready()
+
+            # Unload phase - only unload filament that is actually in toolhead
+            if autoload:
+                self.log_always('Unloading from ACE %d...' % (self._active_device_index + 1))
+
+                for gate in range(4):
+                    sensor = self.printer.lookup_object(
+                        'filament_motion_sensor e%d_filament' % gate, None)
+                    filament_in_head = sensor and sensor.get_status(0)['filament_detected']
+                    module, channel = self.EXTRUDER_MAP[gate]
+
+                    if filament_in_head:
+                        self.log_always('Extruder %d: filament in head, full unload' % gate)
+                        self.gcode.run_script_from_command(
+                            "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d UNLOAD=1 STAGE=prepare" % (module, channel, gate))
+                        self.gcode.run_script_from_command(
+                            "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d UNLOAD=1 STAGE=doing" % (module, channel, gate))
+                    else:
+                        self.log_always('Extruder %d: not in head, skipping unload' % gate)
+
+                # Reset machine state to prevent "Unloading Anomaly"
+                machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
+                if machine_state_manager is not None:
+                    self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=IDLE ACTION=IDLE")
+
+                self.log_always('Unload complete')
+
+            # Disconnect current
+            self._serial_disconnect()
+            self._connected = False
+
+            # Switch to new device
+            self._active_device_index = target_index
+            self.serial_id = self._ace_devices[target_index]
+
+            # Save selection
+            self.gcode.run_script_from_command(
+                "SAVE_VARIABLE VARIABLE=%s VALUE=\"'%s'\"" % (self.VARS_ACE_ACTIVE_DEVICE, self.serial_id))
+
+            # Reset RFID info so heartbeat picks up new ACE's data
+            for slot in self._info['slots']:
+                slot['rfid'] = 0
+
+            # Reconnect
+            self.log_always('Connecting to ACE %d: %s' % (target, self.serial_id))
+            self._queue = queue.Queue()
+            self._callback_map = {}
+            self._request_id = 0
+            self.read_buffer = bytearray()
+            self.gate_status = [GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN]
+            self.connect_timer = self.reactor.register_timer(self._connect, self.reactor.NOW)
+
+        # Load phase - check sensors before loading
+        if autoload:
+            if switching_ace:
+                # Wait for connection
+                for _ in range(30):
+                    self.reactor.pause(self.reactor.monotonic() + 0.5)
+                    if self._connected:
+                        break
+                if not self._connected:
+                    self.log_error('Failed to connect to ACE %d' % target)
+                    return
+
+                # Wait for heartbeat to update gate status and RFID
+                self.reactor.pause(self.reactor.monotonic() + 3.0)
+
+                # Push RFID info from new ACE to display
+                self._push_rfid_info()
+
+            self.log_always('Loading from ACE %d...' % target)
+            loaded_any = False
+
+            for gate in range(4):
+                sensor = self.printer.lookup_object(
+                    'filament_motion_sensor e%d_filament' % gate, None)
+                filament_in_head = sensor and sensor.get_status(0)['filament_detected']
+
+                if filament_in_head:
+                    self.log_always('Extruder %d: filament already in head, skipping' % gate)
+                elif self.gate_status[gate] == GATE_AVAILABLE:
+                    module, channel = self.EXTRUDER_MAP[gate]
+                    self.log_always('Extruder %d: loading...' % gate)
+                    self.gcode.run_script_from_command(
+                        "FEED_AUTO MODULE=%s CHANNEL=%d EXTRUDER=%d LOAD=1" % (module, channel, gate))
+                    loaded_any = True
+                else:
+                    self.log_always('Extruder %d: no filament in ACE, skipping' % gate)
+
+            if loaded_any:
+                self.log_always('Load complete from ACE %d' % target)
+            else:
+                self.log_always('Nothing to load')
+
+    # [mUlt1ACE] New GCode command: Lists all detected ACE devices with active marker
+    cmd_ACE_LIST_help = 'List all detected ACE devices (up to 4)'
+
+    def cmd_ACE_LIST(self, gcmd):
+        if not self._ace_devices:
+            self.log_always('No ACE devices detected')
+            return
+
+        self.log_always('Found %d ACE device(s):' % len(self._ace_devices))
+        for i, device in enumerate(self._ace_devices):
+            active = ' << ACTIVE' if i == self._active_device_index else ''
+            self.log_always('  ACE %d: %s%s' % (i + 1, device, active))
+
+    # [mUlt1ACE] Extended: Added active_device and device_count to status output
+    # Original only returned status, temp, dryer_status, gate_status
     def get_status(self, eventtime=None):
         return {
             'status': self._info['status'],
             'temp': self._info['temp'],
             'dryer_status': self._info['dryer_status'],
             'gate_status': self.gate_status,
+            'active_device': self._active_device_index + 1,
+            'device_count': len(self._ace_devices),
         }
 
 
