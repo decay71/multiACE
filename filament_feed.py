@@ -1325,21 +1325,28 @@ class FilamentFeed:
                 elif stage == FEED_UNLOAD_STAGE_DOING:
                     try:
                         # [mUlt1ACE] Changed: Original only accepted UNLOAD_HEAT_FINISH state.
-                        # Now also handles UNLOAD_FINISH (duplicate touchscreen commands),
-                        # LOAD_FINISH and LOAD_FAIL (unload attempted without prepare phase).
-                        if self.channel_state[ch] not in [FEED_STA_UNLOAD_HEAT_FINISH, FEED_STA_UNLOAD_FINISH,
-                                                          FEED_STA_LOAD_FINISH, FEED_STA_LOAD_FAIL]:
+                        # ACE_SWITCH sends UNLOAD STAGE=doing for all channels, but only
+                        # channels that went through STAGE=prepare will be in UNLOAD_HEAT_FINISH.
+                        # All other channels may be in any stable state (finished, failed, idle).
+                        # We accept these and return silently instead of throwing state_mismatch.
+                        _stable_states = [
+                            FEED_STA_UNLOAD_HEAT_FINISH,
+                            FEED_STA_UNLOAD_FINISH,
+                            FEED_STA_LOAD_FINISH,
+                            FEED_STA_LOAD_FAIL,
+                            FEED_STA_PRELOAD_FINISH,
+                            FEED_STA_PRELOAD_FAIL,
+                            FEED_STA_NONE,
+                            FEED_STA_INITED,
+                        ]
+                        if self.channel_state[ch] not in _stable_states:
                             self.channel_error[ch] = FEED_ERR_STATE_MISMATCH
                             raise ValueError('state mismatch!')
 
-                        # [mUlt1ACE] Ignore if already finished or if prepare phase was skipped
-                        if self.channel_state[ch] == FEED_STA_UNLOAD_FINISH:
-                            logging.info("[feed][unload] ignoring duplicate STAGE=doing, already finished")
-                            self.channel_error[ch] = FEED_OK
-                            return
-
-                        if self.channel_state[ch] in [FEED_STA_LOAD_FINISH, FEED_STA_LOAD_FAIL]:
-                            logging.info("[feed][unload] ignoring STAGE=doing, prepare phase not run (state: %s)" % self.channel_state[ch])
+                        # Only UNLOAD_HEAT_FINISH means prepare ran — proceed with unload.
+                        # All other states: prepare was skipped, ignore silently.
+                        if self.channel_state[ch] != FEED_STA_UNLOAD_HEAT_FINISH:
+                            logging.info("[feed][unload] ignoring STAGE=doing, no prepare phase (state: %s)" % self.channel_state[ch])
                             self.channel_error[ch] = FEED_OK
                             return
 
