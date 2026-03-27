@@ -106,6 +106,12 @@ cp /home/lava/klipper/klippy/kinematics/extruder.py /home/lava/klipper/klippy/ki
 
 ### 4. Install mUlt1ACE Files
 
+Create the required directories:
+```bash
+mkdir -p /home/lava/printer_data/config/extended/
+mkdir -p /home/lava/printer_data/config/extended/mUlt1ACE/
+```
+
 Copy the following files to your Snapmaker U1 using WinSCP or `scp`:
 
 | File | Destination |
