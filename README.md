@@ -13,8 +13,8 @@ Based on [SnapAce by BlackFrogKok](https://github.com/BlackFrogKok/SnapAce).
 
 **Multi-ACE Support**
 - Auto-detection of all connected ACE Pro units via USB Vendor/Product ID
-- Hot-swap between ACE units without reboot (`ACE_SWITCH`)
-- Full unload/load cycle with a single command (`ACE_SWITCH TARGET=2 AUTOLOAD=1`)
+- Hot-swap between ACE units without reboot (`ACE_LOAD` Klipper Makros)
+- Full unload/load cycle with a single command 
 - Active device selection persists across reboots
 - Supports up to 4 ACE Pro units (expandable via USB hubs or daisy chain)
 
