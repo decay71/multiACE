@@ -73,7 +73,7 @@ Refer to the [original SnapAce pinout diagram](https://github.com/BlackFrogKok/S
 ### Recommended Setup
 
 ```
-[Snapmaker U1] ──USB──> [ACE Pro #1] ──DaisyChain──> [ACE Pro #2]
+[Snapmaker U1] ──USB──> [ACE Pro #1]  ──DaisyChain──> [ACE Pro #2]
                                       ──DaisyChain──> [ACE Pro #3]
                                       ──DaisyChain──> [ACE Pro #4]
 ```
