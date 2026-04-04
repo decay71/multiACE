@@ -360,7 +360,7 @@ Wenn etwas durcheinander geraten ist (falsches Filament angezeigt, unerwartetes 
 
 Dieses Projekt basiert auf [SnapACE](https://github.com/BlackFrogKok/SnapACE) und [Klipper](https://github.com/Klipper3d/klipper), beide lizenziert unter GPL-3.0. multiACE ist daher ebenfalls GPL-3.0.
 
-## Hinweis zur KI-gestützten Entwicklung
+##Hinweis zur KI-gestützten Entwicklung
 
 Dieses Projekt enthält KI-unterstützte Inhalte (Recherche, Dokumentation, Teile des Codes).
 Alle Inhalte wurden vor der Aufnahme von Menschen überprüft.
