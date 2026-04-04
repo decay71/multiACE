@@ -1,5 +1,7 @@
 # mUlt1ACE
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
+
 ## multiACE v0.80b "First Light"
 
 **Multi-ACE Pro Unterstützung für Snapmaker U1 mit Klipper**
@@ -36,6 +38,8 @@ multiACE erweitert die [SnapACE](https://github.com/BlackFrogKok/SnapACE) Klippe
 ### ACE-Einheiten umschalten
 
 Die Fluidd-Makros **ACEA__Switch_0..3** verwenden um zwischen ACE-Einheiten umzuschalten.
+
+> **Hinweis zu den Makronamen:** Die Makros verwenden Buchstaben-Präfixe (ACEA, ACEB, ACEC...) damit sie in Fluidds alphabetischer Makroliste in logischer Reihenfolge erscheinen. Wem die Namen nicht gefallen, kann sie jederzeit in `config/extended/ace.cfg` umbenennen.
 
 ## Funktionen
 

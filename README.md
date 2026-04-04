@@ -1,5 +1,7 @@
 # mUlt1ACE
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
+
 ## multiACE v0.80b "First Light"
 
 **Multi-ACE Pro support for Snapmaker U1 with Klipper**
@@ -36,6 +38,8 @@ multiACE extends the [SnapACE](https://github.com/BlackFrogKok/SnapACE) Klipper 
 ### Switching ACE Units
 
 Use the Fluidd macros **ACEA__Switch_0..3** to switch between ACE units.
+
+> **Note on macro names:** The macro names use letter prefixes (ACEA, ACEB, ACEC...) to ensure they appear in a logical order in Fluidd's alphabetical macro list. If you prefer different names, you can rename them anytime in `config/extended/ace.cfg`.
 
 ## Features
 
