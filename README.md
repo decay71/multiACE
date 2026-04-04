@@ -12,7 +12,7 @@
 
 ## What is multiACE?
 
-multiACE extends the [SnapACE](https://github.com/BlackFrogKok/SnapACE) Klipper firmware to support **multiple ACE Pro units** on a single Snapmaker U1 printer. Switch between ACE units to use different filament sets - for example, PLA on ACE 0 and PETG on ACE 1 - without physically swapping spools.
+multiACE extends the [SnapACE](https://github.com/BlackFrogKok/SnapACE) software to support **multiple ACE Pro units** on a single Snapmaker U1 printer. Switch between ACE units to use different filament sets - for example, PLA on ACE 0 and PETG on ACE 1 - without physically swapping spools.
 
 ## Typical Workflow
 
