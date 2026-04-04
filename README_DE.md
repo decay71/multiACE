@@ -12,7 +12,7 @@
 
 ## Was ist multiACE?
 
-multiACE erweitert die [SnapACE](https://github.com/BlackFrogKok/SnapACE) Klipper-Firmware um die Unterstützung **mehrerer ACE Pro Einheiten** an einem einzelnen Snapmaker U1 Drucker. Wechsle zwischen ACE-Einheiten um verschiedene Filament-Sets zu verwenden - z.B. PLA auf ACE 0 und PETG auf ACE 1 - ohne Spulen physisch tauschen zu müssen.
+multiACE erweitert die [SnapACE](https://github.com/BlackFrogKok/SnapACE) Software um die Unterstützung **mehrerer ACE Pro Einheiten** an einem einzelnen Snapmaker U1 Drucker. Wechsle zwischen ACE-Einheiten um verschiedene Filament-Sets zu verwenden - z.B. PLA auf ACE 0 und PETG auf ACE 1 - ohne Spulen physisch tauschen zu müssen.
 
 ## Typischer Arbeitsablauf
 
@@ -73,7 +73,7 @@ Das ACE Pro wird über einen Molex Micro-Fit 3.0 Stecker per USB mit dem Snapmak
 
 **Was wird benötigt:**
 - 1x Molex Micro-Fit 3.0 Male 2x3 Stecker mit vorgequetschten Kabeln - [AliExpress](https://de.aliexpress.com/item/1005010370245711.html)
-- 1x USB Typ-A Schraubklemmen-Adapter - [Amazon](https://www.amazon.com/dp/B0825TWRW7)
+- 1x USB Typ-A Schraubklemmen-Adapter - [Amazon]([https://www.amazon.com/dp/B0825TWRW7](https://www.amazon.de/JZK-USB-Schraubklemmenblock-Adapter-Schraub-Abschirmungsklemmen-Daten%C3%BCbertragung-USB-Schnittstelle))
 
 **Pinbelegung:**
 
