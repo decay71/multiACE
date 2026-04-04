@@ -360,6 +360,11 @@ If things get out of sync (wrong filament displayed, unexpected behavior), reset
 
 This project is based on [SnapACE](https://github.com/BlackFrogKok/SnapACE) and [Klipper](https://github.com/Klipper3d/klipper), both licensed under GPL-3.0. multiACE is therefore also GPL-3.0.
 
+##AI-Assisted Development Notice
+
+This project includes AI-assisted content research documentation, parts of code).
+All content is reviewed by humans before inclusion.
+
 ## Credits
 
 - **[SnapACE](https://github.com/BlackFrogKok/SnapACE)** by BlackFrogKok - Foundation for ACE Pro Klipper integration
