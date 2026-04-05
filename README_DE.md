@@ -275,6 +275,10 @@ retract_speed: 30       # Rückzugsgeschwindigkeit (mm/s, niedriger = sauberere 
 retract_length: 1950    # Abstand vom Extruder-Sensor zum Splitter (mm)
 load_length: 2100       # ACE-Vorschublänge beim Laden (mm)
 
+#Distance for the filament to reach the toolhead (ACE has its own loading procedure, and this length does not affect it).
+#You need to select a value so that after the ACE loading procedure, the filament is 5-6 cm away from the toolhead
+feed_length: 0 # disabled — using load_length for ACE feed
+
 # Wiederholungseinstellungen
 load_retry: 1           # Anzahl der Ladeversuche
 load_retry_retract: 50  # Mini-Rückzug vor Wiederholung (mm)
@@ -320,6 +324,7 @@ dryer_duration: 240     # Standard-Trocknungsdauer (Minuten)
 - **ACE USB Reset** - Inaktive ACE-Einheiten setzen regelmäßig ihre USB-Verbindung zurück (~3s Zyklus). Dies ist normales ACE Pro Firmware-Verhalten und beeinträchtigt den Betrieb nicht. Sichtbar in `dmesg`, aber harmlos.
 - **Display Attach Toolhead** - Das Anbringen eines Toolheads über das Snapmaker-Display löst Auto-Feed aus. Dies ist Standard-Snapmaker-Verhalten und kann nicht unterdrückt werden.
 - **Unload All löscht Display-Info** - Nach **ACEC__Unload_All** werden manuell gesetzte Filament-Typen und Farben gelöscht. Das ist gewollt - nach dem Entladen neu laden und Filament-Info erneut setzen.
+- **feed/load_length nur pro Toolhead** - Wir in der nächsten Version angepasst. Werte enteprechend der längsten Verbindung setzen sollte gehen, da Sensorprüfung.
 
 ## Fehlerbehebung
 
