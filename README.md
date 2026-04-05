@@ -325,7 +325,7 @@ dryer_duration: 240     # Default drying duration (minutes)
 - **ACE USB Reset** - Inactive ACE units periodically reset their USB connection (~3s cycle). This is normal ACE Pro firmware behavior and does not affect operation. Visible in `dmesg` but harmless.
 - **Display Attach Toolhead** - Attaching a toolhead via the Snapmaker display triggers auto-feed. This is stock Snapmaker behavior and cannot be suppressed.
 - **Unload All clears display** - After **ACEC__Unload_All**, manually set filament types and colors are cleared. This is by design - reload and set filament info again after unload.
-- **feed_length per toolhead only** - Will be adressed in next version, same ptfe lenght for all ACE Pros needed.
+- **load / feed_length per toolhead only** - Will be adressed in next version, set settings to longest path length, sensors check shoukd stop it.
 
 ## Troubleshooting
 
