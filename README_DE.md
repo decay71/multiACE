@@ -1,5 +1,7 @@
 # mUlt1ACE
 
+Beim intensiven Testen der aktuellen Version am Wochenende sind leider stärkere Probleme mit der Verbindung zu mehreren ACE Units aufgefallen. Bis diese behoben sind, empfehle ich für einen stabilen Betrieb weiterhin die Version 0.5b zu nutzen. An einem Hotfix wird bereits gearbeitet.
+
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
 ## multiACE v0.80b "First Light"
