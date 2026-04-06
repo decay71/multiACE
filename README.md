@@ -1,5 +1,7 @@
 # mUlt1ACE
 
+During intensive testing over the weekend, significant issues with connecting to multiple ACE Units came up. For more stable operation, I currently recommend sticking with 0.5b. A hotfix is in the works.
+
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
 ## multiACE v0.80b "First Light"
