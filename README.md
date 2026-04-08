@@ -1,10 +1,18 @@
 # mUlt1ACE
 
-During intensive testing over the weekend, significant issues with connecting to multiple ACE Units came up. For more stable operation, I currently recommend sticking with 0.5b. A hotfix is in the works.
+## What's new in 0.81b
+
+USB-level misbehaviour related to the ACE Pro's internal reset cycle could cause sporadic failures mid-print when switching between ACEs on every toolchange. This release works around it by keeping a single connection to the ACE that was active when the print started — the *start ACE* — and never disconnecting from it for the duration of the print.
+
+**Trade-off:** during a print, only the start ACE has feed_assist available. Heads on other ACEs print without feed_assist; the extruder pulls the filament directly through the bowden. Validated through several hours of multi-color test prints without visible underextrusion. For unusually long bowden routing or high-friction filament, pick the start ACE deliberately with `ACE_SWITCH TARGET=N` so your most-used material lives on it. The next major version (v0.82) will lift this restriction.
+
+**Bonus:** cross-ACE toolchanges no longer pay the ~5–10 second USB disconnect/reconnect cost.
+
+**Logging:** dedicated state and USB debug logs were significantly expanded for post-mortem analysis after print issues (`state_debug` / `usb_debug` in `[ace]`).
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
-## multiACE v0.80b "First Light"
+## multiACE v0.81b "First Light" Hotfix 1
 
 **Multi-ACE Pro support for Snapmaker U1 with Klipper**
 
@@ -271,16 +279,36 @@ All settings are in `config/extended/ace.cfg` under the `[ace]` section:
 
 ```ini
 [ace]
+
+# Number of physically connected ACE Pro devices.
+# Default 1 (single ACE — no config change needed). REQUIRED for
+# multi-ACE setups (>1): set to your physical count (2..8). At
+# startup, multiACE waits up to 20s for all expected devices to
+# appear, then locks the path-to-index mapping for the rest of
+# the session so a temporarily missing ACE during a USB reset
+# cycle never causes index drift.
+# ace_device_count: 3
+
+# Logging
+# log_dir: /home/lava/printer_data/logs   # default — usually fine
+state_debug: true       # per-toolchange / per-load audit log
+usb_debug: true         # per-scan / per-connect serial-layer log
+
+# Serial
+baud: 115200
+
 # ACE feed/retract settings
 feed_speed: 80          # Feed speed (mm/s)
 retract_speed: 30       # Retract speed (mm/s, lower = cleaner winding)
 retract_length: 1950    # Distance from extruder to splitter (mm)
 load_length: 2100       # ACE feed distance for load (mm)
 
-#Distance for the filament to reach the toolhead (ACE has its own loading procedure, and this length does not affect it).
-#You need to select a value so that after the ACE loading procedure, the filament is 5-6 cm away from the toolhead
-feed_length: 0 # disabled — using load_length for ACE feed
-load_length: 2100
+# feed_length: distance for the filament to reach the toolhead.
+# ACE has its own loading procedure and this length does not affect
+# it. Pick a value so that after ACE loading the filament is ~5-6 cm
+# away from the toolhead. Set to 0 to disable (recommended; the
+# preload phase wastes time and gives inconsistent positions).
+feed_length: 0
 
 # Retry settings
 load_retry: 1           # Number of load retries
@@ -294,7 +322,7 @@ max_dryer_temperature: 70
 extra_purge_length: 50  # Extra extrusion after flush (mm), 0 = disabled
 
 # Dryer defaults (per-ACE overrides possible)
-dryer_temp: 55          # Default drying temperature
+dryer_temp: 55          # Default drying temperature (°C)
 dryer_duration: 240     # Default drying duration (minutes)
 
 # Optional: Per-ACE dryer overrides
@@ -312,6 +340,10 @@ dryer_duration: 240     # Default drying duration (minutes)
 
 ### Configuration Recommendations
 
+**ace_device_count** - Default `1`. **Required for multi-ACE setups**: uncomment and set to your physical ACE count (2..8). The 20s startup wait ensures all devices are detected even if some happen to be mid USB reset cycle when Klipper boots. Without an explicit count, multi-ACE setups risk locking the canonical mapping with one device missing.
+
+**state_debug / usb_debug** - Default `true`. Keep enabled. These dedicated logs (separate from `klippy.log`) capture per-toolchange audit entries and serial-layer events. Essential for post-mortem analysis after print issues. Negligible runtime overhead.
+
 **feed_length** - Set to `0` (disabled). The preload phase wastes time when loading ACE slots and leads to inconsistent filament positions in the PTFE tubes.
 
 **load_length** - Set to approximately **110% of your actual PTFE tube length** (from ACE to splitter). The load phase is sensor-controlled and will stop when filament is detected, so a longer value is safe and ensures reliable loading.
@@ -323,7 +355,7 @@ dryer_duration: 240     # Default drying duration (minutes)
 ## Known Limitations
 
 - **Unload before first use** - After a fresh install or when upgrading from a previous version, unload all toolheads before using multiACE. Filament loaded from a previous installation may cause unexpected behavior since multiACE has no knowledge of the previous state. Use **ACEC__Unload_All** or unload via display before starting.
-- **Toolchange Time** - When a toolchange during print requires switching to a different ACE, the toolchange is extended by up to ~5 seconds (serial reconnect). Toolchanges within the same ACE are not affected.
+- **Cross-ACE feed_assist** - During a print, only the ACE that was active when the print started has feed_assist available. Toolchanges to heads on other ACEs print without feed_assist (extruder pulls filament directly through the bowden). Pick the start ACE deliberately with `ACE_SWITCH TARGET=N` before the print so your most-used material lives on it. The next major version (v0.82) will lift this restriction.
 - **ACE USB Reset** - Inactive ACE units periodically reset their USB connection (~3s cycle). This is normal ACE Pro firmware behavior and does not affect operation. Visible in `dmesg` but harmless.
 - **Display Attach Toolhead** - Attaching a toolhead via the Snapmaker display triggers auto-feed. This is stock Snapmaker behavior and cannot be suppressed.
 - **Unload All clears display** - After **ACEC__Unload_All**, manually set filament types and colors are cleared. This is by design - reload and set filament info again after unload.

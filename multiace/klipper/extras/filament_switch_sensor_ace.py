@@ -72,7 +72,7 @@ class RunoutHelper:
         # Block runout during mid-print swap
         ace = self.printer.lookup_object('ace', None)
         if ace is not None and getattr(ace, '_swap_in_progress', False):
-            logging.info("filament_switch_sensor: blocking runout during swap")
+            logging.info("[multiACE] filament_switch_sensor: blocking runout during swap")
             return
         # Pausing from inside an event requires that the pause portion
         # of pause_resume execute immediately.
@@ -157,7 +157,7 @@ class RunoutHelper:
             # Block runout during mid-print swap
             ace = self.printer.lookup_object('ace', None)
             if ace is not None and getattr(ace, '_swap_in_progress', False):
-                logging.info("note_filament_present: blocking runout callback during swap")
+                logging.info("[multiACE] note_filament_present: blocking runout callback during swap")
                 return
             # runout detected
             self.min_event_systime = self.reactor.NEVER

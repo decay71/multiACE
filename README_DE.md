@@ -1,6 +1,14 @@
 # mUlt1ACE
 
-Beim intensiven Testen der aktuellen Version am Wochenende sind leider stärkere Probleme mit der Verbindung zu mehreren ACE Units aufgefallen. Bis diese behoben sind, empfehle ich für einen stabilen Betrieb weiterhin die Version 0.5b zu nutzen. An einem Hotfix wird bereits gearbeitet.
+## Was ist neu in 0.81b
+
+USB-Fehlverhalten in Verbindung mit dem internen Reset-Zyklus des ACE Pro konnte sporadische Fehler mitten im Druck verursachen wenn bei jedem Toolchange zwischen ACEs umgeschaltet wurde. Dieses Release umgeht das Problem indem es eine einzige Verbindung zu dem ACE hält der beim Druckstart aktiv war — dem *Start-ACE* — und sie für die gesamte Druckdauer nie trennt.
+
+**Trade-off:** Während eines Drucks hat nur der Start-ACE feed_assist zur Verfügung. Heads auf anderen ACEs drucken ohne feed_assist, der Extruder zieht das Filament direkt durch den Bowden. In mehreren Stunden Multi-Color-Testdrucken ohne sichtbare Underextrusion validiert. Bei ungewöhnlich langem Bowden oder besonders zähem Material den Start-ACE bewusst per `ACE_SWITCH TARGET=N` wählen, so dass das meistgenutzte Material darauf liegt. Die nächste größere Version (v0.82) hebt diese Einschränkung auf.
+
+**Bonus:** Cross-ACE-Toolchanges zahlen den bisherigen ~5–10 Sekunden USB-Disconnect/Reconnect-Aufschlag nicht mehr.
+
+**Logging:** Die dedizierten State- und USB-Debug-Logs wurden für Post-Mortem-Analyse nach Druckproblemen deutlich erweitert (`state_debug` / `usb_debug` in `[ace]`).
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
@@ -271,15 +279,36 @@ Alle Einstellungen sind in `config/extended/ace.cfg` unter dem `[ace]` Abschnitt
 
 ```ini
 [ace]
+
+# Anzahl physisch angeschlossener ACE Pro Einheiten.
+# Default 1 (Single-ACE — keine Config-Änderung nötig). ERFORDERLICH
+# für Multi-ACE-Setups (>1): auf physische Anzahl setzen (2..8).
+# Beim Start wartet multiACE bis zu 20s bis alle erwarteten Geräte
+# erkannt sind, dann wird die Path-zu-Index-Zuordnung für die
+# gesamte Session gesperrt — eine während eines USB-Reset-Zyklus
+# vorübergehend fehlende ACE führt nie zu Index-Verschiebungen.
+# ace_device_count: 3
+
+# Logging
+# log_dir: /home/lava/printer_data/logs   # default — meist passend
+state_debug: true       # Audit-Log pro Toolchange / Load
+usb_debug: true         # Serial-Layer Log pro Scan / Connect
+
+# Serial
+baud: 115200
+
 # ACE Feed-/Retract-Einstellungen
 feed_speed: 80          # Vorschubgeschwindigkeit (mm/s)
 retract_speed: 30       # Rückzugsgeschwindigkeit (mm/s, niedriger = sauberere Wicklung)
 retract_length: 1950    # Abstand vom Extruder-Sensor zum Splitter (mm)
 load_length: 2100       # ACE-Vorschublänge beim Laden (mm)
 
-#Distance for the filament to reach the toolhead (ACE has its own loading procedure, and this length does not affect it).
-#You need to select a value so that after the ACE loading procedure, the filament is 5-6 cm away from the toolhead
-feed_length: 0 # disabled — using load_length for ACE feed
+# feed_length: Distanz die das Filament zum Toolhead zurücklegt.
+# ACE hat eine eigene Ladeprozedur und diese Länge beeinflusst sie
+# nicht. Wert so wählen, dass das Filament nach der ACE-Ladephase
+# ~5-6 cm vor dem Toolhead steht. 0 = deaktiviert (empfohlen; die
+# Vorladephase kostet Zeit und gibt inkonsistente Positionen).
+feed_length: 0
 
 # Wiederholungseinstellungen
 load_retry: 1           # Anzahl der Ladeversuche
@@ -293,7 +322,7 @@ max_dryer_temperature: 70
 extra_purge_length: 50  # Extra-Extrusion nach Flush (mm), 0 = deaktiviert
 
 # Trocknungs-Standardwerte (ACE-spezifische Überschreibungen möglich)
-dryer_temp: 55          # Standard-Trocknungstemperatur
+dryer_temp: 55          # Standard-Trocknungstemperatur (°C)
 dryer_duration: 240     # Standard-Trocknungsdauer (Minuten)
 
 # Optional: ACE-spezifische Trocknungs-Überschreibungen
@@ -311,6 +340,10 @@ dryer_duration: 240     # Standard-Trocknungsdauer (Minuten)
 
 ### Konfigurationsempfehlungen
 
+**ace_device_count** - Default `1`. **Erforderlich für Multi-ACE-Setups**: auskommentieren und auf physische Anzahl (2..8) setzen. Die 20s Startup-Wartezeit stellt sicher dass alle Geräte erkannt werden, auch wenn einige beim Klipper-Start gerade in einem USB-Reset-Zyklus sind. Ohne expliziten Wert riskieren Multi-ACE-Setups dass die canonical Mapping mit einem fehlenden Gerät gesperrt wird.
+
+**state_debug / usb_debug** - Default `true`. Aktiviert lassen. Diese dedizierten Logs (getrennt vom `klippy.log`) erfassen pro Toolchange Audit-Einträge und Serial-Layer-Events. Essentiell für Post-Mortem-Analyse nach Druckproblemen. Vernachlässigbarer Laufzeit-Overhead.
+
 **feed_length** - Auf `0` setzen (deaktiviert). Die Vorladephase kostet Zeit beim Bestücken der ACEs und führt zu inkonsistenten Filamentpositionen im PTFE-Schlauch.
 
 **load_length** - Auf ca. **110% der tatsächlichen PTFE-Schlauchlänge** setzen (von ACE zum Splitter). Die Ladephase ist sensorgesteuert und stoppt wenn Filament erkannt wird, ein größerer Wert ist also sicher und gewährleistet zuverlässiges Laden.
@@ -322,7 +355,7 @@ dryer_duration: 240     # Standard-Trocknungsdauer (Minuten)
 ## Bekannte Einschränkungen
 
 - **Vor der ersten Nutzung entladen** - Nach einer Neuinstallation oder einem Upgrade von einer vorherigen Version alle Toolheads entladen, bevor multiACE verwendet wird. Filament aus einer vorherigen Installation kann unerwartetes Verhalten verursachen, da multiACE den vorherigen Zustand nicht kennt. **ACEC__Unload_All** oder Entladen über Display vor dem Start verwenden.
-- **Toolchange-Dauer** - Wenn ein Toolchange im Druck einen Wechsel zu einer anderen ACE erfordert, verlängert sich der Toolchange um bis zu ~5 Sekunden (serielle Neuverbindung). Toolchanges innerhalb derselben ACE sind nicht betroffen.
+- **Cross-ACE feed_assist** - Während eines Drucks hat nur die ACE die beim Druckstart aktiv war feed_assist zur Verfügung. Toolchanges zu Heads auf anderen ACEs drucken ohne feed_assist (der Extruder zieht das Filament direkt durch den Bowden). Den Start-ACE bewusst per `ACE_SWITCH TARGET=N` vor dem Druck wählen, so dass das meistgenutzte Material darauf liegt. Die nächste größere Version (v0.82) hebt diese Einschränkung auf.
 - **ACE USB Reset** - Inaktive ACE-Einheiten setzen regelmäßig ihre USB-Verbindung zurück (~3s Zyklus). Dies ist normales ACE Pro Firmware-Verhalten und beeinträchtigt den Betrieb nicht. Sichtbar in `dmesg`, aber harmlos.
 - **Display Attach Toolhead** - Das Anbringen eines Toolheads über das Snapmaker-Display löst Auto-Feed aus. Dies ist Standard-Snapmaker-Verhalten und kann nicht unterdrückt werden.
 - **Unload All löscht Display-Info** - Nach **ACEC__Unload_All** werden manuell gesetzte Filament-Typen und Farben gelöscht. Das ist gewollt - nach dem Entladen neu laden und Filament-Info erneut setzen.

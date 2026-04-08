@@ -790,7 +790,7 @@ class FilamentFeed:
             elif action == FEED_ACT_FILAMENT_RUNOUT:
                 # Block runout during mid-print swap
                 if self.ace is not None and getattr(self.ace, '_swap_in_progress', False):
-                    logging.info("_do_feed: blocking FILAMENT_RUNOUT during swap")
+                    logging.info("[multiACE] _do_feed: blocking FILAMENT_RUNOUT during swap")
                     return
                 if self._port[ch].get_filament_detected() == True:
                     self._set_channel_state(ch, FEED_STA_PRELOAD_FINISH, True)
@@ -1248,7 +1248,7 @@ class FilamentFeed:
                                 "G1 E%.1f F300\r\n" % extra_purge)
                             self.toolhead.wait_moves()
                         except Exception as e:
-                            logging.warning('extra_purge_length extrusion failed: %s' % str(e))
+                            logging.warning('[multiACE] extra_purge_length extrusion failed: %s' % str(e))
 
                     # not need!
                     # if self._port[ch].get_filament_detected() == False:
@@ -1279,7 +1279,7 @@ class FilamentFeed:
                             'brand': si.get('brand', 'Generic'),
                         }
                         self.ace._save_head_source()
-                        logging.info('FEED_AUTO LOAD: head_source[%d] -> ACE %d / Slot %d' % (
+                        logging.info('[multiACE] FEED_AUTO LOAD: head_source[%d] -> ACE %d / Slot %d' % (
                             head_idx, ace_idx, ace_slot))
 
                     self.gcode.respond_raw('ok')
@@ -1415,7 +1415,7 @@ class FilamentFeed:
                             head_idx = self.filament_ch[ch]
                             source = self.ace._head_source.get(head_idx)
                             if source and source['ace_index'] != self.ace._active_device_index:
-                                logging.info('FEED_AUTO UNLOAD: switching to ACE %d for retract' % source['ace_index'])
+                                logging.info('[multiACE] FEED_AUTO UNLOAD: switching to ACE %d for retract' % source['ace_index'])
                                 self.ace._switch_ace_for_head_target(source['ace_index'])
 
                             for unload_attempt in range(3):
@@ -1444,7 +1444,7 @@ class FilamentFeed:
                             if self.ace._head_source.get(head_idx) is not None:
                                 self.ace._head_source[head_idx] = None
                                 self.ace._save_head_source()
-                                logging.info('FEED_AUTO UNLOAD: cleared head_source[%d]' % head_idx)
+                                logging.info('[multiACE] FEED_AUTO UNLOAD: cleared head_source[%d]' % head_idx)
 
                     except:
                         self.toolhead.wait_moves()
@@ -1524,7 +1524,7 @@ class FilamentFeed:
                             head_idx = self.filament_ch[ch]
                             source = self.ace._head_source.get(head_idx)
                             if source and source['ace_index'] != self.ace._active_device_index:
-                                logging.info('FEED_AUTO UNLOAD: switching to ACE %d for retract' % source['ace_index'])
+                                logging.info('[multiACE] FEED_AUTO UNLOAD: switching to ACE %d for retract' % source['ace_index'])
                                 self.ace._switch_ace_for_head_target(source['ace_index'])
 
                             for unload_attempt in range(3):
@@ -1553,7 +1553,7 @@ class FilamentFeed:
                             if self.ace._head_source.get(head_idx) is not None:
                                 self.ace._head_source[head_idx] = None
                                 self.ace._save_head_source()
-                                logging.info('FEED_AUTO UNLOAD: cleared head_source[%d]' % head_idx)
+                                logging.info('[multiACE] FEED_AUTO UNLOAD: cleared head_source[%d]' % head_idx)
 
                     except:
                         self.toolhead.wait_moves()
@@ -2081,7 +2081,7 @@ class FilamentFeed:
     def cmd_FEED_RUNOUT_EVENT_HANDLE(self, gcmd):
         # Block runout during mid-print swap
         if self.ace is not None and getattr(self.ace, '_swap_in_progress', False):
-            logging.info("FEED_RUNOUT_EVENT_HANDLE: blocking during swap")
+            logging.info("[multiACE] FEED_RUNOUT_EVENT_HANDLE: blocking during swap")
             return
         channel = gcmd.get_int('CHANNEL')
         if channel < 0 or channel >= FEED_CHANNEL_NUMS:
