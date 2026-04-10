@@ -1,5 +1,10 @@
 # mUlt1ACE
 
+Updates (nach Release) (werden im nächsten Release behoben)
+
+- Wenn die Software ohne angeschlossene ACE installiert wird, muss vor der ersten Nutzung des Druckers das Makro ACE_MODE_NORMAL ausgeführt werden.
+- Bei der Deinstallation verbleibt ace.py im Config-Ordner. Die Datei wird jedoch nicht geladen, da sie aus der printer.cfg entfernt wurde.
+
 ## Was ist neu in 0.81b
 
 USB-Fehlverhalten in Verbindung mit dem internen Reset-Zyklus des ACE Pro konnte sporadische Fehler mitten im Druck verursachen wenn bei jedem Toolchange zwischen ACEs umgeschaltet wurde. Dieses Release umgeht das Problem indem es eine einzige Verbindung zu dem ACE hält der beim Druckstart aktiv war — dem *Start-ACE* — und sie für die gesamte Druckdauer nie trennt.
@@ -99,7 +104,7 @@ ACE Pro Molex (2x3) - Ansicht von vorne    Verbindung
 
 Siehe [SnapAce Pinbelegungsdiagramm](https://github.com/BlackFrogKok/SnapAce/blob/main/.github/img/pinout.png) für die genauen Molex-Pin-Positionen.
 
-> **Wichtig:** Pin 6 (VCC) wird nicht verbunden - das ACE Pro hat ein eigenes Netzteil.
+> **Wichtig:** Pin 6 (VCC) wird nicht verbunden - kann gefährlich für den Drucker sein. Molex-Kabel haben keine standardisierte Farbcodierung. Immer Durchgangsprüfung vor dem Anschließen durchführen.
 
 **Zusammenbau:**
 1. D-, D+ und GND vom Molex-Stecker mit D-, D+ und GND am USB-Stecker verbinden
