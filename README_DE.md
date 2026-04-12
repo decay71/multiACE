@@ -394,6 +394,32 @@ Wenn etwas durcheinander geraten ist (falsches Filament angezeigt, unerwartetes 
 ### Serielle Fehler auf der Konsole
 - Serielle Fehler beim ACE-Wechsel werden nur ins Log geschrieben. Bei anhaltenden Fehlern USB-Kabel prüfen.
 
+### Fehler melden
+
+Beim Melden eines Problems bitte folgende Logs vom Drucker mitschicken. Sie sind essentiell für die Fehleranalyse:
+
+1. **multiACE State-Log** — Protokoll aller Aktionen (Toolchanges, Loads, Unloads, FA-Events):
+   ```
+   cat /home/lava/printer_data/logs/multiace_state.log
+   ```
+2. **multiACE USB-Log** — serielle Connect/Disconnect- und Scan-Events:
+   ```
+   cat /home/lava/printer_data/logs/multiace_usb.log
+   ```
+3. **Klipper-Log** — die letzten ~200 Zeilen rund um den Fehlerzeitpunkt:
+   ```
+   tail -200 /home/lava/printer_data/logs/klippy.log
+   ```
+
+Bitte zusätzlich angeben:
+- **Zeitpunkt des Fehlers** — genauer Timestamp, damit wir ihn in den Logs finden
+- **Was wurde gemacht** — welcher Button / Makro / GCode wurde ausgelöst
+- **Was passierte davor** — mitten im Druck, beim Laden, nach einem Neustart, etc.
+- **Erwartetes Verhalten** — was hätte stattdessen passieren sollen
+- Wie viele ACE-Einheiten angeschlossen sind
+- Ob die Spulen RFID-Tags haben oder nicht
+- Ob Developer Mode aktiviert ist (`ls /oem/.debug`)
+
 ## Roadmap
 
 ### Nächste Version
