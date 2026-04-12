@@ -191,7 +191,7 @@ Before installing multiACE, ensure the following:
 2. **Enable Root Access** - On the Snapmaker display, go to Settings > About > tap firmware version 10 times to unlock Advanced Mode, then enable Root Access
 3. **Enable SSH** - Connect via SSH or serial console and run:
    ```
-   touch /home/lava/.oem_debug
+   touch /oem/.debug
    ```
    After reboot, Wi-Fi password needs to be re-entered on the display. SSH is then available at `root@<printer-ip>`
 4. **Verify SSH** - Connect from your computer:
