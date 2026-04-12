@@ -394,6 +394,34 @@ If things get out of sync (wrong filament displayed, unexpected behavior), reset
 ### Serial errors on console
 - Serial errors during ACE switch are logged silently. If errors persist, check USB cables.
 
+### Serial errors on console
+- Serial errors during ACE switch are logged silently. If errors persist, check USB cables.
+
+### Reporting issues
+
+When reporting a problem, please include the following logs from your printer. They are essential for diagnosing the issue:
+
+1. **multiACE state log** — per-action audit trail (toolchanges, loads, unloads, FA events):
+   ```
+   cat /home/lava/printer_data/logs/multiace_state.log
+   ```
+2. **multiACE USB log** — serial connect/disconnect and scan events:
+   ```
+   cat /home/lava/printer_data/logs/multiace_usb.log
+   ```
+3. **Klipper log** — the last ~200 lines around the time of the issue:
+   ```
+   tail -200 /home/lava/printer_data/logs/klippy.log
+   ```
+
+Also mention:
+- **Time of error** — exact timestamp so we can find it in the logs
+- **What you did** — which button / macro / gcode you triggered
+- **What happened before** — was this mid-print, during load, after a restart, etc.
+- **Expected behavior** — what should have happened instead
+- How many ACE units you have connected
+- Whether your spools have RFID tags or not
+
 ## Roadmap
 
 ### Next Version
