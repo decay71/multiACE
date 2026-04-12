@@ -191,7 +191,7 @@ Vor der Installation von multiACE sicherstellen:
 2. **Root-Zugang aktivieren** - Am Snapmaker-Display unter Einstellungen > Über > Firmware-Version 10x antippen um den erweiterten Modus freizuschalten, dann Root-Zugang aktivieren
 3. **SSH aktivieren** - Per SSH oder serieller Konsole verbinden und ausführen:
    ```
-   touch /home/lava/.oem_debug
+   touch /oem/.debug
    ```
    Nach dem Neustart muss das WLAN-Passwort am Display neu eingegeben werden. SSH ist dann unter `root@<drucker-ip>` erreichbar
 4. **SSH prüfen** - Vom Computer verbinden:
