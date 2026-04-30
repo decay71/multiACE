@@ -1,0 +1,112 @@
+#!/bin/bash
+# multiACE post-commit hook
+#
+# On any commit that changes a tracked file, updates two constants in
+# multiace/klipper/extras/ace.py:
+#   MULTIACE_BUILD_TAG    — short SHA of the commit (which in-memory
+#                           build is loaded)
+#   MULTIACE_BUNDLE_SHA1  — sha1 over the concatenated byte contents of
+#                           the non-ace.py tracked files, in BUNDLE_FILES
+#                           order (validates the on-disk state of those
+#                           files). ace.py itself is excluded to avoid
+#                           self-reference recursion.
+#
+# ACE_HEAD_STATUS prints build vs runtime state, and the expected
+# MULTIACE_BUNDLE_SHA1 vs actual (computed from disk at runtime), with
+# a pass/fail marker — so a single line tells the user if the deploy
+# matches the repo.
+#
+# The hook writes both constants and makes a single follow-up "chore"
+# commit, keeping the written SHAs stable against a real content commit.
+#
+# Install: ./multiace/tools/git-hooks/install.sh
+# (or manually: cp multiace/tools/git-hooks/post-commit .git/hooks/
+#              && chmod +x .git/hooks/post-commit)
+
+set -e
+
+ACE_PY="multiace/klipper/extras/ace.py"
+
+# Files that should trigger a build-tag bump when changed.
+TRACKED_FILES=(
+    "multiace/klipper/extras/ace.py"
+    "multiace/klipper/extras/filament_feed_ace.py"
+    "multiace/klipper/extras/filament_switch_sensor_ace.py"
+    "multiace/klipper/kinematics/extruder_ace.py"
+    "multiace/config/extended/ace.cfg"
+)
+
+# Files that go into MULTIACE_BUNDLE_SHA1 (ace.py excluded — its state
+# is validated via in-memory MULTIACE_BUILD_TAG). Must match the order
+# used at runtime in ace.py _compute_bundle_sha1.
+BUNDLE_FILES=(
+    "multiace/klipper/extras/filament_feed_ace.py"
+    "multiace/klipper/extras/filament_switch_sensor_ace.py"
+    "multiace/klipper/kinematics/extruder_ace.py"
+    "multiace/config/extended/ace.cfg"
+)
+
+# Must run from repo root
+cd "$(git rev-parse --show-toplevel)"
+
+# Skip if ace.py doesn't exist (e.g. running from a worktree without it)
+[ -f "$ACE_PY" ] || exit 0
+
+LAST_MSG=$(git log -1 --format="%s")
+
+# Loop guard: our own chore commits don't trigger us again
+case "$LAST_MSG" in
+    "chore: update MULTIACE_BUILD_TAG to "*)
+        exit 0
+        ;;
+esac
+
+# Only fire if at least one tracked file changed in the last commit
+changed_files=$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null)
+should_fire=false
+for f in "${TRACKED_FILES[@]}"; do
+    if echo "$changed_files" | grep -qx "$f"; then
+        should_fire=true
+        break
+    fi
+done
+if [ "$should_fire" = false ]; then
+    exit 0
+fi
+
+SHA=$(git rev-parse --short HEAD)
+
+# Compute bundle sha1 over the BUNDLE_FILES (in fixed order). cat
+# concatenates to stdout without delimiters; sha1sum reads the stream.
+BUNDLE_SHA=$(cat "${BUNDLE_FILES[@]}" | sha1sum | cut -c1-7)
+
+# Rewrite constants — both in one sed pass before the chore commit.
+if ! grep -q '^MULTIACE_BUILD_TAG = ' "$ACE_PY"; then
+    echo "[post-commit] MULTIACE_BUILD_TAG constant not found in $ACE_PY — skipping" >&2
+    exit 0
+fi
+if ! grep -q '^MULTIACE_BUNDLE_SHA1 = ' "$ACE_PY"; then
+    echo "[post-commit] MULTIACE_BUNDLE_SHA1 constant not found in $ACE_PY — skipping" >&2
+    exit 0
+fi
+
+# Skip if both already match (e.g. re-running on an already-tagged commit)
+if grep -q "^MULTIACE_BUILD_TAG = \"$SHA\"" "$ACE_PY" && \
+   grep -q "^MULTIACE_BUNDLE_SHA1 = \"$BUNDLE_SHA\"" "$ACE_PY"; then
+    exit 0
+fi
+
+sed -i -E "s|^MULTIACE_BUILD_TAG = \".*\"|MULTIACE_BUILD_TAG = \"$SHA\"|" "$ACE_PY"
+sed -i -E "s|^MULTIACE_BUNDLE_SHA1 = \".*\"|MULTIACE_BUNDLE_SHA1 = \"$BUNDLE_SHA\"|" "$ACE_PY"
+
+# If sed didn't actually change anything, bail
+if git diff --quiet -- "$ACE_PY"; then
+    exit 0
+fi
+
+git add "$ACE_PY"
+# --no-verify prevents infinite recursion via other hooks; this hook is
+# the only one updating the tags, so it's safe to bypass.
+git commit --no-verify -m "chore: update MULTIACE_BUILD_TAG to $SHA"
+
+echo "[post-commit] MULTIACE_BUILD_TAG=$SHA MULTIACE_BUNDLE_SHA1=$BUNDLE_SHA"

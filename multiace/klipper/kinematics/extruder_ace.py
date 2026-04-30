@@ -1,8 +1,3 @@
-# Code for handling printer nozzle extruders
-#
-# Copyright (C) 2016-2022  Kevin O'Connor <kevin@koconnor.net>
-#
-# This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
 import stepper, chelper, coded_exception, queuefile
 import os, json, copy
@@ -27,31 +22,25 @@ class ExtruderSwitchRecorder:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        # Use persistent directory for config file
         config_dir = self.printer.get_snapmaker_config_dir("persistent")
         self.file_path = os.path.join(config_dir, EXTRUDER_SWITCH_RECORDER)
-        # Old config path for migration
         self.old_file_path = os.path.join(self.printer.get_snapmaker_config_dir(), EXTRUDER_SWITCH_RECORDER)
         self.save_interval = config.getfloat('save_interval', 30.0)
         self.individual_maintenance_threshold = config.getint('individual_maintenance_threshold', 25100)
         self.total_maintenance_threshold = config.getint('total_maintenance_threshold', 100000)
         self.maintenance_exception_raised = False
 
-        # Migrate data from old location if needed
         self._migrate_data_if_needed()
 
-        # Load existing data
         self.data = self._load_data()
         self.allow_save = False
-        self.dirty = False  # Flag to track unsaved changes
+        self.dirty = False
 
-        # Register G-code commands
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command('GET_EXTRUDER_SWITCH_RECORDER', self.cmd_GET_EXTRUDER_SWITCH_RECORDER)
         self.gcode.register_command('RESET_EXTRUDER_SWITCH_RECORDER', self.cmd_RESET_EXTRUDER_SWITCH_RECORDER)
         self.gcode.register_command('RESET_EXTRUDER_MAINTENANCE_COUNT', self.cmd_RESET_EXTRUDER_MAINTENANCE_COUNT)
 
-        # Register periodic save timer
         self.timer = self.reactor.register_timer(self._on_save_timer)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
@@ -69,7 +58,6 @@ class ExtruderSwitchRecorder:
         maintenance_needed = False
         warning_message = "Maintenance recommended for extruders:\n"
 
-        # Check individual extruder thresholds
         for extruder_name in sorted(self.data.keys()):
             self._init_extruder_entry(extruder_name)
             switch_count_since_maintenance = self.data[extruder_name]['switch_count'] - self.data[extruder_name]['last_maintenance_count']
@@ -77,7 +65,6 @@ class ExtruderSwitchRecorder:
                 maintenance_needed = True
                 warning_message += f"  {extruder_name}: {switch_count_since_maintenance} switches since last maintenance\n"
 
-        # Check total threshold
         total_switch_count = sum(self.data[ext_name].get('switch_count', 0) for ext_name in self.data.keys())
         total_maintenance_count = sum(self.data[ext_name].get('last_maintenance_count', 0) for ext_name in self.data.keys())
         total_switches_since_maintenance = total_switch_count - total_maintenance_count
@@ -92,7 +79,6 @@ class ExtruderSwitchRecorder:
 
     def _migrate_data_if_needed(self):
         """Migrate data from old location to new location if needed"""
-        # Only migrate if new file doesn't exist but old file does
         if not os.path.exists(self.file_path) and os.path.exists(self.old_file_path):
             try:
                 import shutil
@@ -124,22 +110,19 @@ class ExtruderSwitchRecorder:
             return False
     def _init_extruder_entry(self, extruder_name):
         if extruder_name not in self.data:
-            # If extruder does not exist, create all fields
             self.data[extruder_name] = {
                 'switch_count': 0,
                 'retry_count': 0,
                 'error_count': 0,
-                'last_maintenance_count': 0  # Switch count at last maintenance
+                'last_maintenance_count': 0
             }
         else:
-            # If extruder exists, only add missing fields
             entry = self.data[extruder_name]
             for key in ['switch_count', 'retry_count', 'error_count', 'last_maintenance_count']:
                 if key not in entry:
                     entry[key] = 0
 
     def _on_save_timer(self, eventtime):
-        # self.gcode.respond_info("path: {}, self.dirty: {}, self.allow_save: {}".format(self.file_path, self.dirty, self.allow_save))
         if self.dirty and self.allow_save:
             self._write_to_file()
 
@@ -163,23 +146,19 @@ class ExtruderSwitchRecorder:
         self._init_extruder_entry(extruder_name)
         self.data[extruder_name]['switch_count'] += 1
         self.dirty = True
-        # logging.info(f"[ExtruderSwitchRecorder] Extruder {extruder_name} switch count updated to: {self.data[extruder_name]['switch_count']}")
 
     def add_retry_count(self, extruder_name):
         self._init_extruder_entry(extruder_name)
         self.data[extruder_name]['retry_count'] += 1
         self.dirty = True
-        # logging.info(f"[ExtruderSwitchRecorder] Extruder {extruder_name} retry count updated to: {self.data[extruder_name]['retry_count']}")
 
     def add_error_count(self, extruder_name):
         self._init_extruder_entry(extruder_name)
         self.data[extruder_name]['error_count'] += 1
         self.dirty = True
-        # logging.info(f"[ExtruderSwitchRecorder] Extruder {extruder_name} error count updated to: {self.data[extruder_name]['error_count']}")
 
     def cmd_RESET_EXTRUDER_SWITCH_RECORDER(self, gcmd):
         """G-code command to reset extruder switch recorder"""
-        # Check if reset is permitted by checking for permission file
         if not self.printer.check_extruder_config_permission():
             raise gcmd.error("Reset of extruder switch recorder is not allowed.")
 
@@ -193,7 +172,6 @@ class ExtruderSwitchRecorder:
 
     def cmd_RESET_EXTRUDER_MAINTENANCE_COUNT(self, gcmd):
         """G-code command to reset extruder maintenance counter to current switch count"""
-        # Reset maintenance for all extruders
         self.reactor.update_timer(self.timer, self.reactor.NEVER)
         for ext_name in self.data.keys():
             self._init_extruder_entry(ext_name)
@@ -217,12 +195,10 @@ class ExtruderSwitchRecorder:
             gcmd.respond_info("-----------------------------")
         gcmd.respond_info("===============================")
 
-        # Add maintenance status information
         gcmd.respond_info("=== Extruder Maintenance Status ===")
         gcmd.respond_info(f"Individual threshold: {self.individual_maintenance_threshold}")
         gcmd.respond_info(f"Total threshold: {self.total_maintenance_threshold}")
 
-        # Calculate total switch count
         total_switch_count = sum(self.data[ext_name].get('switch_count', 0) for ext_name in self.data.keys())
         total_maintenance_count = sum(self.data[ext_name].get('last_maintenance_count', 0) for ext_name in self.data.keys())
         total_switches_since_maintenance = total_switch_count - total_maintenance_count
@@ -247,14 +223,12 @@ class ExtruderStepper:
         self.config_pa = config.getfloat('pressure_advance', 0., minval=0.)
         self.config_smooth_time = config.getfloat(
                 'pressure_advance_smooth_time', 0.040, above=0., maxval=.200)
-        # Setup stepper
         self.stepper = stepper.PrinterStepper(config)
         ffi_main, ffi_lib = chelper.get_ffi()
         self.sk_extruder = ffi_main.gc(ffi_lib.extruder_stepper_alloc(),
                                        ffi_lib.extruder_stepper_free)
         self.stepper.set_stepper_kinematics(self.sk_extruder)
         self.motion_queue = None
-        # Register commands
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_connect)
         gcode = self.printer.lookup_object('gcode')
@@ -383,7 +357,6 @@ class ExtruderStepper:
         gcmd.respond_info("Extruder '%s' now syncing with '%s'"
                           % (self.name, ename))
 
-# Tracking for hotend heater, extrusion motion queue, and extruder stepper
 class PrinterExtruder:
     def __init__(self, config, extruder_num):
         self.printer = config.get_printer()
@@ -393,13 +366,11 @@ class PrinterExtruder:
         self.activating_move = False
         self.extruder_num = extruder_num
         self.unipolar_hall = False
-        # Setup hotend heater
         pheaters = self.printer.load_object(config, 'heaters')
         gcode_id = 'T%d' % (extruder_num,)
         self.gcode_id = gcode_id
         self.extruder_index = extruder_num
         self.heater = pheaters.setup_heater(config, gcode_id)
-        # Setup kinematic checks
         self.nozzle_diameter = config.getfloat('nozzle_diameter', above=0.)
         filament_diameter = config.getfloat(
             'filament_diameter', minval=self.nozzle_diameter)
@@ -422,19 +393,16 @@ class PrinterExtruder:
             'max_extrude_only_distance', 50., minval=0.)
         self.instant_corner_v = config.getfloat(
             'instantaneous_corner_velocity', 1., minval=0.)
-        # Setup extruder trapq (trapezoidal motion queue)
         ffi_main, ffi_lib = chelper.get_ffi()
         self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         self.trapq_append = ffi_lib.trapq_append
         self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
-        # Setup extruder stepper
         self.extruder_stepper = None
         if (config.get('step_pin', None) is not None
             or config.get('dir_pin', None) is not None
             or config.get('rotation_distance', None) is not None):
             self.extruder_stepper = ExtruderStepper(config)
             self.extruder_stepper.stepper.set_trapq(self.trapq)
-        # check if we have a binding probe
         binding_ind_coil = config.get("inductance_coil", None)
         if binding_ind_coil != None:
             self.binding_probe = \
@@ -446,7 +414,6 @@ class PrinterExtruder:
                 raise config.error("Must register probe firstly!")
         else:
             self.binding_probe = None
-        # check if the extruder is associated with park detector
         park_detector = config.get('park_detector', None)
         if park_detector is not None:
             self.park_detector = self.printer.lookup_object("park_detector {}".format(park_detector), None)
@@ -459,7 +426,6 @@ class PrinterExtruder:
         self.park_exception_cnt = 0
         self.check_interval = config.getfloat('check_interval', PARK_DETECTOR_LOOP_CHECK_INTERVAL, above=0.)
         self.park_detector_loop_check = self.reactor.register_timer(self._park_detector_loop_check)
-        # Getting the necessary information for extruder switchover
         self.xy_park_position = None
         self.y_idle_position = None
         xy_park_position = config.get("xy_park_position", None)
@@ -494,14 +460,12 @@ class PrinterExtruder:
 
         self.switch_accel = config.getfloat('switch_accel', 5000., above=0.)
         self.retry_switch_limit = config.getint('retry_switch_limit', 3, minval=0)
-        # Binding print fan
         self.binding_fan = None
         fan = config.get("fan", None)
         if fan is not None and self.printer.lookup_object("{}".format(fan), None) is not None:
             self.binding_fan = self.printer.lookup_object("{}".format(fan)).fan
         self.switch_extruder_ctr_fan_pwm = config.getboolean('switch_extruder_ctr_fan_pwm', True)
 
-        # Obtaining the reference position
         self.base_position = None
         self.gcode_offset = None
         base_position_bak = self.get_extruder_config("base_position")
@@ -518,12 +482,10 @@ class PrinterExtruder:
             self.vref_sw = self.printer.lookup_object("output_pin {}".format(config.get('vref_sw_pin')), None)
         self.print_config = self.printer.lookup_object('print_task_config', None)
         self.printing_e_pos = 0.0
-        # handle flow calibration events
         self.is_calibrating_flow = False
         self.printer.register_event_handler("flow_calibration:begin", self._handle_flow_calibration_begin)
         self.printer.register_event_handler("flow_calibration:end", self._handle_flow_calibration_end)
         self.printer.register_event_handler("virtual_sdcard:reset_file", self._handle_flow_calibration_end)
-        # Register commands
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
@@ -589,7 +551,6 @@ class PrinterExtruder:
         print_fan = self.printer.lookup_object('fan', None)
         if print_fan is not None:
             print_fan.fan = self.binding_fan
-            # self.printer.lookup_object('gcode').respond_info("binding {} fan".format(self.name))
     def get_park_detector_status(self):
         if self.park_detector is not None:
             return self.park_detector.get_park_detector_status()
@@ -608,7 +569,6 @@ class PrinterExtruder:
         if self.gcode_offset is not None:
             gcode.run_script_from_command("SET_GCODE_OFFSET X=%f Y=%f Z=%f" % (self.gcode_offset[0], self.gcode_offset[1], self.gcode_offset[2]))
     def update_extruder_gcode_offset(self):
-        # Update extruder gcode_offset
         if self.name == 'extruder':
             return
         extruder = self.printer.lookup_object('extruder', None)
@@ -652,22 +612,16 @@ class PrinterExtruder:
             coded_msg = '{"coded":"%s", "msg":"%s"}' % (coded, msg)
             raise self.printer.command_error(coded_msg)
         if (not move.axes_d[0] and not move.axes_d[1]) or axis_r < 0.:
-            # Extrude only move (or retraction move) - limit accel and velocity
             if abs(move.axes_d[3]) > self.max_e_dist:
                 coded = f"0003-0523-{self.extruder_num:04d}-0004"
                 msg = "Extrude only move too long (%.3fmm vs %.3fmm), See the 'max_extrude_only_distance' config option for details" % (move.axes_d[3], self.max_e_dist)
                 coded_msg = '{"coded":"%s", "msg":"%s"}' % (coded, msg)
                 raise self.printer.command_error(coded_msg)
-                # raise self.printer.command_error(
-                #     "Extrude only move too long (%.3fmm vs %.3fmm)\n"
-                #     "See the 'max_extrude_only_distance' config"
-                #     " option for details" % (move.axes_d[3], self.max_e_dist), id=523, index=self.extruder_num, code=4, level=1)
             inv_extrude_r = 1. / abs(axis_r)
             move.limit_speed(self.max_e_velocity * inv_extrude_r,
                              self.max_e_accel * inv_extrude_r)
         elif axis_r > self.max_extrude_ratio:
             if move.axes_d[3] <= self.nozzle_diameter * self.max_extrude_ratio:
-                # Permit extrusion if amount extruded is tiny
                 return
             area = axis_r * self.filament_area
             logging.debug("Overextrude: %s vs %s (area=%.3f dist=%.3f)",
@@ -677,10 +631,6 @@ class PrinterExtruder:
             msg +="See the 'max_extrude_cross_section' config option for details"
             coded_msg = '{"coded":"%s", "msg":"%s"}' % (coded, msg)
             raise self.printer.command_error(coded_msg)
-            # raise self.printer.command_error(
-            #     "Move exceeds maximum extrusion (%.3fmm^2 vs %.3fmm^2)\n"
-            #     "See the 'max_extrude_cross_section' config option for details"
-            #     % (area, self.max_extrude_ratio * self.filament_area), id=523, index=self.extruder_num, code=5, level=1)
     def calc_junction(self, prev_move, move):
         diff_r = move.axes_r[3] - prev_move.axes_r[3]
         if diff_r:
@@ -695,7 +645,6 @@ class PrinterExtruder:
         if axis_r > 0. and ((move.axes_d[0] or move.axes_d[1]) or
                 self.is_calibrating_flow):
             can_pressure_advance = True
-        # Queue movement (x is extruder movement, y is pressure advance flag)
         self.trapq_append(self.trapq, print_time,
                           move.accel_t, move.cruise_t, move.decel_t,
                           move.start_pos[3], 0., 0.,
@@ -948,12 +897,6 @@ class PrinterExtruder:
         if self.park_exception_cnt == PARK_DETECTOR_MAX_EXCEPTION_COUNT:
             self.park_exception_cnt = 0
             self.printer.invoke_shutdown("current extruder name: {}, {} park detector error, {}".format(toolhead.get_extruder().name, self.name, state))
-            # extruder_list = self.printer.lookup_object('extruder_list', [])
-            # for i in range(len(extruder_list)):
-            #     extruder_list[i].set_park_detector_enable(False)
-            # virtual_sdcard = self.printer.lookup_object('virtual_sdcard', None)
-            # if virtual_sdcard is not None and virtual_sdcard.current_file is not None:
-            #     self.gcode.run_script('CANCEL_PRINT')
         return eventtime + self.check_interval
     def _add_structured_code_list(self, e):
         global STRUCTURED_CODE_LIST
@@ -1024,7 +967,6 @@ class PrinterExtruder:
             extruder = self.printer.lookup_object('toolhead').get_extruder()
         pheaters = self.printer.lookup_object('heaters')
         pheaters.set_temperature(extruder.get_heater(), temp, wait)
-    # webhook interface
     def _handle_control_extruder_temp(self, web_request):
         """Handle extruder temperature setting request"""
         try:
@@ -1040,7 +982,6 @@ class PrinterExtruder:
             web_request.send({'state': 'error', 'message': str(e)})
 
     def cmd_M104(self, gcmd, wait=False):
-        # Set Extruder Temperature
         temp = gcmd.get_float('S', 0.)
         index = gcmd.get_int('T', None, minval=0)
         extruder_map = gcmd.get_int('A', 1, minval=0)
@@ -1049,7 +990,6 @@ class PrinterExtruder:
         except Exception as e:
             raise gcmd.error(str(e))
     def cmd_M109(self, gcmd):
-        # Set Extruder Temperature and Wait
         self.cmd_M104(gcmd, wait=True)
     cmd_ACTIVATE_EXTRUDER_help = "Change the active extruder"
     def cmd_ACTIVATE_EXTRUDER(self, gcmd):
@@ -1068,7 +1008,7 @@ class PrinterExtruder:
     def set_max_accel(self, accel):
         self.max_e_accel = accel
     def get_max_accel(self):
-        return self.max_e_accel 
+        return self.max_e_accel
     def cmd_SET_MAX_E_ACCEL(self, gcmd):
         extruder = self.printer.lookup_object('toolhead').get_extruder()
         accel = gcmd.get_float('A', extruder.max_e_accel)
@@ -1086,14 +1026,12 @@ class PrinterExtruder:
     def cmd_PARK_EXTRUDER(self, gcmd):
         gcmd.get_command_parameters()['ACTION'] = 'PARK'
         self.cmd_SWITCH_EXTRUDER(gcmd)
-        # gcmd.respond_info("parameters: {}".format(gcmd.get_command_parameters()))
     def cmd_PICK_EXTRUDER(self, gcmd):
         gcmd.get_command_parameters()['ACTION'] = 'PICK'
         self.cmd_SWITCH_EXTRUDER(gcmd)
     def cmd_SWITCH_EXTRUDER_ADVANCED(self, gcmd):
         gcmd.get_command_parameters()['ACTION'] = None
         extruder_map = gcmd.get_int('A', 1, minval=0)
-        # Mapping Extruder Index
         if extruder_map != 0 and self.print_config is not None:
             index = int(self.gcode_id.split('T')[1])
             index = self.print_config.get_extruder_map_index(index)
@@ -1133,11 +1071,8 @@ class PrinterExtruder:
             while retry_count < self.retry_switch_limit:
                 try:
                     if retry_count > 0:
-                        # gcode.run_script_from_command("G28 X Y")
-                        # toolhead.wait_moves()
                         retry_extruder_id = self.check_allow_retry_switch_extruder()
                         if retry_extruder_id is not None:
-                            # Forced parking of extruders
                             if switch_recorder is not None:
                                 extruder_list = self.printer.lookup_object('extruder_list', [])
                                 if len(extruder_list) > retry_extruder_id:
@@ -1145,7 +1080,7 @@ class PrinterExtruder:
                             self._cmd_SWITCH_EXTRUDER(gcmd, forced_park=True)
                     self._cmd_SWITCH_EXTRUDER(gcmd)
                     break
-            
+
                 except ExtruderUnknownParkStatus as e:
                     handle_retry(str(e))
                 except ExtruderPickAbnormal as e:
@@ -1185,7 +1120,6 @@ class PrinterExtruder:
         if 'ACTION' in params:
             action = params['ACTION']
 
-        # forced_park: Special handling flag, use with caution
         if forced_park:
             action = 'PARK'
 
@@ -1248,7 +1182,6 @@ class PrinterExtruder:
                     toolhead.dwell(0.2)
                     toolhead.wait_moves()
 
-            # Extruder is already active and does not need to be switched
             if (activate_status[0][1] == 0 and activate_status[0][0] == self.name and toolhead.get_extruder() is self and
                 ((self.get_park_detector_status() is None and action is None) or (self.get_park_detector_status() is not None and action != 'PARK'))):
                 gcmd.respond_info("Extruder %s already active" % (self.name,))
@@ -1266,7 +1199,6 @@ class PrinterExtruder:
                 print_fan_speed = print_fan.get_status(current_time)['speed']
                 print_fan.fan.set_speed_from_command(0)
 
-            # enable pwm pin in order to detect the extruder gripping state
             for i in range(len(extruder_list)):
                 if extruder_list[i].binding_fan is not None and extruder_list[i].switch_extruder_ctr_fan_pwm:
                     extruder_list[i].binding_fan.set_speed_from_command(1, False)
@@ -1274,7 +1206,6 @@ class PrinterExtruder:
             fan_pwm_set = True
             fan_close_tick = toolhead.reactor.monotonic()
 
-            # Save current environment
             saved_states = {
                 'absolute_coord': gcode_move.absolute_coord,
                 'absolute_extrude': gcode_move.absolute_extrude,
@@ -1287,11 +1218,7 @@ class PrinterExtruder:
                 'max_accel': toolhead.max_accel,
             }
 
-            # use lower acceleration to switch toolhead
-            # toolhead.set_accel(5000)
-
             if activate_status[0][1] == 0 or (forced_park and retry_extruder_id is not None):
-                # Park extruder
                 if not forced_park:
                     cur_extruder = self.printer.lookup_object(activate_status[0][0], None)
                     if cur_extruder is None:
@@ -1305,7 +1232,6 @@ class PrinterExtruder:
                         msg = f"Parking is not allowed for {cur_extruder.name}, status: {state} [{pin_sta}]"
                         message = '{"coded": "0002-0523-%4d-0019", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
                         raise gcmd.error(message)
-                        # raise gcmd.error("Unknown extruder park status, {}: {}".format(activate_status[0][0], cur_extruder_state))
 
                     if cur_extruder_state is None and action == 'PARK':
                         cur_extruder = self
@@ -1317,44 +1243,31 @@ class PrinterExtruder:
                     (cur_extruder_state is None and action == 'PARK') or (cur_extruder_state is not None and
                     (action == 'PARK' or (action == 'PICK' and activate_status[0][0] != self.name)))):
                     restore_state = True
-                    # gcode_move.absolute_coord = True
                     if self.switch_accel != toolhead.max_accel:
                         toolhead.set_accel(self.switch_accel)
-                    # cur_extruder.set_park_detector_enable(False)
                     x_move_position = cur_extruder.xy_park_position[0] + [1, -1][not cur_extruder.grab_dir] * \
                                     (cur_extruder.horizontal_move_x - cur_extruder.retract_x_dist)
                     gcmd.respond_info("park {} !!!".format(cur_extruder.name))
                     pos = toolhead.get_position()
                     if pos[1] > cur_extruder.y_idle_position:
                         toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
 
                         toolhead.manual_move([x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, None, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 X{} F{}".format(x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, cur_extruder.fast_move_speed*60))
                         toolhead.manual_move([x_move_position, None, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 X{} F{}".format(x_move_position,cur_extruder.fast_move_speed*60))
                     else:
                         toolhead.manual_move([x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, None, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 X{} F{}".format(x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, cur_extruder.fast_move_speed*60))
                         toolhead.manual_move([x_move_position, None, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 X{} F{}".format(x_move_position, cur_extruder.fast_move_speed*60))
 
                         toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
 
                     y_move_position = max(cur_extruder.xy_park_position[1] - cur_extruder.inser_buffer_dist, cur_extruder.y_idle_position)
                     toolhead.manual_move([None, y_move_position, None], cur_extruder.fast_move_speed)
-                    # gcmd.respond_info("G0 Y{} F{}".format(y_move_position, cur_extruder.fast_move_speed*60))
                     toolhead.manual_move([None, cur_extruder.xy_park_position[1], None], cur_extruder.slow_move_speed)
-                    # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.xy_park_position[1], cur_extruder.slow_move_speed*60))
 
                     toolhead.manual_move([cur_extruder.xy_park_position[0], None, None], cur_extruder.slow_move_speed)
-                    # gcmd.respond_info("G0 X{} F{}".format(cur_extruder.xy_park_position[0], cur_extruder.slow_move_speed*60))
 
                     toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
-                    # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
                     toolhead.wait_moves()
-                    # toolhead.dwell(0.1)
                     for i in range(10):
                         cur_extruder_state = cur_extruder.get_park_detector_status()
                         if not (cur_extruder_state is not None and cur_extruder_state['state'] != 'PARKED'):
@@ -1383,16 +1296,11 @@ class PrinterExtruder:
                             gcmd.respond_info(f"Post-park check failed for {cur_extruder.name}, retry {i}")
                             toolhead.dwell(0.2)
                             toolhead.wait_moves()
-                    # cur_extruder_state = cur_extruder.get_park_detector_status()
-                    # if cur_extruder_state is not None and cur_extruder_state['state'] != 'PARKED':
-                    #     raise gcmd.error("Abnormal state detection after extruder park, {}: {}".format(cur_extruder.name, cur_extruder_state))
             if ace is not None:
-                ace._disable_feed_assist(self.extruder_num)
                 gcmd.respond_info("ACE disable feed_assist for extruder %s" % (self.name,))
             if action == 'PARK':
                 raise ExtruderParkAction("park action success!!!")
 
-            # if self.xy_park_position is not None and not (activate_status[0][0] == self.name and activate_status[0][1] == 0):
             extruder_state = self.get_park_detector_status()
             if (self.xy_park_position is not None and (extruder_state is None or (extruder_state is not None and
                 not (activate_status[0][0] == self.name and activate_status[0][1] == 0)))):
@@ -1415,7 +1323,6 @@ class PrinterExtruder:
                         toolhead.dwell(0.2)
                         toolhead.wait_moves()
 
-                # gcode_move.absolute_coord = True
                 restore_state = True
                 if self.switch_accel != toolhead.max_accel:
                     toolhead.set_accel(self.switch_accel)
@@ -1424,37 +1331,26 @@ class PrinterExtruder:
                 pos = toolhead.get_position()
                 if pos[1] > self.y_idle_position:
                     toolhead.manual_move([None, self.y_idle_position, None], self.fast_move_speed)
-                    # gcmd.respond_info("G0 Y{} F{}".format(self.y_idle_position, self.fast_move_speed*60))
 
                     toolhead.manual_move([x_move_position + [1, -1][self.grab_dir]*0.5, None, None], self.fast_move_speed)
-                    # gcmd.respond_info("G0 X{} F{}".format(x_move_position + [1, -1][self.grab_dir]*0.5, self.fast_move_speed*60))
                     toolhead.manual_move([x_move_position, None, None], self.fast_move_speed)
-                    # gcmd.respond_info("G0 X{} F{}".format(x_move_position, self.fast_move_speed*60))
                 else:
                     toolhead.manual_move([x_move_position + [1, -1][self.grab_dir]*0.5, None, None], self.fast_move_speed)
-                    # gcmd.respond_info("G0 X{} F{}".format(x_move_position + [1, -1][self.grab_dir]*0.5, self.fast_move_speed*60))
                     toolhead.manual_move([x_move_position, None, None], self.fast_move_speed)
-                    # gcmd.respond_info("G0 X{} F{}".format(x_move_position, self.fast_move_speed*60))
 
                     toolhead.manual_move([None, self.y_idle_position, None], self.fast_move_speed)
-                    # gcmd.respond_info("G0 Y{} F{}".format(self.y_idle_position, self.fast_move_speed*60))
 
                 y_move_position = max(self.xy_park_position[1] - self.inser_buffer_dist, self.y_idle_position)
                 toolhead.manual_move([None, y_move_position, None], self.fast_move_speed)
-                # gcmd.respond_info("G0 Y{} F{}".format(y_move_position, self.fast_move_speed*60))
 
                 toolhead.manual_move([None, self.xy_park_position[1], None], self.slow_move_speed)
-                # gcmd.respond_info("G0 Y{} F{}".format(self.xy_park_position[1], self.slow_move_speed*60))
 
                 x_move_position = self.xy_park_position[0] + [-1, 1][self.grab_dir]*self.horizontal_move_x
                 toolhead.manual_move([x_move_position, None, None], self.grab_speed)
-                # gcmd.respond_info("G0 X{} F{}".format(x_move_position, self.grab_speed*60))
 
                 toolhead.manual_move([x_move_position+[1, -1][self.grab_dir]*self.retract_x_dist, None, None], self.grab_speed)
-                # gcmd.respond_info("G0 X{} F{}".format(x_move_position+[1, -1][self.grab_dir]*self.retract_x_dist, self.grab_speed*60))
 
                 toolhead.manual_move([None, self.y_idle_position, None], self.fast_move_speed)
-                # gcmd.respond_info("G0 Y{} F{}".format(self.y_idle_position, self.fast_move_speed*60))
 
                 toolhead.wait_moves()
                 check_tick = toolhead.reactor.monotonic()
@@ -1518,27 +1414,20 @@ class PrinterExtruder:
         except ExtruderParkAction as e:
             pass
         except Exception as e:
-            # if activate_status is not None:
-            #     gcmd.respond_info("extruder state: {}".format(activate_status))
             raise
         finally:
             self.activating_move = False
             for i in range(len(extruder_list)):
                 if fan_pwm_set and extruder_list[i].binding_fan is not None and extruder_list[i].switch_extruder_ctr_fan_pwm:
                     extruder_list[i].binding_fan.set_speed_from_command(0)
-                    # print_time = max(extruder_list[i].binding_fan.last_fan_time+0.1, toolhead.get_last_move_time())
-                    # extruder_list[i].binding_fan.mcu_fan.set_pwm(print_time, 0)
 
                 if extruder_list[i].vref_sw is not None:
                     if extruder_list[i].name == self.name:
                         toolhead.register_lookahead_callback(lambda print_time: extruder_list[i].vref_sw._set_pin(print_time, 1))
-                        # extruder_list[i].vref_sw._set_pin(toolhead.get_last_move_time(), 1)
                     else:
                         toolhead.register_lookahead_callback(lambda print_time: extruder_list[i].vref_sw._set_pin(print_time, 0))
-                        # extruder_list[i].vref_sw._set_pin(toolhead.get_last_move_time(), 0)
 
             if restore_state == True:
-                # Restore state
                 gcode_move.absolute_coord = saved_states['absolute_coord']
                 gcode_move.absolute_extrude = saved_states['absolute_extrude']
                 gcode_move.base_position = list(saved_states['base_position'])
@@ -1546,38 +1435,30 @@ class PrinterExtruder:
                 gcode_move.speed = saved_states['speed']
                 gcode_move.speed_factor = saved_states['speed_factor']
                 gcode_move.extrude_factor = saved_states['extrude_factor']
-                # Restore the relative E position
                 e_diff = gcode_move.last_position[3] - saved_states['last_position'][3]
                 gcode_move.base_position[3] += e_diff
                 if saved_states['max_accel'] != toolhead.max_accel:
                     toolhead.set_accel(saved_states['max_accel'])
-                # gcmd.respond_info("Restore state")
 
             if switch_complete == True:
-                # Activating extruder
                 if ace is not None:
-                    ace._enable_feed_assist(self.extruder_num)
                     gcmd.respond_info("ACE enable feed_assist for extruder %s" % (self.name,))
                 gcmd.respond_info("Activating extruder %s" % (self.name,))
                 toolhead.flush_step_generation()
                 toolhead.set_extruder(self, self.last_position)
                 self.printer.send_event("extruder:activate_extruder")
 
-                # binding probe
                 self.active_binding_probe()
                 self.active_binding_fan()
-                # gcmd.respond_info("enable fan,  set turn on {}".format(saved_states['fan_speed']))
                 if saved_states['fan_speed'] is not None and saved_states['fan_speed'] > 0:
                     print_fan.fan.set_speed_from_command(saved_states['fan_speed'])
 
-                # The current operation forces gcode_offset to be overwritten, and specific optimizations can be added later
                 if self.base_position is not None and self.gcode_offset is not None:
                     build_params = {}
                     build_params['X'] = str(self.gcode_offset[0])
                     build_params['Y'] = str(self.gcode_offset[1])
                     build_params['Z'] = str(self.gcode_offset[2])
                     build_params['MOVE'] = '0'
-                    # gcmd.respond_info("gcode offset: {}".format(build_params))
                     restore_offset_gcmd = gcode.create_gcode_command("", "", build_params)
                     gcode_move.cmd_SET_GCODE_OFFSET(restore_offset_gcmd)
             toolhead.set_grab_complete(is_grab_complete)
@@ -1637,29 +1518,23 @@ class PrinterExtruder:
             else:
                 self.is_calibrating_flow = True
     def cmd_SET_EXTRUDER_BASE_POSITION(self, gcmd):
-        # Check if this is the first time setting base_position
         is_first_time = self.base_position is None
 
-        # Create new base position values
         new_base_position = list(self.base_position) if self.base_position is not None else [0.0, 0.0, 0.0]
 
-        # Check for invalid use of _ADJUST parameters
         has_adjust_params = any(gcmd.get_float(axis + '_ADJUST', None) is not None for axis in 'XYZ')
         if is_first_time and has_adjust_params:
             raise gcmd.error("Cannot use X_ADJUST, Y_ADJUST, or Z_ADJUST when base_position is not set. Use absolute values (X, Y, Z) instead.")
 
-        # Process parameters using the same pattern as gcode_move.py
         any_param_specified = False
-        specified_axes = [False, False, False]  # X, Y, Z
+        specified_axes = [False, False, False]
         for pos, axis in enumerate('XYZ'):
             offset = gcmd.get_float(axis, None)
             if offset is None:
                 offset = gcmd.get_float(axis + '_ADJUST', None)
                 if offset is None:
                     continue
-                # Apply adjustment to current value
                 offset += new_base_position[pos]
-            # Set the new value
             new_base_position[pos] = offset
             any_param_specified = True
             specified_axes[pos] = True
@@ -1672,14 +1547,11 @@ class PrinterExtruder:
                 gcmd.respond_info("Base position for %s is not set" % (self.name,))
             return
 
-        # For first time setup, all axes must be specified
         if is_first_time and not all(specified_axes):
             raise gcmd.error("When setting base_position for the first time, all three axes (X, Y, Z) must be specified.")
 
-        # Update the base position in memory
         self.base_position = new_base_position
 
-        # Save to config
         configfile = self.printer.lookup_object('configfile')
         extruder_bak = self.printer.lookup_object('extruder_config_bak', None)
         if extruder_bak is None or not os.path.exists(extruder_bak.base_position_config_path):
@@ -1692,20 +1564,16 @@ class PrinterExtruder:
 
         gcmd.respond_info("Base position for %s set to X:%.3f Y:%.3f Z:%.3f" %
                          (self.name, new_base_position[0], new_base_position[1], new_base_position[2]))
-        # Update the gcode offset
         self.printer.send_event("probe_inductance_coil: update_extruder_offset")
 
     def cmd_SET_EXTRUDER_PARK_POSITION(self, gcmd):
-        # Check if park position is already set
         if self.xy_park_position is None or self.y_idle_position is None:
             raise gcmd.error("Park position is not set. Cannot modify park position.")
 
-        # Create new park position values
         new_xy_park_position = list(self.xy_park_position)
         new_y_idle_position = self.y_idle_position
         force_save = not not gcmd.get_int('FORCE_SAVE', 0)
 
-        # Process XY parameters
         any_param_specified = False
         for pos, axis in enumerate('XY'):
             offset = gcmd.get_float(axis, None)
@@ -1713,28 +1581,22 @@ class PrinterExtruder:
                 offset = gcmd.get_float(axis + '_ADJUST', None)
                 if offset is None:
                     continue
-                # Apply adjustment to current value
                 offset += new_xy_park_position[pos]
-            # Set the new value
             new_xy_park_position[pos] = offset
             any_param_specified = True
 
-        # Process Y_IDLE parameter
         y_idle = gcmd.get_float('Y_IDLE', None)
         if y_idle is None:
             y_idle = gcmd.get_float('Y_IDLE_ADJUST', None)
             if y_idle is None:
-                # Keep current value
                 y_idle = new_y_idle_position
             else:
-                # Apply adjustment to current value
                 y_idle += new_y_idle_position
                 any_param_specified = True
         else:
             any_param_specified = True
 
         if not any_param_specified:
-            # If no parameters specified, just report current values
             gcmd.respond_info("Park position for %s: X:%.3f Y:%.3f Y_IDLE:%.3f" %
                              (self.name, self.xy_park_position[0], self.xy_park_position[1], self.y_idle_position))
             return
@@ -1754,20 +1616,14 @@ class PrinterExtruder:
             err_msg = '{"coded": "0003-0530-0000-0023", "msg":"%s"}' % (msg)
             raise gcmd.error(err_msg)
 
-        # if (not self.printer.check_extruder_config_permission() and not force_save):
-        #     raise gcmd.error("Permission denied. Park position modification not allowed.")
-
-        # Show what values are changing from and to
         gcmd.respond_info("Park position for %s changed from X:%.3f Y:%.3f Y_IDLE:%.3f to X:%.3f Y:%.3f Y_IDLE:%.3f" %
                          (self.name,
                           self.xy_park_position[0], self.xy_park_position[1], self.y_idle_position,
                           new_xy_park_position[0], new_xy_park_position[1], y_idle))
 
-        # Update the park position in memory
         self.xy_park_position = new_xy_park_position
         self.y_idle_position = y_idle
 
-        # Save to config
         configfile = self.printer.lookup_object('configfile')
         extruder_bak = self.printer.lookup_object('extruder_config_bak', None)
         if extruder_bak is None or not os.path.exists(extruder_bak.config_path):
@@ -1801,11 +1657,6 @@ class PrinterExtruder:
         if not hasattr(self, 'xy_park_position') or self.xy_park_position is None:
             err_msg = '{"coded": "0003-0530-0000-0019", "msg":"Park position is not configured, Cannot enter park point manual calibration"}'
             raise gcmd.error(err_msg)
-
-        # machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
-        # if machine_state_manager and str(machine_state_manager.get_status()['main_state']) != "PARK_POINT_MANUAL_CALIBRATION":
-        #     err_msg = '{"coded": "0003-0530-0000-0019", "msg":"Main state is not PARK_POINT_MANUAL_CALIBRATION, Cannot move to park point"}'
-        #     raise gcmd.error(err_msg)
 
         if hasattr(self, 'park_detector') and self.park_detector is not None:
             extruder_state = self.get_extruder_activate_status()
@@ -1847,11 +1698,6 @@ class PrinterExtruder:
         if not hasattr(self, 'xy_park_position') or self.xy_park_position is None:
             err_msg = '{"coded": "0003-0530-0000-0019", "msg":"Park position is not configured, Cannot enter park point manual calibration"}'
             raise gcmd.error(err_msg)
-
-        # machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
-        # if machine_state_manager and str(machine_state_manager.get_status()['main_state']) != "PARK_POINT_MANUAL_CALIBRATION":
-        #     err_msg = '{"coded": "0003-0530-0000-0019", "msg":"Main state is not PARK_POINT_MANUAL_CALIBRATION, can not verify park position"}'
-        #     raise gcmd.error(err_msg)
 
         if hasattr(self, 'park_detector') and self.park_detector is not None:
             extruder_state = self.get_extruder_activate_status()
@@ -1904,7 +1750,6 @@ class PrinterExtruder:
             except:
                 logging.warning("Failed to restore XY park position")
 
-# Dummy extruder class used when a printer has no extruder at all
 class DummyExtruder:
     def __init__(self, printer):
         self.printer = printer

@@ -1,8 +1,3 @@
-# Generic Filament Sensor Module
-#
-# Copyright (C) 2019  Eric Callahan <arksine.code@gmail.com>
-#
-# This file may be distributed under the terms of the GNU GPLv3 license.
 import logging, os
 
 POSTFIX_CONFIG_FILE ='_runout_sensor.json'
@@ -16,7 +11,6 @@ class RunoutHelper:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
-        # Read config
         self.runout_pause = config.getboolean('pause_on_runout', True)
         if self.runout_pause:
             self.printer.load_object(config, 'pause_resume')
@@ -30,7 +24,6 @@ class RunoutHelper:
                 config, 'insert_gcode')
         self.pause_delay = config.getfloat('pause_delay', .5, above=.0)
         self.event_delay = config.getfloat('event_delay', 3., above=0.)
-        # Internal state
         self.min_event_systime = self.reactor.NEVER
         self.filament_present = False
         self.sensor_enabled = True
@@ -44,7 +37,6 @@ class RunoutHelper:
         self.config = self.printer.load_snapmaker_config_file(self.config_path, DEFAULT_CONFIG)
         self.sensor_enabled = self.config['enable']
 
-        # Register commands and event handlers
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.gcode.register_mux_command(
             "QUERY_FILAMENT_SENSOR", "SENSOR", self.name,
@@ -69,13 +61,10 @@ class RunoutHelper:
         return 0
 
     def _runout_event_handler(self, eventtime):
-        # Block runout during mid-print swap
         ace = self.printer.lookup_object('ace', None)
         if ace is not None and getattr(ace, '_swap_in_progress', False):
             logging.info("[multiACE] filament_switch_sensor: blocking runout during swap")
             return
-        # Pausing from inside an event requires that the pause portion
-        # of pause_resume execute immediately.
         pause_prefix = ""
         if self.runout_pause:
             if self.exception_manager is not None:
@@ -120,9 +109,6 @@ class RunoutHelper:
         self.filament_present = is_filament_present
         eventtime = self.reactor.monotonic()
         if eventtime < self.min_event_systime or not self.sensor_enabled:
-            # do not process during the initialization time, duplicates,
-            # during the event delay time, while an event is running, or
-            # when the sensor is disabled
             return
 
         if self.filament_present:
@@ -137,15 +123,10 @@ class RunoutHelper:
         self.printer.send_event("filament_switch_sensor:runout",
                                 self.extruder_index, is_filament_present)
 
-        # Determine "printing" status
-        # idle_timeout = self.printer.lookup_object("idle_timeout")
-        # is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
         print_stats = self.printer.lookup_object('print_stats')
         is_printing = print_stats.state == "printing"
-        # Perform filament action associated with status change (if any)
         if is_filament_present:
             if not is_printing and self.insert_gcode is not None:
-                # insert detected
                 self.min_event_systime = self.reactor.NEVER
                 self.reactor.register_callback(self._insert_event_handler)
             if self.exception_manager is not None:
@@ -154,12 +135,10 @@ class RunoutHelper:
                     index = self.extruder_index,
                     code = self.exception_manager.list.CODE_TOOLHEAD_FILAMENT_RUNOUT)
         elif is_printing and self.runout_gcode is not None:
-            # Block runout during mid-print swap
             ace = self.printer.lookup_object('ace', None)
             if ace is not None and getattr(ace, '_swap_in_progress', False):
                 logging.info("[multiACE] note_filament_present: blocking runout callback during swap")
                 return
-            # runout detected
             self.min_event_systime = self.reactor.NEVER
             logging.info(
                 "Filament Sensor %s: runout event detected, Time %.2f" %
@@ -209,7 +188,6 @@ class SwitchSensor:
         printer = config.get_printer()
         buttons = printer.load_object(config, 'buttons')
         switch_pin = config.get('switch_pin')
-        # buttons.register_buttons([switch_pin], self._button_handler)
         if config.get('analog_range', None) is None:
             buttons.register_buttons([switch_pin], self._button_handler)
         else:

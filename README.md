@@ -1,20 +1,30 @@
 # mUlt1ACE
 
-## What's new in 0.82b
+## What's new in multiACE 0.90b "Vibrant Fungi"
 
-Normal Mode working again
+**This is NO AMS-like solution with 1000s of reliable swaps, and I don't think it ever will be — but it recovers to a pause if it fails, so you can solve the problem and continue.**
 
-USB-level misbehaviour related to the ACE Pro's internal reset cycle could cause sporadic failures mid-print when switching between ACEs on every toolchange. This release works around it by keeping a single connection to the ACE that was active when the print started — the *start ACE* — and never disconnecting from it for the duration of the print.
+**In-print color swaps up to 16 colors** - layer-boundary and mid-layer swaps during an active print are now stable enough for real prints rather than tests. The USB rewrite, the hardened load/unload path, and the FA/Load toggles together close the failure modes that previously made mid-print swaps fragile. 
 
-**Trade-off:** during a print, only the start ACE has feed_assist available. Heads on other ACEs print without feed_assist; the extruder pulls the filament directly through the bowden. Validated through several hours of multi-color test prints without visible underextrusion. For unusually long bowden routing or high-friction filament, pick the start ACE deliberately with `ACE_SWITCH TARGET=N` so your most-used material lives on it. The next major version (v0.82) will lift this restriction.
+**Swaptimizer** - `--optimize` on the post-process script reassigns T indices to minimize mid-print swaps and prints an ACE/Slot-sorted loadout to follow when you load cartridges. Typical savings on a 5+ color print: 20–30 %.
 
-**Bonus:** cross-ACE toolchanges no longer pay the ~5–10 second USB disconnect/reconnect cost.
+The real star is **`--layer`**: it detects whether every layer of the print stays within ≤4 colors, and if so, rewrites the gcode so swaps only ever happen at layer boundaries (Belady-optimal). That typically means an order of magnitude fewer swaps than naive assignment, and no mid-layer toolchange interruptions at all. Example: a 7-color Toad print from MakerWorld drops from 120 mid-print swaps to 3 layer-boundary swaps - at ~3:48 per swap, that's ~7.4 hours of print time back.
 
-**Logging:** dedicated state and USB debug logs were significantly expanded for post-mortem analysis after print issues (`state_debug` / `usb_debug` in `[ace]`).
+**Auto-Load Spools** - The Post-Processing Script Loads spools across all Aces, and unloads where needed. Full Automatic.
+
+**Rewritten USB engine** - cross-ACE toolchanges now run at stock speed *with* feed_assist on every head. The start-ACE-only restriction from 0.81b is gone: every connected ACE stays fully available for the duration of a print, and the reset-cycle edge cases that forced the 0.81b workaround are handled at the engine level.
+
+**Hardened load / unload** - several failure modes that previously stalled prints are now handled instead of just reported. Additional extrude retries retract, so the extruder gears release and re-grip. Failures snapshot the pause state (active extruder, per-head target temps) before raising, and resume was overridden with a multiACE safety layer.
+
+Many color changes possible without U1 load / unload errors - all caught by the sensor / retry logic. If it isn't caught, solve it and resume.
+
+**FA / Load handling on / off** - feed_assist is now togglable per-ACE and separately for print-time and load-time (`fa_print_disable` / `fa_load_disable`). Useful for ACEs where FA interferes with the load mechanics of a specific material.
+
+
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
-## multiACE v0.81b "First Light" Hotfix 1
+## multiACE v0.90b "Vibrant Fungi"
 
 **Multi-ACE Pro support for Snapmaker U1 with Klipper**
 
@@ -27,6 +37,15 @@ USB-level misbehaviour related to the ACE Pro's internal reset cycle could cause
 multiACE extends the [SnapACE](https://github.com/BlackFrogKok/SnapACE) software to support **multiple ACE Pro units** on a single Snapmaker U1 printer. Switch between ACE units to use different filament sets - for example, PLA on ACE 0 and PETG on ACE 1 - without physically swapping spools.
 
 ## Typical Workflow
+
+### In-Print Color Swaps (layer / mid-layer)
+
+Color swaps during an active print can be triggered two ways:
+
+1. **Insert `ACE_SWAP_HEAD` at a layer** via your slicer's "Change Filament" / "Insert Custom G-code at Layer" feature - good for a handful of accent swaps without reslicing.
+2. **Run the slicer gcode through the included post-processing script** - rewrites slicer-emitted virtual toolheads `T4..T15` into the correct `ACE_SWAP_HEAD` commands automatically.
+
+Both paths use the same hardened load/unload logic as normal toolchanges. See [How to Do Toolswaps](#how-to-do-toolswaps) below for the exact command format and post-processing setup.
 
 ### Single Material (e.g. PLA on ACE 0)
 
@@ -55,6 +74,10 @@ Use the Fluidd macros **ACEA__Switch_0..3** to switch between ACE units.
 
 ## Features
 
+- **In-Print Color Swaps** - Layer-boundary and mid-layer color swaps during an active print, triggered from slicer gcode or via post-processing script
+- **Full Cross-ACE Feed_Assist** - All connected ACEs stay fully available during a print, feed_assist on every head, at stock toolchange speed (rewritten USB engine)
+- **Hardened Load / Unload** - Retract-recovery between extrude retries, pause-state snapshot before failure, safer resume path (pre-heat before travel, Z-hop before XY)
+- **FA / Load Toggle per ACE** - Disable feed_assist per-ACE and separately for print-time / load-time (`fa_print_disable` / `fa_load_disable`)
 - **Multi-ACE Support** - Connect up to 4 ACE Pro units simultaneously
 - **ACE Switching** - Switch between ACE units via Fluidd macros or console
 - **Auto-Load** - Load all filled slots from selected ACE with one command
@@ -63,19 +86,56 @@ Use the Fluidd macros **ACEA__Switch_0..3** to switch between ACE units.
 - **Manual Filament Support** - Works with both RFID and non-RFID spools
 - **Per-ACE Dryer Settings** - Configurable temperature and duration per ACE
 - **Normal Mode** - Switch back to stock Snapmaker operation at any time (only original files active, no ACE code running). Useful for filaments the ACE Pro cannot handle, such as TPU/TPE
-- **Auto-Feed Control** - Automatic during print, disabled outside print to prevent unwanted preloads
-- **Print-Start Safety Check** - Warns if a needed ACE is offline
 - **PAXX Firmware Compatible** - Works with PAXX firmware which provides display mirroring, allowing full load/unload control from your computer
 - **Clean Install/Uninstall** - One-command scripts with automatic backup and restore
 
 ## Requirements
 
 - Snapmaker U1 printer
-- Snapmaker firmware or PAXX firmware (tested with Snapmaker 1.2 and PAXX 12-14)
+- Snapmaker firmware or PAXX firmware (tested with Snapmaker 1.2, 1.3 and PAXX 12-14, 12-15)
 - 1-4 Anycubic ACE Pro units connected via USB (tested with 3)
 - SSH access to the printer
 - Fluidd web interface
 - PTFE tube splitters (1-to-N per toolhead) - also allows switching to Normal Mode without recabling
+
+## Q & A
+
+**Why go back to "poop" printing?**
+You don't have to. The main goal of this software is still clean filament handling, not color-swap printing. You don't need to produce 1000-color swap prints that poop out more filament than the part weighs (and mulitACE isn't designed for that) - but adding 4-16 extra colors on top of standard multi-material work is nice without much added waste. Or just adding Gold and Silver to your CMYKW Full Spectrum print.
+
+**You still use tip forming - why not a cutter?**
+Tip forming is one of several ACE/U1 load-unload quirks. The first approach here is to solve them in software: sensor-reading retries, hardened recovery paths, changes to tip forming. If you want to build a physical cutter, I'll gladly build the routines for it - get in touch. And if something does fail, you can still walk to the printer, sort it out by hand, and hit resume.
+It doesn't produce as much poop as a cutter, that's an advantage.
+
+**Is it fast?**
+No. Tip forming instead of a cutter, plus the bowden length, retries, puts a single color swap at up to 3-4 minutes. And since swaps don't happen at the park position, every change adds directly to print time. That said, stock Snapmaker per-layer color changes aren't any faster and require manual intervention every time - here it's at least automated. Park-position swaps are an option for the future.
+
+**Does it work with ACE 2, AnkerMake Vivid, or other changers?**
+No. But the ACE2 is reverse engineered now, I'll look into it. If you know another changer that is *proven* reliably better than the ACE Pro (and Klipper compatible), let me know - I've seen no trustworthy tests on the Vivid, and self-built machines are much pricier. multiACE aims for a solution anyone can set up.
+
+**Can I use multiACE with just one ACE Pro?**
+Yes. With a single ACE, multiACE still manages loads, unloads, and auto-feed cleanly and adds the hardened retry/resume path. `ace_device_count` defaults to `1`, no extra config needed.
+
+**Does it work with / without RFID tags?**
+Yes. Anycubic-RFID (or self written) spools work fine - or set filament type and color manually via the Snapmaker display. RFID and non-RFID spools can be mixed across slots and ACEs.
+
+**Can I still use TPU / TPE?**
+Yes, two ways: switch to **Normal Mode** (stock feeders, no ACE) for a full TPU session, or use **Load Off** on a per-toolhead basis while the rest of the heads keep using the ACE. Both keep swap/unload state consistent.
+
+**Do I need PAXX firmware?**
+No. Stock Snapmaker firmware 1.2+ works. PAXX adds display mirroring so load/unload is fully controllable from the computer - convenient, not required.
+
+**What happens if an ACE is powered off or disconnected at startup?**
+multiACE waits up to 20s for all expected devices (per `ace_device_count`) before locking the path-to-index mapping. A device missing at that point will be flagged, and a pre-print safety check warns if a needed ACE is offline.
+
+**Will a failed load during print ruin the whole print?**
+Not automatically. Load failures trigger a pause (not a full abort), snapshot the pause state (active extruder, target temps), and route through a hardened resume path. In many cases - loose filament, gear slip - the retract-between-retries recovery clears the problem before the pause is even raised.
+
+**Can I go back to stock operation?**
+Yes. `ACEF__Mode_Normal` switches to stock Snapmaker operation (no ACE code running). The uninstall script reverts everything with one command.
+
+**Will this work reliably?**
+No. Maybe yes. This is beta software, errors can and will show up. I've thoroughly tested it, but now it's up to you! Test and report errors - you're part of the team.
 
 ## Hardware Setup
 
@@ -101,7 +161,7 @@ ACE Pro Molex (2x3) - front view          Connection
 
 Refer to the [SnapAce pinout diagram](https://github.com/BlackFrogKok/SnapAce/blob/main/.github/img/pinout.png) for the exact Molex pin positions.
 
-> **Important:** Pin 6 (VCC) is not connected - the ACE Pro has its own power supply. Can be dangerous for your printer. Molex cables have no standardized color coding. Always measure continuity before connecting.
+> **Important:** Do **not** connect Pin 6 (VCC) - the ACE Pro has its own power supply, and connecting VCC can damage your printer. Molex cables have no standardized color coding - always measure continuity before connecting.
 
 **Assembly:**
 1. Connect D-, D+, and GND from the Molex connector to D-, D+, and GND on the USB connector
@@ -180,15 +240,17 @@ Spools without RFID tags work fine - you can set the filament type and color man
 
 ## Installation
 
+> **Before Snapmaker firmware updates:** run `bash uninstall_multiace.sh` first, install the firmware update, then reinstall multiACE. Snapmaker firmware updates overwrite the multiACE Klipper files (`filament_feed.py`, `extruder.py`, `filament_switch_sensor.py`); without uninstalling first you end up in a half-stock half-multiACE state where neither path works reliably.
+
 ### Prerequisites
 
 Before installing multiACE, ensure the following:
 
-1. **Firmware** - Install Snapmaker firmware 1.2+ or PAXX firmware 12-14 on your Snapmaker U1
-2. **Enable Root Access** - On the Snapmaker display, go to Settings > About > tap firmware version 10 times to unlock Advanced Mode, then enable Root Access
+1. **Firmware** - Install Snapmaker firmware 1.2+ or PAXX firmware 12-14+ on your Snapmaker U1
+2. **Enable Root Access** - On the Snapmaker display, go to Settings > About > tap firmware version 10 times to unlock Advanced Mode, then enable Root Access 
 3. **Enable SSH** - Connect via SSH or serial console and run:
    ```
-   touch /home/lava/.oem_debug
+   touch /oem/.debug
    ```
    After reboot, Wi-Fi password needs to be re-entered on the display. SSH is then available at `root@<printer-ip>`
 4. **Verify SSH** - Connect from your computer:
@@ -271,97 +333,171 @@ All operations are available as macro buttons in Fluidd, sorted alphabetically:
 | **ACEC__Load_T0..T3** | Load individual toolhead from active ACE |
 | **ACED__Dry_Start_0..3** | Start drying on ACE (uses config settings) |
 | **ACED__Dry_Stop** | Stop drying on current ACE |
-| **ACEE__Autofeed_Off/ON** | Disable/enable auto-feed |
 | **ACEF__Mode_Normal** | Switch to stock mode (no ACE) |
 | **ACEF__Mode_Multi** | Switch to multi-ACE mode |
+| **ACEG__Status** | Show active ACE, detected devices, head mapping, build tag |
+| **ACEG__List** | List all detected ACE devices |
+
+## How to Do Toolswaps
+
+multiACE supports up to **16 logical filaments** (4 toolheads × up to 4 ACE units). The core in-print swap command is:
+
+```
+ACE_SWAP_HEAD HEAD=<0..3> ACE=<0..3>
+```
+
+This swaps the filament on `HEAD` to the matching slot of the given `ACE`, reusing the hardened load/unload path. There are two ways to get these commands into your print gcode.
+
+### Option 1 - Manual G-code Insertion (per layer)
+
+For a quick 1-2 swap print without reslicing the whole project, use your slicer's **"Insert Custom G-code at Layer"** feature (Orca / Prusa: "Change Filament At Layer"; Bambu: "Pause / Custom G-code at layer").
+
+Example: at layer 42, swap the filament on head 0 to the spool in ACE 1, slot 0:
+
+```
+; layer 42
+ACE_SWAP_HEAD HEAD=0 ACE=1
+```
+
+Use this when you want full manual control over where and how often swaps happen. Good for color accents, signatures, or single-layer labels.
+
+### Option 2 - Automatic Post-Processing (`post_process_virtual_toolheads.py`)
+
+For a real multi-color print where the slicer already thinks in tool changes, let the included post-processing script do the conversion. The script maps slicer-emitted **virtual toolheads T4..T15** to the correct `ACE_SWAP_HEAD` commands and cleans up the heater/pre-extrude commands so nothing collides with multiACE's own swap flow.
+
+**Filament order in the slicer** - set up your project with up to 16 filaments: **T0..T3** are the four "primary" filaments physically loaded on your active ACE (head 0..3), and **T4..T15** are the swap-in filaments on the other ACE slots. The mapping is position-based: `T4` = ACE 1 / head 0, `T5` = ACE 1 / head 1, … `T7` = ACE 1 / head 3, `T8..T11` = ACE 2 heads 0..3, `T12..T15` = ACE 3 heads 0..3. Assign your slicer's colors/materials in that order so the post-processing script can translate every toolchange into the right `ACE_SWAP_HEAD HEAD=X ACE=Y`.
+
+**Setup** - in your slicer's post-processing field, point it at:
+
+```
+python3 /path/to/multiace/tools/post_process_virtual_toolheads.py 
+```
+
+**Flags:**
+
+- `--optimize` - Swaptimizer: reassign T indices to minimize mid-print swaps, print an ACE/Slot-sorted loading order.
+- `--layer` - upgrade of `--optimize`: if every layer stays within ≤4 colors, rewrite the gcode so swaps only happen at layer boundaries. Silently falls back to `--optimize` when infeasible.
+- `--no-auto-load` - turn off auto-load feature
+
+**What it does:**
+
+- Rewrites bare `T4..T15` in the print body into `T<head%4>` + `ACE_SWAP_HEAD HEAD=X ACE=Y`
+- Skips redundant swaps when a head already holds the requested color
+- Runs an **optimizer**: prints a recommended ACE loadout (which 4 colors should live on the "primary" slots so fewer swaps are needed) to both the slicer's post-process dialog and `multiace_postprocess.log`
+
+**Upload the processed gcode via Fluidd** - after the slicer exports, upload the resulting `.gcode` through Fluidd (Jobs → Upload) and start the print from there. Fluidd sends the rewritten commands to Klipper directly, so the ACE-aware gcode reaches multiACE exactly as the script produced it.
+
+This is the path used for full multi-material prints. The optimizer output is useful even if you edit the loadout by hand afterwards - it tells you which color changes cost you the most swaps.
 
 ## Configuration
 
-All settings are in `config/extended/ace.cfg` under the `[ace]` section:
+All settings live in `config/extended/ace.cfg` under the `[ace]` section (the Fluidd macros live in the same file below). For a fresh multi-ACE install only `ace_device_count` has to be changed - everything else has sensible defaults.
+
+### Required
 
 ```ini
 [ace]
+ace_device_count: 1          # Number of physical ACE Pro devices (1..8)
+```
 
-# Number of physically connected ACE Pro devices.
-# Default 1 (single ACE — no config change needed). REQUIRED for
-# multi-ACE setups (>1): set to your physical count (2..8). At
-# startup, multiACE waits up to 20s for all expected devices to
-# appear, then locks the path-to-index mapping for the rest of
-# the session so a temporarily missing ACE during a USB reset
-# cycle never causes index drift.
-# ace_device_count: 3
+At startup multiACE waits up to 20s for all expected devices before locking the path-to-index mapping, so a unit mid-USB-reset-cycle at boot never causes index drift. **Required for multi-ACE** - without an explicit count a single missing unit can lock the wrong mapping.
 
-# Logging
-# log_dir: /home/lava/printer_data/logs   # default — usually fine
-state_debug: true       # per-toolchange / per-load audit log
-usb_debug: true         # per-scan / per-connect serial-layer log
+### Logging / Debug
 
-# Serial
+```ini
+state_debug: true            # per-toolchange / per-load audit log
+usb_debug: true              # per-scan / per-connect serial-layer log
+fa_debug: true               # feed_assist trace (useful during 0.90b bring-up)
+# log_dir: /home/lava/printer_data/logs   # default is usually fine
+```
+
+Separate files under `printer_data/logs/multiace_*.log`. Keep them on while the release is in beta - they're essential for post-mortem analysis and cost nothing at runtime.
+
+### Serial / Feed / Retract
+
+```ini
 baud: 115200
+feed_speed: 80               # mm/s
+retract_speed: 80            # mm/s
+load_length: 2100            # ACE feed distance into the bowden (mm)
+retract_length: 1950         # sensor-to-splitter distance (mm)
+```
 
-# ACE feed/retract settings
-feed_speed: 80          # Feed speed (mm/s)
-retract_speed: 30       # Retract speed (mm/s, lower = cleaner winding)
-retract_length: 1950    # Distance from extruder to splitter (mm)
-load_length: 2100       # ACE feed distance for load (mm)
+Set `load_length` to roughly **110 % of your PTFE length** - the phase is sensor-stopped, so overshoot is safe. `retract_length` = measured extruder-sensor-to-splitter distance minus ~100 mm; the retract only needs to pass the splitter junction, not the full tube. Low `retract_speed` helps the ACE wind the spool tighter; a spool guide upgrade like [this roller guide](https://www.printables.com/model/1237589-20-anycubic-ace-pro-upgrade-kit-to-new-s1-version) improves winding quality further.
 
-# feed_length: distance for the filament to reach the toolhead.
-# ACE has its own loading procedure and this length does not affect
-# it. Pick a value so that after ACE loading the filament is ~5-6 cm
-# away from the toolhead. Set to 0 to disable (recommended; the
-# preload phase wastes time and gives inconsistent positions).
-feed_length: 0
+### Load / Unload Retry (multiACE hardening)
 
-# Retry settings
-load_retry: 1           # Number of load retries
-load_retry_retract: 50  # Mini-retract before retry (mm)
+```ini
+load_retry: 3               # FEED_AUTO LOAD retries if sensor not reached
 
-# Temperature
-swap_default_temp: 250  # Fallback temp when no config available
-max_dryer_temperature: 70
+extrusion_retry: 7           # outer retries after wheel check fails (0 = disabled)
 
-# Purge (for in-layer color swap, future feature)
-extra_purge_length: 50  # Extra extrusion after flush (mm), 0 = disabled
+unload_retry: 3              # unload re-heat / re-run attempts
+```
 
-# Dryer defaults (per-ACE overrides possible)
-dryer_temp: 55          # Default drying temperature (°C)
-dryer_duration: 240     # Default drying duration (minutes)
+### Dryer
 
-# Optional: Per-ACE dryer overrides
+```ini
+dryer_temp: 55               # °C
+dryer_duration: 240          # minutes
+max_dryer_temperature: 70    # safety cap
+
+# Per-ACE overrides (optional):
 # dryer_temp_0: 55
 # dryer_temp_1: 45
 # dryer_duration_0: 240
-# dryer_duration_1: 180
-
-# Optional: Per-Toolhead overrides
-# load_length_0: 2100
-# load_length_1: 2050
-# retract_length_0: 1950
-# retract_length_1: 1900
 ```
 
-### Configuration Recommendations
+### Feed-Assist (FA) Gate
 
-**ace_device_count** - Default `1`. **Required for multi-ACE setups**: uncomment and set to your physical ACE count (2..8). The 20s startup wait ensures all devices are detected even if some happen to be mid USB reset cycle when Klipper boots. Without an explicit count, multi-ACE setups risk locking the canonical mapping with one device missing.
+```ini
+# Per-ACE FA exclusion (comma-separated 0-based ACE indices).
+# fa_print_disable: no FA during print - extruder pulls filament alone
+# fa_load_disable:  no FA during load - manual insert (e.g. TPU)
+# fa_print_disable: 0,2
+# fa_load_disable: 1
+```
 
-**state_debug / usb_debug** - Default `true`. Keep enabled. These dedicated logs (separate from `klippy.log`) capture per-toolchange audit entries and serial-layer events. Essential for post-mortem analysis after print issues. Negligible runtime overhead.
+### Toolchange / Swap
 
-**feed_length** - Set to `0` (disabled). The preload phase wastes time when loading ACE slots and leads to inconsistent filament positions in the PTFE tubes.
+```ini
+extra_purge_length: 50       # extra mm after flush during toolchange
+swap_default_temp: 250       # fallback swap temp when no heater/RFID target
 
-**load_length** - Set to approximately **110% of your actual PTFE tube length** (from ACE to splitter). The load phase is sensor-controlled and will stop when filament is detected, so a longer value is safe and ensures reliable loading.
+# swap_retract_length: 900   # mid-print swap retract (default = retract_length)
+```
 
-**retract_speed** - Keep low (default `30`). The ACE Pro sometimes winds filament loosely at higher speeds, causing tangles on the spool. Additionally, consider printing a spool guide upgrade such as [this ACE Pro roller guide](https://www.printables.com/model/1237589-20-anycubic-ace-pro-upgrade-kit-to-new-s1-version) to improve winding quality.
+### Per-ACE Length Overrides (optional)
 
-**retract_length** - Measure the actual distance from your extruder sensor to the PTFE splitter and subtract ~100mm. The retract only needs to pull the filament back past the splitter junction, not the full tube length.
+When bowden lengths differ per ACE, override them in a dedicated `[ace N]` section:
+
+```ini
+[ace 0]
+load_length: 2100
+retract_length: 1950
+load_length_2: 2200          # slot-specific override (ACE 0, slot 2)
+
+[ace 1]
+load_length: 2050
+```
+
+Lookup priority: `[ace N] load_length_Y` → `[ace N] load_length` → `[ace] load_length`. Same for `retract_length`. Speeds stay global.
 
 ## Known Limitations
+- **Don't turn off automatic load in display** - Throws errors.
+- **Maybe some purge-finetuning is needed**, have to look into that.
+- **Unload before first use** - After a fresh install or when upgrading from a previous version, unload all toolheads before starting multiACE. Filament loaded from a previous installation can cause unexpected behavior since multiACE has no knowledge of the previous state. Use **ACEC__Unload_All** or unload via the display first.
+- **Unload All clears display info** - After **ACEC__Unload_All**, manually set filament types and colors are cleared. By design - reload and set filament info again after unloading.
 
-- **Unload before first use** - After a fresh install or when upgrading from a previous version, unload all toolheads before using multiACE. Filament loaded from a previous installation may cause unexpected behavior since multiACE has no knowledge of the previous state. Use **ACEC__Unload_All** or unload via display before starting.
-- **Cross-ACE feed_assist** - During a print, only the ACE that was active when the print started has feed_assist available. Toolchanges to heads on other ACEs print without feed_assist (extruder pulls filament directly through the bowden). Pick the start ACE deliberately with `ACE_SWITCH TARGET=N` before the print so your most-used material lives on it. The next major version (v0.82) will lift this restriction.
-- **ACE USB Reset** - Inactive ACE units periodically reset their USB connection (~3s cycle). This is normal ACE Pro firmware behavior and does not affect operation. Visible in `dmesg` but harmless.
-- **Display Attach Toolhead** - Attaching a toolhead via the Snapmaker display triggers auto-feed. This is stock Snapmaker behavior and cannot be suppressed.
-- **Unload All clears display** - After **ACEC__Unload_All**, manually set filament types and colors are cleared. This is by design - reload and set filament info again after unload.
-- **load / feed_length per toolhead only** - Will be adressed in next version, set settings to longest path length, sensors check shoukd stop it.
+## Tips
+
+Small things that make a big difference in practice - mostly mechanical, a few config-related:
+
+- **Use spools the ACE actually likes.** Cardboard spools are the classic offender: they soak up humidity, swell, jam in the ACE channel, and the feed wheel still registers motion because only the spool itself is turning. Rewind to plastic or print a spool adapter. Spools that are too large or too small for the ACE Pro hub bind just as easily - stay close to standard 1 kg plastic cores.
+- **Kobra 3 / S1 guide upgrade.** On the newer Anycubic roller-guide system the original feeder parts often skip; print the updated guide parts for much smoother winding. <!-- TODO: add link --> *(link to follow)*
+- **Tune the retry parameters for your setup.** `load_retry`, `extrusion_retry` and `unload_retry` are there to be adjusted. The defaults catch most soft failure modes without user intervention, but bumping them up further on a problematic spool/setup is worth experimenting with.
+- **Fit a larger purge bin.** Multi-color prints produce more purge than single-material runs. A bigger aftermarket or printed purge bin saves a trip to the printer mid-print.
+- **Stable splitter / PTFE connections.** A splitter that shifts under feed pressure, or a PTFE joint sitting 1–2 mm short, can cost you a load with no obvious cause. Make sure every junction is fully seated, collets are locked, and the splitter is mounted on something that doesn't flex.
 
 ## Troubleshooting
 
@@ -386,17 +522,36 @@ If things get out of sync (wrong filament displayed, unexpected behavior), reset
 
 ### Old code running despite update
 - Delete Python cache: `rm -rf /home/lava/klipper/klippy/extras/__pycache__/`
-- Check file timestamp in console: `multiACE v0.80b (file: ...)`
+- Check file timestamp in console: `multiACE v0.90b (file: ...)`
 
 ### Serial errors on console
 - Serial errors during ACE switch are logged silently. If errors persist, check USB cables.
 
-## Roadmap
+### Reporting issues
 
-### Next Version
-- Bug fixes based on community feedback
-- Custom Fluidd UI panel for ACE management
-- Maybe one day: [Full vision](https://youtube.com/video/gJVQikjtDNs)
+When reporting a problem, please include the following logs from your printer. They are essential for diagnosing the issue:
+
+1. **multiACE state log** - per-action audit trail (toolchanges, loads, unloads, FA events):
+   ```
+   cat /home/lava/printer_data/logs/multiace_state.log
+   ```
+2. **multiACE USB log** - serial connect/disconnect and scan events:
+   ```
+   cat /home/lava/printer_data/logs/multiace_usb.log
+   ```
+3. **Klipper log** - the last ~200 lines around the time of the issue:
+   ```
+   tail -200 /home/lava/printer_data/logs/klippy.log
+   ```
+
+Also mention:
+- **Time of error** - exact timestamp so we can find it in the logs
+- **What you did** - which button / macro / gcode you triggered
+- **What happened before** - was this mid-print, during load, after a restart, etc.
+- **Expected behavior** - what should have happened instead
+- How many ACE units you have connected
+- Whether your spools have RFID tags or not
+- Whether Developer Mode is enabled (`ls /oem/.debug`)
 
 ## License
 
@@ -404,7 +559,7 @@ This project is based on [SnapACE](https://github.com/BlackFrogKok/SnapACE) and 
 
 ## AI-Assisted Development Notice
 
-This project includes AI-assisted content research documentation, parts of code).
+This project includes AI-assisted content (research, documentation, parts of code).
 All content is reviewed by humans before inclusion.
 
 ## Credits

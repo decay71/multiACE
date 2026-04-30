@@ -1,7 +1,7 @@
 #!/bin/bash
 # multiACE Uninstaller for Snapmaker U1
 # Restores original files from _pre_multiace or _stock backups
-# Usage: bash uninstall_multiace.sh
+# Usage: bash uninstall_multiace.sh [-y|--yes|--force]
 
 # Fix Windows line endings
 sed -i 's/\r$//' "$0" 2>/dev/null
@@ -13,14 +13,73 @@ EXTRAS_DIR="${HOME_DIR}/klipper/klippy/extras"
 KINEMATICS_DIR="${HOME_DIR}/klipper/klippy/kinematics"
 CONFIG_DIR="${HOME_DIR}/printer_data/config/extended"
 MULTIACE_DIR="${CONFIG_DIR}/multiace"
+ACE_VARS="${MULTIACE_DIR}/ace_vars.cfg"
 PRINTER_CFG="${HOME_DIR}/printer_data/config/printer.cfg"
 LOGFILE="/tmp/multiace_uninstall.log"
+
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        -y|--yes|--force) FORCE=1 ;;
+    esac
+done
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE] $1" | tee -a "$LOGFILE"
 }
 
 log "=== multiACE Uninstall ==="
+
+# --- Pre-flight: warn if any toolheads are currently registered as loaded ---
+LOADED_HEADS=""
+LOADED_COUNT=0
+if [ -f "$ACE_VARS" ]; then
+    HS_LINE=$(grep '^ace__head_source' "$ACE_VARS" 2>/dev/null || true)
+    if [ -n "$HS_LINE" ]; then
+        for i in 0 1 2 3; do
+            # Loaded entry looks like '0': {ace_index: ...}, empty is '0': None
+            # Klipper save_variables uses single quotes (Python repr)
+            if echo "$HS_LINE" | grep -q "'$i': {"; then
+                LOADED_COUNT=$((LOADED_COUNT + 1))
+                LOADED_HEADS="$LOADED_HEADS T$i"
+            fi
+        done
+    fi
+fi
+
+if [ "$LOADED_COUNT" -gt 0 ]; then
+    echo ""
+    echo "================================================================"
+    echo "  WARNING: $LOADED_COUNT toolhead(s) registered as loaded:$LOADED_HEADS"
+    echo "================================================================"
+    echo ""
+    echo "  Uninstalling will delete the head_source mapping in"
+    echo "  ace_vars.cfg. The actual filament will remain physically"
+    echo "  loaded in the toolheads, but multiACE will no longer know"
+    echo "  which ACE/slot each head was loaded from."
+    echo ""
+    echo "  Recommended: run the Unload All macro from Fluidd before"
+    echo "  uninstalling, then re-run this script."
+    echo ""
+    if [ "$FORCE" -eq 1 ]; then
+        echo "  --force given, continuing anyway."
+        echo ""
+    else
+        printf "  Continue with uninstall? [y/N]: "
+        read -r reply
+        echo ""
+        case "$reply" in
+            y|Y|yes|YES)
+                log "User confirmed uninstall with $LOADED_COUNT loaded heads"
+                ;;
+            *)
+                log "Uninstall aborted by user (loaded heads:$LOADED_HEADS)"
+                echo "Uninstall aborted. No changes made."
+                exit 0
+                ;;
+        esac
+    fi
+fi
 
 # --- Restore original files from backups ---
 log "Restoring original files..."
@@ -54,6 +113,7 @@ log "  Removed ace.cfg"
 
 # --- Remove multiACE files ---
 log "Removing multiACE files..."
+rm -f "$EXTRAS_DIR/ace.py"
 rm -f "$EXTRAS_DIR/filament_feed_ace.py"
 rm -f "$EXTRAS_DIR/filament_switch_sensor_ace.py"
 rm -f "$EXTRAS_DIR/filament_feed_pre_multiace.py"

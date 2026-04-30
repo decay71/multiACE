@@ -100,7 +100,7 @@ log "  ace.cfg installed"
 mkdir -p "$MULTIACE_DIR"
 cp "$INSTALL_DIR/config/extended/multiace/ace_mode_switch.sh" "$MULTIACE_DIR/ace_mode_switch.sh"
 chmod +x "$MULTIACE_DIR/ace_mode_switch.sh"
-# Only copy ace_vars.cfg if it doesn't exist (preserve settings)
+# Only copy ace_vars.cfg if it doesn't exist (preserve settings across upgrade)
 if [ ! -f "$MULTIACE_DIR/ace_vars.cfg" ]; then
     cp "$INSTALL_DIR/config/extended/multiace/ace_vars.cfg" "$MULTIACE_DIR/ace_vars.cfg"
     log "  ace_vars.cfg created (fresh)"
@@ -168,6 +168,88 @@ log "ACE files activated"
 rm -rf "$EXTRAS_DIR/__pycache__"
 rm -rf "$KINEMATICS_DIR/__pycache__"
 log "Python cache deleted"
+
+# --- Post-install verification ---
+# Catches the #1 support case: install runs "successfully" but the
+# Snapmaker overlay silently drops overwrites when Advanced Mode is
+# disabled on the display. Without this check, users get a half-installed
+# printer that crashes in confusing ways.
+log ""
+log "Verifying install integrity..."
+
+VERIFY_FAILED=0
+
+verify_match() {
+    local src="$1"
+    local dst="$2"
+    local label="$3"
+    if [ ! -f "$dst" ]; then
+        log "  FAIL: $label: not found at $dst"
+        VERIFY_FAILED=1
+        return
+    fi
+    if ! cmp -s "$src" "$dst"; then
+        local src_size dst_size
+        src_size=$(wc -c < "$src" 2>/dev/null || echo "?")
+        dst_size=$(wc -c < "$dst" 2>/dev/null || echo "?")
+        log "  FAIL: $label: content mismatch (src=$src_size, dst=$dst_size bytes)"
+        VERIFY_FAILED=1
+    else
+        log "  OK:   $label"
+    fi
+}
+
+# New files copied directly into klippy/ and config/
+verify_match "$INSTALL_DIR/klipper/extras/ace.py" \
+             "$EXTRAS_DIR/ace.py" "ace.py"
+verify_match "$INSTALL_DIR/klipper/extras/filament_feed_ace.py" \
+             "$EXTRAS_DIR/filament_feed_ace.py" "filament_feed_ace.py"
+verify_match "$INSTALL_DIR/klipper/extras/filament_switch_sensor_ace.py" \
+             "$EXTRAS_DIR/filament_switch_sensor_ace.py" "filament_switch_sensor_ace.py"
+verify_match "$INSTALL_DIR/klipper/kinematics/extruder_ace.py" \
+             "$KINEMATICS_DIR/extruder_ace.py" "extruder_ace.py"
+verify_match "$INSTALL_DIR/config/extended/ace.cfg" \
+             "$CONFIG_DIR/ace.cfg" "ace.cfg"
+
+# Stock file overwrites done by ace_mode_switch.sh — these are the
+# ones that silently fail on a locked overlay.
+verify_match "$EXTRAS_DIR/filament_feed_ace.py" \
+             "$EXTRAS_DIR/filament_feed.py" "filament_feed.py (mode swap)"
+verify_match "$EXTRAS_DIR/filament_switch_sensor_ace.py" \
+             "$EXTRAS_DIR/filament_switch_sensor.py" "filament_switch_sensor.py (mode swap)"
+verify_match "$KINEMATICS_DIR/extruder_ace.py" \
+             "$KINEMATICS_DIR/extruder.py" "extruder.py (mode swap)"
+
+# printer.cfg include
+if [ -f "$PRINTER_CFG" ]; then
+    if grep -q "extended/ace.cfg" "$PRINTER_CFG"; then
+        log "  OK:   printer.cfg include"
+    else
+        log "  FAIL: printer.cfg missing [include extended/ace.cfg]"
+        VERIFY_FAILED=1
+    fi
+fi
+
+if [ "$VERIFY_FAILED" = "1" ]; then
+    log ""
+    log "========================================================"
+    log "  INSTALL VERIFICATION FAILED"
+    log ""
+    log "  One or more files did not persist after copy."
+    log "  This almost always means ADVANCED MODE is NOT enabled"
+    log "  on the Snapmaker U1 display."
+    log ""
+    log "  To enable:"
+    log "    Settings > About > tap firmware version 10 times"
+    log "    > Advanced Mode > Root Access"
+    log ""
+    log "  Then re-run: bash install_multiace.sh"
+    log "========================================================"
+    log ""
+    exit 1
+fi
+
+log "All files verified OK."
 
 log ""
 log "=== Installation complete ==="
