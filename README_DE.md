@@ -102,7 +102,7 @@ Dafür gibt es die Fluidd-Makros **ACEA__Switch_0..3**.
 ## Q & A
 
 **Warum zurück zum "Poop"-Drucken?**
-Muss man nicht. Der Hauptzweck dieser Software bleibt sauberes Filament-Handling, nicht Farbwechsel-Druck. Keiner muss 1000-Farben-Drucke fahren, bei denen mehr Filament im Abfall landet als im Teil (und multiACE ist dafür nicht gemacht) - aber 2–4 zusätzliche Farben oben auf den normalen Multi-Material-Workflow sind nett, ohne großen Mehrabfall. Oder einfach Gold und Silber für einen CMYKW-Full-Spectrum-Druck dazupacken.
+Muss man nicht. Der Hauptzweck dieser Software bleibt sauberes Filament-Handling, nicht Farbwechsel-Druck. Keiner muss 1000-Farben-Drucke fahren, bei denen mehr Filament im Abfall landet als im Teil (und multiACE ist dafür nicht gemacht) - aber 1-12 zusätzliche Farben oben auf den normalen Multi-Material-Workflow sind nett, ohne großen Mehrabfall. Oder einfach Gold und Silber für einen CMYKW-Full-Spectrum-Druck dazupacken.
 
 **Du nutzt immer noch Tip-Forming - warum keinen Cutter?**
 Tip-Forming ist nur eine von mehreren ACE/U1-Load-Unload-Eigenheiten. Der erste Ansatz ist hier, sie per Software zu lösen: Sensor-Read-Retries, gehärtete Recovery-Pfade etc. Wer einen physischen Cutter bauen will - ich schreibe gerne die Routinen dafür, einfach melden. Und falls doch mal was schiefgeht, kann man immer noch zum Drucker gehen, von Hand sortieren und Resume drücken.
