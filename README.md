@@ -101,7 +101,7 @@ Use the Fluidd macros **ACEA__Switch_0..3** to switch between ACE units.
 ## Q & A
 
 **Why go back to "poop" printing?**
-You don't have to. The main goal of this software is still clean filament handling, not color-swap printing. You don't need to produce 1000-color swap prints that poop out more filament than the part weighs (and mulitACE isn't designed for that) - but adding 4-16 extra colors on top of standard multi-material work is nice without much added waste. Or just adding Gold and Silver to your CMYKW Full Spectrum print.
+You don't have to. The main goal of this software is still clean filament handling, not color-swap printing. You don't need to produce 1000-color swap prints that poop out more filament than the part weighs (and mulitACE isn't designed for that) - but adding 1-12 extra colors on top of standard multi-material work is nice without much added waste. Or just adding Gold and Silver to your CMYKW Full Spectrum print.
 
 **You still use tip forming - why not a cutter?**
 Tip forming is one of several ACE/U1 load-unload quirks. The first approach here is to solve them in software: sensor-reading retries, hardened recovery paths, changes to tip forming. If you want to build a physical cutter, I'll gladly build the routines for it - get in touch. And if something does fail, you can still walk to the printer, sort it out by hand, and hit resume.
