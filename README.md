@@ -1,10 +1,5 @@
 # mUlt1ACE
 
-Updates (past release)  (will be addressed in the next release)
-- If the software is installed without an ACE connected, the ACE_MODE_NORMAL macro must be run before using the printer.
-- Uninstalling leaves ace.py in the config folder. However, the file will not be loaded since it has been removed from printer.cfg.
-
-
 ## What's new in 0.81b
 
 USB-level misbehaviour related to the ACE Pro's internal reset cycle could cause sporadic failures mid-print when switching between ACEs on every toolchange. This release works around it by keeping a single connection to the ACE that was active when the print started — the *start ACE* — and never disconnecting from it for the duration of the print.
@@ -191,7 +186,7 @@ Before installing multiACE, ensure the following:
 2. **Enable Root Access** - On the Snapmaker display, go to Settings > About > tap firmware version 10 times to unlock Advanced Mode, then enable Root Access
 3. **Enable SSH** - Connect via SSH or serial console and run:
    ```
-   touch /oem/.debug
+   touch /home/lava/.oem_debug
    ```
    After reboot, Wi-Fi password needs to be re-entered on the display. SSH is then available at `root@<printer-ip>`
 4. **Verify SSH** - Connect from your computer:
@@ -393,34 +388,6 @@ If things get out of sync (wrong filament displayed, unexpected behavior), reset
 
 ### Serial errors on console
 - Serial errors during ACE switch are logged silently. If errors persist, check USB cables.
-
-### Serial errors on console
-- Serial errors during ACE switch are logged silently. If errors persist, check USB cables.
-
-### Reporting issues
-
-When reporting a problem, please include the following logs from your printer. They are essential for diagnosing the issue:
-
-1. **multiACE state log** — per-action audit trail (toolchanges, loads, unloads, FA events):
-   ```
-   cat /home/lava/printer_data/logs/multiace_state.log
-   ```
-2. **multiACE USB log** — serial connect/disconnect and scan events:
-   ```
-   cat /home/lava/printer_data/logs/multiace_usb.log
-   ```
-3. **Klipper log** — the last ~200 lines around the time of the issue:
-   ```
-   tail -200 /home/lava/printer_data/logs/klippy.log
-   ```
-
-Also mention:
-- **Time of error** — exact timestamp so we can find it in the logs
-- **What you did** — which button / macro / gcode you triggered
-- **What happened before** — was this mid-print, during load, after a restart, etc.
-- **Expected behavior** — what should have happened instead
-- How many ACE units you have connected
-- Whether your spools have RFID tags or not
 
 ## Roadmap
 

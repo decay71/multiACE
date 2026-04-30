@@ -1986,8 +1986,15 @@ class BunnyAce:
 
         try:
             import subprocess
-            subprocess.Popen(['bash', script, file_mode],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            result = subprocess.run(['bash', script, file_mode],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=30)
+            if result.returncode != 0:
+                raise gcmd.error(
+                    '[multiACE] Mode switch script failed (rc=%d): %s' % (
+                        result.returncode, result.stderr.decode('utf-8', 'replace')))
+        except subprocess.TimeoutExpired:
+            raise gcmd.error('[multiACE] Mode switch script timed out after 30s')
         except Exception as e:
             raise gcmd.error('[multiACE] Failed to run mode switch script: %s' % str(e))
 

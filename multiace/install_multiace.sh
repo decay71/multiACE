@@ -54,15 +54,21 @@ done
 log "Target directories verified"
 
 # --- Backup current files (only if backup doesn't exist yet) ---
+# chmod 644 on the backups so the Klipper user (lava) can read them
+# during a SET_ACE_MODE MODE=normal swap. Without this, a default
+# umask of 077 left the backups mode 600 root-only and the bash cp
+# from Klipper subprocess silently failed back to ace state.
 log "Backing up current files..."
 for f in "filament_feed.py" "filament_switch_sensor.py"; do
     if [ -f "$EXTRAS_DIR/$f" ] && [ ! -f "$EXTRAS_DIR/${f%.py}_pre_multiace.py" ]; then
         cp "$EXTRAS_DIR/$f" "$EXTRAS_DIR/${f%.py}_pre_multiace.py"
+        chmod 644 "$EXTRAS_DIR/${f%.py}_pre_multiace.py"
         log "  Backed up $f -> ${f%.py}_pre_multiace.py"
     fi
 done
 if [ -f "$KINEMATICS_DIR/extruder.py" ] && [ ! -f "$KINEMATICS_DIR/extruder_pre_multiace.py" ]; then
     cp "$KINEMATICS_DIR/extruder.py" "$KINEMATICS_DIR/extruder_pre_multiace.py"
+    chmod 644 "$KINEMATICS_DIR/extruder_pre_multiace.py"
     log "  Backed up extruder.py -> extruder_pre_multiace.py"
 fi
 if [ -f "$CONFIG_DIR/ace.cfg" ] && [ ! -f "$CONFIG_DIR/ace_pre_multiace.cfg" ]; then
