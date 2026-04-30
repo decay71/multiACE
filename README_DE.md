@@ -1,6 +1,8 @@
 # mUlt1ACE
 
-## Was ist neu in 0.81b
+## Was ist neu in 0.82b
+
+Nomal Modus funktioniert wieder.
 
 USB-Fehlverhalten in Verbindung mit dem internen Reset-Zyklus des ACE Pro konnte sporadische Fehler mitten im Druck verursachen wenn bei jedem Toolchange zwischen ACEs umgeschaltet wurde. Dieses Release umgeht das Problem indem es eine einzige Verbindung zu dem ACE hält der beim Druckstart aktiv war — dem *Start-ACE* — und sie für die gesamte Druckdauer nie trennt.
 
