@@ -1,5 +1,7 @@
 # mUlt1ACE
 
+# DIESE VERSION HAT EIN GROESSERES FEED ASSIST PROBLEM, LEIDER ZU SPÄT BEMERKT, ABSCHALTEN ODER ÄLTERE VERSION BENUTZEN, HOTFIX KOMMT!
+
 ## Was ist neu in multiACE 0.90b "Vibrant Fungi"
 
 **Das ist KEINE AMS-Lösung mit tausenden zuverlässigen Swaps, und ich glaube auch nicht, dass sie das jemals sein wird — aber sie pausiert, wenn etwas schief geht, sodass du das Problem lösen und fortfahren kannst.**
