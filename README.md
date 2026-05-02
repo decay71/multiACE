@@ -2,7 +2,7 @@
 
 **Hotfix 1 out - solves FA problems with initial release.
 
-## What's new in multiACE 0.90b "Vibrant Fungi"
+## What's new in multiACE 0.91b "Vibrant Fungi"
 
 **This is NO AMS-like solution with 1000s of reliable swaps, and I don't think it ever will be — but it recovers to a pause if it fails, so you can solve the problem and continue.**
 
