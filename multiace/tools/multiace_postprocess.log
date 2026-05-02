@@ -1,39 +1,30 @@
 ============================================================
 multiACE plan
 ============================================================
-Colors: 7   Toolchanges: 462   Mid-print swaps: 225 (~855.0 min)
+Colors: 6   Toolchanges: 253   Mid-print swaps: 67 (~254.6 min)
 
 Slicer Loadout:
-  ACE 0 Slot 0  T0   Black (#161616)  (99x)
-  ACE 0 Slot 1  T1   Yellow (#FFF144)  (9x)
-  ACE 0 Slot 3  T3   DarkBlue (#0A2989)  (57x)
-  ACE 1 Slot 0  T4   Red (#C12E1F)  (20x)
-  ACE 1 Slot 2  T6   Gray (#7D6556)  (58x)
-  ACE 1 Slot 3  T7   White (#FFFFFF)  (94x)
-  ACE 2 Slot 0  T8   White (#FFDFEF)  (125x)
+  ACE 0 Slot 0  T0   Cyan (#00C1C1)  (63x)
+  ACE 0 Slot 1  T1   Red (#FF0000)  (28x)
+  ACE 0 Slot 2  T2   Green (#00D500)  (82x)
+  ACE 0 Slot 3  T3   Pink (#FF80C0)  (26x)
+  ACE 1 Slot 0  T4   White (#FFFFFF)  (35x)
+  ACE 1 Slot 1  T5   Black (#000000)  (19x)
 
---- OPTIMIZER: 24 swaps possible (201 fewer, 89% less) ---
+--- OPTIMIZER: 34 swaps possible (33 fewer, 49% less) ---
 Optimized Print Loadout:
-  ACE 0 Slot 0  T1   Yellow (#FFF144)  (primary, 9x)
-  ACE 0 Slot 1  T3   DarkBlue (#0A2989)  (primary, 57x)
-  ACE 0 Slot 2  T4   Red (#C12E1F)  (primary, 20x)
-  ACE 0 Slot 3  T8   White (#FFDFEF)  (primary, 125x)
-  ACE 1 Slot 0  T0   Black (#161616)  (swap, 99x)
-  ACE 1 Slot 1  T7   White (#FFFFFF)  (swap, 94x)
-  ACE 1 Slot 2  T6   Gray (#7D6556)  (swap, 58x)
+  ACE 0 Slot 0  T0   Cyan (#00C1C1)  (primary, 63x)
+  ACE 0 Slot 1  T1   Red (#FF0000)  (primary, 28x)
+  ACE 0 Slot 2  T2   Green (#00D500)  (primary, 82x)
+  ACE 0 Slot 3  T4   White (#FFFFFF)  (primary, 35x)
+  ACE 1 Slot 0  T3   Pink (#FF80C0)  (swap, 26x)
+  ACE 1 Slot 1  T5   Black (#000000)  (swap, 19x)
 
 Layer-only swap analysis:
-  Layers: 379   Max colors/layer: 4
-  Feasible: NO  (same-head conflict in 175 layer(s): layer 126 (head 0: T0, T8); layer 127 (head 0: T0, T8); layer 128 (head 0: T0, T8) +172 more)
-    Each head N can only hold one color at a time;
-    colors with the same N (where N = T%%4) compete:
-    head 0: T0, T4, T8, T12   head 1: T1, T5, T9, T13
-    head 2: T2, T6, T10, T14  head 3: T3, T7, T11, T15
-
-  No conflict-free remap found within 3 ACE budget.
-  Either reduce the number of colors or increase --aces.
+  Layers: 234   Max colors/layer: 5
+  Feasible: NO  (>4 distinct colors in some layer — needs mid-layer swaps)
 ============================================================
---- AUTO-REMAP applied: 225 swaps -> 24 (201 saved) ---
-T remap (old -> new): T0->T4, T1->T0, T3->T1, T4->T2, T6->T6, T7->T5, T8->T3
-Rewrite: 25 active ACE_SWAP_HEAD, 237 skipped, 11 swap-backs inserted
+--- AUTO-REMAP applied: 67 swaps -> 34 (33 saved) ---
+T remap (old -> new): T0->T0, T1->T1, T2->T2, T3->T4, T4->T3, T5->T5
+Rewrite: 34 active ACE_SWAP_HEAD, 27 skipped, 16 swap-backs inserted
 Auto-load: injected ACE_SWAP_HEAD for 4 head(s) before first T command

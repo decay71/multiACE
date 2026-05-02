@@ -10,10 +10,10 @@ import hashlib
 import serial
 from serial import SerialException
 
-MULTIACE_VERSION = "0.90b"
+MULTIACE_VERSION = "0.91b"
 MULTIACE_CODENAME = "Vibrant Fungi"
-MULTIACE_BUILD_TAG = "dcef236"
-MULTIACE_BUNDLE_SHA1 = "35bea5c"
+MULTIACE_BUILD_TAG = "fceb122"
+MULTIACE_BUNDLE_SHA1 = "a56bab3"
 
 def _setup_file_logger(name, filepath, max_bytes=1048576, backup_count=3):
 
@@ -205,6 +205,8 @@ class BunnyAce:
             'multiace_telemetry', os.path.join(log_dir, 'multiace_telemetry.log'))
         self._wiggle_log = _setup_file_logger(
             'multiace_wiggle', os.path.join(log_dir, 'multiace_wiggle.log'))
+        self._fa_log = _setup_file_logger(
+            'multiace_fa', os.path.join(log_dir, 'multiace_fa.log'))
         self._state_debug_enabled = config.getboolean('state_debug', False)
         self._usb_debug_enabled = config.getboolean('usb_debug', True)
         self._apply_log_levels()
@@ -213,6 +215,12 @@ class BunnyAce:
         self._fa_last_active_ts = time.monotonic()
         self._fa_gap_threshold_ms = config.getint(
             'fa_gap_threshold_ms', 3000, minval=100)
+        self._fa_settle_after_stop = config.getfloat(
+            'fa_settle_after_stop', 1.5, minval=0.0, maxval=10.0)
+        self._fa_start_retries = config.getint(
+            'fa_start_retries', 5, minval=0, maxval=30)
+        self._fa_start_retry_delay = config.getfloat(
+            'fa_start_retry_delay', 0.5, minval=0.05, maxval=5.0)
 
         self._usb_stats = {
             'scans': 0,
@@ -363,6 +371,9 @@ class BunnyAce:
         self.gcode.register_command(
             'MACE_LOG', self.cmd_MACE_LOG,
             desc=self.cmd_MACE_LOG_help)
+        self.gcode.register_command(
+            'ACE_FA_TEST', self.cmd_ACE_FA_TEST,
+            desc=self.cmd_ACE_FA_TEST_help)
 
     def _refresh_ace_devices(self, context):
 
@@ -438,6 +449,7 @@ class BunnyAce:
         gated = logging.DEBUG if self._state_debug_enabled else off
         self._telemetry_log.setLevel(gated)
         self._wiggle_log.setLevel(gated)
+        self._fa_log.setLevel(logging.DEBUG if self.fa_debug else logging.WARNING)
 
     def _handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
@@ -619,11 +631,10 @@ class BunnyAce:
         return self.retract_length
 
     def _fa_trace(self, msg):
-        """Log FA/load transitions when fa_debug is enabled. Helps diagnose
-        flakey first-load failures or unexpected FA suppression by showing
-        every gate/context transition and call site."""
-        if self.fa_debug:
-            logging.info('[multiACE-FA] ' + msg)
+        """Log FA/load transitions to multiace_fa.log. _fa_log level is
+        gated by fa_debug (DEBUG when on, WARNING when off) so trace
+        info is silent in production but failures persist."""
+        self._fa_log.info(msg)
 
     def _on_print_start(self, *args):
         if self._ace_mode == 'multi':
@@ -1122,29 +1133,25 @@ class BunnyAce:
         msg_id = self._next_request_id_for(idx)
         cb_map = self._callback_maps.setdefault(idx, {})
 
-        if self.fa_debug:
-            method = request.get('method', '?')
-            params = request.get('params', {}) or {}
-            slot_repr = params.get('index', params.get('slot', '?'))
-            len_repr = params.get('length', '?')
-            speed_repr = params.get('speed', '?')
-            logging.info(
-                '[multiACE-req] SEND ACE %d id=%d method=%s slot=%s len=%s speed=%s'
-                % (idx, msg_id, method, slot_repr, len_repr, speed_repr))
-            original_cb = callback
-            def _traced_cb(self, response):
-                try:
-                    logging.info(
-                        '[multiACE-req] RESP ACE %d id=%s method=%s slot=%s '
-                        'code=%s msg=%s' % (
-                            idx, response.get('id', '?'), method, slot_repr,
-                            response.get('code', '?'), response.get('msg', '')))
-                except Exception:
-                    pass
-                original_cb(self=self, response=response)
-            cb_map[msg_id] = _traced_cb
-        else:
-            cb_map[msg_id] = callback
+        method = request.get('method', '?')
+        params = request.get('params', {}) or {}
+        slot_repr = params.get('index', params.get('slot', '?'))
+        len_repr = params.get('length', '?')
+        speed_repr = params.get('speed', '?')
+        self._fa_log.info(
+            'SEND ACE %d id=%d method=%s slot=%s len=%s speed=%s'
+            % (idx, msg_id, method, slot_repr, len_repr, speed_repr))
+        original_cb = callback
+        def _traced_cb(self, response):
+            try:
+                self._fa_log.info(
+                    'RESP ACE %d id=%s method=%s slot=%s code=%s msg=%s' % (
+                        idx, response.get('id', '?'), method, slot_repr,
+                        response.get('code', '?'), response.get('msg', '')))
+            except Exception:
+                pass
+            original_cb(self=self, response=response)
+        cb_map[msg_id] = _traced_cb
 
         request['id'] = msg_id
         self._send_request_to(idx, request)
@@ -1340,19 +1347,94 @@ class BunnyAce:
         if idx == self._active_device_index:
             self._feed_assist_index = slot
 
-        def callback(self, response):
-            if response.get('code', 0) != 0:
-                self.log_error(f"ACE[{idx}] Error starting feed_assist: {response.get('msg')}")
-            else:
-                logging.info('[multiACE] FA start_feed_assist ACK from ACE %d: %s' % (idx, response))
+        max_retries = self._fa_start_retries
+        retry_delay = self._fa_start_retry_delay
+        settle_delay = self._fa_settle_after_stop
 
-        try:
-            self.send_request_to(idx,
-                {"method": "start_feed_assist", "params": {"index": slot}},
-                callback)
-            logging.info('[multiACE] FA start_feed_assist SENT to ACE %d slot %d' % (idx, slot))
-        except Exception as e:
-            logging.info('[multiACE] send start_feed_assist to ACE %d failed: %s' % (idx, e))
+        def start_callback_factory(attempt):
+            def start_callback(self, response):
+                code = response.get('code', 0)
+                msg = (response.get('msg', '') or '').lower()
+                if not self._auto_feed_enabled:
+                    return
+                if self._feed_assist_per_ace.get(idx, -1) != slot:
+                    return
+                if code == 0 and (msg == 'success' or msg == ''):
+                    if attempt > 0:
+                        self._fa_log.warning(
+                            'start_feed_assist OK after %d retry(s): ACE %d slot %d'
+                            % (attempt, idx, slot))
+                    return
+                if msg == 'forbidden' and attempt < max_retries:
+                    next_attempt = attempt + 1
+                    self._fa_log.info(
+                        'start_feed_assist FORBIDDEN, retry %d/%d in %.1fs: ACE %d slot %d'
+                        % (next_attempt, max_retries, retry_delay, idx, slot))
+                    def _retry(eventtime):
+                        if not self._auto_feed_enabled:
+                            return self.reactor.NEVER
+                        if self._feed_assist_per_ace.get(idx, -1) != slot:
+                            return self.reactor.NEVER
+                        try:
+                            self.send_request_to(idx,
+                                {"method": "start_feed_assist", "params": {"index": slot}},
+                                start_callback_factory(next_attempt))
+                            self._fa_log.info(
+                                'start_feed_assist RETRY %d/%d sent: ACE %d slot %d'
+                                % (next_attempt, max_retries, idx, slot))
+                        except Exception as e:
+                            self.log_error(
+                                '[multiACE] FA start_feed_assist RETRY send failed: %s' % e)
+                            self._fa_log.error(
+                                'start_feed_assist RETRY send failed: %s' % e)
+                        return self.reactor.NEVER
+                    self.reactor.register_timer(
+                        _retry, self.reactor.monotonic() + retry_delay)
+                    return
+                final_msg = (
+                    '[multiACE] FA start_feed_assist FAILED after %d attempt(s) on ACE %d slot %d: '
+                    'code=%s msg=%s — this lane will NOT be fed; check that filament '
+                    'is loaded into the ACE slot'
+                    % (attempt + 1, idx, slot, code, response.get('msg', '')))
+                self.log_error(final_msg)
+                self._fa_log.error(final_msg)
+            return start_callback
+
+        def _send_start():
+            try:
+                self.send_request_to(idx,
+                    {"method": "start_feed_assist", "params": {"index": slot}},
+                    start_callback_factory(0))
+                logging.info('[multiACE] FA start_feed_assist SENT to ACE %d slot %d' % (idx, slot))
+            except Exception as e:
+                logging.info('[multiACE] send start_feed_assist to ACE %d failed: %s' % (idx, e))
+
+        if prev_slot != -1:
+            try:
+                self.send_request_to(idx,
+                    {"method": "stop_feed_assist", "params": {"index": prev_slot}},
+                    lambda *a, **kw: None)
+                logging.info('[multiACE] FA pre-start stop sent: ACE %d slot %d (before start slot %d, settle %.1fs)'
+                             % (idx, prev_slot, slot, settle_delay))
+            except Exception as e:
+                logging.info('[multiACE] pre-start stop_feed_assist failed: %s' % e)
+            def _delayed_start(eventtime):
+                if not self._auto_feed_enabled:
+                    self._fa_trace(
+                        'post-stop delayed start SUPPRESSED (gate closed): idx=%d slot=%d'
+                        % (idx, slot))
+                    return self.reactor.NEVER
+                if self._feed_assist_per_ace.get(idx, -1) != slot:
+                    self._fa_trace(
+                        'post-stop delayed start SUPPRESSED (slot changed): idx=%d expected=%d actual=%d'
+                        % (idx, slot, self._feed_assist_per_ace.get(idx, -1)))
+                    return self.reactor.NEVER
+                _send_start()
+                return self.reactor.NEVER
+            self.reactor.register_timer(
+                _delayed_start, self.reactor.monotonic() + settle_delay)
+        else:
+            _send_start()
 
     def _stop_feed_assist_on(self, idx):
         prev_slot = self._feed_assist_per_ace.get(idx, -1)
@@ -3752,6 +3834,198 @@ class BunnyAce:
     def cmd_MACE_LOG(self, gcmd):
         msg = gcmd.get('MSG', '')
         logging.info('[mace_log] %s', msg)
+
+    cmd_ACE_FA_TEST_help = (
+        '[multiACE] Stress-test FA stop+start across slots without a print. '
+        'Usage: ACE_FA_TEST [ACE=0] [SCENARIO=cycle|pingpong|burst|matrix] '
+        '[SLOTS=0,1,2,3] [DELAY=0.5] [REPEATS=2] [INTER=0] '
+        '[RETRIES=0] [RETRY_DELAY=0.2]'
+    )
+    def cmd_ACE_FA_TEST(self, gcmd):
+        ace_idx = gcmd.get_int('ACE', 0, minval=0)
+        scenario = gcmd.get('SCENARIO', 'cycle').lower()
+        slots_str = gcmd.get('SLOTS', '0,1,2,3')
+        delay = gcmd.get_float('DELAY', 0.5, minval=0.05)
+        repeats = gcmd.get_int('REPEATS', 2, minval=1, maxval=200)
+        inter = gcmd.get_float('INTER', 0.0, minval=0.0)
+        retries = gcmd.get_int('RETRIES', 0, minval=0, maxval=100)
+        retry_delay = gcmd.get_float('RETRY_DELAY', 0.2, minval=0.05)
+
+        try:
+            slots = [int(s.strip()) for s in slots_str.split(',') if s.strip()]
+        except ValueError:
+            raise gcmd.error('[ACE_FA_TEST] invalid SLOTS=%r' % slots_str)
+        for s in slots:
+            if not (0 <= s <= 3):
+                raise gcmd.error('[ACE_FA_TEST] slot %d out of range 0..3' % s)
+
+        if ace_idx >= len(self._ace_devices) or not self._connected_per_ace.get(ace_idx, False):
+            raise gcmd.error('[ACE_FA_TEST] ACE %d not connected' % ace_idx)
+
+        steps = []
+        if scenario == 'cycle':
+            seq = list(slots) * repeats
+            prev = None
+            for s in seq:
+                if prev is not None:
+                    steps.append(('stop', prev))
+                steps.append(('start', s))
+                prev = s
+            if prev is not None:
+                steps.append(('stop', prev))
+        elif scenario == 'pingpong':
+            if len(slots) < 2:
+                raise gcmd.error('[ACE_FA_TEST] pingpong needs at least 2 slots')
+            seq = []
+            for r in range(repeats):
+                for s in slots:
+                    seq.append(s)
+            prev = None
+            for s in seq:
+                if prev is not None:
+                    steps.append(('stop', prev))
+                steps.append(('start', s))
+                prev = s
+            if prev is not None:
+                steps.append(('stop', prev))
+        elif scenario == 'burst':
+            for s in slots:
+                for _ in range(repeats):
+                    steps.append(('start', s))
+                    steps.append(('stop', s))
+        elif scenario == 'matrix':
+            for r in range(repeats):
+                for f in slots:
+                    for t in slots:
+                        if t == f:
+                            continue
+                        steps.append(('start', f))
+                        steps.append(('stop', f))
+                        steps.append(('start', t))
+                        steps.append(('stop', t))
+        else:
+            raise gcmd.error('[ACE_FA_TEST] unknown SCENARIO=%s (use cycle|pingpong|burst|matrix)' % scenario)
+
+        results = {}
+        retry_counts = {}
+
+        def is_forbidden(response):
+            if not response:
+                return False
+            msg = response.get('msg', '') or ''
+            return msg.lower() == 'forbidden'
+
+        def make_callback(step_idx, action, slot, attempt):
+            def cb(self=None, response=None, **kw):
+                code = response.get('code', 0) if response else None
+                msg = response.get('msg', '') if response else ''
+                results.setdefault(step_idx, []).append((attempt, action, slot, code, msg))
+                logging.info(
+                    '[ACE_FA_TEST] RESP step=%d attempt=%d %s slot=%d code=%s msg=%s'
+                    % (step_idx, attempt, action, slot, code, msg))
+                if action == 'start' and is_forbidden(response) and attempt < retries:
+                    next_attempt = attempt + 1
+                    retry_counts[step_idx] = next_attempt
+                    def retry_send(eventtime):
+                        try:
+                            self.send_request_to(ace_idx,
+                                {"method": "start_feed_assist", "params": {"index": slot}},
+                                make_callback(step_idx, action, slot, next_attempt))
+                            logging.info(
+                                '[ACE_FA_TEST] RETRY step=%d attempt=%d %s slot=%d (after FORBIDDEN)'
+                                % (step_idx, next_attempt, action, slot))
+                        except Exception as e:
+                            logging.info(
+                                '[ACE_FA_TEST] RETRY step=%d attempt=%d %s slot=%d failed: %s'
+                                % (step_idx, next_attempt, action, slot, e))
+                        return self.reactor.NEVER
+                    self.reactor.register_timer(
+                        retry_send, self.reactor.monotonic() + retry_delay)
+            return cb
+
+        gcmd.respond_info(
+            '[ACE_FA_TEST] ACE=%d scenario=%s slots=%s delay=%.2fs repeats=%d steps=%d '
+            'inter=%.2fs retries=%d retry_delay=%.2fs — running, watch klippy.log'
+            % (ace_idx, scenario, slots, delay, repeats, len(steps), inter,
+               retries, retry_delay))
+
+        start_t = self.reactor.monotonic()
+        for i, (action, slot) in enumerate(steps):
+            t = start_t + (i + 1) * delay + i * inter
+
+            def make_step(step_idx, action, slot):
+                method = 'start_feed_assist' if action == 'start' else 'stop_feed_assist'
+                def fire(eventtime):
+                    try:
+                        self.send_request_to(ace_idx,
+                            {"method": method, "params": {"index": slot}},
+                            make_callback(step_idx, action, slot, 0))
+                        logging.info('[ACE_FA_TEST] SENT step=%d attempt=0 %s slot=%d' % (step_idx, action, slot))
+                    except Exception as e:
+                        logging.info('[ACE_FA_TEST] SEND step=%d %s slot=%d failed: %s' % (step_idx, action, slot, e))
+                    return self.reactor.NEVER
+                return fire
+
+            self.reactor.register_timer(make_step(i, action, slot), t)
+
+        retry_budget = retries * retry_delay if retries else 0.0
+        summary_t = (start_t + (len(steps) + 1) * delay + len(steps) * inter
+                     + retry_budget + 1.0)
+
+        def summary(eventtime):
+            sent = len(steps)
+            recv_steps = len(results)
+            no_ack_total = sent - recv_steps
+            start_steps = [(i, a, s) for i, (a, s) in enumerate(steps) if a == 'start']
+            attempts_hist = {}
+            failed = []
+            no_ack_starts = []
+            for i, _, slot in start_steps:
+                attempts = results.get(i, [])
+                if not attempts:
+                    no_ack_starts.append((i, slot))
+                    continue
+                final = attempts[-1]
+                final_msg = (final[4] or '').lower()
+                n_attempts = len(attempts)
+                if final_msg == 'success':
+                    attempts_hist[n_attempts] = attempts_hist.get(n_attempts, 0) + 1
+                else:
+                    failed.append((i, slot, n_attempts, final_msg or 'empty'))
+
+            n_starts = len(start_steps)
+            n_ok = sum(attempts_hist.values())
+            max_att = max(attempts_hist.keys()) if attempts_hist else 0
+
+            self.log_always(
+                '[ACE_FA_TEST] DONE: %d starts | %d ok | %d failed | %d no_ack'
+                % (n_starts, n_ok, len(failed), len(no_ack_starts)))
+            if attempts_hist:
+                hist_str = '  '.join(
+                    '%dx=%d' % (k, attempts_hist[k])
+                    for k in sorted(attempts_hist.keys()))
+                self.log_always(
+                    '[ACE_FA_TEST]   attempts: %s   max=%d'
+                    % (hist_str, max_att))
+            if failed:
+                self.log_always(
+                    '[ACE_FA_TEST]   FAILED (still %s after retries):' %
+                    ('FORBIDDEN' if any(f[3] == 'forbidden' for f in failed) else 'non-success'))
+                for step_i, slot, n_att, msg in failed[:10]:
+                    self.log_always(
+                        '[ACE_FA_TEST]     step=%d slot=%d (%d attempts) → %s'
+                        % (step_i, slot, n_att, msg))
+                if len(failed) > 10:
+                    self.log_always('[ACE_FA_TEST]     ... %d more' % (len(failed) - 10))
+            if no_ack_starts:
+                self.log_always(
+                    '[ACE_FA_TEST]   NO_ACK (firmware never responded):')
+                for step_i, slot in no_ack_starts[:10]:
+                    self.log_always(
+                        '[ACE_FA_TEST]     step=%d slot=%d' % (step_i, slot))
+            return self.reactor.NEVER
+
+        self.reactor.register_timer(summary, summary_t)
 
     def _audit_state(self, action, params=None):
 
