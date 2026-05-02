@@ -1,6 +1,6 @@
 # mUlt1ACE
 
-# THIS VERSION HAS SOME FEED ASSIST ISSUES, I JUST DISCOVERD, TURN OFF OR USE OLDER VERSION, HOTFIX COMING!
+## Hotfix 1 out - solves FA problems with initial release
 
 ## What's new in multiACE 0.90b "Vibrant Fungi"
 
