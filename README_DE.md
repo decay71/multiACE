@@ -1,6 +1,6 @@
 # mUlt1ACE
 
-**Hotfix 1 - löst FA probleme.
+Hotfix 1 - löst FA probleme.
 
 ## Was ist neu in multiACE 0.90b "Vibrant Fungi"
 
