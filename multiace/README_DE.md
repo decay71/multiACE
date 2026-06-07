@@ -189,7 +189,11 @@ Vor der Installation von multiACE sicherstellen:
    touch /home/lava/.oem_debug
    ```
    Nach dem Neustart muss das WLAN-Passwort am Display neu eingegeben werden. SSH ist dann unter `root@<drucker-ip>` erreichbar
-4. **SSH prüfen** - Vom Computer verbinden:
+4. **Persistenz aktivieren (Firmware 1.4+ / PAXX)** - Ab Firmware 1.4 ist das Root-Dateisystem ein Overlay, das bei **jedem Neustart** auf den Auslieferungszustand zurückgesetzt wird, sofern nicht die Datei `/oem/.debug` existiert. Ohne sie wird das installierte multiACE-Plugin beim nächsten Aus-/Einschalten gelöscht und Klipper startet nicht mehr (`Section 'ace' is not a valid config section`). Die Datei einmalig anlegen - sie liegt auf der persistenten `/oem`-Partition und ist **nicht** dasselbe wie das SSH-Flag `/home/lava/.oem_debug` (das selbst im gelöschten Overlay liegt):
+   ```
+   touch /oem/.debug
+   ```
+5. **SSH prüfen** - Vom Computer verbinden:
    ```
    ssh root@<drucker-ip>
    ```
@@ -212,9 +216,12 @@ Vor der Installation von multiACE sicherstellen:
 
 Für manuelle Installation:
 
-1. Klipper-Extras auf den Drucker kopieren:
+1. Klipper-Extras auf den Drucker kopieren (`ace.py` importiert `ace_protocol*`, daher müssen alle drei kopiert werden, sonst schlägt der Import in Klipper fehl):
    ```
    cp klipper/extras/ace.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol_v1.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol_v2.py /home/lava/klipper/klippy/extras/
    cp klipper/extras/filament_feed_ace.py /home/lava/klipper/klippy/extras/
    cp klipper/extras/filament_switch_sensor_ace.py /home/lava/klipper/klippy/extras/
    cp klipper/kinematics/extruder_ace.py /home/lava/klipper/klippy/kinematics/

@@ -66,6 +66,59 @@ for d in "$EXTRAS_DIR" "$KINEMATICS_DIR" "$CONFIG_DIR"; do
     fi
 done
 log "Target directories verified"
+# --------------------------------------------------------------------------
+# Persistence pre-check  (PAXX / Snapmaker firmware >= 1.4, overlayfs rootfs)
+#
+# On these firmwares "/" is an overlayfs whose writable upper layer is reset on
+# EVERY boot by /etc/init.d/S01aoverlayfs, UNLESS the marker file /oem/.debug
+# exists:
+#
+#     # /etc/init.d/S01aoverlayfs
+#     if [ ! -f /oem/.debug ]; then
+#         rm -rf /oem/overlay/*        # <- wipes /home/lava/klipper back to stock
+#     fi
+#
+# The multiACE Klipper plugin lives under /home/lava/klipper (inside the
+# overlay), so without /oem/.debug it is deleted on the next reboot - while the
+# config under /home/lava/printer_data (a separate, persistent partition)
+# survives. The printer then boots straight into:
+#
+#     ConfigError: Section 'ace' is not a valid config section
+#
+# This is exactly the "install verifies OK, then Klipper won't start after a
+# reboot" symptom. So: if this firmware uses that overlay-reset mechanism and
+# /oem/.debug is missing, abort BEFORE changing anything and tell the user how
+# to enable persistence. We deliberately do NOT create /oem/.debug
+# automatically - it turns off the firmware's boot-time overlay reset (a safety
+# feature), so enabling it must be an explicit, informed choice by the user.
+# --------------------------------------------------------------------------
+OVERLAY_INIT="/etc/init.d/S01aoverlayfs"
+if [ -f "$OVERLAY_INIT" ] && grep -q '/oem/\.debug' "$OVERLAY_INIT" 2>/dev/null; then
+    if [ ! -f /oem/.debug ]; then
+        log ""
+        log "============================================================"
+        log "  INSTALL ABORTED - PERSISTENCE NOT ENABLED"
+        log ""
+        log "  This firmware (PAXX / Snapmaker 1.4+) resets the Klipper"
+        log "  install to stock on EVERY reboot unless /oem/.debug exists."
+        log "  Installing now would appear to work, then Klipper would"
+        log "  fail to start after the next power-cycle with:"
+        log "      Section 'ace' is not a valid config section"
+        log ""
+        log "  Fix - enable persistence once, then re-run the installer:"
+        log ""
+        log "      touch /oem/.debug"
+        log "      bash $0 $*"
+        log ""
+        log "  /oem/.debug lives on the persistent /oem partition, so it"
+        log "  only needs to be created once. It disables the firmware's"
+        log "  boot-time overlay wipe so changes under /home/lava survive."
+        log "============================================================"
+        log ""
+        exit 1
+    fi
+    log "Persistence flag /oem/.debug present - overlay changes will survive reboot"
+fi
 log "Backing up current files..."
 for f in "filament_feed.py" "filament_switch_sensor.py"; do
     if [ -f "$EXTRAS_DIR/$f" ] && [ ! -f "$EXTRAS_DIR/${f%.py}_pre_multiace.py" ]; then

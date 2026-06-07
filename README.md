@@ -385,9 +385,12 @@ Before installing multiACE, ensure the following:
 
 If you prefer manual installation:
 
-1. Copy Klipper extras to the printer:
+1. Copy Klipper extras to the printer (`ace.py` imports `ace_protocol*`, so all three must be copied or Klipper fails on import):
    ```
    cp klipper/extras/ace.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol_v1.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol_v2.py /home/lava/klipper/klippy/extras/
    cp klipper/extras/filament_feed_ace.py /home/lava/klipper/klippy/extras/
    cp klipper/extras/filament_switch_sensor_ace.py /home/lava/klipper/klippy/extras/
    cp klipper/kinematics/extruder_ace.py /home/lava/klipper/klippy/kinematics/

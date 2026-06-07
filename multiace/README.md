@@ -189,7 +189,11 @@ Before installing multiACE, ensure the following:
    touch /home/lava/.oem_debug
    ```
    After reboot, Wi-Fi password needs to be re-entered on the display. SSH is then available at `root@<printer-ip>`
-4. **Verify SSH** - Connect from your computer:
+4. **Enable persistence (firmware 1.4+ / PAXX)** - On firmware 1.4 and newer the root filesystem is an overlay that is reset to stock on **every reboot** unless `/oem/.debug` exists. Without it the installed multiACE plugin is wiped on the next power-cycle and Klipper fails to start with `Section 'ace' is not a valid config section`. Create the flag once - it lives on the persistent `/oem` partition and is **not** the same as the SSH flag `/home/lava/.oem_debug` (which is itself inside the wiped overlay):
+   ```
+   touch /oem/.debug
+   ```
+5. **Verify SSH** - Connect from your computer:
    ```
    ssh root@<printer-ip>
    ```
@@ -212,9 +216,12 @@ Before installing multiACE, ensure the following:
 
 If you prefer manual installation:
 
-1. Copy Klipper extras to the printer:
+1. Copy Klipper extras to the printer (`ace.py` imports `ace_protocol*`, so all three must be copied or Klipper fails on import):
    ```
    cp klipper/extras/ace.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol_v1.py /home/lava/klipper/klippy/extras/
+   cp klipper/extras/ace_protocol_v2.py /home/lava/klipper/klippy/extras/
    cp klipper/extras/filament_feed_ace.py /home/lava/klipper/klippy/extras/
    cp klipper/extras/filament_switch_sensor_ace.py /home/lava/klipper/klippy/extras/
    cp klipper/kinematics/extruder_ace.py /home/lava/klipper/klippy/kinematics/
