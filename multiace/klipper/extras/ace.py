@@ -5176,6 +5176,26 @@ class MultiAce:
                 'context': fa_prev_context,
             })
 
+            # Issue #35: a head swap walks the Snapmaker state machine to IDLE and
+            # never restores PRINTING, which blocks resume-after-pause and silently
+            # disables defect/spaghetti detection (it only runs while main_state is
+            # PRINTING). Restore PRINTING when mid-print. Wrapped so a state-manager
+            # hiccup can never disrupt the swap's own cleanup.
+            try:
+                msm = self.printer.lookup_object('machine_state_manager', None)
+                ps = self.printer.lookup_object('print_stats', None)
+                if msm is not None and ps is not None:
+                    et = self.printer.get_reactor().monotonic()
+                    in_print = ps.get_status(et).get('state') in ('printing', 'paused')
+                    if in_print and msm.get_status(et).get('main_state') == 0:
+                        self.gcode.run_script_from_command(
+                            'SET_MAIN_STATE MAIN_STATE=PRINTING ACTION=IDLE')
+                        logging.info(
+                            '[multiACE] #35: restored main_state=PRINTING after swap')
+            except Exception:
+                logging.exception(
+                    '[multiACE] #35: main_state restore after swap failed')
+
     def _switch_ace_for_head_target(self, ace_index):
         if ace_index == self._active_device_index:
             self._audit_state('SWITCH_TARGET_NOOP', {
