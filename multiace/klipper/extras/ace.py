@@ -17,11 +17,11 @@ from .ace_protocol_v2 import AceProtocolV2
 
 KNOWN_PROTOCOLS = (AceProtocolV1, AceProtocolV2)
 
-MULTIACE_VERSION = "0.97.2b"
+MULTIACE_VERSION = "0.97.3b"
 MULTIACE_CODENAME = "Kindred Allies"
 
-MULTIACE_BUILD_TAG = "6335ce7"
-MULTIACE_BUNDLE_SHA1 = "d27478b"
+MULTIACE_BUILD_TAG = "e2d2beb"
+MULTIACE_BUNDLE_SHA1 = "0e6ee1d"
 
 SAFE_PTC_MATERIALS = set([
     'PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'PVA',
@@ -95,6 +95,9 @@ class AceException(Exception):
 GATE_UNKNOWN = -1
 GATE_EMPTY = 0
 GATE_AVAILABLE = 1
+
+V2_FA_RUNNING_STATES = (
+    'assisting', 'rollback_assisting', 'feeding', 'rollback', 'preloading')
 
 FA_HOMING_SETTLE = 0.5
 
@@ -287,6 +290,7 @@ class MultiAce:
         self._serials = {}
         self._connected_per_ace = {}
         self._serial_failed_per_ace = {}
+        self._reconnecting_per_ace = {}
         self._info_per_ace = {}
 
         self._slot_overrides = {}
@@ -319,6 +323,7 @@ class MultiAce:
 
         self._v2_velocity_timers = {}
         self._v2_velocity_state = {}
+        self._v2_fa_rearm_pending = set()
         self._fa_intent_ts = {}
 
         self._v2_feed_check_check_length = config.getint(
@@ -1265,6 +1270,73 @@ class MultiAce:
         info is silent in production but failures persist."""
         self._fa_log.info(msg)
 
+    def _is_v2_idx(self, idx):
+        proto = self._protocols.get(idx)
+        return proto is not None and getattr(proto, 'NAME', None) == 'v2'
+
+    def _v2_get_slot_status(self, idx, slot):
+        try:
+            slot = int(slot)
+        except (TypeError, ValueError):
+            return None
+        info = self._info_per_ace.get(idx) or {}
+        for s in info.get('slots') or []:
+            if s.get('index') == slot:
+                return s.get('slot_status')
+        vstate = self._v2_velocity_state.get(idx) or {}
+        return (vstate.get('last_slot_statuses') or {}).get(slot)
+
+    def _clear_fa_cache_for(self, idx, slot):
+        if self._feed_assist_per_ace.get(idx, -1) == slot:
+            self._feed_assist_per_ace[idx] = -1
+        if idx == self._active_device_index and self._feed_assist_index == slot:
+            self._feed_assist_index = -1
+
+    def _v2_schedule_fa_rearm(self, idx, slot, reason, delay=0.05):
+        if not self._is_v2_idx(idx):
+            return False
+        try:
+            slot = int(slot)
+        except (TypeError, ValueError):
+            return False
+        key = (idx, slot)
+        if key in self._v2_fa_rearm_pending:
+            return False
+        self._v2_fa_rearm_pending.add(key)
+
+        def _rearm(eventtime):
+            self._v2_fa_rearm_pending.discard(key)
+            if not self._auto_feed_enabled:
+                return self.reactor.NEVER
+            if self._fa_context not in ('print', 'load'):
+                return self.reactor.NEVER
+            if getattr(self, '_v2_active_rev_assist', False):
+                return self.reactor.NEVER
+            try:
+                cur_ext = self.toolhead.get_extruder()
+                cur_head = getattr(cur_ext, 'extruder_index',
+                                   getattr(cur_ext, 'extruder_num', None))
+                src = self._head_source.get(cur_head) if cur_head is not None else None
+            except Exception:
+                src = None
+            if src is None or src.get('ace_index') != idx or src.get('slot') != slot:
+                return self.reactor.NEVER
+            status = self._v2_get_slot_status(idx, slot)
+            if status in V2_FA_RUNNING_STATES:
+                return self.reactor.NEVER
+            self._fa_log.info(
+                '[v2-recover] stale FA cache, rearming ACE %d slot %d reason=%s status=%s'
+                % (idx, slot, reason, status if status is not None else 'unknown'))
+            self._clear_fa_cache_for(idx, slot)
+            try:
+                self._arm_fa_for(idx, slot)
+            except Exception as e:
+                logging.info('[multiACE] V2 FA rearm failed: %s' % e)
+            return self.reactor.NEVER
+
+        self.reactor.register_timer(_rearm, self.reactor.monotonic() + delay)
+        return True
+
     def _on_print_start(self, *args):
         if self._ace_mode == 'multi':
 
@@ -1312,6 +1384,8 @@ class MultiAce:
                         head=head, ace=self._disp(ace_idx)))
         self._auto_feed_enabled = True
         self._fa_context = 'print'
+        self._serial_failed_pause_sent = False
+        self._reopen_failed_aces_on_resume()
         logging.info('[multiACE] Print started - auto-feed enabled')
         self._fa_trace('gate OPEN (context=print) via _on_print_start')
 
@@ -1564,7 +1638,7 @@ class MultiAce:
             pass
         return True
 
-    def _open_ace(self, idx):
+    def _open_ace(self, idx, on_ready=None):
         if idx >= len(self._ace_devices):
             return False
         serial_path = self._ace_devices[idx]
@@ -1695,13 +1769,32 @@ class MultiAce:
                         % (idx, e))
             handshake_requests = protocol.initial_handshake_requests() or []
 
-            for req in handshake_requests:
+            ready_state = {'fired': False}
+            def _fire_ready():
+                if ready_state['fired'] or on_ready is None:
+                    return
+                ready_state['fired'] = True
+                try:
+                    on_ready()
+                except Exception as e:
+                    logging.info('[multiACE] _open_ace on_ready failed: %s' % e)
+            last_i = len(handshake_requests) - 1
+            for i, req in enumerate(handshake_requests):
                 method = req.get('method', '')
-                if method == 'get_info':
-                    cb = (lambda self, response: info_callback(self, response))
-                else:
-                    cb = (lambda self, response: None)
+                def cb(self, response, _m=method, _last=(i == last_i)):
+                    if _m == 'get_info':
+                        info_callback(self, response)
+                    if _last:
+                        _fire_ready()
                 self.send_request_to(idx, request=dict(req), callback=cb)
+            if on_ready is not None:
+                def _ready_timeout(eventtime):
+                    _fire_ready()
+                    return self.reactor.NEVER
+                try:
+                    self.reactor.register_timer(_ready_timeout, self.reactor.monotonic() + 2.5)
+                except Exception:
+                    _fire_ready()
             return True
         except serial.serialutil.SerialException:
             self._usb_stats['connect_failures'] += 1
@@ -1801,7 +1894,15 @@ class MultiAce:
                         break
                     logging.info('[multiACE] V2 writer ACE %d error: %s' % (
                         idx, e))
-                    time.sleep(0.05)
+                    if not self._serial_failed_per_ace.get(idx, False):
+                        self._serial_failed_per_ace[idx] = True
+                        try:
+                            self.reactor.register_async_callback(
+                                lambda et, i=idx, er=str(e):
+                                    self._v2_reconnect_or_pause(i, er))
+                        except Exception as re:
+                            logging.info('[multiACE] V2 writer reconnect schedule failed ACE %d: %s' % (idx, str(re)))
+                    break
         return _loop
 
     def _make_v2_reader_thread_for(self, idx, ser, protocol):
@@ -1812,11 +1913,19 @@ class MultiAce:
             while not stop.is_set():
                 try:
                     chunk = ser.read(256)
-                except Exception:
+                except Exception as e:
                     if stop.is_set():
                         break
-                    time.sleep(0.05)
-                    continue
+                    logging.info('[multiACE] V2 reader ACE %d error: %s' % (idx, e))
+                    if not self._serial_failed_per_ace.get(idx, False):
+                        self._serial_failed_per_ace[idx] = True
+                        try:
+                            self.reactor.register_async_callback(
+                                lambda et, i=idx, er=str(e):
+                                    self._v2_reconnect_or_pause(i, er))
+                        except Exception as re:
+                            logging.info('[multiACE] V2 reader reconnect schedule failed ACE %d: %s' % (idx, str(re)))
+                    break
                 if stop.is_set():
                     break
                 if not chunk:
@@ -2051,23 +2160,103 @@ class MultiAce:
                 self._disconnect_from(idx)
             except Exception:
                 pass
-            if not self._serial_failed_pause_sent:
-                self._serial_failed_pause_sent = True
-                def _do_pause(eventtime):
-                    try:
-                        self.gcode.run_script('PAUSE')
-                    except Exception as pe:
-                        logging.info('[multiACE] PAUSE call failed: %s' % str(pe))
-                    try:
-                        self.printer.invoke_async_shutdown(
-                            '[multiACE] ACE %d permanently failed - print stopped' % idx)
-                    except Exception:
-                        pass
-                    return self.reactor.NEVER
+        if not self._serial_failed_pause_sent:
+            self._serial_failed_pause_sent = True
+            def _do_pause(eventtime):
                 try:
-                    self.reactor.register_timer(_do_pause, self.reactor.NOW)
+                    self.gcode.run_script('PAUSE')
+                except Exception as pe:
+                    logging.info('[multiACE] PAUSE call failed: %s' % str(pe))
+                return self.reactor.NEVER
+            try:
+                self.reactor.register_timer(_do_pause, self.reactor.NOW)
+            except Exception:
+                pass
+
+    def _v2_reconnect_or_pause(self, idx, err):
+        # Recovery-first for a V2 comms loss ([Errno 5] on the reader/writer
+        # thread). MUST run on the reactor (marshalled via
+        # register_async_callback); _open_ace is not thread-safe. On success
+        # the print continues (FA re-armed); PAUSE is the last resort.
+        if self._reconnecting_per_ace.get(idx, False):
+            return
+        self._reconnecting_per_ace[idx] = True
+        try:
+            logging.info('[multiACE] V2 ACE %d comms lost (%s) - reconnecting' % (idx, err))
+            try:
+                self._state_log.warning('V2_COMMS_LOST idx=%d error=%s', idx, err)
+            except Exception:
+                pass
+            reconnected = False
+            for attempt, delay in enumerate((0.3, 0.8, 1.6), start=1):
+                try:
+                    self.reactor.pause(self.reactor.monotonic() + delay)
                 except Exception:
                     pass
+                try:
+                    reconnected = self._open_ace(idx, on_ready=lambda i=idx: self._rearm_fa_after_reconnect(i))
+                except Exception as ce:
+                    logging.info('[multiACE] V2 reconnect[%d] attempt %d raised: %s' % (idx, attempt, str(ce)))
+                    reconnected = False
+                if reconnected:
+                    break
+                logging.info('[multiACE] V2 reconnect[%d] attempt %d/3 failed' % (idx, attempt))
+            if reconnected:
+                self._serial_failed_per_ace[idx] = False
+                self._usb_stats['errno5_recovered'] += 1
+                self.log_always(self._t('msg.serial_write_recovered', ace=self._disp(idx)))
+                try:
+                    self._audit_state('V2_RECONNECTED', {'idx': idx})
+                except Exception:
+                    pass
+            else:
+                self._usb_stats['errno5_unrecovered'] += 1
+                self._handle_per_ace_failure(idx, err)
+        finally:
+            self._reconnecting_per_ace[idx] = False
+
+    def _rearm_fa_after_reconnect(self, idx):
+        # After a reconnect, resume feed-assist for the active head if it is
+        # sourced from this ACE and we were feeding (printing).
+        if not self._auto_feed_enabled:
+            return
+        try:
+            extruder = self.toolhead.get_extruder()
+            head_index = getattr(extruder, 'extruder_index',
+                                 getattr(extruder, 'extruder_num', None))
+        except Exception:
+            head_index = None
+        if head_index is None:
+            return
+        source = self._head_source.get(head_index)
+        if source is None:
+            return
+        if int(source.get('ace_index', -1)) != idx:
+            return
+        # Called only after the post-reopen handshake (via _open_ace on_ready),
+        # so the device accepts start_feed_assist (an immediate arm raced the
+        # handshake and got dropped). Clear stale slot first or the guard skips.
+        self._feed_assist_per_ace[idx] = -1
+        try:
+            self._arm_fa_for(idx, source['slot'])
+            self.log_always('[multiACE] FA re-armed after ACE %s reconnect (head %d slot %s)'
+                            % (self._disp(idx), head_index, self._disp(source['slot'])))
+        except Exception as e:
+            logging.info('[multiACE] FA re-arm after reconnect failed: %s' % e)
+
+    def _reopen_failed_aces_on_resume(self):
+        for idx in list(self._serial_failed_per_ace.keys()):
+            if not self._serial_failed_per_ace.get(idx, False):
+                continue
+            try:
+                ok = self._open_ace(idx, on_ready=lambda i=idx: self._rearm_fa_after_reconnect(i))
+            except Exception as e:
+                ok = False
+                logging.info('[multiACE] resume reopen ACE %d raised: %s' % (idx, str(e)))
+            if ok:
+                self.log_always('[multiACE] resume: reopened ACE %s (was failed) - FA will re-arm' % self._disp(idx))
+            else:
+                self.log_error('[multiACE] resume: ACE %s still unreachable - feed will not resume for its heads' % self._disp(idx))
 
     def _on_homing_move_begin(self, hmove):
         self._homing_active = True
@@ -2137,8 +2326,17 @@ class MultiAce:
 
         prev_slot = self._feed_assist_per_ace.get(idx, -1)
         if prev_slot == slot:
-            logging.info('[multiACE] FA _start skipped: prev_slot=%d == slot=%d (already running)' % (prev_slot, slot))
-            return
+            if self._is_v2_idx(idx):
+                slot_status = self._v2_get_slot_status(idx, slot)
+                if slot_status in V2_FA_RUNNING_STATES:
+                    logging.info('[multiACE] FA _start skipped: prev_slot=%d == slot=%d (already running, status=%s)' % (prev_slot, slot, slot_status))
+                    return
+                self._fa_log.info('[v2-recover] stale FA cache, rearming ACE %d slot %d status=%s' % (idx, slot, slot_status if slot_status is not None else 'unknown'))
+                self._clear_fa_cache_for(idx, slot)
+                prev_slot = -1
+            else:
+                logging.info('[multiACE] FA _start skipped: prev_slot=%d == slot=%d (already running)' % (prev_slot, slot))
+                return
         logging.info('[multiACE] FA _start proceeding: idx=%d slot=%d prev_slot=%d' % (idx, slot, prev_slot))
 
         any_active_before = any(
@@ -2756,9 +2954,18 @@ class MultiAce:
                         if s.get('index') == last_idx:
                             new_state = s.get('slot_status', 'unknown')
                             break
-                    self._fa_log.info(
-                        '[v2-vel] ace=%d disarmed (was slot=%s, now=%s)' % (
-                            idx, last_idx, new_state))
+                    if new_state not in V2_FA_RUNNING_STATES:
+                        self._fa_log.info(
+                            '[v2-vel] ace=%d disarmed (was slot=%s, now=%s)' % (
+                                idx, last_idx, new_state))
+
+                        if self._feed_assist_per_ace.get(idx, -1) == last_idx:
+                            self._fa_log.info('[v2-recover] clearing stale FA cache ACE %d slot %d after disarm status=%s' % (idx, last_idx, new_state))
+                            self._clear_fa_cache_for(idx, last_idx)
+                            if (target_slot == last_idx and self._auto_feed_enabled
+                                    and self._fa_context in ('print', 'load')
+                                    and not getattr(self, '_v2_active_rev_assist', False)):
+                                self._v2_schedule_fa_rearm(idx, last_idx, 'slot-disarmed:%s' % new_state)
 
                     state['last_armed_slot'] = None
                     state['last_quantum'] = None
@@ -5105,6 +5312,7 @@ class MultiAce:
             try:
                 self._arm_fa_for(ace_index, slot)
                 self.wait_ace_ready()
+                self._v2_schedule_fa_rearm(ace_index, slot, 'post-load-verify', delay=0.20)
                 self._fa_trace('gate RE-OPEN for post-load wipe (context=%s) on ACE %d slot %d' % (
                     self._fa_context, ace_index, slot))
             except Exception as fa_e:

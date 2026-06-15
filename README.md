@@ -1,31 +1,26 @@
 # mUlt1ACE 
 
-⚠️ Known issue: multiple ACE 2 Pro (V2) units, support temporarily withdrawn
-
-Affected: setups running multiple ACE 2 Pro (V2) units on long prints.
-
-What happens: if the USB connection to the ACE units drops out (a hardware-level disconnect, which can hit several units at once), the active slot light goes from flashing to solid and the printer keeps moving without filament. The result is under-extrusion / "air printing", with no error and no pause. A long print can be silently ruined.
-
-Background: I had tested the ACE 2 units for many (100+) hours, including prints over 6 hours, without seeing this. It surfaced only now through a user report, and today I was able to reproduce it in a 12-hour print, starting around hour 7.
-
-Status: Until a fix ships, I unfortunately have to withdraw support for running multiple ACE 2 units. Because the dropouts originate in USB hardware disconnects, I cannot give a timeline yet. On top of that, testing itself takes a long time, since every verification run needs a multi-hour print to even trigger the problem. Root cause looks like a hardware reconnect issue, hopefully not a firmware problem. I am working on it.
-
-If you bought a cable kit or supported and would like to return it because of this, please message me directly on  ko-fi.
-
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
 [![Guides & Downloads](visitbutton.png)](https://postapocalyptic-diy.com/multiace/)
-
 ## Post-release notes
-- Paxx 12-18 prerelease version available - not fully tested against this firmare, next version is fully tested, but may take a while, so i decided to build this.
+
+Another FA bug showed up on hotfix3 — fix re-uploaded.
+If you still hit errors, please revert to hotfix2. I'll take more time for the next version and thoroughly test all releases from now on.
+
+- Paxx 12-19 prerelease version available - not fully tested against this firmare, next version is fully tested, but may take a while, so i decided to build this. 
 
 - RESUME Bug: just noticed a change in code destroyed a few Resume paths during swap. If you can't Resume with "can't resume while machine main state idle" Error, type SET_MAIN_STATE MAIN_STATE=PRINTING and RESUME in fluidd console, will be fixed in next release.
 
 - Filament runout does not reenable Feed assist, air prints with new spool,  will be fixed in next version
 
-- Bin image Web-Preflight not working, ssh install or re-download Paxx 12-17 version, corrected it there.
+## What's new in multiACE 0.97b "Kindred Allies" Hotfix 3 (prerelease -unsupported)
 
-- Paxx 12-17 version available
+**- V2 USB comms-loss recovery - on a USB dropout the ACE 2 reader/writer now reconnect and re-arm feed-assist automatically; a longer dropout pauses the print (resumable) instead of silently under-extruding.**
+
+**- Feed-assist stale-cache recovery - now verifies the device's real slot status instead of trusting the host cache, so feed-assist reliably re-arms after swaps/reconnects. Based on a patch kindly contributed by @hfoi589 - thanks!**
+
+
 
 ## What's new in multiACE 0.97b "Kindred Allies" Hotfix 2 (prerelease)
 
