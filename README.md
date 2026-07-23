@@ -12,7 +12,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 **Please report how it works in the sticky issue**
 
-Note: swap orchestration is a first iteration, there is clear room for improvement, reserved for future versions. The hardware part ist still somewhat experimental, but i am looking for a better solution. Any ideas welcome.
+Note: swap orchestration is a first iteration, there is clear room for improvement, reserved for future versions. The hardware part ist still somewhat experimental (problems with small ooze bits on the print bed), but i am looking for a better solution. Any ideas welcome.
 
 Just select head mode in config and connect complete ACE with a 4in1 combiner to that head. Activate BG to enable park position background swaps.
 
