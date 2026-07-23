@@ -18,10 +18,13 @@ Just select head mode in config and connect complete ACE with a 4in1 combiner to
 
 Remaining Feeders work like Stock-Mode.
 
-**New printable nozzle wipers released: https://makerworld.com/en/models/3084827**
+
 
 
 ## What's new in multiACE 0.99.5b "Persistent Pesterers" prerelease (comes without support for now)
+
+**New printable nozzle wipers released: https://makerworld.com/en/models/3084827**
+
 - Ace per Head mode up to 4 Aces / 7 Colors with U1 + just 1 ACE Pro, 10 with 2, 13 with 3 and 16 with 4
 - Parked position background swaps (per Head mode only, it is not possible in multi mode with Ace Hardware)
 - Ace per Head Preflight and Optimization Modes for Background swaps
