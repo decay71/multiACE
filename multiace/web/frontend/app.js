@@ -142,6 +142,8 @@ createApp({
       aces: [], toolheads: [], wiring: [],
       save_variables: {},
       bg_swap: {available: false, enabled_heads: [], busy: [], version: null},
+      pickup_cleaning: false,
+      tipform: {available: false, mode: null, tables: []},
     });
     const loadError = ref("");
     const notifications = ref([]);
@@ -202,6 +204,7 @@ createApp({
       state.active_device = s.active_device ?? null;
       state.device_count  = s.device_count ?? 0;
       state.mode          = s.mode || "normal";
+      state.pickup_cleaning = !!s.pickup_cleaning;
       state.ace_head      = (typeof s.ace_head === "number") ? s.ace_head : 3;
       state.ace_heads     = Array.isArray(s.ace_heads) ? s.ace_heads : [];
       state.head_feeder   = (s.head_feeder && typeof s.head_feeder === "object") ? s.head_feeder : {};
@@ -604,6 +607,17 @@ createApp({
       } catch (_) {}
       reloadState();
     }
+    async function setPickupCleaning(enable) {
+      try {
+        await fetch(`${API}/macro`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name: "ACE_SET_PICKUP_CLEANING",
+                                args: {ENABLE: enable ? 1 : 0}}),
+        });
+      } catch (_) {}
+      reloadState();
+    }
     async function setHeadAce(idx, ace) {
       try {
         await fetch(`${API}/head-ace`, {
@@ -710,6 +724,170 @@ createApp({
       const th = state.toolheads.find(tt => tt.idx === h);
       return !!(th && th.head_source_known && th.ace === aceIdx && th.slot === slotIdx);
     }
+    // ---- per-material tip forming ([ace_tipform]) editor ---------------
+    // Server truth = the cfg section; state.tipform = what Klipper RUNS.
+    // The two differ until a restart -> tipformRestartPending banner.
+    const tipform = reactive({
+      supported: false, mode: "stock", rows: [],
+      cfgMode: "stock", cfgNames: [],
+      error: "", savedMsg: "",
+    });
+    // A section key is '<material>' or '<vendor>_<material>' (join '_', see
+    // ace_tipform.table_for). Split back for the editor: the material is the
+    // LAST '_'-segment (DB materials are single tokens / hyphenated, never
+    // underscored - pla, petg, pla-cf), the vendor is everything before,
+    // with '_' shown as spaces for readability. 'default'/'soft' and any
+    // plain material have no '_' -> vendor ''.
+    function tipformSplitKey(key) {
+      const k = String(key || "");
+      const i = k.lastIndexOf("_");
+      if (i < 0) return {material: k, vendor: ""};
+      return {vendor: k.slice(0, i).replace(/_/g, " "), material: k.slice(i + 1)};
+    }
+    // Compose the section key from a row: vendor collapsed to lower_snake,
+    // '<vendor>_<material>' or '<material>'. Mirrors ace_tipform.table_for
+    // so the editor's key and the engine's constructed lookup key match.
+    function tipformComposeKey(material, vendor) {
+      const mat = (material || "").trim().toLowerCase();
+      const ven = (vendor || "").trim().toLowerCase().split(/\s+/).filter(Boolean).join("_");
+      if (!mat) return "";
+      return ven ? `${ven}_${mat}` : mat;
+    }
+    // --- Visual token builder (web-only convenience; the raw string stays
+    // the source of truth, this just parses/serializes it). Step = one token
+    // {type, a, b}: move -> a@b, others -> type:a. Mirrors the token grammar
+    // in ace_tipform.parse_table; the backend parse_table remains the strict
+    // gate on save, so a half-built table can never reach Klipper.
+    const TIPFORM_STEP_TYPES = ["move", "pause", "temp", "waittemp", "fan", "unloadtemp"];
+    function tipformParseSteps(tableStr) {
+      const steps = [];
+      for (let part of String(tableStr || "").split(",")) {
+        part = part.trim();
+        if (!part) continue;
+        const low = part.toLowerCase();
+        let m;
+        if ((m = /^(pause|waittemp|unloadtemp|temp|fan)\s*:\s*(.*)$/.exec(low))) {
+          steps.push({type: m[1], a: m[2].trim(), b: ""});
+        } else if (part.includes("@")) {
+          const [mm, f] = part.split("@");
+          steps.push({type: "move", a: mm.trim(), b: (f || "").trim()});
+        } else {
+          steps.push({type: "move", a: part, b: ""});
+        }
+      }
+      return steps;
+    }
+    function tipformStepToToken(s) {
+      return s.type === "move" ? `${s.a}@${s.b}` : `${s.type}:${s.a}`;
+    }
+    function tipformStepsToTable(row) {
+      row.table = (row._steps || []).map(tipformStepToToken).join(", ");
+    }
+    function tipformToggleBuilder(row) {
+      row._builderOpen = !row._builderOpen;
+      if (row._builderOpen) row._steps = tipformParseSteps(row.table);
+    }
+    function tipformAddStep(row) {
+      if (!row._steps) row._steps = [];
+      row._steps.push({type: "move", a: "", b: ""});
+      tipformStepsToTable(row);
+    }
+    function tipformRemoveStep(row, i) {
+      row._steps.splice(i, 1);
+      tipformStepsToTable(row);
+    }
+    function tipformStepPlaceholder(step) {
+      if (step.type === "move") return "mm";
+      if (step.type === "pause") return "ms";
+      if (step.type === "fan") return "0-255";
+      return "°C";
+    }
+    // The firmware's stock pull (CONTROL_RETRACT_ACTION), as a starting point
+    // to tune from - matches the reference in the [ace_tipform] cfg comment.
+    const TIPFORM_STOCK = "57@400, 3@1500, -27@2700, -5.5@40, -37.5@1500";
+    function tipformInsertStock(row) {
+      row.table = TIPFORM_STOCK;
+      if (row._builderOpen) row._steps = tipformParseSteps(row.table);
+    }
+    function _tipformNewRow(material, vendor, table) {
+      return {material: material || "", vendor: vendor || "", table: table || "",
+              _builderOpen: false, _steps: []};
+    }
+    async function loadTipform() {
+      try {
+        const r = await fetch(`${API}/tipform`);
+        if (!r.ok) { tipform.supported = false; return; }
+        const j = await r.json();
+        tipform.supported = !!j.supported;
+        tipform.mode = j.mode || "stock";
+        tipform.rows = Object.entries(j.tables || {})
+          .map(([name, table]) => {
+            const s = tipformSplitKey(name);
+            return _tipformNewRow(s.material, s.vendor, table);
+          });
+        tipform.cfgMode = tipform.mode;
+        tipform.cfgNames = Object.keys(j.tables || {});
+        tipform.error = "";
+      } catch (_) { tipform.supported = false; }
+    }
+    function tipformAddRow() { tipform.rows.push(_tipformNewRow()); }
+    function tipformRemoveRow(i) { tipform.rows.splice(i, 1); }
+    async function saveTipform(restart) {
+      tipform.error = ""; tipform.savedMsg = "";
+      const tables = {};
+      for (const row of tipform.rows) {
+        const tbl = (row.table || "").trim();
+        const key = tipformComposeKey(row.material, row.vendor);
+        if (!key && !tbl) continue;
+        if (!key) { tipform.error = t("ui.config.tipform_err_name"); return; }
+        tables[key] = tbl;
+      }
+      try {
+        const resp = await fetch(`${API}/tipform`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({mode: tipform.mode, tables,
+                                restart_klipper: !!restart}),
+        });
+        const j = await resp.json();
+        if (!resp.ok || j.detail) {
+          tipform.error = String(j.detail || `HTTP ${resp.status}`);
+          return;
+        }
+        tipform.savedMsg = restart ? t("ui.config.tipform_saved_restart")
+                                   : t("ui.config.tipform_saved");
+        await loadTipform();
+        if (restart) setTimeout(reloadState, 3000);
+      } catch (e) { tipform.error = String(e); }
+    }
+    // Name options for a table row: the special keys + the firmware
+    // filament DB (same list the slot picker offers, /api/materials),
+    // lowercased to the lookup key. A row whose saved name is not in the
+    // list (hand-edited cfg) keeps its own entry so the select never
+    // blanks an existing table.
+    function tipformNameOptions(row) {
+      const opts = ['default', 'soft'];
+      for (const m of pickerMaterials.value) {
+        const k = String(m).toLowerCase();
+        if (!opts.includes(k)) opts.push(k);
+      }
+      const own = (row && row.material || '').trim().toLowerCase();
+      if (own && !opts.includes(own)) opts.push(own);
+      return opts;
+    }
+
+    // saved cfg vs live Klipper state (NOT the unsaved editor rows)
+    const tipformRestartPending = computed(() => {
+      if (!tipform.supported) return false;
+      const live = state.tipform || {};
+      const liveMode = live.available ? (live.mode || "stock") : "stock";
+      if (liveMode !== (tipform.cfgMode || "stock")) return true;
+      if (liveMode === "stock") return false;
+      const a = [...(live.tables || [])].map(String).sort().join(",");
+      const b = [...(tipform.cfgNames || [])].sort().join(",");
+      return a !== b;
+    });
+
     // Default/fallback list; the live list + per-type subtypes are loaded
     // from /api/materials, which sources them from the firmware filament DB
     // (filament_parameters.py) - same materials the printer's display offers.
@@ -738,11 +916,47 @@ createApp({
         }
       } catch (_) {}
     }
+    // Vendors declared in [ace_tipform] keys ('<vendor>_<material>'), per
+    // material - offered in the filament picker so the declared identity can
+    // hit a vendor table/unloadtemp exactly (table_for matching is
+    // case-insensitive, so the title-cased display value matches). Sources:
+    // the LIVE Klipper tables plus the editor rows (saved or in-progress).
+    function _titleCase(s) {
+      return String(s || "").split(/\s+/).filter(Boolean)
+        .map(w => w[0].toUpperCase() + w.slice(1)).join(" ");
+    }
+    const tipformVendorsByMaterial = computed(() => {
+      const map = {};
+      const add = (material, vendor) => {
+        const m = String(material || "").trim().toUpperCase();
+        const v = _titleCase(vendor);
+        if (!m || !v) return;
+        if (!(map[m] = map[m] || []).includes(v)) map[m].push(v);
+      };
+      for (const k of (state.tipform && state.tipform.tables) || []) {
+        const s = tipformSplitKey(String(k).toLowerCase());
+        if (s.vendor) add(s.material, s.vendor);
+      }
+      for (const row of (tipform.rows || [])) {
+        if (row && row.vendor) add(row.material, row.vendor);
+      }
+      return map;
+    });
     // Vendors for the chosen material (Generic always first) straight from the
-    // firmware DB. The cascade watchers validate a user pick against THIS list.
+    // firmware DB, PLUS the [ace_tipform] vendors for that material (dedup,
+    // case-insensitive). Tipform vendors are in the VALIDATION list on
+    // purpose: the material-change cascade must not snap them away when the
+    // same vendor is declared for the new material too.
     const pickerDbVendors = computed(() => {
       const v = Object.keys(pickerDb.value[picker.material] || { Generic: [] });
-      return v.includes("Generic") ? ["Generic", ...v.filter(x => x !== "Generic")] : v;
+      const base = v.includes("Generic")
+        ? ["Generic", ...v.filter(x => x !== "Generic")] : [...v];
+      const low = new Set(base.map(x => x.toLowerCase()));
+      const mat = String(picker.material || "").toUpperCase();
+      for (const tv of tipformVendorsByMaterial.value[mat] || []) {
+        if (!low.has(tv.toLowerCase())) { base.push(tv); low.add(tv.toLowerCase()); }
+      }
+      return base;
     });
     // Display list for the <select>: the DB vendors PLUS the slot's current
     // vendor when the printer doesn't ship it (e.g. an RFID-set brand). Without
@@ -1164,6 +1378,7 @@ createApp({
       retract_speed: 80,
       load_length: 2100,
       retract_length: 1950,
+      seat_overshoot_length: '',
       swap_retract_length: '',
       swap_purge_length: '',
       dryer_temp: '',
@@ -1216,6 +1431,7 @@ createApp({
       configForm.retract_speed  = num('retract_speed');
       configForm.load_length    = num('load_length');
       configForm.retract_length = num('retract_length');
+      configForm.seat_overshoot_length = numOrEmpty(params.seat_overshoot_length);
       configForm.swap_retract_length = numOrEmpty(params.swap_retract_length);
       configForm.swap_purge_length = numOrEmpty(params.swap_purge_length);
       configForm.dryer_temp        = numOrEmpty(params.dryer_temp);
@@ -1257,6 +1473,7 @@ createApp({
         retract_speed:      numStr(configForm.retract_speed),
         load_length:        numStr(configForm.load_length),
         retract_length:     numStr(configForm.retract_length),
+        seat_overshoot_length: numStr(configForm.seat_overshoot_length),
         swap_retract_length: numStr(configForm.swap_retract_length),
         swap_purge_length:   numStr(configForm.swap_purge_length),
         dryer_temp:         numStr(configForm.dryer_temp),
@@ -1819,6 +2036,23 @@ createApp({
         if (!sb) return -1;
         if (sa.ace !== sb.ace)   return sa.ace  - sb.ace;
         if (sa.slot !== sb.slot) return sa.slot - sb.slot;
+        return a.t - b.t;
+      });
+    }
+    function slicerColorsInPrintOrder() {
+      // The "Slicer colors" list ordered by FIRST use in the print (Dirk
+      // 2026-07-19: fold the print order into the existing list instead of
+      // a separate chip strip). First-appearance index from report.events
+      // (the toolchange sequence); colours the body never prints keep
+      // their T order after the used ones. No events -> original order.
+      const cols = (preflight.report && preflight.report.slicer_colors) || [];
+      const evs = (preflight.report && preflight.report.events) || [];
+      const first = {};
+      evs.forEach((t, i) => { if (!(t in first)) first[t] = i; });
+      return cols.slice().sort((a, b) => {
+        const fa = (a.t in first) ? first[a.t] : Infinity;
+        const fb = (b.t in first) ? first[b.t] : Infinity;
+        if (fa !== fb) return fa - fb;
         return a.t - b.t;
       });
     }
@@ -2588,6 +2822,7 @@ createApp({
       await reloadState();
       await reloadSnapshots();
       await loadConfig();
+      await loadTipform();
       await loadMaterials();
       await loadNotifications();
       await refreshDebugState();
@@ -2624,15 +2859,17 @@ createApp({
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,
       state, loadError, run, macroLog,
-      slotTitle, switchAce, loadSlot, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, setHeadManual, setHeadFeeder, setHeadAce, aceOptionsForHead, headAceOf, visibleAces, openHeadPicker, isToolheadOccupied, needsReload, toolheadOps, bgEnabledFor, setBgHead,
+      slotTitle, switchAce, loadSlot, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, setHeadManual, setHeadFeeder, setHeadAce, aceOptionsForHead, headAceOf, visibleAces, openHeadPicker, isToolheadOccupied, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning,
       isPrinting,
       dryerCfg, dryStart, dryStop, dryOpenAce, toggleDryPanel, aceDrying,
       snapshots, selectedSnapshot, snapshotPreview, saveSnapshot, loadSnapshot, deleteSnapshot,
       config, configLog, configLoadError, showRawConfig, configForm, rebootNeeded,
       aceHeadsRightSide,
       loadConfig, saveConfigForm, saveConfigRaw, setMode,
+      tipform, loadTipform, tipformAddRow, tipformRemoveRow, saveTipform, tipformRestartPending, tipformNameOptions,
+      TIPFORM_STEP_TYPES, tipformToggleBuilder, tipformAddStep, tipformRemoveStep, tipformStepsToTable, tipformStepPlaceholder, tipformInsertStock,
       preflight, closePreflight, startPreflightPrint, applyLoadout, stageLabel,
-      tierLabel, tierWarn, rgbDec, sortedMapping,
+      tierLabel, tierWarn, rgbDec, sortedMapping, slicerColorsInPrintOrder,
       slotKey, textOn, slicerSlotOptions, slicerEffectiveSlot, onSlicerSlotChange,
       recalcSlicer, slicerSwapsDisplay,
       headTargets, headTargetOptions, headEffectiveTargetId, headTargetLabel,

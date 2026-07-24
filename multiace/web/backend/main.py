@@ -154,6 +154,7 @@ ACE_OBJECTS = [
     "print_stats",
     "idle_timeout",
     "ace_bg_swap",
+    "ace_tipform",
 ]
 
 def _slot_state_name(v: Any) -> str:
@@ -206,6 +207,7 @@ def _parse_state(status: dict) -> dict:
     fl = status.get("filament_feed left",  {}) or {}
     fr = status.get("filament_feed right", {}) or {}
     bg = status.get("ace_bg_swap", {}) or {}
+    tf = status.get("ace_tipform", {}) or {}
 
     device_count = int(ace.get("device_count", 1))
     active_device = int(ace.get("active_device", 0))
@@ -517,6 +519,7 @@ def _parse_state(status: dict) -> dict:
         "active_device":      active_device,
         "device_count":       device_count,
         "mode":               mode,
+        "pickup_cleaning":    bool(ace.get("pickup_cleaning", False)),
         "ace_head":           int(ace.get("ace_head", 3) or 3),
         "ace_heads":          ace.get("ace_heads", []) or [],
         "head_feeder":        head_feeder,
@@ -534,6 +537,11 @@ def _parse_state(status: dict) -> dict:
             "version":       bg.get("version"),
             "enabled_heads": bg.get("enabled_heads", []) or [],
             "busy":          bg.get("busy", []) or [],
+        },
+        "tipform": {
+            "available": bool(tf.get("mode")),
+            "mode":      tf.get("mode"),
+            "tables":    tf.get("tables", []) or [],
         },
     }
 
@@ -553,6 +561,11 @@ class MacroBatchRequest(BaseModel):
 
 class ConfigUpdate(BaseModel):
     content: str
+    restart_klipper: bool = False
+
+class TipformUpdate(BaseModel):
+    mode: str
+    tables: dict[str, str]
     restart_klipper: bool = False
 
 class SnapshotSave(BaseModel):
@@ -759,6 +772,7 @@ async def _head_mode_context() -> dict:
     bgs = parsed.get("bg_swap") or {}
     return {"mode": mode, "ace_head": ace_head, "ace_heads": ace_heads,
             "head_ace": head_ace, "feeders": feeders,
+            "pickup_cleaning": bool(parsed.get("pickup_cleaning")),
             "bg_available": bool(bgs.get("available")),
             "bg_heads": [int(h) for h in (bgs.get("enabled_heads") or [])]}
 
@@ -914,6 +928,12 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
             head_ctx["mode"] = "head"
         else:
             head_ctx = {"mode": "multi"}
+        if "pickup_cleaning" not in head_ctx:
+            try:
+                head_ctx["pickup_cleaning"] = bool(_parse_state(
+                    await _query_state_gated()).get("pickup_cleaning"))
+            except Exception:
+                head_ctx["pickup_cleaning"] = False
 
         final = await asyncio.to_thread(
             preflight_core.rewrite_pipeline, pp,
@@ -1428,6 +1448,159 @@ def _extract_params(text: str) -> tuple[dict[str, str], dict[int, dict[str, str]
             per_ace.setdefault(section, {})[key] = val
     return main, per_ace
 
+_TIPFORM_SECTION_RE = re.compile(r"^\[\s*ace_tipform\s*\]\s*$")
+_TIPFORM_KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_\-]*)\s*:\s*(.*)$")
+_TIPFORM_NAME_RE = re.compile(r"^[a-z0-9_\-]{1,32}$")
+_tipform_mod_cache: dict = {"sig": None, "mod": None}
+
+def _load_tipform_module():
+    """Import the INSTALLED ace_tipform.py so the web validates tables with
+    the exact parser Klipper will run them through (a bad table written
+    unvalidated would HALT Klipper at the next restart). mtime-aware like
+    the post-processor loader (S23: updates replace the file, uvicorn
+    lives on). None = module not on this build -> editor disabled."""
+    import importlib.util
+    candidates = [
+        Path("/home/lava/klipper/klippy/extras/ace_tipform.py"),
+        Path(__file__).resolve().parents[2] / "klipper" / "extras"
+        / "ace_tipform.py",
+    ]
+    for cand in candidates:
+        try:
+            if not cand.is_file():
+                continue
+            st = cand.stat()
+            sig = (str(cand), st.st_mtime, st.st_size)
+            if _tipform_mod_cache["sig"] == sig \
+                    and _tipform_mod_cache["mod"] is not None:
+                return _tipform_mod_cache["mod"]
+            spec = importlib.util.spec_from_file_location(
+                "ace_tipform_webvalidate", str(cand))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _tipform_mod_cache["sig"] = sig
+            _tipform_mod_cache["mod"] = mod
+            return mod
+        except Exception as e:
+            print("[/api/tipform] validator load failed from %s: %s"
+                  % (cand, e), file=sys.stderr, flush=True)
+    return None
+
+def _extract_tipform(text: str) -> tuple[str, dict[str, str]]:
+    """(mode, {table_name: raw_table_string}) from the cfg's [ace_tipform]
+    section. Missing section -> ('stock', {})."""
+    mode, tables = "stock", {}
+    in_section = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = bool(_TIPFORM_SECTION_RE.match(stripped))
+            continue
+        if not in_section or not stripped or stripped.startswith("#"):
+            continue
+        if raw[:1] in (" ", "\t"):
+            continue
+        m = _TIPFORM_KEY_RE.match(stripped)
+        if not m:
+            continue
+        key, val = m.group(1).strip().lower(), m.group(2).strip()
+        if key == "mode":
+            mode = val.lower()
+        else:
+            tables[key] = val
+    return mode, tables
+
+def _rewrite_tipform_section(text: str, mode: str,
+                             tables: dict[str, str]) -> str:
+    """Replace (or append) the [ace_tipform] section body. Everything
+    outside the section - including the shipped comment block ABOVE the
+    header - is preserved byte-identically."""
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    i, n = 0, len(lines)
+    placed = False
+    while i < n:
+        raw = lines[i]
+        if _TIPFORM_SECTION_RE.match(raw.strip()):
+            out.append(raw if raw.endswith("\n") else raw + "\n")
+            out.append("mode: %s\n" % mode)
+            for key in sorted(tables.keys()):
+                out.append("%s: %s\n" % (key, tables[key]))
+            i += 1
+            while i < n and not lines[i].lstrip().startswith("["):
+                i += 1
+            placed = True
+            continue
+        out.append(raw)
+        i += 1
+    if not placed:
+        if out and out[-1].strip():
+            out.append("\n")
+        out.append("[ace_tipform]\n")
+        out.append("mode: %s\n" % mode)
+        for key in sorted(tables.keys()):
+            out.append("%s: %s\n" % (key, tables[key]))
+    return "".join(out)
+
+@app.get("/api/tipform")
+async def get_tipform() -> dict:
+    """The tip-forming editor state: cfg truth (mode + raw table strings)
+    plus whether this build supports the feature at all."""
+    mod = _load_tipform_module()
+    p = Path(MULTIACE_CFG_PATH)
+    mode, tables = ("stock", {})
+    if p.exists():
+        mode, tables = _extract_tipform(p.read_text(encoding="utf-8"))
+    return {
+        "supported": mod is not None,
+        "mode": mode,
+        "tables": tables,
+    }
+
+@app.post("/api/tipform")
+async def set_tipform(payload: TipformUpdate) -> dict:
+    """Validate + write the [ace_tipform] section. Validation runs the
+    installed module's parse_table - the same code Klipper runs at
+    startup - so a table the web accepts can never halt the printer."""
+    mod = _load_tipform_module()
+    if mod is None:
+        raise HTTPException(409, "this build has no ace_tipform module - "
+                            "update multiACE first")
+    mode = (payload.mode or "stock").strip().lower()
+    if mode not in ("stock", "custom"):
+        raise HTTPException(400, "mode must be 'stock' or 'custom'")
+    tables: dict[str, str] = {}
+    for name, raw in (payload.tables or {}).items():
+        key = (name or "").strip().lower()
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        if key == "mode" or not _TIPFORM_NAME_RE.match(key):
+            raise HTTPException(
+                400, "invalid table name %r (a-z, 0-9, _ and -, max 32)"
+                % name)
+        try:
+            mod.parse_table(raw)
+        except ValueError as e:
+            raise HTTPException(400, "table %r: %s" % (key, e))
+        tables[key] = raw
+    p = Path(MULTIACE_CFG_PATH)
+    if not p.exists():
+        raise HTTPException(404, f"config file not found: {MULTIACE_CFG_PATH}")
+    text = p.read_text(encoding="utf-8")
+    backup = p.with_suffix(p.suffix + ".bak")
+    backup.write_text(text, encoding="utf-8")
+    p.write_text(_rewrite_tipform_section(text, mode, tables),
+                 encoding="utf-8")
+    restart: dict | None = None
+    if payload.restart_klipper:
+        try:
+            restart = await _mr_post("/printer/firmware_restart", {})
+        except httpx.HTTPError as e:
+            restart = {"error": str(e)}
+    return {"mode": mode, "tables": tables, "backup": str(backup),
+            "restart": restart}
+
 @app.get("/api/config")
 async def get_config() -> dict:
     p = Path(MULTIACE_CFG_PATH)
@@ -1448,7 +1621,7 @@ async def update_config(payload: ConfigUpdate) -> dict:
     restart: dict | None = None
     if payload.restart_klipper:
         try:
-            restart = await _mr_post("/printer/restart", {})
+            restart = await _mr_post("/printer/firmware_restart", {})
         except httpx.HTTPError as e:
             restart = {"error": str(e)}
     return {"path": str(p), "backup": str(backup), "restart": restart}

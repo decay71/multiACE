@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 import sys, re, os, json
 import urllib.request, urllib.error
@@ -865,6 +864,8 @@ BG_SWAP_COST_INLINE_S = 210
 BG_SWAP_COST_BG_S = 30
 BG_UNLOAD_INLINE_SAVING_S = BG_SWAP_COST_INLINE_S - BG_SWAP_COST_BG_S
 
+BG_INITIAL_LOAD = True
+
 _UNRETRACT_RE = re.compile(
     r'^G[01]\s+(?:F[0-9.]+\s+)?E([0-9.]+)(?:\s+F[0-9.]+)?\s*$')
 
@@ -944,7 +945,7 @@ def _scan_body_tools(in_path):
     return tools, times, line_nos
 
 def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
-                              progress=None):
+                              progress=None, pickup_cleaning=False):
     """Streaming head-mode rewrite of the ORIGINAL slicer gcode. Each slicer
     T<n> is rewritten per `assignment` (compute_head_mode_layout):
       - 'pin' -> T<pin_head>                       (feeder head, no swap)
@@ -1097,6 +1098,8 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                    '  ; skipped (already loaded)\n'
                                    % (head, a, s))
                         skipped += 1
+                        if pickup_cleaning:
+                            fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % head)
                     else:
                         v = post_t_unret.get(line_no)
                         if v is None:
@@ -1110,6 +1113,8 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                         primed_ace.add(head)
                         fout.write('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d '
                                    'FORCE=1\n' % head)
+                elif pickup_cleaning:
+                    fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % h)
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
 
@@ -2391,7 +2396,7 @@ def apply_remap_to_file(in_path, out_path, remap, progress=None):
         except Exception:
             pass
 
-def rewrite_to_file(in_path, out_path, progress=None):
+def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     """Streaming equivalent of rewrite(gcode). Same M104/M109 +
     SM_PRINT_PREEXTRUDE_FILAMENT handling, same body T4-T15 expansion
     + ACE_SWAP_HEAD dedupe + swap-back insertion. Returns
@@ -2446,6 +2451,8 @@ def rewrite_to_file(in_path, out_path, progress=None):
             swapbacks += 1
             active += 1
             head_loaded[head] = initial_key
+        elif pickup_cleaning:
+            fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % head)
 
     def flush_pending_paired(fout):
         """Pending bare T was followed by ACE_SWAP_HEAD - emit it
@@ -2575,7 +2582,8 @@ def rewrite_to_file(in_path, out_path, progress=None):
             pass
     return active, skipped, swapbacks
 
-def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None):
+def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
+                             bg_heads=None):
     """Streaming equivalent of inject_auto_load(gcode).
 
     Three passes:
@@ -2741,10 +2749,27 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None):
         inject_heads = sorted(initial.keys())
         inject_block.append('; multiACE auto-load: load %d head(s)\n' %
                             len(inject_heads))
-        for h in inject_heads:
+        _bg_set = set(bg_heads or ())
+        _use_bg = (BG_INITIAL_LOAD and only_heads is not None and bool(_bg_set))
+        i = 0
+        while i < len(inject_heads):
+            h = inject_heads[i]
             a, s = initial[h]
-            inject_block.append(
-                'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d\n' % (h, a, s))
+            hb = inject_heads[i + 1] if i + 1 < len(inject_heads) else None
+            if _use_bg and hb is not None and hb in _bg_set:
+                ab, sb = initial[hb]
+                inject_block.append(
+                    'ACE_BG_SWAP HEAD=%d ACE=%d SLOT=%d ANTI_OOZE=%s QUIET=1\n'
+                    % (hb, ab, sb, _fmt_anti_ooze(ANTI_OOZE_NO_UNRETRACT)))
+                inject_block.append(
+                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d\n' % (h, a, s))
+                inject_block.append(
+                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d\n' % (hb, ab, sb))
+                i += 2
+            else:
+                inject_block.append(
+                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d\n' % (h, a, s))
+                i += 1
         if (only_heads is not None and first_seen_head is not None
                 and first_seen_head in initial):
             inject_block.append('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d '

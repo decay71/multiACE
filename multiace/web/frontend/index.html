@@ -120,7 +120,7 @@
                 <button class="slot-load-btn"
                         :class="{reload: needsReload(ace.idx, slot.idx)}"
                         @click.stop="loadSlot(ace.idx, slot.idx)"
-                        :disabled="isPrinting || (state.mode === 'head' ? slotLoadedInHead(ace.idx, slot.idx) : (!needsReload(ace.idx, slot.idx) && isToolheadOccupied(ace.idx, slot.idx)))"
+                        :disabled="isPrinting || (state.mode === 'head' ? (slotLoadedInHead(ace.idx, slot.idx) && !needsReload(ace.idx, slot.idx)) : (!needsReload(ace.idx, slot.idx) && isToolheadOccupied(ace.idx, slot.idx)))"
                         :title="isPrinting ? t('ui.dashboard.blocked_printing') : (needsReload(ace.idx, slot.idx) ? t('ui.dashboard.reload_hint') : t('ui.dashboard.load'))">
                   {{ needsReload(ace.idx, slot.idx) ? t('ui.dashboard.reload') : t('ui.dashboard.load') }}
                 </button>
@@ -293,6 +293,13 @@
                 @click="setMode(m)">{{ m }}</button>
       </div>
       <p v-if="state.mode === 'head'" class="muted small">{{ t('ui.config.head_mode_hint') }}</p>
+      <h3>{{ t('ui.config.pickup_cleaning') }}</h3>
+      <label class="pickup-clean-toggle">
+        <input type="checkbox" :checked="state.pickup_cleaning"
+               @change="setPickupCleaning($event.target.checked)">
+        {{ t('ui.config.pickup_cleaning_label') }}
+      </label>
+      <p class="muted small">{{ t('ui.config.pickup_cleaning_hint') }}</p>
       <h3>{{ t('ui.config.parameters') }}</h3>
       <div class="config-form">
         <div class="config-row">
@@ -316,6 +323,11 @@
         <div class="config-row">
           <label>{{ t('ui.config.retract_length') }}</label>
           <input type="number" v-model.number="configForm.retract_length" min="0" max="5000">
+        </div>
+        <div class="config-row">
+          <label>{{ t('ui.config.seat_overshoot') }}</label>
+          <input type="number" v-model.number="configForm.seat_overshoot_length"
+                 min="0" max="100" step="1" placeholder="20">
         </div>
         <div class="config-row">
           <label>{{ t('ui.config.swap_retract_length') }}</label>
@@ -453,6 +465,63 @@
           <button @click="saveConfigRaw" class="primary">{{ t('ui.config.raw_save') }}</button>
         </div>
       </details>
+      <h3>{{ t('ui.config.tipform_title') }}</h3>
+      <div v-if="tipform.supported" class="tipform-card">
+        <p class="muted small">{{ t('ui.config.tipform_intro') }}</p>
+        <div class="config-row">
+          <label>{{ t('ui.config.tipform_mode') }}</label>
+          <select v-model="tipform.mode">
+            <option value="stock">stock</option>
+            <option value="custom">custom</option>
+          </select>
+        </div>
+        <div v-for="(row, idx) in tipform.rows" :key="idx" class="tipform-row-wrap">
+          <div class="tipform-row">
+            <select class="tipform-name" v-model="row.material">
+              <option value="" disabled>{{ t('ui.config.tipform_name_ph') }}</option>
+              <option v-for="n in tipformNameOptions(row)" :key="n" :value="n">{{ n }}</option>
+            </select>
+            <input class="tipform-vendor" v-model="row.vendor"
+                   :placeholder="t('ui.config.tipform_vendor_ph')"
+                   spellcheck="false">
+            <input class="tipform-table" v-model="row.table"
+                   placeholder="57@400, 3@1500, -27@2700, -5.5@40, -37.5@1500"
+                   spellcheck="false">
+            <button class="tipform-stock" @click="tipformInsertStock(row)"
+                    :title="t('ui.config.tipform_stock_hint')">{{ t('ui.config.tipform_stock') }}</button>
+            <button class="tipform-build" :class="{active: row._builderOpen}"
+                    @click="tipformToggleBuilder(row)"
+                    :title="t('ui.config.tipform_builder_hint')">🔧</button>
+            <button class="tipform-del" @click="tipformRemoveRow(idx)"
+                    :title="t('ui.common.remove')">✕</button>
+          </div>
+          <div v-if="row._builderOpen" class="tipform-builder">
+            <div v-for="(step, si) in row._steps" :key="si" class="tipform-step">
+              <select v-model="step.type" @change="tipformStepsToTable(row)">
+                <option v-for="ty in TIPFORM_STEP_TYPES" :key="ty" :value="ty">{{ ty }}</option>
+              </select>
+              <input v-model="step.a" @input="tipformStepsToTable(row)"
+                     :placeholder="tipformStepPlaceholder(step)" spellcheck="false">
+              <input v-if="step.type === 'move'" v-model="step.b"
+                     @input="tipformStepsToTable(row)" placeholder="mm/min" spellcheck="false">
+              <button class="tipform-del" @click="tipformRemoveStep(row, si)"
+                      :title="t('ui.common.remove')">✕</button>
+            </div>
+            <button class="tipform-addstep" @click="tipformAddStep(row)">
+              + {{ t('ui.config.tipform_add_step') }}</button>
+          </div>
+        </div>
+        <div class="row">
+          <button @click="tipformAddRow">{{ t('ui.config.tipform_add') }}</button>
+          <button @click="saveTipform(false)" class="primary">{{ t('ui.common.save') }}</button>
+          <button @click="saveTipform(true)" class="primary">{{ t('ui.config.tipform_save_restart') }}</button>
+        </div>
+        <p v-if="tipform.error" class="error">{{ tipform.error }}</p>
+        <p v-else-if="tipform.savedMsg" class="muted small">{{ tipform.savedMsg }}</p>
+        <p v-if="tipformRestartPending" class="tipform-pending">⚠ {{ t('ui.config.tipform_restart_pending') }}</p>
+        <p class="muted small">{{ t('ui.config.tipform_syntax') }}</p>
+      </div>
+      <p v-else class="muted small">{{ t('ui.config.tipform_unsupported') }}</p>
       <h3>{{ t('ui.config.update_title') }}</h3>
       <p class="muted small">{{ t('ui.config.update_intro') }}</p>
       <div class="update-card">
@@ -686,7 +755,7 @@ reboot</pre>
         </div>
         <h4>{{ t('ui.preflight.slicer_colors') }}</h4>
         <div class="preflight-grid">
-          <div v-for="c in preflight.report.slicer_colors"
+          <div v-for="c in slicerColorsInPrintOrder()"
                :key="'sc-' + c.t"
                class="preflight-card">
             <div class="preflight-swatch"
@@ -821,7 +890,7 @@ reboot</pre>
           </div>
           <h4>{{ t('ui.preflight.slicer_colors') }}</h4>
           <div class="preflight-grid">
-            <div v-for="c in preflight.report.slicer_colors" :key="'hsc-'+c.t"
+            <div v-for="c in slicerColorsInPrintOrder()" :key="'hsc-'+c.t"
                  class="preflight-card">
               <div class="preflight-swatch"
                    :style="{background: c.hex || '#444'}"></div>
@@ -972,7 +1041,10 @@ reboot</pre>
     </div>
   </div>
 </div>
-<script src="https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js"></script>
+<!-- Vue is vendored locally (web/frontend/vendor/) so the UI works with no
+     internet at the browser: the CDN reference left the page as a bare,
+     unmounted HTML skeleton whenever unpkg.com was unreachable. -->
+<script src="vendor/vue.global.prod.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

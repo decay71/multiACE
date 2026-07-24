@@ -537,6 +537,8 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
         ace_heads, ace_head_of_ace, ace_num_of_head, feeder_heads = \
             head_maps(head_ctx)
         targets = head_mode_targets(pp, feeders, live_slots, ace_head_of_ace)
+        hm_bg_heads = [int(h) for h in
+                       ((head_ctx or {}).get("bg_heads") or [])]
         if head_plan in ("optimize", "layer"):
             set_stage(head_plan, 1.0)
             hm_result = pp.plan_loadout_from_file(str(src_path), num_aces) or {}
@@ -580,14 +582,25 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
             assignment = layout["assignment"]
 
         set_stage("rewrite", 10.0)
-        pp.rewrite_head_mode_to_file(
-            str(src_path), str(tmp_a), assignment, None,
-            stage_cb(10.0, 60.0))
+        _pc = bool((head_ctx or {}).get("pickup_cleaning"))
+        try:
+            pp.rewrite_head_mode_to_file(
+                str(src_path), str(tmp_a), assignment, None,
+                stage_cb(10.0, 60.0), pickup_cleaning=_pc)
+        except TypeError:
+            pp.rewrite_head_mode_to_file(
+                str(src_path), str(tmp_a), assignment, None,
+                stage_cb(10.0, 60.0))
         cur, nxt = tmp_a, tmp_b
 
         set_stage("inject_auto_load", 70.0)
-        pp.inject_auto_load_to_file(
-            str(cur), str(nxt), stage_cb(70.0, 12.0), set(ace_heads))
+        try:
+            pp.inject_auto_load_to_file(
+                str(cur), str(nxt), stage_cb(70.0, 12.0), set(ace_heads),
+                bg_heads=set(hm_bg_heads))
+        except TypeError:
+            pp.inject_auto_load_to_file(
+                str(cur), str(nxt), stage_cb(70.0, 12.0), set(ace_heads))
         cur, nxt = nxt, cur
         return str(cur)
 
@@ -632,7 +645,12 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
     cur, nxt = tmp_a, tmp_b
 
     set_stage("rewrite", 45.0)
-    pp.rewrite_to_file(str(cur), str(nxt), stage_cb(45.0, 30.0))
+    try:
+        pp.rewrite_to_file(
+            str(cur), str(nxt), stage_cb(45.0, 30.0),
+            pickup_cleaning=bool((head_ctx or {}).get("pickup_cleaning")))
+    except TypeError:
+        pp.rewrite_to_file(str(cur), str(nxt), stage_cb(45.0, 30.0))
     cur, nxt = nxt, cur
 
     set_stage("inject_auto_load", 75.0)

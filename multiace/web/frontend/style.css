@@ -708,3 +708,60 @@ body { padding-bottom: 64px; }
 .src-rfid     { background: var(--accent); color: var(--accent-fg); }
 .src-override { background: #1f3a6b; color: #cfe0ff; }
 .src-derived  { background: var(--border); color: var(--muted); }
+
+/* --- tip-forming editor (config tab) --- */
+.tipform-card { margin-bottom: 1em; }
+.tipform-row {
+  display: flex;
+  gap: .5em;
+  align-items: center;
+  margin: .3em 0;
+}
+.tipform-name {
+  width: 10em;
+  text-transform: uppercase;
+  background: #111; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: .25rem .4rem;
+}
+.tipform-vendor {
+  width: 8em;
+  font-size: .85em;
+  text-transform: capitalize;
+  background: #111; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: .25rem .4rem;
+}
+.tipform-table {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .85em;
+  background: #111; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: .25rem .4rem;
+}
+.tipform-del { padding: .2em .55em; }
+.tipform-stock, .tipform-build {
+  padding: .2em .55em; font-size: .8em; white-space: nowrap;
+}
+.tipform-build.active { outline: 1px solid var(--accent, #4a9); }
+.tipform-row-wrap { margin: .3em 0; }
+.tipform-builder {
+  display: flex; flex-direction: column; gap: .25em;
+  margin: .3em 0 .6em 1.2em; padding: .4em .5em;
+  border-left: 2px solid var(--border); background: rgba(255,255,255,.02);
+  border-radius: 4px;
+}
+.tipform-step { display: flex; gap: .4em; align-items: center; }
+.tipform-step select {
+  width: 8em; background: #111; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; padding: .2rem .3rem;
+}
+.tipform-step input {
+  width: 6em; background: #111; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; padding: .2rem .3rem;
+}
+.tipform-addstep {
+  align-self: flex-start; padding: .2em .6em; font-size: .82em;
+}
+.tipform-pending { color: #e0a020; }

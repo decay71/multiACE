@@ -51,6 +51,7 @@ for f in \
     "klipper/extras/filament_feed_ace.py" \
     "klipper/extras/filament_switch_sensor_ace.py" \
     "klipper/extras/ace_bg_swap.py" \
+    "klipper/extras/ace_tipform.py" \
     "klipper/kinematics/extruder_ace.py" \
     "config/extended/ace.cfg" \
     "config/extended/multiace/ace_mode_switch.sh" \
@@ -97,7 +98,9 @@ cp "$INSTALL_DIR/klipper/extras/filament_switch_sensor_ace.py" "$EXTRAS_DIR/fila
 # ([ace_bg_swap]) - always shipped so opting in is a config-only step and a
 # stale copy can never shadow a new ace.py.
 cp "$INSTALL_DIR/klipper/extras/ace_bg_swap.py" "$EXTRAS_DIR/ace_bg_swap.py"
-chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py"
+# Per-material tip-forming tables ([ace_tipform] section, inert on 'stock')
+cp "$INSTALL_DIR/klipper/extras/ace_tipform.py" "$EXTRAS_DIR/ace_tipform.py"
+chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py" "$EXTRAS_DIR/ace_tipform.py"
 log "  Klipper extras installed"
 cp "$INSTALL_DIR/klipper/kinematics/extruder_ace.py" "$KINEMATICS_DIR/extruder_ace.py"
 chmod 644 "$KINEMATICS_DIR/extruder_ace.py"
@@ -125,6 +128,23 @@ if [ -f "$MCU_PY" ] && grep -qE '^TRSYNC_TIMEOUT = ' "$MCU_PY"; then
         log "  TRSYNC_TIMEOUT raised ${TRSYNC_CUR} -> ${TRSYNC_VALUE} in mcu.py (backup: ${MCU_PY}.pre_multiace)"
     else
         log "  TRSYNC_TIMEOUT already >= ${TRSYNC_VALUE} (${TRSYNC_CUR}) - leaving stock untouched"
+    fi
+fi
+# Same 0003/"Timer too close" family as the trsync raise above: pre-warm the
+# klipper page cache at every boot so the homing/probe window never takes a
+# cold page fault (see the script header for details). Needs root for
+# /etc/init.d; a lava-context web update skips it with a note (the previously
+# installed copy keeps running). Also run it ONCE right now so the current
+# session is warmed without a reboot.
+if [ -f "$INSTALL_DIR/deploy/S59multiace-prewarm" ]; then
+    if [ "$IS_ROOT" = "1" ]; then
+        cp "$INSTALL_DIR/deploy/S59multiace-prewarm" /etc/init.d/S59multiace-prewarm
+        sed -i 's/\r$//' /etc/init.d/S59multiace-prewarm
+        chmod 0755 /etc/init.d/S59multiace-prewarm
+        log "  Installed init script: /etc/init.d/S59multiace-prewarm (klipper page-cache prewarm)"
+        /etc/init.d/S59multiace-prewarm start >>"$LOGFILE" 2>&1 || true
+    else
+        log "  SKIP: S59multiace-prewarm install needs root (existing copy stays active)"
     fi
 fi
 NEW_CFG="$INSTALL_DIR/config/extended/ace.cfg"

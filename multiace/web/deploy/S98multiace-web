@@ -25,11 +25,60 @@ export MOONRAKER_URL="${MOONRAKER_URL:-http://127.0.0.1:7125}"
 export MULTIACE_CFG_PATH="${MULTIACE_CFG_PATH:-/home/lava/printer_data/config/extended/ace.cfg}"
 export MULTIACE_FRONTEND_DIR="${MULTIACE_FRONTEND_DIR:-/home/lava/multiace_web/frontend}"
 
+# Every uvicorn instance we ever start matches this cmdline pattern.
+# /proc scan instead of pgrep: busybox builds here don't guarantee pgrep.
+_uvicorn_pids() {
+    for p in /proc/[0-9]*; do
+        pid=${p#/proc/}
+        [ -r "$p/cmdline" ] || continue
+        if tr '\0' ' ' < "$p/cmdline" 2>/dev/null \
+                | grep -q "uvicorn main:app.*7126"; then
+            echo "$pid"
+        fi
+    done
+}
+
+# TERM the given pids, wait up to 10s for them to exit, then KILL leftovers.
+# uvicorn shuts down gracefully and open frontend websockets can hold that
+# up for seconds - the old 'stop; sleep 1; start' raced it: the new
+# instance hit 'address already in use' and died while the OLD one kept
+# serving STALE code after an update (HW: 14-27 bind errors per log).
+_kill_and_wait() {
+    any=0
+    for pid in $1; do
+        kill -0 "$pid" 2>/dev/null || continue
+        kill -TERM "$pid" 2>/dev/null && any=1
+    done
+    [ "$any" = "1" ] || return 0
+    n=0
+    while [ "$n" -lt 10 ]; do
+        alive=0
+        for pid in $1; do
+            kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ "$alive" = "0" ] && return 0
+        sleep 1
+        n=$((n + 1))
+    done
+    for pid in $1; do
+        kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+    done
+    return 0
+}
+
 start() {
     printf "Starting %s: " "$NAME"
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
         echo "already running"
         return 1
+    fi
+    # No (live) pidfile, but an untracked instance may still hold the port
+    # (stale/lost pidfile, a stop that raced the graceful shutdown). It
+    # would make our bind fail AND keep serving stale code - replace it.
+    orphans="$(_uvicorn_pids)"
+    if [ -n "$orphans" ]; then
+        _kill_and_wait "$orphans"
+        printf "(replaced untracked instance) "
     fi
     if [ ! -d "$DAEMON_DIR" ]; then
         echo "FAIL ($DAEMON_DIR missing)"
@@ -65,16 +114,24 @@ start() {
 
 stop() {
     printf "Stopping %s: " "$NAME"
+    pids=""
     if [ -f "$PIDFILE" ]; then
-        start-stop-daemon -K -p "$PIDFILE" -s TERM
-        rm -f "$PIDFILE"
+        pids="$(cat "$PIDFILE" 2>/dev/null)"
+    fi
+    # Sweep untracked instances too, and WAIT for the exit (see
+    # _kill_and_wait) - a stop that returns while uvicorn still drains
+    # its websockets is what produced the bind-error double starts.
+    pids="$pids $(_uvicorn_pids)"
+    if [ -n "$(echo $pids)" ]; then
+        _kill_and_wait "$pids"
         echo "OK"
     else
         echo "not running"
     fi
+    rm -f "$PIDFILE"
 }
 
-restart() { stop; sleep 1; start; }
+restart() { stop; start; }
 
 case "$1" in
     start)        start;;

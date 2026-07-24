@@ -1,0 +1,50 @@
+#!/bin/sh
+# multiACE: pre-warm the klipper page cache before Klipper starts (S60).
+#
+# "Timer too close" / "Communication timeout during homing" (0003) trace back
+# to host stalls in the multi-MCU homing/probe window. A prime suspect is a
+# cold page fault on klipper code mid-window: overlay-ext4 reads contend with
+# the constant log writes on /oem, squashfs faults pay a decompression - both
+# can cost the few ms that trip the window. Reading the whole tree once at
+# boot (~6 MB, 1-2 s cold) moves those faults out of the print path.
+#
+# Runs at S59: AFTER S56 (trsync patch) so the PATCHED mcu.py is what gets
+# warmed, and directly before S60klipper.
+#
+# Opt-out: touch /home/lava/printer_data/config/extended/multiace/prewarm.disabled
+KLIPPER_DIR=/home/lava/klipper
+FLAG=/home/lava/printer_data/config/extended/multiace/prewarm.disabled
+LOG_TAG="multiace-prewarm"
+# Also log to printer_data/logs (S21 pattern): syslog is volatile and not
+# part of the usual log uploads - the cold/warm duration there is the only
+# externally visible trace that the hook ran.
+LOGFILE=/home/lava/printer_data/logs/multiace_prewarm.log
+log() {
+    logger -t "$LOG_TAG" "$1"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOGFILE" 2>/dev/null
+    chmod 0666 "$LOGFILE" 2>/dev/null
+}
+start() {
+    if [ -f "$FLAG" ]; then
+        log "disabled by $FLAG"
+        return 0
+    fi
+    [ -d "$KLIPPER_DIR" ] || return 0
+    t0=$(date +%s)
+    # cat every code file once and discard the output - the point is the
+    # read itself (page-cache fill). Covers python source, bytecode and the
+    # chelper native library. busybox-safe (no find -exec +).
+    find "$KLIPPER_DIR" -type f \
+        \( -name '*.py' -o -name '*.pyc' -o -name '*.so' \) 2>/dev/null \
+    | while read -r f; do
+        cat "$f" > /dev/null 2>&1
+    done
+    log "klipper tree prewarmed in $(( $(date +%s) - t0 ))s"
+}
+case "$1" in
+    start|"")   start ;;
+    stop)       ;;
+    restart)    start ;;
+    *)          echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+exit 0

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Preserve user values from an existing ace.cfg when refreshing to a new
 ace.cfg.default shipped by a firmware update.
 
@@ -26,7 +25,8 @@ from __future__ import annotations
 import re
 import sys
 
-SECTION_RE = re.compile(r'^\[\s*(ace(?:\s+\d+)?|ace_bg_swap)\s*\]\s*$')
+SECTION_RE = re.compile(r'^\[\s*(ace(?:\s+\d+)?|ace_bg_swap|ace_tipform)\s*\]\s*$')
+PRESERVE_ALL_KEYS_SECTIONS = ('ace_tipform',)
 KEY_RE = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)$')
 COMMENTED_KEY_RE = re.compile(r'^#\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)$')
 
@@ -64,6 +64,26 @@ def parse_user_values(path: str) -> dict[str, dict[str, str]]:
                 out[current][key] = val
     return out
 
+def _flush_preserved(current, user_values, written, out_lines, notes):
+    """Emit user keys of a PRESERVE_ALL_KEYS_SECTIONS section that the new
+    default does not carry, before the section ends."""
+    if current not in PRESERVE_ALL_KEYS_SECTIONS or current not in user_values:
+        return
+    extra = [k for k in sorted(user_values[current].keys())
+             if (current, k) not in written]
+    if not extra:
+        return
+    insert_at = len(out_lines)
+    while insert_at > 0 and out_lines[insert_at - 1].strip() == '':
+        insert_at -= 1
+    block = []
+    for k in extra:
+        block.append('%s: %s\n' % (k, user_values[current][k]))
+        written.add((current, k))
+        notes.append('%s.%s: preserved (user key, not in new default)'
+                     % (current, k))
+    out_lines[insert_at:insert_at] = block
+
 def merge(old_path: str, new_path: str, out_path: str) -> tuple[list[str], list[str]]:
     user_values = parse_user_values(old_path)
     written: set[tuple[str, str]] = set()
@@ -77,6 +97,8 @@ def merge(old_path: str, new_path: str, out_path: str) -> tuple[list[str], list[
             stripped = raw.strip()
 
             if is_section_header(stripped):
+                _flush_preserved(current, user_values, written,
+                                 out_lines, notes)
                 current = section_name(stripped)
                 if current is not None:
                     emitted_sections.add(current)
@@ -112,6 +134,8 @@ def merge(old_path: str, new_path: str, out_path: str) -> tuple[list[str], list[
                         continue
 
             out_lines.append(raw)
+
+    _flush_preserved(current, user_values, written, out_lines, notes)
 
     appended_sections: list[str] = []
     for sec in sorted(user_values.keys()):
