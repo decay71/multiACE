@@ -6,39 +6,25 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 [![Guides & Downloads](visitbutton.png)](https://postapocalyptic-diy.com/multiace/)
 
-**Since the very first version I have been asked about this "occasionally", so I finally sat down and built it: ACE per head mode, which gives you 7 colors from a U1 with single ACE.**
-
-**Now it got even better: 1-4 ACE 1 or ACE 2 units in per Head mode + Parked position background swaps**
-
-**Please report how it works in the sticky issue**
-
-Note: swap orchestration is a first iteration, there is clear room for improvement, reserved for future versions. 
-
-Just select head mode in config and connect complete ACE with a 4in1 combiner to that head. Activate BG to enable park position background swaps.
-
-Remaining Feeders work like Stock-Mode.
+**Since the very first version I have been asked about this "occasionally", so I finally sat down and built it: ACE per head mode and background swaps.**
 
 
-
-
-## What's new in multiACE 0.99.5b "Persistent Pesterers" prerelease (comes without support for now)
+## What's new in multiACE 0.99.6b "Persistent Pesterers" 
 
 **New printable nozzle wipers released: https://makerworld.com/en/models/3084827**
 
-- Ace per Head mode up to 4 Aces / 7 Colors with U1 + just 1 ACE Pro, 10 with 2, 13 with 3 and 16 with 4
+- Custom Temp and Tip Forming (see https://postapocalyptic-diy.com/temp-and-tip-tuning/)
+  Easily exchangeable through strings, Step Editor included in config, Please post you results in the sticky issue
+  **Thanks to forum user Popstar (forum.snapmaker.com), the default PLA swap temperature is now 220 °C. Together with a short extra   push on load ("seat overshoot"), swap reliability on my system has noticeably improved.**
 - Parked position background swaps (per Head mode only, it is not possible in multi mode with Ace Hardware)
-- Ace per Head Preflight and Optimization Modes for Background swaps
-- Prepared for 1.5.1 Firmware
+  (Even though this mode is now part of the release, it is still considered experimental. Even with the new hardware, contamination    from the park position can end up in the print.)
+- Parallel preload
+- Pickup-Cleaning (a short nozzle wipe after same‑colour tool pickups that have no cleaning move.)
+- Ace per Head mode up to 4 Aces / 7 Colors with U1 + just 1 ACE Pro, 10 with 2, 13 with 3 and 16 with 4
+- Prepared for the 1.5.x Firmware
 - Many internal improvements
 
-## What's new in multiACE 0.99.3b "Persistent Pesterers" 
-- Assign Optimize Layout to ACE Slots / Auto replenish fix
-- Paxx 12-20  version available.
-- Ace per Head mode (1 ACE 1/2 only at the moment)  7 Colors with U1 + just 1 ACE Pro 
-- Ace per Head Preflight and Optimization Modes
-- Selectable Slots in multi and head preflight
-- Preflight is now computed on client pc (thanks @hfoi589 for initial js code)
-- Error corrections
+
 
 ## multiACE 
 
