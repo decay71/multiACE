@@ -19,7 +19,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 - Parked position background swaps (per Head mode only, it is not possible in multi mode with Ace Hardware)
   (Even though this mode is now part of the release, it is still considered experimental. Even with the new hardware, contamination    from the park position can end up in the print.)
 - Parallel preload
-- Pickup-Cleaning (a short nozzle wipe after same‑colour tool pickups that have no cleaning move.)
+- Pickup-Cleaning (a short nozzle wipe after same‑colour tool pickups that have no cleaning move.) Preflight only atm.
 - Ace per Head mode up to 4 Aces / 7 Colors with U1 + just 1 ACE Pro, 10 with 2, 13 with 3 and 16 with 4
 - Prepared for the 1.5.x Firmware
 - Many internal improvements
