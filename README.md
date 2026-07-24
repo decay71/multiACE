@@ -442,7 +442,7 @@ load_length: 2100            # ACE feed distance into the bowden (mm)
 retract_length: 1950         # sensor-to-splitter distance (mm)
 ```
 
-Set `load_length` to roughly **110 % of your PTFE length** - the phase is sensor-stopped, so overshoot is safe. `retract_length` = measured extruder-sensor-to-splitter distance minus ~100 mm; the retract only needs to pass the splitter junction, not the full tube. Low `retract_speed` helps the ACE wind the spool tighter; a spool guide upgrade like [this roller guide](https://www.printables.com/model/1237589-20-anycubic-ace-pro-upgrade-kit-to-new-s1-version) improves winding quality further.
+Set `load_length` to roughly **110 % of your PTFE length** - the phase is sensor-stopped, so overshoot is safe. `retract_length` = measured extruder-sensor-to-splitter distance minus ~100 mm; the retract only needs to pass the splitter junction, not the full tube. Low `retract_speed` helps the ACE wind the spool tighter; a spool guide upgrade like [this roller guide](https://makerworld.com/de/@Nightfly777/upload) improves winding quality further.
 
 ### Load / Unload Retry (multiACE hardening)
 
