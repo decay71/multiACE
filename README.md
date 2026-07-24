@@ -144,51 +144,11 @@ This is beta software, errors can and will show up. I've thoroughly tested it, b
 
 ## Hardware Setup
 
-### Cable Building Guide (Solder-Free)
+Cable Setup see:
 
-The ACE Pro connects to the Snapmaker U1 via USB using a Molex Micro-Fit 3.0 connector. No soldering required.
-
-**What You Need:**
-- 1x Molex Micro-Fit 3.0 Male 2x3 connector with pre-crimped wires - [AliExpress](https://de.aliexpress.com/item/1005010370245711.html)
-- 1x USB Type-A screw terminal adapter - [Amazon](https://www.amazon.com/dp/B0825TWRW7)
-
-**For ACE Pro 2** 1 Cable per ACE PRO 2, not daisy chain atm, use Kobra S1 cable and this one.
-- 1x Molex Micro-Fit 3.0 Female 2x2 connector with pre-crimped wires - [AliExpress](https://de.aliexpress.com/item/1005010370245711.html)
-- 1x USB Type-A screw terminal adapter - [Amazon](https://www.amazon.com/dp/B0825TWRW7)
+https://postapocalyptic-diy.com/ace-pro-1-2-cable-guide/
 
 
-**Pinout:**
-
-```
-ACE Pro Molex (2x3) - front view          Connection
-         ||  <- clip
-   ┌────────────┐
-   │ [1] [2] [3] │                        Pin 2 (D-)  -> USB D-
-   │ [4] [5] [6] │                        Pin 3 (D+)  -> USB D+
-   └────────────┘                         Pin 5 (GND) -> USB GND
-                                          Pin 6 (VCC) -> NOT CONNECTED
-```
-
-```
-ACE Pro 2 Molex (2x2) - front view  mating side     Connection
-        ||  <- clip
-   ┌─────────┐
-   │ [2] [1] │                        Pin 1 (D-)  -> USB D-
-   │ [4] [3] │                        Pin 2 (D+)  -> USB D+
-   └─────────┘                        Pin 4 (GND) -> USB GND
-                                      Pin 3 (VCC) -> NOT CONNECTED
-```
-
-
-
-> **Important:** Do **not** connect Pin  (VCC) - the ACE Pro / 2 has its own power supply, and connecting VCC can damage your printer. Molex cables have no standardized color coding - always measure continuity before connecting.
-
-**Assembly:**
-1. Connect D-, D+, and GND from the Molex connector to D-, D+, and GND on the USB connector
-2. Twist D+ and D- wires together (2-3 twists per cm) to reduce electromagnetic interference
-3. If using a cut USB cable: wrap the exposed section with aluminum foil overlapping the cable shield
-4. Additional ACE units connect via the daisy chain cable (included with ACE Pro) - no additional USB cables needed for units 2+
-5. ACE Pro 2 one cable per ACE, Hub needed for more than 1 unit.
 
 ### ACE Connection Overview
 
