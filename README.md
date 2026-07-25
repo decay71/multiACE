@@ -18,7 +18,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
   Easily exchangeable through strings, Step Editor included in config, Please post you results in the sticky issue
   **Thanks to forum user Popstar (forum.snapmaker.com), the default PLA swap temperature is now 220 °C. Together with a short extra   push on load ("seat press"), swap reliability on my system has improved. Whether that's also true for other systems remains     to be seen.**
 - Parked position background swaps (per Head mode only, it is not possible in multi mode with Ace Hardware)
-  (Even though this mode is now part of the release, it is still considered experimental. Even with the new hardware, contamination    from the park position can end up in the print.)
+  (Even though this mode is now part of the release, it is still considered experimental. Even with the new hardware, contamination    from the park position can end up in the print. Purge may build up on the wipers.)
 - Parallel preload
 - Pickup-Cleaning (a short nozzle wipe after same‑colour tool pickups that have no cleaning move.) Preflight only atm.
 - Ace per Head mode up to 4 Aces / 7 Colors with U1 + just 1 ACE Pro, 10 with 2, 13 with 3 and 16 with 4
