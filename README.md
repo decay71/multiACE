@@ -12,7 +12,8 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 ## What's new in multiACE 0.99.6b "Persistent Pesterers" 
 
 **Nozzle wiper updated to version 2 — new, larger purge bin with a filament flap.**
-**New printable nozzle wipers released: https://makerworld.com/en/models/3084827**
+
+**https://makerworld.com/en/models/3084827**
 (still not perfect..)
 
 - Custom Temp and Tip Forming (see https://postapocalyptic-diy.com/temp-and-tip-tuning/)
