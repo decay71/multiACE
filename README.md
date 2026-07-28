@@ -14,7 +14,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 **Nozzle wiper updated to version 2 — new, larger purge bin with a filament flap.**
 
 **https://makerworld.com/en/models/3084827**
-(still not perfect..)
+
 
 - Custom Temp and Tip Forming (see https://postapocalyptic-diy.com/temp-and-tip-tuning/)
   Easily exchangeable through strings, Step Editor included in config, Please post you results in the sticky issue
