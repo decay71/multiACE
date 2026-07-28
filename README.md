@@ -13,7 +13,8 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 **Nozzle wiper updated to version 2 — new, larger purge bin.p.**
 
-**https://makerworld.com/en/models/3084827**
+**https://makerworld.com/en/models/3084827** Wiper
+**https://makerworld.com/en/models/3040955** Bin & Bin XL
 
 
 - Custom Temp and Tip Forming (see https://postapocalyptic-diy.com/temp-and-tip-tuning/)
