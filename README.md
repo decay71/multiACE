@@ -9,7 +9,13 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 **Since the very first version I have been asked about this "occasionally", so I finally sat down and built it: ACE per head mode and background swaps.**
 
 
+
+
 ## What's new in multiACE 0.99.6b "Persistent Pesterers" 
+
+**Bugs**
+
+Prime Tower regression in multiMode Ace swaps, will be fixed with in Hotfix1
 
 **Nozzle wiper updated to version 2 — new, larger purge bin.p.**
 
