@@ -17,7 +17,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 Prime Tower regression in multiMode Ace swaps, will be fixed with in Hotfix1
 
-**Nozzle wiper updated to version 2 — new, larger purge bin.p.**
+**Nozzle wiper updated to version 2 — new, larger purge bin.**
 
 **https://makerworld.com/en/models/3084827** Wiper
 **https://makerworld.com/en/models/3040955** Bin & Bin XL
