@@ -26,7 +26,7 @@ Prime Tower regression in multiMode Ace swaps, will be fixed with in Hotfix1
 - Custom Temp and Tip Forming (see https://postapocalyptic-diy.com/temp-and-tip-tuning/)
   Easily exchangeable through strings, Step Editor included in config, Please post you results in the sticky issue
   **Thanks to forum user Popstar (forum.snapmaker.com), the default PLA swap temperature is now 220 °C. Together with a short extra   push on load ("seat press"), swap reliability on my system has improved. Whether that's also true for other systems remains     to be seen.**
-- Parked position background swaps (per Head mode only, it is not possible in multi mode with Ace Hardware)
+- **Parked position background swaps** (per Head mode only, it is not possible in multi mode with Ace Hardware)
   (Even though this mode is now part of the release, it is still considered **experimental**. Even with the new hardware, contamination    from the park position can end up in the print. Purge may build up on the wipers.)
 - Parallel preload
 - Pickup-Cleaning (a short nozzle wipe after same‑colour tool pickups that have no cleaning move.) Preflight only atm.
