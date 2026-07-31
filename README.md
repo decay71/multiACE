@@ -1,6 +1,6 @@
 # mUlt1ACE 
 
-Started as a SnapACE fork, it has grown to over 5 times the original size, with around 85% of the code now its own and many unique features:
+Started as a SnapACE fork, it has grown to over 5 times the original size, with around 90% of the code now its own and many unique features:
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
