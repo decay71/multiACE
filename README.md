@@ -11,11 +11,11 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 
 
-## What's new in multiACE 0.99.6b "Persistent Pesterers" 
+## What's new in multiACE 0.99.6.1b "Persistent Pesterers" Hotfix 1
 
-**Bugs**
+**Fixes**
 
-Prime Tower regression in multiMode Ace swaps, will be fixed with in Hotfix1
+Prime Tower regression in multiMode Ace swaps fixed
 
 **Nozzle wiper updated to version 2 — new, larger purge bin.**
 
