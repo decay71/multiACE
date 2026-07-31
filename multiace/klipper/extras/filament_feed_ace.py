@@ -262,8 +262,18 @@ class FeedPort:
                 pass
             slot = self.ace._ace_slot_for_head(self.index)
             src = self.ace._head_source.get(self.index)
+            ace_idx = None
             if src is not None and isinstance(src.get('ace_index'), int):
-                gates = self.ace._gate_status_per_ace.get(src['ace_index'])
+                ace_idx = src['ace_index']
+            else:
+                try:
+                    if (getattr(self.ace, '_ace_mode', 'multi') == 'head'
+                            and self.ace.head_uses_ace(self.index)):
+                        ace_idx = self.ace.head_ace_for(self.index)
+                except Exception:
+                    ace_idx = None
+            if ace_idx is not None:
+                gates = self.ace._gate_status_per_ace.get(ace_idx)
                 if gates is not None and slot < len(gates):
                     return gates[slot] == 1
             return self.ace.gate_status[slot] == 1
@@ -2615,10 +2625,20 @@ class FilamentFeed:
             except Exception:
                 return None
 
+        _printing = False
+        try:
+            _ps = self.printer.lookup_object('print_stats', None)
+            if _ps is not None:
+                _printing = _ps.get_status(0).get('state') in (
+                    'printing', 'paused')
+        except Exception:
+            _printing = False
         for _ch in (FEED_CHANNEL_1, FEED_CHANNEL_2):
-            if filament_detected[_ch] and _runout(_ch) is False:
+            if _printing and filament_detected[_ch] and _runout(_ch) is False:
                 try:
-                    if self.ace.head_uses_ace(self.filament_ch[_ch]):
+                    _hd = self.filament_ch[_ch]
+                    if (self.ace.head_uses_ace(_hd)
+                            and self.ace._head_source.get(_hd) is not None):
                         filament_detected[_ch] = False
                 except Exception:
                     pass

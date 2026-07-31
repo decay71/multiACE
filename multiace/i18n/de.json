@@ -213,7 +213,10 @@
       "snapshot_save_failed": "Snapshot speichern fehlgeschlagen: {error}",
       "config_load_failed": "Config laden fehlgeschlagen: {error}",
       "klipper_restart_requested": "Klipper-Neustart angefordert.",
-      "saving_raw": "Speichere (roh)…"
+      "saving_raw": "Speichere (roh)…",
+      "config_conflict_merged": "Config hatte sich auf dem Drucker ge\u00e4ndert - deine Einstellungen wurden auf den aktuellen Stand angewendet.",
+      "config_conflict_raw": "Config hat sich seit dem Laden ge\u00e4ndert. Config-Tab neu laden (dein Text wurde NICHT gespeichert) und \u00c4nderung erneut eintragen.",
+      "config_conflict_failed": "Config hat sich ge\u00e4ndert, automatisches \u00dcbernehmen fehlgeschlagen - Config-Tab neu laden"
     },
     "upload": {
       "button": "G-Code",

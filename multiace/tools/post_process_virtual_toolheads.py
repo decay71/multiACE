@@ -2421,9 +2421,16 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     active = 0
     skipped = 0
     swapbacks = 0
-    primed = {}
+    primed_first = set()
+
+    post_t_unret = _scan_post_t_unretracts(in_path)
+
+    def _ao_for(t_line_no):
+        v = post_t_unret.get(t_line_no)
+        return _fmt_anti_ooze(v if v is not None else ANTI_OOZE_NO_UNRETRACT)
 
     pending_head = None
+    pending_line_no = None
     pending_blanks: list[str] = []
 
     total = os.path.getsize(in_path) or 1
@@ -2436,18 +2443,21 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
         color. Swap-backs also count toward `active` because the
         in-memory rewrite() counts every ACE_SWAP_HEAD line in the
         output, regardless of provenance."""
-        nonlocal pending_head, swapbacks, active
+        nonlocal pending_head, pending_line_no, swapbacks, active
         if pending_head is None:
             return
         head = pending_head
+        t_no = pending_line_no
         pending_head = None
+        pending_line_no = None
         initial_key = (0, head)
         fout.write('T%d\n' % head)
         for b in pending_blanks:
             fout.write(b)
         pending_blanks.clear()
         if head_loaded.get(head) != initial_key:
-            fout.write('ACE_SWAP_HEAD HEAD=%d ACE=0 SLOT=%d\n' % (head, head))
+            fout.write('ACE_SWAP_HEAD HEAD=%d ACE=0 SLOT=%d ANTI_OOZE=%s\n'
+                       % (head, head, _ao_for(t_no)))
             swapbacks += 1
             active += 1
             head_loaded[head] = initial_key
@@ -2457,11 +2467,12 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     def flush_pending_paired(fout):
         """Pending bare T was followed by ACE_SWAP_HEAD - emit it
         and let the swap handler update head_loaded."""
-        nonlocal pending_head
+        nonlocal pending_head, pending_line_no
         if pending_head is None:
             return
         head = pending_head
         pending_head = None
+        pending_line_no = None
         fout.write('T%d\n' % head)
         for b in pending_blanks:
             fout.write(b)
@@ -2469,7 +2480,7 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
 
     with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
          open(out_path, 'w', encoding='utf-8') as fout:
-        for line in fin:
+        for _raw_no, line in enumerate(fin):
             seen += len(line.encode('utf-8', errors='ignore'))
             stripped = line.rstrip('\r\n')
 
@@ -2485,8 +2496,8 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
                 if pending_head is not None:
                     flush_pending_unmatched(fout)
                 hpre = int(mdp.group(1)) % 4
-                if primed.get(hpre) != head_loaded.get(hpre):
-                    primed[hpre] = head_loaded.get(hpre)
+                if hpre not in primed_first:
+                    primed_first.add(hpre)
                     fout.write(
                         'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d FORCE=1\n' % hpre)
                 last_pr = _emit_progress(progress, seen, total, last_pr)
@@ -2521,12 +2532,10 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             mlp = low_pre.match(stripped)
             if mlp:
                 h = int(mlp.group(1))
-                if primed.get(h) != head_loaded.get(h):
-                    primed[h] = head_loaded.get(h)
+                if h not in primed_first:
+                    primed_first.add(h)
                     fout.write(
                         'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d FORCE=1\n' % h)
-                else:
-                    fout.write(line)
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
 
@@ -2556,8 +2565,9 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
                         head, ace, head))
                     skipped += 1
                 else:
-                    fout.write('ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d\n' % (
-                        head, ace, head))
+                    fout.write('ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d '
+                               'ANTI_OOZE=%s\n' % (
+                        head, ace, head, _ao_for(_raw_no)))
                     head_loaded[head] = key
                     active += 1
                 last_pr = _emit_progress(progress, seen, total, last_pr)
@@ -2566,6 +2576,7 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             m = bare_lo.match(stripped)
             if m:
                 pending_head = int(m.group(1))
+                pending_line_no = _raw_no
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
 

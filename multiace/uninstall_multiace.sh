@@ -11,6 +11,9 @@ PRINTER_CFG="${HOME_DIR}/printer_data/config/printer.cfg"
 LOG_DIR="${HOME_DIR}/printer_data/logs"
 mkdir -p "$LOG_DIR" 2>/dev/null
 LOGFILE="${LOG_DIR}/multiace_uninstall.log"
+# Dual-user log self-heal + never abort on a failed log write (set -e;
+# same fix as install_multiace.sh - root-owned log vs lava-context run).
+( touch "$LOGFILE" && chmod 0666 "$LOGFILE" ) 2>/dev/null || true
 FORCE=0
 for arg in "$@"; do
     case "$arg" in
@@ -18,7 +21,9 @@ for arg in "$@"; do
     esac
 done
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE] $1" | tee -a "$LOGFILE"
+    _line="$(date '+%Y-%m-%d %H:%M:%S') [multiACE] $1"
+    echo "$_line"
+    { echo "$_line" >> "$LOGFILE"; } 2>/dev/null || true
 }
 log "=== multiACE Uninstall ==="
 LOADED_HEADS=""

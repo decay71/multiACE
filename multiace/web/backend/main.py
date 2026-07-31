@@ -562,6 +562,7 @@ class MacroBatchRequest(BaseModel):
 class ConfigUpdate(BaseModel):
     content: str
     restart_klipper: bool = False
+    base_sha1: str | None = None
 
 class TipformUpdate(BaseModel):
     mode: str
@@ -1601,6 +1602,10 @@ async def set_tipform(payload: TipformUpdate) -> dict:
     return {"mode": mode, "tables": tables, "backup": str(backup),
             "restart": restart}
 
+def _cfg_sha1(text: str) -> str:
+    import hashlib
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
 @app.get("/api/config")
 async def get_config() -> dict:
     p = Path(MULTIACE_CFG_PATH)
@@ -1608,23 +1613,35 @@ async def get_config() -> dict:
         raise HTTPException(404, f"config file not found: {MULTIACE_CFG_PATH}")
     text = p.read_text(encoding="utf-8")
     main, per_ace = _extract_params(text)
-    return {"path": str(p), "content": text, "params": main, "per_ace_params": per_ace}
+    return {"path": str(p), "content": text, "params": main,
+            "per_ace_params": per_ace, "sha1": _cfg_sha1(text)}
 
 @app.put("/api/config")
 async def update_config(payload: ConfigUpdate) -> dict:
     p = Path(MULTIACE_CFG_PATH)
     if not p.exists():
         raise HTTPException(404, f"config file not found: {MULTIACE_CFG_PATH}")
+    if payload.base_sha1:
+        cur = p.read_text(encoding="utf-8")
+        cur_sha1 = _cfg_sha1(cur)
+        if cur_sha1 != payload.base_sha1:
+            raise HTTPException(409, json.dumps({
+                "error": "config changed on disk since it was loaded",
+                "sha1": cur_sha1,
+                "content": cur,
+            }))
     backup = p.with_suffix(p.suffix + ".bak")
     backup.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
     p.write_text(payload.content, encoding="utf-8")
+    new_sha1 = _cfg_sha1(payload.content)
     restart: dict | None = None
     if payload.restart_klipper:
         try:
             restart = await _mr_post("/printer/firmware_restart", {})
         except httpx.HTTPError as e:
             restart = {"error": str(e)}
-    return {"path": str(p), "backup": str(backup), "restart": restart}
+    return {"path": str(p), "backup": str(backup), "restart": restart,
+            "sha1": new_sha1}
 
 _LANG_NAME_RE = re.compile(r"^[A-Za-z]{2}(-[A-Za-z]{2})?$")
 

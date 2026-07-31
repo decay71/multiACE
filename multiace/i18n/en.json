@@ -213,7 +213,10 @@
       "snapshot_save_failed": "Snapshot save failed: {error}",
       "config_load_failed": "Config load failed: {error}",
       "klipper_restart_requested": "Klipper restart requested.",
-      "saving_raw": "Saving (raw)…"
+      "saving_raw": "Saving (raw)…",
+      "config_conflict_merged": "Config had changed on disk - re-applied your settings on the current file.",
+      "config_conflict_raw": "Config changed on disk since it was loaded. Reload the config tab (your text was NOT saved) and apply your edit again.",
+      "config_conflict_failed": "config changed on disk, could not re-apply automatically - reload the config tab"
     },
     "upload": {
       "button": "G-code",

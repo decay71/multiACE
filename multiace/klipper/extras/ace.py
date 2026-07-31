@@ -16,13 +16,13 @@ from .ace_protocol_v2 import AceProtocolV2
 
 KNOWN_PROTOCOLS = (AceProtocolV1, AceProtocolV2)
 
-MULTIACE_VERSION = "0.99.6b"
+MULTIACE_VERSION = "0.99.6.1b"
 MULTIACE_CODENAME = "Persistent Pesterers"
 
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "d30d474d"
-MULTIACE_BUNDLE_SHA1 = "a600f35"
+MULTIACE_BUILD_TAG = "41f9b859"
+MULTIACE_BUNDLE_SHA1 = "7ce5409"
 
 def _load_i18n_catalog(i18n_dir, lang):
     """Read <i18n_dir>/<lang>.json overlaid on en.json. Returns a dict
@@ -115,6 +115,7 @@ PICK_GATE_ACE_PUSH_RETRY_DELAY = 1.0
 PICK_TURBULENCE_UPSWING = 3000.
 PICK_TURBULENCE_SETTLE = 2.0
 BG_PICK_WIPE = True
+RESUME_NOOP_WIPE_WINDOW = 180.
 
 FA_REARM_MAX_FAILS = 5
 FA_STICK_CONFIRM_TIME = 8.0
@@ -466,6 +467,7 @@ class MultiAce:
         self._bg_left_empty = set()
         self._bg_staged = {}
         self._bg_load_unverified = set()
+        self._resume_wipe_deadline = 0.
         self._bg_prime_deficit = {}
         self._hotplug_gone = {}
 
@@ -2067,6 +2069,8 @@ class MultiAce:
         self._fa_rearm_suspended.clear()
         self._reopen_failed_aces_on_resume()
         self._runout_suppress_heads = set()
+        self._resume_wipe_deadline = (self.reactor.monotonic()
+                                      + RESUME_NOOP_WIPE_WINDOW)
         logging.info('[multiACE] Print started - auto-feed enabled')
         self._fa_trace('gate OPEN (context=print) via _on_print_start')
 
@@ -5514,21 +5518,30 @@ class MultiAce:
             printing = False
         if not printing or self._swap_in_progress:
             return
+        self.log_always('[multiACE] Pickup-Cleaning: nozzle wipe at the discard '
+                        'position (head %s)'
+                        % (self._disp(head) if head is not None else '?'))
+        self._discard_wipe(head, 'pickup-clean')
+
+    def _discard_wipe(self, head, tag):
+        """Shared discard-wipe excursion (Z hop -> discard -> stock ooze-cutoff
+        wipe -> pos/E restore). Callers: ACE_PICKUP_CLEAN and the post-resume
+        no-op wipe. Fail-open; returns True when the wipe ran."""
         try:
             homed = self.toolhead.get_status(
                 self.reactor.monotonic()).get('homed_axes', '')
         except Exception:
             homed = ''
         if not all(a in homed for a in 'xyz'):
-            logging.info('[multiACE] [pickup-clean] axes not homed (%s) - '
-                         'skipped' % (homed or 'none'))
-            return
+            logging.info('[multiACE] [%s] axes not homed (%s) - '
+                         'skipped' % (tag, homed or 'none'))
+            return False
         try:
             heater = self.toolhead.get_extruder().get_heater()
             if not bool(getattr(heater, 'can_extrude', True)):
-                logging.info('[multiACE] [pickup-clean] below min_extrude_temp '
-                             '- skipped')
-                return
+                logging.info('[multiACE] [%s] below min_extrude_temp '
+                             '- skipped' % tag)
+                return False
         except Exception:
             pass
         gcode_move = self.printer.lookup_object('gcode_move')
@@ -5541,9 +5554,6 @@ class MultiAce:
                            and head not in self._runout_suppress_heads)
         if _added_suppress:
             self._runout_suppress_heads.add(head)
-        self.log_always('[multiACE] Pickup-Cleaning: nozzle wipe at the discard '
-                        'position (head %s)'
-                        % (self._disp(head) if head is not None else '?'))
         try:
             self.gcode.run_script_from_command('G91')
             self.gcode.run_script_from_command('G1 Z2 F600')
@@ -5554,11 +5564,13 @@ class MultiAce:
             self.gcode.run_script_from_command(
                 'INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD ACTION=2')
             self.toolhead.wait_moves()
-            logging.info('[multiACE] [pickup-clean] nozzle wipe done (head %s)'
-                         % (self._disp(head) if head is not None else '?'))
+            logging.info('[multiACE] [%s] nozzle wipe done (head %s)'
+                         % (tag, self._disp(head) if head is not None else '?'))
+            _wipe_ok = True
         except Exception as e:
-            logging.info('[multiACE] [pickup-clean] wipe failed (continuing): '
-                         '%s' % e)
+            logging.info('[multiACE] [%s] wipe failed (continuing): '
+                         '%s' % (tag, e))
+            _wipe_ok = False
         finally:
             if _added_suppress:
                 self._runout_suppress_heads.discard(head)
@@ -5580,8 +5592,9 @@ class MultiAce:
                 self.gcode.run_script_from_command(
                     'G1 F%d' % (saved_speed * 60))
             except Exception as re:
-                logging.info('[multiACE] [pickup-clean] pos restore failed: %s'
-                             % re)
+                logging.info('[multiACE] [%s] pos restore failed: %s'
+                             % (tag, re))
+        return _wipe_ok
 
     def cmd_ACE_SWITCH(self, gcmd):
         target = gcmd.get_int('TARGET')
@@ -7629,7 +7642,8 @@ class MultiAce:
                     'SET_HEATER_TEMPERATURE HEATER=%s TARGET=%d' % (heater, swap_temp))
                 self.gcode.run_script_from_command(
                     'TEMPERATURE_WAIT SENSOR=%s MINIMUM=%d' % (heater, swap_temp - 5))
-                if head in getattr(self, '_bg_load_unverified', ()):
+                _had_pickcheck = head in getattr(self, '_bg_load_unverified', ())
+                if _had_pickcheck:
                     _pick = self._bg_pick_flow_check(head, anti_ooze)
                     if _pick == 'no_flow':
                         self._pause_for_recovery(
@@ -7657,6 +7671,16 @@ class MultiAce:
                             ],
                             code=4,
                         )
+                if (self.reactor.monotonic()
+                        < getattr(self, '_resume_wipe_deadline', 0.)):
+                    self._resume_wipe_deadline = 0.
+                    if not _had_pickcheck:
+                        self.log_always(
+                            '[multiACE] Post-resume ooze wipe: head %d sat '
+                            'hot through the pause, no-op swap runs no '
+                            'flush - wiping at the discard edge'
+                            % self._disp(head))
+                        self._discard_wipe(head, 'resume-wipe')
             elif head != active_head:
                 logging.info('[multiACE] Swap: HEAD %d not active toolhead '
                              '(active=%s) - skip pre-heat to avoid holding '
@@ -7718,6 +7742,7 @@ class MultiAce:
 
         self._swap_in_progress = True
         self._swap_phase = 'unload'
+        self._resume_wipe_deadline = 0.
         self._ace_event(
             'swap_imminent', head=head, ace=ace_index, slot=slot,
             from_ace=(prev_ace_src if prev_ace_src is not None else -1),

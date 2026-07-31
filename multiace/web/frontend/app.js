@@ -1368,7 +1368,8 @@ createApp({
     }
     function cancelConfirm() { confirmDialog.show = false; }
     function confirmSync(msg) { return window.confirm(msg); }
-    const config = reactive({path: "", content: "", params: {}, restartKlipper: false});
+    const config = reactive({path: "", content: "", params: {}, restartKlipper: false,
+                             sha1: ""});
     const configLog = ref("");
     const configLoadError = ref("");
     const showRawConfig = ref(false);
@@ -1751,6 +1752,8 @@ createApp({
         config.path = j.path || "";
         config.content = j.content || "";
         config.params = j.params || {};
+        // Revision token for the lost-update guard (see saveConfigForm).
+        config.sha1 = j.sha1 || "";
         paramsToForm(j.params, j.per_ace_params || {});
       } catch (e) {
         configLoadError.value = t("ui.log.config_load_failed", {error: e});
@@ -1758,21 +1761,50 @@ createApp({
     }
     async function saveConfigForm() {
       configLog.value = t("ui.common.saving");
-      const newContent = formToCfgContent(config.content);
       try {
+        // LOST-UPDATE GUARD (HW 2026-07-30): the form PATCHES the browser's
+        // cached copy of the file, so a tab that loaded an older revision
+        // silently writes it back - a cfg repaired via SSH was reverted to a
+        // section-less version, losing SET_ACE_MODE, [ace_bg_swap] and
+        // [ace_tipform]. We send the sha1 we loaded; on 409 the server
+        // returns the CURRENT content and we re-apply the form values on top
+        // of it and retry once, so the user's edit lands without clobbering
+        // whatever else changed on disk meanwhile.
+        let base = config.content;
+        let sha1 = config.sha1;
+        let newContent = formToCfgContent(base);
         // Do NOT auto-restart Klipper: a bare Klipper restart applies most
         // [ace] scalars but NOT changes that need a full reboot (USB/serial
         // re-enumeration, PAXX boot-script settings), and it caused a scary
         // "503 Klippy Host not connected" mid-restart. Save the file and tell
         // the user to restart the printer so every change takes effect.
-        const r = await fetch(`${API}/config`, {
+        let r = await fetch(`${API}/config`, {
           method: "PUT",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({content: newContent, restart_klipper: false}),
+          body: JSON.stringify({content: newContent, restart_klipper: false,
+                                base_sha1: sha1}),
         });
+        if (r.status === 409) {
+          let fresh = null;
+          try { fresh = JSON.parse((await r.json()).detail); } catch (e) { fresh = null; }
+          if (!fresh || typeof fresh.content !== "string") {
+            throw new Error(`HTTP 409 ${t("ui.log.config_conflict_failed")}`);
+          }
+          base = fresh.content;
+          sha1 = fresh.sha1 || "";
+          newContent = formToCfgContent(base);
+          r = await fetch(`${API}/config`, {
+            method: "PUT",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({content: newContent, restart_klipper: false,
+                                  base_sha1: sha1}),
+          });
+          configLog.value = t("ui.log.config_conflict_merged");
+        }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
         const j = await r.json();
         config.content = newContent;
+        config.sha1 = j.sha1 || "";
         rebootNeeded.value = true;
         configLog.value = `✓ ${j.path}\nBackup: ${j.backup}\n${t("ui.common.please_restart")}`;
       } catch (e) { configLog.value = `${t("ui.common.error")}: ${e}`; }
@@ -1783,10 +1815,21 @@ createApp({
         const r = await fetch(`${API}/config`, {
           method: "PUT",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({content: config.content, restart_klipper: config.restartKlipper}),
+          body: JSON.stringify({content: config.content,
+                                restart_klipper: config.restartKlipper,
+                                base_sha1: config.sha1}),
         });
+        // No auto-retry here: the raw editor's content IS the user's text -
+        // silently rebasing would discard either their edit or the on-disk
+        // change. Report the conflict and let them reload.
+        if (r.status === 409) {
+          configLog.value = t("ui.log.config_conflict_raw");
+          return;
+        }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
-        configLog.value = JSON.stringify(await r.json(), null, 2);
+        const j = await r.json();
+        config.sha1 = j.sha1 || "";
+        configLog.value = JSON.stringify(j, null, 2);
       } catch (e) { configLog.value = `${t("ui.common.error")}: ${e}`; }
     }
     async function setMode(m) {

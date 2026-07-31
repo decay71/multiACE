@@ -25,6 +25,12 @@ PRINTER_CFG="${HOME_DIR}/printer_data/config/printer.cfg"
 LOG_DIR="${HOME_DIR}/printer_data/logs"
 mkdir -p "$LOG_DIR" 2>/dev/null
 LOGFILE="${LOG_DIR}/multiace_install.log"
+# Dual-user log self-heal (same class as ace_mode_switch.log): a root SSH
+# install creates this file root-owned, the web self-update then runs as
+# lava and tee could not append -> the pipeline failed -> set -e killed
+# the update right after the first log line. Make the file appendable for
+# both users; never let a failed log write abort an install (see log()).
+( touch "$LOGFILE" && chmod 0666 "$LOGFILE" ) 2>/dev/null || true
 IS_ROOT=0
 if [ "$(id -u)" = "0" ]; then
     IS_ROOT=1
@@ -39,7 +45,9 @@ run_as_lava() {
     fi
 }
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [multiACE] $1" | tee -a "$LOGFILE"
+    _line="$(date '+%Y-%m-%d %H:%M:%S') [multiACE] $1"
+    echo "$_line"
+    { echo "$_line" >> "$LOGFILE"; } 2>/dev/null || true
 }
 log "=== multiACE Installation ==="
 log "Install from: $INSTALL_DIR"
