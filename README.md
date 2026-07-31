@@ -593,6 +593,12 @@ This project is based on [SnapACE](https://github.com/BlackFrogKok/SnapACE) and 
 This project includes AI-assisted content (research, documentation, parts of code).
 All content is reviewed by humans before inclusion.
 
+## Contributors
+
+- **[hfoi](https://github.com/hfoi)**
+  - **Feed-assist re-arm (device-status-aware)** — verifying the ACE's real slot status instead of trusting the host cache, so a stale cache after a swap, reconnect or spontaneous disarm is cleared and re-sent instead of silently skipped. Ported from an `ace.py` he shared and still in use today.
+  - **Browser-side preflight** — his JavaScript implementation was the starting point. The shipped version was rebuilt around Pyodide so the browser and the backend run the exact same Python code, but the idea and the groundwork are his.
+
 ## Credits
 
 - **[ Hakimio](https://github.com/hakimio)** for ACE Pro 2 reverse engineering and support
