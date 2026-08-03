@@ -32,7 +32,7 @@ Prime Tower regression in multiMode Ace swaps fixed
 - Parallel preload
 - Pickup-Cleaning (a short nozzle wipe after same‑colour tool pickups that have no cleaning move.) Preflight only atm.
 - Ace per Head mode up to 4 Aces / 7 Colors with U1 + just 1 ACE Pro, 10 with 2, 13 with 3 and 16 with 4
-- Prepared for the 1.5.x Firmware
+- Prepared for the 1.5.1 Firmware
 - Many internal improvements
 
 
