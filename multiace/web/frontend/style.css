@@ -15,6 +15,49 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; }
+/* Fields: every block that needed one (.config-row, .per-ace-row,
+   .snapshot-row, .dryer-form, .tipform-step) repeated the identical
+   dark+border look, and whatever never got one fell back to the browser
+   default - i.e. WHITE in a dark UI. One rule here, so a new field is dark
+   by default and nobody has to remember. Types are listed explicitly:
+   checkbox/radio/range/color must keep their native look, and a bare
+   `input` selector would flatten them too. Component rules come later in
+   the file and are more specific, so their sizing still wins. */
+input[type="text"], input[type="number"], input[type="password"],
+input[type="search"], input[type="url"], input[type="email"],
+input[type="date"], input[type="time"], select {
+  background: #111; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: .25rem .4rem;
+}
+select option { background: #111; color: var(--fg); }
+/* Buttons, same story as the fields above: .row / .update-actions /
+   .snapshot-row / .dryer-form each repeated the identical card+border look,
+   and whatever was never given one fell through to the browser default -
+   which is what made the panel's Load/Unload rows and the loadout select
+   glare white inside the Fluidd camera card. This is that repeated look,
+   once. Bare `button` is the weakest selector there is, so every component
+   rule above and below still wins - button.slot, nav button and .pill
+   button are untouched (verified: no rule setting a button background is
+   weaker or equal). The .primary / .warn / .danger classes already exist in
+   the markup, so they are defined here too rather than per block. Font is
+   deliberately NOT touched: buttons that currently render in the browser
+   font keep doing so, and this stays a colour/border fix instead of a
+   silent relayout. */
+button {
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: .3rem .8rem; cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button.primary {
+  background: var(--accent); color: var(--accent-fg);
+  border-color: var(--accent); font-weight: 600;
+}
+button.warn:hover:not(:disabled), button.danger:hover:not(:disabled) {
+  background: var(--danger); color: #fff; border-color: var(--danger);
+}
+button:disabled { opacity: .5; cursor: not-allowed; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   background: var(--bg); color: var(--fg);
@@ -307,6 +350,8 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .toolhead-card.unknown { border-color: #b59a2a; }
 .toolhead-card.unknown .meta .muted { color: #d6b842; }
 .toolhead-card.manual { border-color: #3a6a8a; }
+.toolhead-card.load-failed { border-color: #a04a3a; }
+.toolhead-card.load-failed .meta .error-inline { color: #e07a5f; }
 .toolhead-card.manual .meta .muted { color: #6aa6c8; }
 .toolhead-card.feeder { border-color: #2f6f5f; }
 .toolhead-card.feeder .meta .muted { color: #5fae9a; }
@@ -765,3 +810,279 @@ body { padding-bottom: 64px; }
   align-self: flex-start; padding: .2em .6em; font-size: .82em;
 }
 .tipform-pending { color: #e0a020; }
+
+/* ---- Panel mode (?panel=1) -------------------------------------------
+   Embedded view, e.g. as a Fluidd "HTTP Page" camera. The iframe does NOT
+   scale with the panel and Fluidd defaults it to 300px wide, so this
+   layout has to survive a narrow, fixed box: no header, no nav, no fixed
+   overlays, and everything sized in relative units. */
+/* Keep the app's own background by default so a DIRECT call of
+   /multiace/?panel=1 is not white; only the embedded case goes
+   transparent, so the Fluidd camera card paints behind us. app.js sets
+   the class when window.self !== window.top. */
+body:has(.panel) { margin: 0; background: var(--bg); }
+body.panel-embedded:has(.panel) { background: transparent; }
+.panel {
+  padding: .5em;
+  /* The iframe IS the viewport here, so vw tracks the CAMERA CARD's width,
+     not the Fluidd page around it - one rule fits a 300px card and a 700px
+     one without a breakpoint. Everything inside sizes in em so it follows. */
+  font-size: clamp(11px, 2.4vw, 14px);
+  display: flex;
+  flex-direction: column;
+  gap: .5em;
+}
+.panel-tabs { display: flex; gap: .35em; }
+.panel-tabs button {
+  flex: 1; padding: .25em 0; font-size: 1em; line-height: 1.2;
+}
+.panel-tabs button.active { outline: 1px solid var(--hl, #4aa3ff); }
+.panel-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-weight: 600;
+}
+.panel-temp { font-weight: 400; opacity: .75; font-size: .9em; }
+/* Sits at the far right of the head row, so it is the top-right corner
+   whether or not the unit tabs are showing. Muted until hovered - it is
+   an escape hatch, not something to draw the eye away from the slots. */
+.panel-full {
+  color: var(--muted); text-decoration: none; line-height: 1;
+  font-size: 1.1em; padding: 0 .1em; flex: none;
+}
+.panel-full:hover { color: var(--accent); }
+/* One card per slot, laid out side by side. The minimum is in PX on
+   purpose: an em minimum shrinks together with the vw font size above, so
+   the two cancel out and you get four cramped columns at every width
+   (measured). A px floor plus one breakpoint gives 4-across in a wide
+   (16:9 / 4:3) camera card and a clean 2x2 in a portrait one. */
+.panel-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: .4em;
+}
+/* 45% admits exactly two columns, whatever the slot count. PORTRAIT only:
+   in a wide-but-short tile (a camera card in Fluidd's all-cameras view)
+   a second row is exactly the wrong direction - it grows the one
+   dimension that is already short. */
+@media (max-width: 430px) and (orientation: portrait) {
+  .panel-cards { grid-template-columns: repeat(auto-fit, minmax(45%, 1fr)); }
+}
+.panel-card {
+  display: flex; flex-direction: column; gap: .3em;
+  padding: .35em .4em;
+  border: 1px solid rgba(128, 128, 128, .35);
+  border-radius: .35em;
+  min-width: 0;
+}
+/* Dim the contents, never the buttons - an empty slot is exactly where you
+   want to press Load. */
+.panel-card.empty .panel-card-body,
+.panel-card.empty .panel-card-label { opacity: .5; }
+.panel-card.active { border-color: var(--hl, #4aa3ff); }
+/* Same signal as the dashboard's toolhead card - green while this slot's
+   filament is being loaded, red while it is pulled back - in the panel's
+   flatter idiom. The toolhead keyframes fade to #3a3a3a at the extremes
+   because that IS that card's background; a panel card is transparent, so
+   reusing them verbatim would park a grey box on it for the whole
+   operation. Same rhythm and the same two colours, from transparent. */
+@keyframes panel-blink-load {
+  0%, 100% { background: transparent; }
+  50%      { background: #1f4d2a; }
+}
+@keyframes panel-blink-unload {
+  0%, 100% { background: transparent; }
+  50%      { background: #5a1f1f; }
+}
+.panel-card.op-loading   { animation: panel-blink-load   1s ease-in-out infinite; }
+.panel-card.op-unloading { animation: panel-blink-unload 1s ease-in-out infinite; }
+/* An empty slot dims its contents - but a slot being loaded INTO is empty
+   right up to the moment it is not, and the one card that is doing
+   something must not be the faintest one on screen. */
+.panel-card.op-loading .panel-card-body,
+.panel-card.op-loading .panel-card-label,
+.panel-card.op-unloading .panel-card-body,
+.panel-card.op-unloading .panel-card-label { opacity: 1; }
+.panel-card-top {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: .85em;
+}
+.panel-card-slot { font-weight: 700; }
+/* Which head this slot feeds is the one thing on the card you look for
+   from across the room, so it gets the accent and its own size instead
+   of riding along dimmed in the .85em top row. */
+.panel-card-head {
+  font-size: 1.3em; font-weight: 700; line-height: 1;
+  color: var(--accent);
+}
+.panel-card-body {
+  display: flex; gap: .4em; align-items: center; min-width: 0;
+}
+.panel-spool { width: 2.2em; height: 3.1em; flex: none; }
+.panel-spool-side { fill: #c8a06a; }
+/* Without the outline a black spool is invisible against the card. */
+.panel-spool-core { stroke: rgba(255, 255, 255, .25); stroke-width: .6; }
+.panel-spool-empty { fill: rgba(128, 128, 128, .35); }
+.panel-card-info {
+  display: flex; flex-direction: column; align-items: flex-end;
+  margin-left: auto; min-width: 0; text-align: right;
+}
+.panel-card-mat { font-weight: 600; }
+.panel-card-sub { font-size: .85em; opacity: .7; }
+.panel-card-mat, .panel-card-sub, .panel-card-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 100%;
+}
+/* margin-top:auto pins label+actions to the bottom. The cards are already
+   equal height (grid stretch), but without this the button rows sit at
+   different heights inside them whenever one slot has a subtype line and
+   its neighbour does not. */
+.panel-card-label {
+  margin-top: auto;
+  text-align: center; font-size: .85em; opacity: .8; min-height: 1.2em;
+  border-top: 1px solid rgba(128, 128, 128, .25); padding-top: .25em;
+}
+.panel-card-actions { display: flex; gap: .3em; }
+.panel-card-actions button { flex: 1; min-width: 0; }
+/* Touch targets get a PX floor, not an em one - em is relative to the
+   button's own (already reduced) font size, which put them at 17px on a
+   narrow card. This is the one place that must not scale down. */
+.panel-btn {
+  padding: .25em .3em; font-size: .85em; min-height: 24px; white-space: nowrap;
+}
+.panel-all { display: flex; gap: .35em; }
+.panel-all button {
+  flex: 1; padding: .35em 0; font-size: .9em; min-height: 26px;
+}
+.panel-snap { display: flex; gap: .35em; align-items: stretch; }
+/* The select takes the room, the three actions stay at their text width.
+   min-width:0 so a long loadout name shrinks the select instead of
+   pushing the buttons out of the card. */
+.panel-snap select {
+  flex: 1; min-width: 0; font-size: .85em; padding: .15em .3em;
+}
+.panel-snap button {
+  padding: .25em .5em; font-size: .85em; min-height: 26px;
+  white-space: nowrap;
+}
+/* The card body doubles as the picker target, like the slot tile does on
+   the dashboard - say so on hover. */
+.panel-card-pick { cursor: pointer; }
+.panel-card-pick:hover { outline: 1px solid var(--accent); border-radius: .25em; }
+/* The picker is a full form in a box that can be 236px tall. Let the
+   dialog scroll inside the overlay instead of growing past it, and drop
+   the label column to one line per row so it stays readable when narrow.
+   Only inside the panel - the normal UI keeps its layout. */
+body:has(.panel) .overlay .dialog {
+  max-height: 94vh; overflow-y: auto; max-width: 96vw;
+}
+@media (max-width: 430px) {
+  body:has(.panel) .dialog .config-row {
+    display: flex; flex-direction: column; align-items: stretch; gap: .15em;
+  }
+}
+.panel-err { color: #ff6b6b; }
+.panel-status {
+  display: flex; gap: .5em; align-items: center;
+  font-size: .85em; opacity: .85; min-width: 0;
+}
+.panel-notif {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Thumbnail line - hidden at every normal size, the media query at the end
+   of this file switches it on and the cards off. */
+.panel-mini { display: none; }
+.panel-mini-dot {
+  width: 1.8em; height: 1.8em; border-radius: 50%; flex: none;
+  /* Same reason as .panel-spool-core: a black spool would otherwise be an
+     invisible hole in the card. */
+  border: 1px solid rgba(255, 255, 255, .25);
+}
+.panel-mini-dot-empty { background: rgba(128, 128, 128, .35); }
+.panel-mini-text { display: flex; flex-direction: column; min-width: 0; }
+.panel-mini-main {
+  font-weight: 700; font-size: 1.2em; line-height: 1.15;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-mini-sub { font-weight: 400; opacity: .75; }
+.panel-mini-hint {
+  font-size: .8em; opacity: .6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Short tile: everything that carries a fixed px floor has to give. The
+   touch-target floor is deliberate on a phone but pointless here - at
+   this size the panel is a thumbnail nobody taps, they click it to
+   enlarge. One row of slots, tighter spacing, and the status line goes:
+   without this the content stays 315px tall and the card just grows
+   scrollbars (measured at 420/340/260px wide). */
+@media (max-height: 280px) {
+  .panel { padding: .3em; gap: .3em; font-size: clamp(9px, 2.2vw, 13px); }
+  .panel-cards { grid-template-columns: repeat(4, 1fr); gap: .25em; }
+  .panel-card { padding: .2em .25em; gap: .15em; }
+  .panel-spool { width: 1.4em; height: 2em; }
+  .panel-card-label { min-height: 0; padding-top: .1em; }
+  .panel-btn { min-height: 0; padding: .1em .2em; }
+  .panel-all button { min-height: 0; padding: .15em 0; }
+  .panel-status { display: none; }
+  .panel-snap select, .panel-snap button { min-height: 0; padding: .1em .3em; }
+}
+/* The loadout row goes first, and earlier than the rest: it is the tallest
+   single row (18px) and the one you never need at a glance - applying a
+   loadout is a sit-down action. Without this the band between the two
+   blocks below overflowed by up to 21px (measured 700x176..196), i.e. the
+   panel grew scrollbars exactly where it was supposed to be getting
+   simpler. */
+@media (max-height: 200px) {
+  .panel-snap { display: none; }
+}
+/* Thumbnail: at this height the slot label and the All buttons are the
+   last things worth their pixels - you cannot read the one and would not
+   aim at the other; the full view is one click away. */
+@media (max-height: 175px) {
+  .panel-card-label { display: none; }
+  .panel-all { display: none; }
+}
+
+/* ---- Thumbnail mode -------------------------------------------------
+   Below this the cards stop being worth their pixels: at 280px the tile
+   gives each of the four ~67px, which is a spool sketch plus a clipped
+   word and two buttons too small to aim at (measured; below 220px it
+   overflows outright). Fluidd's all-cameras strip lands right here - three
+   tiles in a 600px row are ~190px each. So instead of shrinking further
+   the panel shows the one thing worth a glance from across the room, and
+   the full view stays one click away.
+   LANDSCAPE only: a narrow but TALL tile has room for the 2x2 portrait
+   layout, and collapsing that one would throw away space it actually has.
+   The aspect clause catches the other degenerate case - a letterbox tile
+   wide enough to pass the width test but too short for the cards (the
+   content bottoms out at ~127px tall however wide the tile is). */
+@media (max-width: 280px) and (orientation: landscape),
+       (min-aspect-ratio: 4/1) {
+  .panel-tabs, .panel-head, .panel-cards,
+  .panel-all, .panel-snap, .panel-status { display: none; }
+  .panel-mini { display: flex; align-items: center; gap: .5em; }
+  /* The tile is no longer split four ways, so the text may have the room:
+     the 2.2vw above is tuned for four columns and bottoms out at its 9px
+     floor here, which would waste the whole thumbnail on 11px type.
+     min-height is what makes justify-content mean anything - the panel is
+     a content-height box otherwise, and the line would cling to the top
+     edge of an otherwise empty tile (border-box, so the padding is inside
+     the 100vh and cannot produce a scrollbar). */
+  .panel {
+    font-size: clamp(12px, 7vw, 20px);
+    min-height: 100vh; justify-content: center; align-items: center;
+  }
+  .panel-mini-dot { width: 2.4em; height: 2.4em; }
+  /* An error still shows - it is the one thing more important than the
+     lane - but it must not push the line out of the tile. */
+  .panel-err {
+    font-size: .8em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+}
+/* Strip-of-thumbnails size: the hint is the first thing to go - by the
+   time a tile is this short the user has long since learned that clicking
+   it enlarges. Colour and head stay: that is the whole point of the line. */
+@media (max-height: 90px) {
+  .panel-mini-hint { display: none; }
+}

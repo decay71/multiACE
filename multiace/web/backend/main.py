@@ -427,8 +427,10 @@ def _parse_state(status: dict) -> dict:
         ext_key = f"extruder{t}" if t > 0 else "extruder0"
         feed = (fl if t < 2 else fr).get(ext_key, {}) or {}
 
-        d_explicit, sl_explicit = _resolve_head_source(
-            head_source.get(str(t)) or head_source.get(t))
+        _src_raw = head_source.get(str(t)) or head_source.get(t)
+        d_explicit, sl_explicit = _resolve_head_source(_src_raw)
+        load_failed = bool(isinstance(_src_raw, dict)
+                           and _src_raw.get("load_failed"))
         loaded = bool(feed.get("filament_detected"))
         color = None
         material = ""
@@ -485,6 +487,7 @@ def _parse_state(status: dict) -> dict:
             "sku":                sku,
             "brand":              brand,
             "head_source_known":  (d_explicit is not None) and not is_manual and not is_feeder,
+            "load_failed":        load_failed and not is_manual and not is_feeder,
             "manual":             is_manual,
             "feeder":             is_feeder,
             "source":             source,
@@ -1267,6 +1270,49 @@ async def reboot() -> dict:
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502,
                             detail=f"moonraker reboot failed: {e}")
+
+FLUIDD_CAMERA_NAME = "multiACE"
+FLUIDD_CAMERA = {
+    "name": FLUIDD_CAMERA_NAME,
+    "location": "printer",
+    "service": "iframe",
+    "stream_url": "/multiace/?panel=1",
+    "snapshot_url": "",
+    "aspect_ratio": "16:9",
+    "target_fps": 15,
+    "target_fps_idle": 5,
+    "enabled": True,
+    "icon": "mdiWebcam",
+}
+
+@app.post("/api/fluidd-camera")
+async def fluidd_camera() -> dict:
+    """Register the panel as a camera in Fluidd, via Moonraker.
+
+    Fluidd keeps cameras in Moonraker's database, so this is a plain
+    POST - no config file to edit and nothing to restart. Deliberately a
+    button rather than something the installer does: it changes the
+    user's own Fluidd dashboard, and nobody should find a camera there
+    they did not ask for.
+
+    Idempotent: an existing entry of the same name is reported and left
+    alone, so a second click cannot overwrite a URL or aspect ratio the
+    user has adjusted by hand.
+    """
+    try:
+        listing = await _mr_get("/server/webcams/list")
+        cams = (listing.get("result") or {}).get("webcams") or []
+        for cam in cams:
+            if str(cam.get("name", "")).strip().lower() \
+                    == FLUIDD_CAMERA_NAME.lower():
+                return {"ok": True, "existed": True,
+                        "stream_url": cam.get("stream_url", "")}
+        result = await _mr_post("/server/webcams/item", FLUIDD_CAMERA,
+                                timeout=10.0)
+        return {"ok": True, "existed": False, "moonraker": result}
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502,
+                            detail=f"moonraker: {e}")
 
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:
@@ -2608,6 +2654,15 @@ async def ws(websocket: WebSocket) -> None:
         return
     except Exception:
         return
+
+_SHELL_PATHS = {"/", "/index.html", "/app.js", "/style.css"}
+
+@app.middleware("http")
+async def _shell_revalidate(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path in _SHELL_PATHS:
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 if Path(FRONTEND_DIR).is_dir():
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

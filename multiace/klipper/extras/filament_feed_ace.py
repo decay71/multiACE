@@ -2611,6 +2611,30 @@ class FilamentFeed:
             if a is not None and s is not None else ''
         return self.ace._t(key, head=hd, loc=loc)
 
+    def _feed_load_fail_details(self, channel):
+        """(detail, steps) for a failed LOAD, classified the way the swap path
+        classifies it: no transport vs no flow vs a dead ACE-side feed.
+
+        (None, None) = cannot classify (no ace object, not multi, no
+        head_source, or an ace.py without the helper); the caller then keeps
+        the flat 'Load jam' message.
+        """
+        if self.ace is None or getattr(self.ace, '_ace_mode', '') != 'multi':
+            return None, None
+        detail_fn = getattr(self.ace, '_load_slip_details', None)
+        if detail_fn is None:
+            return None, None
+        head = self.filament_ch[channel]
+        src = (getattr(self.ace, '_head_source', None) or {}).get(head) or {}
+        a, s = src.get('ace_index'), src.get('slot')
+        if a is None or s is None:
+            return None, None
+        try:
+            return detail_fn(head, int(a), int(s))
+        except Exception as e:
+            logging.info('[feed][load] classify failed, using flat message: %s' % e)
+            return None, None
+
     def get_status(self, eventtime=None):
         filament_detected = []
         filament_detected.append(self._port[FEED_CHANNEL_1].get_filament_detected())
@@ -2885,15 +2909,19 @@ class FilamentFeed:
                 if raw_msg is not None:
                     tech_msg = tech_msg + "raw msg:" + raw_msg
 
-                feed_msg = self._emit_feed_pause(channel, 'msg.pause_feed_load_jam')
+                feed_msg, feed_steps = self._feed_load_fail_details(channel)
+                if feed_msg is None:
+                    feed_msg = self._emit_feed_pause(channel, 'msg.pause_feed_load_jam')
                 if feed_msg is not None:
                     head_idx = self.filament_ch[channel]
                     head_disp = self.ace._disp(head_idx)
-                    for step in (
-                        'Reload Head %s filament (display load menu or web "Reload")' % head_disp,
-                        'Verify filament is in the toolhead',
-                        'Press RESUME on display or in fluidd to continue',
-                    ):
+                    if feed_steps is None:
+                        feed_steps = (
+                            'Reload Head %s filament (display load menu or web "Reload")' % head_disp,
+                            'Verify filament is in the toolhead',
+                            'Press RESUME on display or in fluidd to continue',
+                        )
+                    for step in feed_steps:
                         try:
                             self.gcode.run_script_from_command(
                                 'RESPOND TYPE=echo MSG="  - %s"' % step)

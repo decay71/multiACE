@@ -215,6 +215,15 @@ createApp({
       state.toolheads     = Array.isArray(s.toolheads) ? s.toolheads : [];
       state.wiring        = Array.isArray(s.wiring) ? s.wiring : [];
       state.save_variables = s.save_variables || {};
+      // What Klipper RUNS (the cfg side comes from /api/tipform). Missing
+      // here, state.tipform kept its declared default {available:false} for
+      // ever: tipformRestartPending then read the live mode as "stock"
+      // against a cfg mode of "custom" - the shipped default - and showed
+      // "restart Klipper to apply" permanently, right after a restart too.
+      // tipformVendorsByMaterial silently lost its vendors the same way.
+      state.tipform = (s.tipform && typeof s.tipform === "object")
+        ? s.tipform
+        : {available: false, mode: null, tables: []};
       state.bg_swap       = (s.bg_swap && typeof s.bg_swap === "object")
         ? s.bg_swap
         : {available: false, enabled_heads: [], busy: [], version: null};
@@ -278,7 +287,16 @@ createApp({
           _resolve: resolve,
         });
         cmdQueue.value.unshift(it);
-        _scheduleAdvance();
+        // In the panel the dispatch waits one microtask, so a synchronous
+        // burst reaches the dispatcher TOGETHER. Every case that matters is
+        // such a burst - load-on-an-occupied-head enqueues unload+load in
+        // one run, a loadout its whole action list, the picker save+refresh.
+        // Called synchronously the first command was already on its way
+        // before the second existed, so the batch check below never saw
+        // more than one item (measured). Two presses seconds apart still
+        // go one by one - by then the first is at the printer anyway.
+        if (panelMode) queueMicrotask(_scheduleAdvance);
+        else _scheduleAdvance();
       });
     }
     function removeFromQueue(id) {
@@ -297,6 +315,10 @@ createApp({
     }
     function _scheduleAdvance() {
       if (cmdQueueRunning) return;
+      // A batch is on its way: its items are still 'queued' until the POST
+      // resolves, so without this the next pass would send them a second
+      // time, one by one.
+      if (sendingAll.value) return;
       if (cmdPaused.value) return;
       if (cmdQueue.value.length === 0) return;
       // Klipper processes gcode serially: a Load/Unload swap holds
@@ -307,6 +329,19 @@ createApp({
       // state.swap_in_progress re-invokes us when Klipper clears.
       if (state.swap_in_progress) return;
       const arr = cmdQueue.value;
+      // In the panel the queue is a liability rather than a safety net:
+      // Fluidd drops the camera tile's iframe whenever it pauses its
+      // streams (a browser tab switch does exactly that), and everything
+      // still waiting in browser memory dies with it. A Load on an occupied
+      // head would then unload and never load - press Load, end up empty.
+      // So as soon as there is more than one command, hand the whole run to
+      // the printer as a single script: Klipper owns the sequence from then
+      // on and the tile may vanish. One command needs none of this - it is
+      // dispatched immediately and already lives at the printer.
+      if (panelMode && arr.filter(it => it.status === 'queued').length > 1) {
+        sendAllToPrinter();
+        return;
+      }
       let target = null;
       for (let i = arr.length - 1; i >= 0; i--) {
         if (arr[i].status === 'queued') { target = arr[i]; break; }
@@ -371,7 +406,14 @@ createApp({
     }
     const sendingAll = ref(false);
     async function sendAllToPrinter() {
-      const items = cmdQueue.value.filter(it => it.status === 'queued');
+      // .reverse() is load-bearing: new items are unshifted to the FRONT and
+      // the single-command path walks the array from the END, so the array
+      // order is newest-first while the queue itself runs oldest-first.
+      // Handing the filtered array to the batch as-is sent the script
+      // BACKWARDS - a Load on an occupied head became load-then-unload,
+      // i.e. it ended up empty. filter() already returns a copy, so this
+      // does not touch the queue.
+      const items = cmdQueue.value.filter(it => it.status === 'queued').reverse();
       if (!items.length) return;
       const commands = items.map(it => ({name: it.cmd, args: it.args || {}}));
       sendingAll.value = true;
@@ -498,6 +540,139 @@ createApp({
     function switchAce(idx) {
       run("ACE_SWITCH", {TARGET: idx});
     }
+    // --- Panel mode (?panel=1) -------------------------------------------
+    // Compact embeddable view, for Fluidd's "HTTP Page" camera type. A MODE
+    // of this app, not a second interface: same state, macros, queue,
+    // confirmations (window.confirm works fine inside an iframe) and i18n.
+    const _q = new URLSearchParams(location.search);
+    const panelMode = _q.get("panel") === "1";
+    // The full UI is this same page without ?panel=1. Derived from the
+    // current URL rather than hardcoded, so it stays right whether we are
+    // served under /multiace/ or off the root in a dev setup. Opened in a
+    // new tab on purpose - a plain link would navigate the camera TILE to
+    // the full interface, inside a 190px box.
+    const fullUiHref = location.pathname;
+    // The panel is transparent so the Fluidd camera card paints the
+    // background behind it - but opened DIRECTLY there is nothing behind
+    // it and transparent falls through to the browser's white. Flag the
+    // embedded case instead; the stylesheet keeps the app's own dark
+    // background by default, so the standalone view never flashes white.
+    if (panelMode) {
+      try {
+        if (window.self !== window.top) {
+          document.body.classList.add("panel-embedded");
+        }
+      } catch (e) {
+        // Cross-origin access to window.top throws - that only happens
+        // when we ARE embedded, so treat it as such.
+        document.body.classList.add("panel-embedded");
+      }
+    }
+    // Which unit the panel SHOWS. Never ACE_SWITCH - that changes the
+    // printer's ACTIVE unit, and looking at another card must not do that.
+    // null = follow the active unit until the user picks one.
+    const _panelAcePinned = ref((() => {
+      const p = parseInt(_q.get("ace"), 10);
+      if (!isNaN(p)) return p;                       // ?ace=2 pins it
+      const s = localStorage.getItem("multiace.panelAce");
+      return s === null ? null : parseInt(s, 10);
+    })());
+    const panelAceIdx = computed(() => {
+      const aces = state.aces || [];
+      const pin = _panelAcePinned.value;
+      if (pin !== null && aces.some(a => a.idx === pin)) return pin;
+      if (state.active_device !== null
+          && aces.some(a => a.idx === state.active_device)) {
+        return state.active_device;
+      }
+      return aces.length ? aces[0].idx : null;
+    });
+    const panelAce = computed(() =>
+      (state.aces || []).find(a => a.idx === panelAceIdx.value) || null);
+    function setPanelAce(idx) {
+      _panelAcePinned.value = idx;
+      // Remembered per browser on purpose: which card you are looking at is
+      // a VIEW preference, unlike confirm_commands (a safety setting, which
+      // lives on the printer so phone and desktop cannot disagree).
+      try { localStorage.setItem("multiace.panelAce", String(idx)); } catch (e) {}
+    }
+    // Unload is per HEAD. Multi wires slot N to head N; in head mode only
+    // the ACE head unloads, and only its own slots offer it.
+    function panelSlotHead(aceIdx, slotIdx) {
+      if (state.mode === "head") {
+        const h = state.ace_head;
+        return (headAceOf(h) === aceIdx) ? h : null;
+      }
+      return slotIdx;
+    }
+    // Which head this slot currently FEEDS, for the card's "T2" corner.
+    // head_source is the truth in both modes: multi wires slot N to head N,
+    // but that says nothing about whether it is loaded, and head mode maps
+    // freely. null = feeds nothing right now, so the corner stays empty.
+    function panelSlotHeadLoaded(aceIdx, slotIdx) {
+      const th = (state.toolheads || []).find(
+        t_ => t_.head_source_known && t_.ace === aceIdx && t_.slot === slotIdx);
+      return th ? th.idx : null;
+    }
+    // The closest thing we have to "this slot is printing right now": there
+    // is no active-extruder field in /api/state, but the ACE reports the slot
+    // its feed assist is armed on, and the printing lane keeps FA armed the
+    // whole print (CLAUDE.md 12 - the armed slot is the strongest
+    // which-slot-feeds-this-head signal). -1 = nothing armed.
+    function panelSlotActive(ace, slotIdx) {
+      return !!ace && ace.feed_assist === slotIdx;
+    }
+    // Bottom line of a card. AFC prints the colour name there; our closest
+    // equivalent is whatever brand the slot reports. Empty string keeps the
+    // row (and thus the card height) stable.
+    function panelSlotLabel(aceIdx, slotIdx) {
+      const a = (state.aces || []).find(x => x.idx === aceIdx);
+      const sl = a && (a.slots || []).find(s => s.idx === slotIdx);
+      return (sl && sl.brand) || "";
+    }
+    // Is this slot's filament moving right now - the card blinks green while
+    // loading, red while unloading, same signal as the dashboard's toolhead
+    // card. head_source is what ties a SLOT card to a per-HEAD operation: it
+    // is stamped BEFORE the feed and cleared only on a verified unload, so
+    // the card that blinks is the one whose filament actually moves - in both
+    // modes, and for a combiner slot whose index does not match its head.
+    // toolheadOps is declared further down; this only runs at render time.
+    function panelSlotOp(aceIdx, slotIdx) {
+      const head = panelSlotHeadLoaded(aceIdx, slotIdx);
+      return head === null ? null : (toolheadOps.value[head] || null);
+    }
+    // Content of the thumbnail line. In an all-cameras strip a tile is about
+    // 190px wide, where four slot cards are neither readable nor tappable -
+    // so below that the stylesheet swaps the cards for this: the lane that is
+    // running, in its colour. WHEN that happens is decided in CSS alone (the
+    // iframe is the viewport, so a media query sees the tile), which is why
+    // this is a plain computed with no resize listener behind it.
+    const panelMini = computed(() => {
+      // Same signal as panelSlotActive - /api/state has no active-extruder
+      // field, but the printing lane keeps feed assist armed for the whole
+      // print. The shown unit is asked first, then the others: a swap can
+      // leave the pinned card idle while a different unit is the one feeding.
+      const aces = state.aces || [];
+      const shown = panelAce.value;
+      const order = shown ? [shown].concat(aces.filter(a => a !== shown)) : aces;
+      for (const a of order) {
+        const s = a.feed_assist;
+        if (typeof s !== "number" || s < 0) continue;
+        const slot = (a.slots || []).find(x => x.idx === s) || {};
+        const head = panelSlotHeadLoaded(a.idx, s);
+        return {
+          color: slot.color || null,
+          // The head is what you look for; if the armed slot feeds none
+          // (possible between a swap's unload and load), name the unit
+          // instead of inventing a head.
+          main: head === null ? "ACE " + dispIdx(a.idx) : "T" + dispIdx(head),
+          sub: slot.material || "",
+        };
+      }
+      // Nothing armed: idle, or a print that has not reached its first load.
+      return {color: null,
+              main: shown ? "ACE " + dispIdx(shown.idx) : "multiACE", sub: ""};
+    });
     function loadAll(idx) {
       if (_blockIfPrinting()) return;
       run("ACE_SWITCH", {TARGET: idx, AUTOLOAD: 1});
@@ -540,10 +715,37 @@ createApp({
       }
       return false;
     }
+    // Does this slot have filament at the ACE input? 'empty' is the backend's
+    // own verdict (gate == 0 or an empty status, V1's 'empty1' included);
+    // 'unknown' means the unit has not reported yet and must NOT block
+    // anything. The engine refuses to load an empty slot - it has since the
+    // very first version - so offering the button here only ever produced
+    // the useless half of the sequence: on an occupied head loadSlot
+    // enqueues unload+load, the unload ran, the load was refused, and the
+    // head stood empty for nothing.
+    function slotIsEmpty(aceIdx, slotIdx) {
+      const a = (state.aces || []).find(x => x.idx === aceIdx);
+      const sl = a && (a.slots || []).find(s => s.idx === slotIdx);
+      return !!sl && sl.state === 'empty';
+    }
     function isToolheadOccupied(aceIdx, slotIdx) {
       const th = state.toolheads.find(tt => tt.idx === slotIdx);
       if (!th) return false;
-      if (th.head_source_known) return th.ace === aceIdx;
+      if (th.head_source_known) {
+        if (th.ace !== aceIdx) return false;
+        // Multi twin of slotLoadedInHead's sensor rule: a head whose
+        // toolhead sensor explicitly reads CLEAR is not really occupied -
+        // head_source is retry/FA bookkeeping, not filament (failed load,
+        // manual extraction: bowden off, lever, pull, cut, just load).
+        // The engine's own already-loaded guard reads the same sensor.
+        // toolheadOps keeps it "occupied" while a load/unload still RUNS
+        // (the sensor clears ~30s before an unload finishes); a None/
+        // undefined sensor stays conservative-occupied.
+        if (th.filament_at_extruder === false && !toolheadOps.value[th.idx]) {
+          return false;
+        }
+        return true;
+      }
       return !!th.filament_at_extruder;
     }
     // Mid-print runout: print paused, the head still owns its ACE source
@@ -557,10 +759,15 @@ createApp({
       // (head_source ace/slot), not the toolhead whose index == the slot.
       // In head mode a head loads from any slot of its wired ACE, so the old
       // idx===slot lookup blinked "reload" under the wrong slot (slot==head).
+      // toolheadOps gate: during a running unload the sensor clears ~30s
+      // before head_source does - without the gate the button flipped to
+      // "Reload" mid-op and invited a click into the half-finished unload
+      // (Dirk 2026-07-26).
       return state.toolheads.some(th =>
         th.head_source_known &&
         th.ace === aceIdx && th.slot === slotIdx &&
-        th.filament_at_extruder === false);
+        th.filament_at_extruder === false &&
+        !toolheadOps.value[th.idx]);
     }
     function unloadHead(idx) {
       if (_blockIfPrinting()) return;
@@ -606,6 +813,28 @@ createApp({
         });
       } catch (_) {}
       reloadState();
+    }
+    // Register the panel as a camera in Fluidd. A button, not something
+    // the installer does - it changes the user's own dashboard, and the
+    // backend leaves an existing entry of that name alone, so a second
+    // click cannot overwrite a URL or aspect ratio they adjusted.
+    const fluiddCamBusy = ref(false);
+    const fluiddCamMsg = ref("");
+    async function addFluiddCamera() {
+      fluiddCamBusy.value = true;
+      fluiddCamMsg.value = "";
+      try {
+        const r = await fetch(`${API}/fluidd-camera`, {method: "POST"});
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || r.status);
+        fluiddCamMsg.value = j.existed
+          ? t("ui.config.fluidd_panel_exists")
+          : t("ui.config.fluidd_panel_added");
+      } catch (e) {
+        fluiddCamMsg.value = `${t("ui.common.error")}: ${e.message || e}`;
+      } finally {
+        fluiddCamBusy.value = false;
+      }
     }
     async function setPickupCleaning(enable) {
       try {
@@ -678,6 +907,13 @@ createApp({
     });
     function loadSlot(aceIdx, slotIdx) {
       if (_blockIfPrinting()) return;
+      // Before anything is enqueued: an empty source slot cannot load, and
+      // the unload half would otherwise run and strand the head.
+      if (slotIsEmpty(aceIdx, slotIdx)) {
+        setMacroLog(t("ui.dashboard.slot_empty_hint",
+                      {ace: dispIdx(aceIdx), slot: dispIdx(slotIdx)}));
+        return;
+      }
       if (state.mode === "head") {
         // head mode: each ACE head is wired to exactly one ACE (head_ace), so
         // this ACE's slots all feed the head whose head_ace points here. Loading
@@ -685,12 +921,25 @@ createApp({
         const h = aceHeadForAce(aceIdx);
         if (h === null) return;
         const th = state.toolheads.find(tt => tt.idx === h);
-        if (th && th.head_source_known) {
+        // SAME ace/slot with the toolhead sensor CLEAR needs NO unload
+        // cycle - nothing is at the head, ACE_LOAD_HEAD just (re)runs the
+        // feed (its already-loaded guard reads this same eN sensor). That
+        // covers BOTH: a failed load (head_source kept with
+        // load_failed=true) and the mid-print runout reload (head_source
+        // kept for the FA-rearm on resume; the old unconditional prefix
+        // forced a pointless double unload there - Dirk 2026-07-26). A
+        // different slot still unloads first (two filaments must not share
+        // the path), and a head whose sensor reads filament (no-flow
+        // class / really loaded) still unloads first too.
+        const directLoad = !!(th && !th.filament_at_extruder
+          && th.ace === aceIdx && th.slot === slotIdx);
+        if (th && th.head_source_known && !directLoad) {
           enqueue("ACE_UNLOAD_HEAD", {HEAD: h});
         }
         enqueue("ACE_LOAD_HEAD", {HEAD: h, ACE: aceIdx, SLOT: slotIdx});
         return;
       }
+      // multi: slot N feeds head N.
       const th = state.toolheads.find(tt => tt.idx === slotIdx);
       if (th && th.head_source_known && th.ace !== aceIdx) {
         enqueue("ACE_UNLOAD_HEAD", {HEAD: slotIdx});
@@ -722,7 +971,20 @@ createApp({
       const h = aceHeadForAce(aceIdx);
       if (h === null) return false;
       const th = state.toolheads.find(tt => tt.idx === h);
-      return !!(th && th.head_source_known && th.ace === aceIdx && th.slot === slotIdx);
+      // load_failed: the slot is NOT actually loaded (failed load keeps
+      // head_source for the retry) - keep its Load button usable as the
+      // one-click retry. Same for a head whose toolhead sensor reads CLEAR
+      // (manual extraction: bowden off, lever, pull, cut - Dirk's no-flow
+      // recovery): head_source alone is bookkeeping, not filament. Only an
+      // explicit sensor False counts (None/undefined = module offline ->
+      // stay conservative, keep disabled). toolheadOps keeps the button
+      // disabled while a load/unload is still RUNNING on that head (the
+      // sensor clears ~30s before an unload finishes - without this the
+      // button re-enabled mid-op).
+      return !!(th && th.head_source_known && !th.load_failed
+                && (th.filament_at_extruder !== false
+                    || !!toolheadOps.value[th.idx])
+                && th.ace === aceIdx && th.slot === slotIdx);
     }
     // ---- per-material tip forming ([ace_tipform]) editor ---------------
     // Server truth = the cfg section; state.tipform = what Klipper RUNS.
@@ -1386,6 +1648,7 @@ createApp({
       dryer_duration: '',
       display_index_base: 0,
       v2_order: 'first',
+      identity_priority: 'multiace',
       load_retry: '',
       extrusion_retry: '',
       unload_retry: '',
@@ -1439,6 +1702,8 @@ createApp({
       configForm.dryer_duration    = numOrEmpty(params.dryer_duration);
       configForm.display_index_base = numOrEmpty(params.display_index_base);
       configForm.v2_order = (params.v2_order === 'last') ? 'last' : 'first';
+      configForm.identity_priority =
+        (params.identity_priority === 'spoollink') ? 'spoollink' : 'multiace';
       configForm.load_retry        = numOrEmpty(params.load_retry);
       configForm.extrusion_retry   = numOrEmpty(params.extrusion_retry);
       configForm.unload_retry      = numOrEmpty(params.unload_retry);
@@ -1481,6 +1746,8 @@ createApp({
         dryer_duration:     numStr(configForm.dryer_duration),
         display_index_base: numStr(configForm.display_index_base),
         v2_order:           configForm.v2_order === 'last' ? 'last' : 'first',
+        identity_priority:  configForm.identity_priority === 'spoollink'
+                              ? 'spoollink' : 'multiace',
         load_retry:         numStr(configForm.load_retry),
         extrusion_retry:    numStr(configForm.extrusion_retry),
         unload_retry:       numStr(configForm.unload_retry),
@@ -2879,7 +3146,15 @@ createApp({
         window.addEventListener("resize", recomputeWiring);
       }
       scheduleWiringRecompute();
-      window.addEventListener("beforeunload", _onBeforeUnload);
+      // Never in the panel. The guard is there to stop you navigating the
+      // MAIN UI away mid-operation; embedded as a Fluidd camera card we have
+      // no say over the parent's navigation anyway, and there is nothing to
+      // lose in a tile - the commands run on the printer, not in the browser.
+      // Worse, beforeunload fires every time OUR document is torn down, and
+      // Fluidd drops the card's iframe src whenever it pauses its streams -
+      // which a browser tab switch does. With anything left in the queue that
+      // was a "leave site?" prompt on every single tab switch.
+      if (!panelMode) window.addEventListener("beforeunload", _onBeforeUnload);
     });
     function _onBeforeUnload(ev) {
       const pending = cmdQueue.value.some(
@@ -2902,7 +3177,11 @@ createApp({
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,
       state, loadError, run, macroLog,
-      slotTitle, switchAce, loadSlot, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, setHeadManual, setHeadFeeder, setHeadAce, aceOptionsForHead, headAceOf, visibleAces, openHeadPicker, isToolheadOccupied, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning,
+      panelMode, panelAce, panelAceIdx, setPanelAce, panelSlotHead,
+      panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
+      panelMini, fullUiHref,
+      slotTitle, switchAce, loadSlot, slotIsEmpty, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, setHeadManual, setHeadFeeder, setHeadAce, aceOptionsForHead, headAceOf, visibleAces, openHeadPicker, isToolheadOccupied, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning,
+      addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       isPrinting,
       dryerCfg, dryStart, dryStop, dryOpenAce, toggleDryPanel, aceDrying,
       snapshots, selectedSnapshot, snapshotPreview, saveSnapshot, loadSnapshot, deleteSnapshot,
