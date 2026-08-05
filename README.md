@@ -11,7 +11,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 
 
-## What's new in multiACE 0.99.6.1b "Persistent Pesterers" Hotfix 2
+## What's new in multiACE 0.99.6.2b "Persistent Pesterers" Hotfix 2
 - Supports paxx mod mode, seperate download as mod zip soon.
 - Pseudo integrates in fluidd as camera, add camera in config section
 - New config switch for SpoolLink users, overwrite ACE Slots or leave it alone 
