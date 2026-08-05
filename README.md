@@ -11,12 +11,11 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 
 
-## What's new in multiACE 0.99.6.1b "Persistent Pesterers" Hotfix 1
-
-**Fixes**
-
-Prime Tower regression in multiMode Ace swaps fixed
-
+## What's new in multiACE 0.99.6.1b "Persistent Pesterers" Hotfix 2
+- Supports paxx mod mode, seperate download as mod zip soon.
+- Pseudo integrates in fluidd as camera, add camera in config section
+- New config switch for SpoolLink users, overwrite ACE Slots or leave it alone 
+  
 **Nozzle wiper updated to version 2 — new, larger purge bin.**
 
 **https://makerworld.com/en/models/3084827** Wiper
