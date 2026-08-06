@@ -255,6 +255,31 @@ Before installing multiACE, ensure the following:
    ssh root@<printer-ip>
    ```
 
+## Building PAXX firmware with multiACE
+
+PAXX firmware with multiACE baked in. Most users should just flash the
+prebuilt `firmware.bin` — this is for anyone who wants to build it
+themselves or combine multiACE with other PAXX mods.
+
+**Requirements:** Linux or WSL, Docker, git, ~10 GB free disk space.
+
+Download `multiace-<version>-paxx-mod.tar.gz` from
+[Releases](https://github.com/decay71/multiACE/releases), then:
+
+```sh
+# 1. Get the PAXX firmware (upstream — no fork needed)
+git clone --recursive -b v1.5.2-paxx12-21 \
+  https://github.com/paxx12-snapmaker-u1/SnapmakerU1-Extended-Firmware.git paxx
+
+# 2. Unpack the multiACE mod
+mkdir -p paxx/overlays/mods/decay71
+tar xzf multiace-<version>-paxx-mod.tar.gz -C paxx/overlays/mods/decay71/
+
+# 3. Build
+cd paxx
+sudo ./dev.sh make build PROFILE=extended-decay71 GIT_VERSION=v1.5.2-paxx12-21
+
+
 ### Quick Install (Recommended)
 
 1. Download or clone this repository
