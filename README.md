@@ -255,6 +255,25 @@ Before installing multiACE, ensure the following:
    ssh root@<printer-ip>
    ```
 
+### Install
+
+1. Download or clone this repository
+2. Copy the `multiace/` folder to your printer via SCP/SFTP (e.g. WinSCP on Windows, or command line):
+   ```
+   scp -r multiace/ root@<printer-ip>:/tmp/multiace/
+   ```
+3. SSH into the printer and run:
+   ```
+   bash /tmp/multiace/install_multiace.sh
+   ```
+4. Install with WEB UI https://printer-ip/multiace/
+   ```
+   bash /tmp/multiace/install_multiace.sh --install-web
+   
+   ```
+5. Reboot the printer
+6. multiACE starts in **Multi mode** - all connected ACE units are detected automatically
+
 
 ### Uninstall
 
