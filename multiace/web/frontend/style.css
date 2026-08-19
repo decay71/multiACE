@@ -15,14 +15,14 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; }
-/* Fields: every block that needed one (.config-row, .per-ace-row,
-   .snapshot-row, .dryer-form, .tipform-step) repeated the identical
-   dark+border look, and whatever never got one fell back to the browser
-   default - i.e. WHITE in a dark UI. One rule here, so a new field is dark
-   by default and nobody has to remember. Types are listed explicitly:
-   checkbox/radio/range/color must keep their native look, and a bare
-   `input` selector would flatten them too. Component rules come later in
-   the file and are more specific, so their sizing still wins. */
+/* Text-entry controls, app-wide. Until now every component styled its own
+   (.dryer-form, .snapshot-row, .th-ace-pick, the tip-form editor ...) and a
+   block that forgot to fell back to the browser default - i.e. WHITE in a
+   dark UI. That is what made the spool table stand out. One rule here, so a
+   new field is dark by default and nobody has to remember. Types are listed
+   explicitly: checkbox/radio/range/color must keep their native look, and a
+   bare `input` selector would flatten them too. Component rules come later
+   in the file and are more specific, so their sizing still wins. */
 input[type="text"], input[type="number"], input[type="password"],
 input[type="search"], input[type="url"], input[type="email"],
 input[type="date"], input[type="time"], select {
@@ -31,19 +31,31 @@ input[type="date"], input[type="time"], select {
   padding: .25rem .4rem;
 }
 select option { background: #111; color: var(--fg); }
-/* Buttons, same story as the fields above: .row / .update-actions /
+/* A value the UI refuses to send (see autoDryPairInvalid) or one the printer
+   refused: framed, not popped up, and the typed text stays put.
+   !important is deliberate and the one place it is used. An error frame that
+   a layout rule can silently defeat is worse than none, and that is exactly
+   what happened: `.dry-panel .dry-row input[type=number]` (0,3,1) re-set the
+   border over `input.invalid` (0,1,1), and its :focus rule painted the
+   border ACCENT on top - so the state was computed correctly and never
+   drawn. Chasing every component selector instead would mean this breaks
+   again the next time someone adds a scoped input rule. */
+input.invalid, select.invalid,
+input.invalid:focus, select.invalid:focus {
+  border-color: var(--error) !important;
+  outline-color: var(--error);
+}
+/* Buttons, same story as the inputs above: .row / .update-actions /
    .snapshot-row / .dryer-form each repeated the identical card+border look,
-   and whatever was never given one fell through to the browser default -
-   which is what made the panel's Load/Unload rows and the loadout select
-   glare white inside the Fluidd camera card. This is that repeated look,
-   once. Bare `button` is the weakest selector there is, so every component
-   rule above and below still wins - button.slot, nav button and .pill
-   button are untouched (verified: no rule setting a button background is
-   weaker or equal). The .primary / .warn / .danger classes already exist in
-   the markup, so they are defined here too rather than per block. Font is
-   deliberately NOT touched: buttons that currently render in the browser
-   font keep doing so, and this stays a colour/border fix instead of a
-   silent relayout. */
+   and whatever was never given one (the spool table actions, the export /
+   import / Spoolman row, the ✓ next to the Spoolman URL) fell through to the
+   browser default. This is that repeated look, once. Bare `button` is the
+   weakest selector there is, so every component rule above and below still
+   wins - button.slot, nav button and .pill button are untouched. The
+   .primary / .warn / .danger classes already exist in the markup, so they
+   are defined here too rather than per block. Font is deliberately NOT
+   touched: buttons that currently render in the browser font keep doing so,
+   and this stays a colour/border fix instead of a silent relayout. */
 button {
   background: var(--card); color: var(--fg);
   border: 1px solid var(--border); border-radius: 4px;
@@ -116,7 +128,50 @@ h3 { margin: 1.2rem 0 .5rem 0; color: var(--muted); font-size: .85rem; font-weig
 .reboot-banner {
   background: var(--warn-bg); color: var(--warn);
   border-bottom: 1px solid var(--warn);
-  padding: .6rem 1rem; font-size: .9rem; font-weight: 600; text-align: center;
+  padding: .7rem 1rem; font-size: .95rem; font-weight: 700; text-align: center;
+  /* Sticky: the config form is long, and a notice that only exists at the
+     top of the DOCUMENT is invisible exactly when it is earned - at the
+     save button far below (Dirk 2026-08-15). */
+  position: sticky; top: 0; z-index: 50;
+}
+/* The same warning AT the save button - FILLED, not a tinted outline: the
+   tinted version still read as decoration next to the grey log block
+   (Dirk 2026-08-15 "bitte auffaelliger"). The short pulse catches the eye
+   once when it appears and then stops - it must not flicker forever while
+   the user works on. */
+.config-restart-hint {
+  background: var(--warn); color: #201400;
+  border: 1px solid var(--warn); border-radius: 4px;
+  padding: .7rem 1rem; margin: .7rem 0 0 0;
+  font-weight: 700; font-size: 1rem; text-align: center;
+  box-shadow: 0 0 0 3px rgba(255, 187, 102, .18);
+  animation: restart-pulse .7s ease-in-out 4;
+}
+@keyframes restart-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(255, 187, 102, .18); }
+  50%      { box-shadow: 0 0 0 9px rgba(255, 187, 102, .30); }
+}
+/* Users who ask the browser for less motion get the colour, not the pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .config-restart-hint { animation: none; }
+}
+/* Send-to-multiACE inbox: a slicer-pushed file waiting for pickup. */
+.inbox-banner {
+  background: var(--card); color: var(--fg);
+  border-bottom: 1px solid var(--accent);
+  padding: .5rem 1rem; font-size: .9rem;
+  display: flex; align-items: center; justify-content: center; gap: .8rem;
+  flex-wrap: wrap;
+}
+.inbox-banner .inbox-wait { color: var(--muted); font-size: .8rem; }
+.inbox-banner .inbox-start {
+  background: var(--accent); color: var(--accent-fg); border: none;
+  padding: .3rem .9rem; border-radius: 6px; font-weight: 600; cursor: pointer;
+}
+.inbox-banner .inbox-start:disabled { opacity: .45; cursor: default; }
+.inbox-banner .inbox-dismiss {
+  background: none; border: none; color: var(--muted);
+  font-size: 1.1rem; cursor: pointer; padding: 0 .3rem;
 }
 .status-row { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
 .pill {
@@ -177,10 +232,18 @@ h3 { margin: 1.2rem 0 .5rem 0; color: var(--muted); font-size: .85rem; font-weig
                   pointer-events: none; z-index: 0; }
 .ace-th-wrap .ace-grid, .ace-th-wrap .toolhead-grid, .ace-th-wrap h3,
 .ace-th-wrap p { position: relative; z-index: 1; }
-.ace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 1rem; }
+/* Track cap 420px, not 1fr: with FEWER than four visible cards (head mode
+   shows only the wired ACEs) an uncapped auto-fit track balloons to half
+   or a third of the row, and the slot tiles inside turn into wide
+   rectangles - multi and head mode looked like different designs (Dirk
+   2026-08-16: "bitte auf die bessere Variante angleichen" = the compact
+   multi look). At four cards the cap changes nothing below ~1750px
+   viewport; both modes now render identical cards at every count. */
+.ace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 420px)); gap: 1rem; }
 /* Solo ACE (head/single view): span the full grid row and use a fixed width
    (not max-width) so the card is the same size whether left- or right-aligned
-   - justify-self:end would otherwise shrink it to content width on the right. */
+   - justify-self:end would otherwise shrink it to content width on the right.
+   Deliberately WIDER than the capped tracks (S32, Dirk-decided 500px). */
 .ace-grid > .ace-card:only-child { grid-column: 1 / -1; width: min(500px, 100%); }
 /* head mode, all ACE heads on the right: right-align the card so it starts from
    the right and lines up with the right toolheads. Keep the normal card size
@@ -196,10 +259,16 @@ header h1 .hl { color: var(--accent); }
 .ace-card.clickable:hover { border-color: var(--accent); }
 .ace-card h2 { margin: 0 0 .6rem 0; font-size: 1.05rem; font-weight: 600;
                display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .6rem; }
-.ace-card h2 .ace-name { display: inline-flex; align-items: center; gap: .4rem; }
+.ace-card h2 .ace-name { display: inline-flex; align-items: center; gap: .4rem;
+                          min-width: 0; }
 .ace-card h2 small { color: var(--accent); font-weight: 600; font-size: .7rem; text-transform: uppercase; }
+/* The middle block (temp / rH / state) must never wrap - the header is a
+   three-column grid and the left column grew with the firmware version,
+   which pushed "%rH" onto a second line (Dirk 2026-08-09). nowrap here
+   plus min-width:0 on the name lets the LEFT side yield instead. */
 .ace-card h2 .ace-status { color: var(--muted); font-weight: 400; font-size: .8rem;
-                            text-align: center; justify-self: center; }
+                            text-align: center; justify-self: center;
+                            white-space: nowrap; }
 .ace-card h2 .ace-load-all {
   background: var(--card); color: var(--fg); border: 1px solid var(--border);
   padding: .25rem .7rem; border-radius: 4px; cursor: pointer; font-size: .8rem; font-weight: 500;
@@ -283,7 +352,30 @@ header h1 .hl { color: var(--accent); }
 .slot-load-btn.reload:hover:not(:disabled) { background: #d4880f; border-color: #d4880f; }
 @keyframes reload-pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
 button.slot {
-  flex: 1; aspect-ratio: 1 / 1.5;
+  /* FIXED height, deliberately NOT aspect-ratio (was 1/1.5 until
+     2026-08-09). The ratio derived the height from the width, so the tile
+     changed size with the viewport - and worse, a ratio is only a
+     suggestion: as soon as the content did not fit, the tile stretched
+     past it. The spool WEIGHT line is what tipped it (measured in
+     Chromium: content 122.6px with weight vs 102.6px without, so +20px).
+     The ratio needs a >=81.7px tile to hold that, but right after every
+     grid column break a tile is only 64px wide - so tiles read ~1.9
+     instead of 1.5 in the bands 640-790px and 940-1190px (and below
+     420px), and were clean again only at >=800/1200px. That is why it
+     showed up at some window widths and not others. On top, all four
+     tiles share ONE flex row, so a single spool-bound slot lifted the
+     whole row and cards differed from each other. A fixed height removes
+     the coupling outright: identical tile at every width, loaded or
+     empty, with or without a bound spool. In rem, not px, so it tracks
+     the root font size - every contributing size (slot-num, em, badge,
+     padding) is rem/em based, so a px value would clip once the user
+     scales text. 8rem = 128px leaves ~5px over the tallest content.
+     flex must be 0 0 <height>, NOT the old `flex: 1`: .slot-cell is a
+     COLUMN flex container, so flex-basis lands on the vertical axis and a
+     grow factor overrides `height` outright - with `flex: 1` the tile
+     silently went back to content height (122.6 vs 102.6) and the whole
+     point was lost. */
+  flex: 0 0 8rem; height: 8rem;
   border-radius: 4px;
   display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
   font-weight: 700; font-size: .9rem;
@@ -349,13 +441,18 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .toolhead-card.present { border-color: #3a6a3a; }
 .toolhead-card.unknown { border-color: #b59a2a; }
 .toolhead-card.unknown .meta .muted { color: #d6b842; }
-.toolhead-card.manual { border-color: #3a6a8a; }
 .toolhead-card.load-failed { border-color: #a04a3a; }
 .toolhead-card.load-failed .meta .error-inline { color: #e07a5f; }
+.toolhead-card.manual { border-color: #3a6a8a; }
 .toolhead-card.manual .meta .muted { color: #6aa6c8; }
 .toolhead-card.feeder { border-color: #2f6f5f; }
 .toolhead-card.feeder .meta .muted { color: #5fae9a; }
-.toolhead-card.feeder-empty { opacity: .5; }
+/* No empty-dim for feeder cards (was opacity .5; Dirk 2026-08-09
+   "Feederkoepfe brauchen eigentlich nicht gedimmt zu werden"): the
+   identity tile is the card's main content now, and parent opacity is
+   multiplicative - a child cannot undim itself, so the tile's filament
+   colour washed out exactly where it matters. The .feeder-empty class
+   stays on the card as a styling hook. */
 @keyframes th-blink-load {
   0%, 100% { background: #3a3a3a; }
   50%      { background: #1f4d2a; }
@@ -374,12 +471,63 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .th-manual input { cursor: pointer; }
 .th-manual.disabled { opacity: .4; cursor: not-allowed; }
 .th-manual.disabled input { cursor: not-allowed; }
-/* feeder head: the title colour circle opens the filament picker on click */
-.toolhead-card .th-color.clickable { cursor: pointer; width: 18px; height: 18px; }
-.toolhead-card .th-color.clickable:hover { border-color: var(--accent); }
-.toolhead-card .th-color.empty { background:
+/* Feeder head identity TILE (replaces the old 18px title dot, Dirk mockup
+   2026-08-09): a slot-style square - material inside, spool weight, SPOOL
+   badge, filament colour as the surface. Same visual language as
+   button.slot so it reads as "click me to change", which the dot never
+   did. */
+/* The tile is SMALL on purpose - it fits inside the title+meta zone
+   (Dirk 2026-08-09: "lieber das Picker-Feld etwas kleiner"). The card
+   stays the SAME flex column as every other toolhead card, so the
+   margin-top:auto bottom-pinning above keeps working and feeder cards
+   line up flush with ACE cards - the grid experiment broke exactly
+   that (actions clumped at the top while ACE cards pinned them down).
+   Absolutely positioned top right; h2/meta reserve its width, and the
+   meta min-height guarantees the title+meta zone is at least as tall
+   as the tile, so the actions row can never slide under it. */
+.toolhead-card.feeder, .toolhead-card.manual { position: relative; }
+.toolhead-card.feeder > h2, .toolhead-card.manual > h2,
+.toolhead-card.feeder > .meta, .toolhead-card.manual > .meta {
+  padding-right: 4.5rem;
+}
+.toolhead-card.feeder > .meta, .toolhead-card.manual > .meta {
+  min-height: 2.4rem;
+}
+.toolhead-card .feeder-tile {
+  position: absolute; top: .8rem; right: .8rem;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: .05rem;
+  width: 4rem; height: 3.9rem;
+  border-radius: 4px; border: 2px solid transparent;
+  background: #444; color: #fff;
+  font-weight: 700; font-size: .78rem; font-family: inherit;
+  text-shadow:
+    -1px -1px 0 rgba(0,0,0,.9),
+     1px -1px 0 rgba(0,0,0,.9),
+    -1px  1px 0 rgba(0,0,0,.9),
+     1px  1px 0 rgba(0,0,0,.9);
+  cursor: pointer; padding: .2rem .1rem;
+  transition: transform .08s ease, box-shadow .15s;
+}
+.toolhead-card .feeder-tile:hover {
+  transform: translateY(-2px); box-shadow: 0 4px 8px rgba(21,189,198,0.25);
+}
+.toolhead-card .feeder-tile em {
+  font-style: normal; font-weight: 500; opacity: .95;
+  text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+  max-width: 100%;
+}
+.toolhead-card .feeder-tile .spool-weight { font-size: .6rem; }
+.toolhead-card .feeder-tile .src-badge { margin-top: .1rem; font-size: .5rem; }
+.toolhead-card .feeder-tile.no-color { background:
   repeating-conic-gradient(#555 0deg 90deg, var(--card) 90deg 180deg)
-  50% / 8px 8px; }
+  50% / 12px 12px; }
+/* Empty feeder/manual head: grey surface + "leer", the declared colour
+   demoted to the border (set inline). AFTER .no-color so grey wins when
+   both apply. Full opacity on purpose - the card-level dim died today. */
+.toolhead-card .feeder-tile.tile-empty {
+  background: #46464a; color: #bbb; text-shadow: none;
+}
 .th-ace-row { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
 .th-ace-row .th-ace-pick, .th-ace-row .th-manual { margin-top: .4rem; }
 .th-ace-pick { display: flex; align-items: center; gap: .35rem; margin-top: .4rem; font-size: .78rem; color: #aaa; }
@@ -447,6 +595,27 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .checkbox-grid label { display: inline-flex; gap: .35rem; align-items: center; color: var(--fg); }
 .checkbox-grid code { color: var(--accent); font-size: .85rem; }
 .config-row label { font-size: .9rem; color: var(--muted); }
+/* Checkbox + caption as the row's CONTROL (second grid cell), so it lines up
+   with the inputs above instead of reading as a second row label. */
+.config-inline-check { display: inline-flex; align-items: center; gap: .4rem; }
+.config-inline-check input { width: auto; }
+.config-row-hint { margin: -.2rem 0 .6rem 0; }
+/* Group separator inside the parameter form (transport | dryer | spoolman). */
+.config-sep { border-top: 1px solid var(--border); margin: 1rem 0 .9rem 0; }
+/* Colour swatches (picker dialog + spool form). Own padding/size, since the
+   global button rule would otherwise pad them into rectangles. */
+.swatches { display: flex; flex-wrap: wrap; gap: .28rem; align-items: center; }
+.swatches-inline { margin-left: .4rem; }
+.swatch { width: 1.35rem; height: 1.35rem; padding: 0; border-radius: 4px;
+          border: 1px solid var(--border); cursor: pointer; flex: 0 0 auto; }
+.swatch:hover { border-color: var(--fg); }
+.swatch.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Tag SKU beside the picker's RFID button: identifying, not shouting - and
+   capped, since a tag may carry a long string. */
+.picker-sku { font-size: .72rem; color: var(--muted); font-family: ui-monospace, monospace;
+              margin-right: .4rem; max-width: 14ch; overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap;
+              display: inline-block; vertical-align: middle; }
 .per-ace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
                 gap: .6rem; margin-bottom: 1rem; }
 .per-ace-card { background: var(--card); border: 1px solid var(--border);
@@ -556,11 +725,29 @@ canvas { background: #000; width: 100%; max-width: 1024px; height: auto;
 }
 .notif-clear:hover { background: var(--error); color: #fff; }
 .notif-list { display: flex; flex-direction: column; gap: .2rem; }
+/* Timestamp prefix (dashboard strip + panel): browser-local HH:MM:SS,
+   muted + tabular so a column of them aligns. */
+.notif-time {
+  color: var(--muted); font-variant-numeric: tabular-nums;
+  font-size: .9em; margin-right: .35rem; white-space: nowrap;
+  flex-shrink: 0;
+}
 .notif-item {
   display: flex; gap: .5rem; align-items: flex-start;
   padding: .25rem .35rem; background: var(--error-bg);
   border-radius: 3px; color: var(--error);
 }
+/* warn-level (ace.log_warn): intermediate/recoverable events - reconnect
+   attempts, retry hiccups. Amber, not red; red = final failures only. */
+.notif-item.notif-warn {
+  background: var(--warn-bg); color: var(--warn);
+}
+.notif-item.notif-warn .notif-dismiss { color: var(--warn); }
+/* Strip frame follows the worst level present: only warns -> amber frame. */
+.notif-strip.warn-only { border-color: var(--warn); }
+.notif-strip.warn-only .notif-head { color: var(--warn); }
+.notif-strip.warn-only .notif-clear { border-color: var(--warn); color: var(--warn); }
+.notif-strip.warn-only .notif-clear:hover { background: var(--warn); color: #000; }
 .notif-msg { flex: 1; word-break: break-word; }
 .notif-dismiss {
   background: transparent; border: 0; color: var(--error);
@@ -633,6 +820,14 @@ body { padding-bottom: 64px; }
 .overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
            background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center;
            z-index: 100; }
+/* The confirm dialog sits ABOVE whatever raised it. Every overlay shared
+   z-index 100, so the stack was decided by DOM order alone - and the
+   preflight modal comes later in the document, which put every confirm
+   raised from it BEHIND: the preflight bar crossed the dialog and hid its
+   message, leaving a titled box with an OK button and nothing to read. The
+   modal deliberately stays VISIBLE behind (the fallback offer continues in
+   it), it just must not paint over the question. */
+.overlay-top { z-index: 110; }
 .dialog { background: var(--card); border: 1px solid var(--border); border-radius: 6px;
           padding: 1.5rem; max-width: 500px; box-shadow: 0 8px 32px rgba(0,0,0,.4); }
 .preflight-dialog { width: 96vw; max-width: none; max-height: 92vh;
@@ -675,6 +870,10 @@ body { padding-bottom: 64px; }
               white-space: nowrap; }
 .hm-dd-item:hover { background: rgba(255,255,255,.08); }
 .hm-dd-item.sel { background: rgba(255,255,255,.14); }
+/* Occupied slot without a declared identity: shown so the user sees it is
+   there, not selectable because nobody said what is in it. */
+.hm-dd-item.off { cursor: default; opacity: .55; font-style: italic; }
+.hm-dd-item.off:hover { background: transparent; }
 .preflight-plan { border: 1px solid var(--border); border-radius: 4px;
                   padding: .6rem .8rem; margin-top: .8rem; }
 .preflight-plan-head { display: flex; align-items: baseline; gap: .6rem;
@@ -724,6 +923,16 @@ body { padding-bottom: 64px; }
   margin: .8rem 0 0; cursor: pointer; user-select: none;
   font-size: .9rem; color: var(--fg); }
 .dialog-checkbox input { accent-color: var(--accent); cursor: pointer; }
+.dialog-input { margin: .8rem 0 0; display: flex; flex-direction: column; gap: .3rem; }
+.dialog-input label { font-size: .85rem; color: var(--muted); }
+.dialog-input input { padding: .45rem .5rem; background: #111; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; font-size: .95rem;
+  font-family: inherit; }
+.dialog-input input:focus { outline: none; border-color: var(--accent); }
+/* Invalid is a BLOCK, not a hint (the OK button is disabled with it), so it
+   gets the error colour rather than the warn one. */
+.dialog-input input.invalid { border-color: var(--error); }
+.dialog-input-err { font-size: .8rem; color: var(--error); }
 @media (max-width: 600px) {
   header { flex-wrap: wrap; }
   nav { order: 3; width: 100%; }
@@ -753,6 +962,93 @@ body { padding-bottom: 64px; }
 .src-rfid     { background: var(--accent); color: var(--accent-fg); }
 .src-override { background: #1f3a6b; color: #cfe0ff; }
 .src-derived  { background: var(--border); color: var(--muted); }
+.src-spool    { background: #1f5a3a; color: #ccf0dd; }
+/* Spoolman-backed spool: SM in the Spoolman orange, black text (Dirk) -
+   tells the two spool worlds apart at a glance wherever the badge shows. */
+.src-spoolman { background: #f7941d; color: #151515; }
+/* Mode chip next to the spools-tab heading (Spoolman / + SpoolLink). */
+h2 .src-badge { vertical-align: middle; margin-left: .5rem; }
+/* Spoolman search (pickers + spools tab): input with a dropdown of the
+   backend's top-50. Absolute so the dialog does not jump while typing. */
+/* Connection indicator + save in the config tab's Spoolman row. */
+.sm-save-btn { padding: .35rem .7rem; background: var(--card); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+  font-size: .85rem; font-family: inherit; flex: 0 0 auto; }
+.sm-save-btn:hover { border-color: var(--accent); }
+.sm-ping { display: inline-flex; align-items: center; gap: .25rem;
+  font-weight: 700; cursor: pointer; user-select: none; flex: 0 0 auto; }
+.sm-ping.ok { color: var(--ok); }
+.sm-ping.bad { color: var(--error); }
+.sm-logo { width: 14px; height: 19px; }
+.sm-search { position: relative; flex: 1; min-width: 0; }
+.sm-search input { width: 100%; padding: .4rem .5rem; background: #111;
+  color: var(--fg); border: 1px solid var(--border); border-radius: 4px;
+  font-size: .9rem; font-family: inherit; }
+.sm-search input:focus { outline: none; border-color: var(--accent); }
+.sm-search-tab { max-width: 44rem; margin: .4rem 0 .6rem; }
+/* Wordmark + search in one line: the brand says "Spoolman is active
+   here" and doubles as the label of the otherwise bare search field. */
+.sm-tab-head { display: flex; align-items: center; gap: .7rem;
+  margin: .4rem 0 .6rem; }
+.sm-tab-head .sm-search-tab { margin: 0; flex: 1; }
+.sm-brand { display: inline-flex; align-items: center; gap: .4rem;
+  font-weight: 600; letter-spacing: .02em; color: #f7941d;
+  white-space: nowrap; }
+.spool-toolbar { margin: .4rem 0 .5rem; display: flex; gap: .4rem; align-items: center; }
+.spool-query { width: 100%; max-width: 480px; padding: .4rem .5rem;
+  background: #111; color: var(--fg); border: 1px solid var(--border);
+  border-radius: 4px; font-size: .9rem; font-family: inherit; }
+.spool-query:focus { outline: none; border-color: var(--accent); }
+/* Adopt bar: the staged Spoolman pick + its MANDATORY target. */
+.sm-adopt-bar { display: flex; align-items: center; gap: .6rem;
+  margin: .4rem 0 .6rem; padding: .45rem .6rem; max-width: 620px;
+  background: var(--card); border: 1px solid var(--accent);
+  border-radius: 4px; }
+.sm-adopt-bar select { padding: .3rem .4rem; background: #111;
+  color: var(--fg); border: 1px solid var(--border); border-radius: 4px;
+  font-size: .85rem; }
+.sm-adopt-bar button { padding: .3rem .7rem; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--card);
+  color: var(--fg); cursor: pointer; font-family: inherit; }
+.sm-adopt-bar button.primary { background: var(--accent);
+  color: var(--accent-fg); border-color: var(--accent); }
+.sm-adopt-bar button:disabled { opacity: .4; cursor: not-allowed; }
+/* Camera tile: the picker's Spoolman results must stay small enough for
+   a few rows to stack inside a ~190px iframe (Dirk 2026-08-09). */
+body.panel-embedded .sm-search input { padding: .25rem .4rem; font-size: .8rem; }
+body.panel-embedded .sm-results { max-height: 120px; }
+body.panel-embedded .sm-row { padding: .2rem .4rem; font-size: .72rem; gap: .35rem; }
+body.panel-embedded .sm-dot { width: 10px; height: 10px; }
+body.panel-embedded .sm-right { font-size: .68rem; }
+.sm-results { position: absolute; z-index: 30; left: 0; right: 0; top: 100%;
+  margin-top: 2px; max-height: 260px; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.sm-note { padding: .45rem .6rem; }
+.sm-row { display: flex; align-items: center; gap: .5rem; width: 100%;
+  padding: .4rem .6rem; background: transparent; border: 0;
+  border-bottom: 1px solid var(--border); color: var(--fg);
+  font-family: inherit; font-size: .85rem; text-align: left;
+  cursor: pointer; }
+.sm-row:last-child { border-bottom: 0; }
+.sm-row:hover { background: rgba(21,189,198,.12); }
+/* Taken = already bound somewhere: greyed, no hover invitation - the row
+   itself names where the spool sits (smRowWhere). */
+.sm-row:disabled { opacity: .45; cursor: default; }
+.sm-row:disabled:hover { background: transparent; }
+.sm-dot { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto;
+  background: #444; border: 1px solid #555; }
+/* One flat line per result (Dirk 2026-08-09: "kurz und hoch, 3 zeilig,
+   die koennten auch laenger werden") - name and vendor/material sit
+   BESIDE each other instead of stacked, the right side keeps weight and
+   SM-id on the same baseline. The name yields via ellipsis when tight,
+   the meta may vanish entirely before the row is allowed to grow tall. */
+.sm-main { display: flex; align-items: baseline; gap: .45rem; min-width: 0; }
+.sm-main b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-main .small { overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; flex: 0 1 auto; }
+.sm-right { margin-left: auto; text-align: right; flex: 0 0 auto;
+  white-space: nowrap; color: var(--ok, #7c6); font-size: .8rem; }
 
 /* --- tip-forming editor (config tab) --- */
 .tipform-card { margin-bottom: 1em; }
@@ -810,6 +1106,106 @@ body { padding-bottom: 64px; }
   align-self: flex-start; padding: .2em .6em; font-size: .82em;
 }
 .tipform-pending { color: #e0a020; }
+
+/* ---- spool table (Config tab) + remaining weight on a slot tile -------- */
+/* align-items:end so the buttons line up with the INPUTS, not with the
+   caption line above them. */
+.spool-add { display: flex; flex-wrap: wrap; align-items: flex-end;
+             gap: .4rem .5rem; margin: .5rem 0; }
+.spool-add input { padding: .3rem .4rem; }
+.spool-table { width: 100%; border-collapse: collapse; margin: .5rem 0; }
+.spool-table th {
+  text-align: left; font-weight: 600; font-size: .75rem;
+  opacity: .7; padding: .2rem .4rem; border-bottom: 1px solid var(--border);
+}
+.spool-table td { padding: .25rem .4rem; border-bottom: 1px solid var(--border); }
+.spool-dot {
+  display: inline-block; width: .7em; height: .7em; border-radius: 50%;
+  margin-right: .35em; border: 1px solid var(--border); vertical-align: baseline;
+}
+.spool-actions { white-space: nowrap; text-align: right; }
+.spool-actions button {
+  padding: .1rem .4rem; margin-left: .2rem; font-size: .8rem; line-height: 1.4;
+}
+.spool-actions button.danger:hover { background: var(--danger, #b3261e); color: #fff; }
+.spool-io { display: flex; gap: .4rem; align-items: center; margin: .5rem 0 1rem; }
+/* Estimate, so it stays visually quiet next to the real slot identity. */
+.spool-weight { font-size: .6rem; font-style: normal; opacity: .75; }
+/* Spool form: labelled controls in a wrapping row; the colour picker pairs
+   the native swatch with a hex field (both edit the same value).
+   The caption sits ABOVE its field: side by side, every label+input pair is
+   twice as wide, so the row broke into a ragged two-line mess as soon as the
+   tag field joined. Stacked, a pair is only as wide as its input. */
+.spool-add label {
+  display: inline-flex; flex-direction: column; align-items: stretch;
+  gap: .15rem; font-size: .7rem; opacity: .75;
+}
+/* The caption is quiet, the VALUE is not - undo the label's dimming. */
+.spool-add label > input, .spool-add label > select, .spool-add label > span {
+  opacity: 1; font-size: .85rem;
+}
+.spool-add select, .spool-add input[type="text"], .spool-add input[type="number"] { padding: .25rem .35rem; }
+.spool-color-pick { display: inline-flex; align-items: center; gap: .25rem; }
+.spool-color-pick input[type="color"] { width: 2rem; height: 1.6rem; padding: 0; border: 1px solid var(--border); }
+.spool-color-clear {
+  padding: 0 .35rem; line-height: 1.4; font-size: .75rem;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+}
+.spool-color-clear:hover { color: var(--fg); border-color: var(--accent); }
+.spool-sm { margin-left: .35em; font-size: .6rem; opacity: .6; }
+/* Tag id: monospace so a mistyped character is spottable when comparing it
+   against what the writer app shows. */
+/* --- ACE 2 firmware update (config tab) --- */
+.acefw-card h4 { margin: 0 0 .5rem; }
+/* Fields use the standard .config-form/.config-row grid (label left);
+   only the action row below stays a flat flex line. */
+.acefw-actions { display: flex; gap: .4rem; align-items: center;
+  flex-wrap: wrap; margin-top: .5rem; }
+.acefw-err { color: var(--error); }
+.acefw-force-row { display: inline-flex; align-items: center;
+  gap: .45rem; }
+/* The version option carries the googleable .swu name in brackets, which
+   does not fit the shared 200px cap of .config-row controls - lift it for
+   THIS select only (and for the password, which is a long base64 string).
+   Same for the file button, whose label is the uploaded file name. */
+.acefw-card .config-row select.acefw-version,
+.acefw-card .config-row input.acefw-pw { max-width: 26rem; }
+.acefw-file-btn { max-width: 26rem; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+/* The BIG RED own-risk box inside the confirm dialog (Dirk 2026-08-09:
+   "grosser roter own risk disclaimer"). */
+.acefw-danger { color: #ff5252; border: 2px solid #ff5252;
+  border-radius: 6px; padding: .8rem .9rem; font-weight: 700;
+  font-size: 1.05rem; line-height: 1.5; }
+
+.spool-th-sort { cursor: pointer; user-select: none; }
+.spool-th-sort.active { text-decoration: underline; }
+.spool-sku-cell { white-space: nowrap; }
+.spool-sku {
+  margin-left: .5em; font-size: .65rem; opacity: .6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.spool-table tr.editing { outline: 1px solid var(--accent); }
+.spool-slot-sel { font-size: .8rem; padding: .1rem .2rem; }
+/* Slot picker: shorter label column than the page form (its labels are one
+   word), so the controls get the width back and all start at the same edge.
+   Every control fills the cell -> equal width for material/vendor/sub-type/
+   spools; picker-short opts out for grams and colour. */
+.picker-form .config-row { grid-template-columns: 6.5rem 1fr; gap: .6rem; }
+.picker-form .config-row > select,
+.picker-form .config-row > input { width: 100%; max-width: none; justify-self: stretch; }
+.picker-form .config-row > .picker-short { width: 6rem; justify-self: start; }
+.picker-form .config-row > .picker-color { width: 6rem; height: 2rem; padding: .1rem; }
+/* Dropdown + "+" share the control cell; the select takes what is left, so
+   it still ends flush with the fields above. */
+.spool-picker-row { display: flex; align-items: center; gap: .35rem; }
+.spool-picker-row select { flex: 1 1 auto; min-width: 0; }
+.spool-picker-row .spool-new-btn { flex: 0 0 auto; }
+.spool-new-btn {
+  padding: .15rem .5rem; line-height: 1.2;
+  font-size: .9rem; font-weight: 600;
+}
 
 /* ---- Panel mode (?panel=1) -------------------------------------------
    Embedded view, e.g. as a Fluidd "HTTP Page" camera. The iframe does NOT
@@ -907,6 +1303,15 @@ body.panel-embedded:has(.panel) { background: transparent; }
   font-size: .85em;
 }
 .panel-card-slot { font-weight: 700; }
+/* Identity-source marker in the card's top row - deliberately SMALL and
+   quiet (Dirk: "möglichst klein, nicht so auffällig"): the source colours
+   stay recognisable from the dashboard badges, but shrunk and dimmed so
+   the glanceable facts (number, head, spool colour) keep the stage. Pushed
+   left next to the number; the head label keeps the right edge. */
+.panel-card-top .panel-src {
+  font-size: .5rem; padding: .1em .3em; opacity: .7;
+  margin-left: .25em; margin-right: auto; align-self: center;
+}
 /* Which head this slot feeds is the one thing on the card you look for
    from across the room, so it gets the accent and its own size instead
    of riding along dimmed in the .85em top row. */
@@ -927,8 +1332,8 @@ body.panel-embedded:has(.panel) { background: transparent; }
   margin-left: auto; min-width: 0; text-align: right;
 }
 .panel-card-mat { font-weight: 600; }
-.panel-card-sub { font-size: .85em; opacity: .7; }
-.panel-card-mat, .panel-card-sub, .panel-card-label {
+.panel-card-sub, .panel-card-weight { font-size: .85em; opacity: .7; }
+.panel-card-mat, .panel-card-sub, .panel-card-weight, .panel-card-label {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   max-width: 100%;
 }
@@ -979,6 +1384,7 @@ body:has(.panel) .overlay .dialog {
   body:has(.panel) .dialog .config-row {
     display: flex; flex-direction: column; align-items: stretch; gap: .15em;
   }
+  body:has(.panel) .dialog .picker-short { width: 100%; }
 }
 .panel-err { color: #ff6b6b; }
 .panel-status {
@@ -1086,3 +1492,36 @@ body:has(.panel) .overlay .dialog {
 @media (max-height: 90px) {
   .panel-mini-hint { display: none; }
 }
+
+/* --- FOrca banner + mixed-nozzle loading view -------------------------- */
+/* The mixed view REPLACES the normal assignment table (no free assignment
+   exists across nozzle sizes), so it gets its own framing rather than
+   blending into the matcher UI. */
+.forca-banner { border: 1px solid var(--border); border-radius: 6px;
+  padding: .5rem .6rem; margin: .5rem 0; }
+.forca-banner.mixed { border-color: var(--accent); }
+.forca-nozzles { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .35rem; }
+.forca-nozzle { border: 1px solid var(--border); border-radius: 4px;
+  padding: .1rem .4rem; font-size: .85em; white-space: nowrap; }
+.forca-group { margin: .6rem 0; }
+/* Each nozzle group renders its OWN table, so without a fixed layout every
+   table sizes its columns to its own content and the headings jitter from
+   group to group (Dirk: "flatterig"). Fixed widths line them all up. */
+.forca-group .preflight-mapping { table-layout: fixed; }
+.forca-group .preflight-mapping th:nth-child(1),
+.forca-group .preflight-mapping td:nth-child(1) { width: 34%; }
+.forca-group .preflight-mapping th:nth-child(2),
+.forca-group .preflight-mapping td:nth-child(2) { width: 26%; }
+.forca-group .preflight-mapping th:nth-child(3),
+.forca-group .preflight-mapping td:nth-child(3) { width: 26%; }
+.forca-group .preflight-mapping th:nth-child(4),
+.forca-group .preflight-mapping td:nth-child(4) { width: 14%; }
+.forca-group .preflight-slot-select { max-width: 100%; }
+.forca-group-head { display: flex; align-items: baseline; gap: .5rem;
+  border-bottom: 1px solid var(--border); padding-bottom: .2rem; }
+
+/* Save result right at the button - the config form is long enough that
+   the top reboot banner was off-screen after a save (Dirk 2026-08-09). */
+.config-log-inline { margin: .4rem 0 .8rem; padding: .5rem .6rem;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 4px; white-space: pre-wrap; font-size: .8rem; }

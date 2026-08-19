@@ -330,7 +330,7 @@ class ExtruderStepper:
         if print_stats is not None:
             print_stats_state = print_stats.get_status(self.reactor.monotonic())["state"]
         print_config = self.printer.lookup_object('print_task_config', None)
-        if print_config is not None and print_stats is not None and \
+        if print_config is not None and print_stats is not None and\
                 print_config.print_task_config['flow_calibrate'] == True:
             if print_stats_state in ['printing', 'paused']:
                 gcmd.respond_info("flow calibration enabled, so not take effect.")
@@ -444,7 +444,7 @@ class PrinterExtruder:
 
         binding_ind_coil = config.get("inductance_coil", None)
         if binding_ind_coil != None:
-            self.binding_probe = \
+            self.binding_probe =\
                 self.printer.lookup_object("inductance_coil {}".format(binding_ind_coil), None)
             if self.binding_probe is None:
                 raise config.error("Must provide binding probe[{}] for extruder[{}]".format(binding_ind_coil, self.name))
@@ -1146,7 +1146,7 @@ class PrinterExtruder:
     def set_max_accel(self, accel):
         self.max_e_accel = accel
     def get_max_accel(self):
-        return self.max_e_accel 
+        return self.max_e_accel
     def cmd_SET_MAX_E_ACCEL(self, gcmd):
         extruder = self.printer.lookup_object('toolhead').get_extruder()
         accel = gcmd.get_float('A', extruder.max_e_accel)
@@ -1390,7 +1390,7 @@ class PrinterExtruder:
                     if self.switch_accel != toolhead.max_accel:
                         toolhead.set_accel(self.switch_accel)
 
-                    x_move_position = cur_extruder.xy_park_position[0] + [1, -1][not cur_extruder.grab_dir] * \
+                    x_move_position = cur_extruder.xy_park_position[0] + [1, -1][not cur_extruder.grab_dir] *\
                                     (cur_extruder.horizontal_move_x - cur_extruder.retract_x_dist)
                     gcmd.respond_info("park {} !!!".format(cur_extruder.name))
                     pos = toolhead.get_position()
@@ -1633,7 +1633,7 @@ class PrinterExtruder:
         if not self.check_xy_homing():
             raise gcmd.error("Activate extruder must home XY first")
 
-        x_idle_position = current_extruder.xy_park_position[0] + [1, -1][not current_extruder.grab_dir] * \
+        x_idle_position = current_extruder.xy_park_position[0] + [1, -1][not current_extruder.grab_dir] *\
                 (current_extruder.horizontal_move_x - current_extruder.retract_x_dist)
         if (current_extruder.name == "extruder"):
             x_idle_position -= 2

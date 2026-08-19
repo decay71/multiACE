@@ -155,6 +155,15 @@ if [ -f "$INSTALL_DIR/deploy/S59multiace-prewarm" ]; then
         log "  SKIP: S59multiace-prewarm install needs root (existing copy stays active)"
     fi
 fi
+prune_cfg_backups() {
+    # Keep only the newest 3 timestamped ace.cfg backups - the names sort
+    # chronologically, so this needs no stat/find. Without it every install
+    # adds one forever (Dirk: the config already grows such a list).
+    ls -1 "$ACTIVE_CFG".bak.* 2>/dev/null | sort | head -n -3 | while read -r old_bak; do
+        rm -f "$old_bak" && log "  pruned old config backup: $old_bak"
+    done
+}
+
 NEW_CFG="$INSTALL_DIR/config/extended/ace.cfg"
 ACTIVE_CFG="$CONFIG_DIR/ace.cfg"
 MERGER="$INSTALL_DIR/tools/merge_ace_cfg.py"
@@ -165,6 +174,7 @@ elif [ -f "$ACTIVE_CFG" ] && [ -f "$MERGER" ]; then
     ts=$(date -u '+%Y%m%d-%H%M%S')
     backup="$ACTIVE_CFG.bak.$ts"
     cp "$ACTIVE_CFG" "$backup"
+    prune_cfg_backups
     tmp_out="$ACTIVE_CFG.merged.$$"
     if python3 "$MERGER" "$ACTIVE_CFG" "$NEW_CFG" "$tmp_out"; then
         mv "$tmp_out" "$ACTIVE_CFG"
@@ -182,6 +192,7 @@ else
         ts=$(date -u '+%Y%m%d-%H%M%S')
         backup="$ACTIVE_CFG.bak.$ts"
         cp "$ACTIVE_CFG" "$backup"
+        prune_cfg_backups
         log "  existing ace.cfg backed up to $backup"
     fi
     cp "$NEW_CFG" "$ACTIVE_CFG"
@@ -537,16 +548,29 @@ PYEOF
         "$INITD_SCRIPT" stop  >>"$LOGFILE" 2>&1 || true
         "$INITD_SCRIPT" start >>"$LOGFILE" 2>&1 || log "  WARN: start failed - see $LOGFILE"
         sleep 1
-        if "$INITD_SCRIPT" status 2>/dev/null | grep -q "running"; then
+        # Judge by the status EXIT CODE, not by grepping the text: the old
+        # `grep -q "running"` also matched "not running", so the installer
+        # reported "multiACE Web running" unconditionally - on 2026-08-05
+        # that green light hid an Errno-98 bind failure while the
+        # pre-update backend kept serving stale code all evening.
+        if "$INITD_SCRIPT" status >>"$LOGFILE" 2>&1; then
             log "  multiACE Web running"
             log "  -> http://<printer-ip>/multiace/"
         else
-            log "  WARN: multiACE Web not running - check $LOGFILE and $WEB_DEST/backend/"
+            log "  WARN: multiACE Web NOT healthy - check $LOGFILE and $WEB_DEST/backend/"
         fi
     else
         if pgrep -u lava -f 'uvicorn.*main:app' >/dev/null 2>&1; then
             pkill -TERM -u lava -f 'uvicorn.*main:app' 2>/dev/null || true
             log "  Sent SIGTERM to running uvicorn (restart needed for new code)"
+        fi
+        # A root-owned instance (S98 boot / web-update context) is out of
+        # lava's reach - the pkill above cannot touch it and the fresh code
+        # will NOT serve until a reboot. Say so instead of staying silent.
+        sleep 2
+        if netstat -tln 2>/dev/null | grep -q ':7126 '; then
+            log "  WARN: :7126 still served by an instance we cannot replace"
+            log "        (root-owned?) - new web code is NOT live until reboot"
         fi
         log "  Skipped service restart (non-root context) - reboot or use Web Restart"
     fi

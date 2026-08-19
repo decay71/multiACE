@@ -219,8 +219,6 @@
       "stage_done": "完成",
       "skip_calibration": "跳过热床调平、流量校准和延时摄影",
       "swaps_label": "次换料",
-      "recalc": "重新计算换料",
-      "stale": "需重新计算",
       "not_feasible": "不可行",
       "slicer": "切片",
       "printer": "打印机",

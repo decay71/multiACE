@@ -30,6 +30,11 @@ class RunoutHelper:
         self.filament_present = False
         self.sensor_enabled = True
 
+
+
+
+
+
         self.extruder_index = self._get_extruder_index(config.get('extruder'))
         self.exception_manager = self.printer.lookup_object('exception_manager', None)
 
@@ -63,13 +68,17 @@ class RunoutHelper:
         return 0
 
     def _runout_disp(self):
+
+
+
+
         ace = self.printer.lookup_object('ace', None)
         head = self.extruder_index
         if ace is not None and hasattr(ace, '_t'):
             hd = ace._disp(head)
             src = (getattr(ace, '_head_source', None) or {}).get(head) or {}
             a, s = src.get('ace_index'), src.get('slot')
-            loc = ' (ACE %d / Slot %d)' % (ace._disp(a), ace._disp(s)) \
+            loc = ' (ACE %d / Slot %d)' % (ace._disp(a), ace._disp(s))\
                 if a is not None and s is not None else ''
             return ace._t('msg.pause_runout', head=hd, loc=loc)
         return ('[multiACE] %s runout - reload filament '
@@ -101,12 +110,71 @@ class RunoutHelper:
             self.printer.get_reactor().pause(eventtime + self.pause_delay)
         self._exec_gcode(pause_prefix, self.runout_gcode)
         if self.runout_pause:
+
+
+
+
+
+
+
+
+
+
+            def _try_quad():
+                try:
+                    ace = self.printer.lookup_object('ace', None)
+                    if ace is not None and hasattr(
+                            ace, 'quad_replenish_after_runout'):
+                        return bool(ace.quad_replenish_after_runout(
+                            self.extruder_index))
+                except Exception:
+                    logging.exception(
+                        '[multiACE] quad-replenish hook failed')
+                return False
+
+            quad_first = False
             try:
-                self.gcode.run_script(f'\nM400\nINNER_AUTO_REPLENISH_FILAMENT EXTRUDER={self.extruder_index}\n')
+                _ace = self.printer.lookup_object('ace', None)
+                quad_first = bool(getattr(_ace, 'quad_first', False))
             except Exception:
-                logging.exception("Script running error")
-            if self.print_task_config.perform_auto_replenish == False:
-                if self.exception_manager is not None:
+                quad_first = False
+
+            handled = False
+            if quad_first:
+                handled = _try_quad()
+            if not handled:
+
+
+
+
+
+
+
+
+
+
+                _ace = self.printer.lookup_object('ace', None)
+                try:
+                    if _ace is not None:
+                        _ace._replenish_check_active = True
+                    self.gcode.run_script(f'\nM400\nINNER_AUTO_REPLENISH_FILAMENT EXTRUDER={self.extruder_index}\n')
+                except Exception:
+                    logging.exception("Script running error")
+                finally:
+                    if _ace is not None:
+                        _ace._replenish_check_active = False
+
+
+
+
+                        try:
+                            _ace._refresh_filament_exist_flags()
+                        except Exception:
+                            pass
+            if not handled and self.print_task_config.perform_auto_replenish == False:
+                if not quad_first:
+                    handled = _try_quad()
+                if not handled and self.exception_manager is not None:
                     self.exception_manager.raise_exception_async(
                         id = self.exception_manager.list.MODULE_ID_TOOLHEAD,
                         index = self.extruder_index,
@@ -125,6 +193,11 @@ class RunoutHelper:
             logging.exception("Script running error")
         self.min_event_systime = self.reactor.monotonic() + self.event_delay
     def note_filament_present(self, is_filament_present, force=False):
+
+
+
+
+
         if is_filament_present == self.filament_present and force == False:
             return
         self.filament_present = is_filament_present
@@ -149,10 +222,14 @@ class RunoutHelper:
         is_printing = print_stats.state == "printing"
 
         if is_filament_present:
+
+
             ace = self.printer.lookup_object('ace', None)
             if ace is not None and self.extruder_index in getattr(ace, '_runout_suppress_heads', ()):
                 ace._runout_suppress_heads.discard(self.extruder_index)
                 logging.info("[multiACE] note_filament_present: head %d (re)loaded - clearing runout suppression" % self.extruder_index)
+
+
             if ace is not None and self.extruder_index in getattr(ace, '_bg_left_empty', ()):
                 ace._bg_left_empty.discard(self.extruder_index)
             if not is_printing and self.insert_gcode is not None:
@@ -174,7 +251,8 @@ class RunoutHelper:
                 logging.info("[multiACE] note_filament_present: runout suppressed for head %d (recovery: empty head awaiting reload)" % self.extruder_index)
                 return
 
-            if self.print_task_config is not None and \
+
+            if self.print_task_config is not None and\
                     getattr(self.print_task_config, 'is_exec_print_end_action', False):
                 return
 
@@ -201,7 +279,8 @@ class RunoutHelper:
         self.config['enable'] = bool(self.sensor_enabled)
         logging.info("Filament Sensor: set enable/disable -- %d", self.sensor_enabled)
 
-        if self.print_task_config is not None and \
+
+        if self.print_task_config is not None and\
                 hasattr(self.print_task_config, 'update_filament_flags'):
             self.print_task_config.update_filament_flags()
 
@@ -218,6 +297,12 @@ class RunoutHelper:
         if print_stats is not None and print_stats.state in ["printing", "paused"]:
             if bool(self.sensor_enabled) and not bool(self.filament_present):
                 ace = self.printer.lookup_object('ace', None)
+
+
+
+
+
+
                 if ace is not None and self.extruder_index in getattr(
                         ace, '_runout_suppress_heads', ()):
                     logging.info(
@@ -225,6 +310,18 @@ class RunoutHelper:
                         'head %d (recovery: empty head awaiting reload)'
                         % self.extruder_index)
                     return
+
+
+
+
+
+
+
+
+
+
+
+
                 if (ace is not None
                         and getattr(ace, '_print_has_gcode_loads', False)
                         and ace.head_uses_ace(self.extruder_index)

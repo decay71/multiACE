@@ -38,6 +38,38 @@ _uvicorn_pids() {
     done
 }
 
+# Whoever actually LISTENS on :7126, found by socket inode - catches
+# holders whose cmdline does NOT match _uvicorn_pids (older launcher,
+# different arg order, a foreign process). The cmdline sweep alone let a
+# mismatched instance survive stop/start: the fresh uvicorn died with
+# 'address already in use' while the old one kept serving STALE code,
+# and status still reported the run green (HW 2026-08-05, Errno 98 in
+# multiace_web.log while the pre-update backend served all evening).
+# 1BD6 = 7126 hex; /proc/net/tcp st 0A = LISTEN, field 10 = inode.
+_port_holder_pids() {
+    inodes="$(awk -v a=":1BD6" '$2 ~ a && $4 == "0A" {print $10}' \
+        /proc/net/tcp 2>/dev/null)"
+    [ -n "$inodes" ] || return 0
+    for p in /proc/[0-9]*; do
+        pid=${p#/proc/}
+        for fd in "$p"/fd/*; do
+            l="$(readlink "$fd" 2>/dev/null)" || continue
+            case "$l" in
+                "socket:["*"]")
+                    ino="${l#socket:[}"
+                    ino="${ino%]}"
+                    for i in $inodes; do
+                        if [ "$i" = "$ino" ]; then
+                            echo "$pid"
+                            break 2
+                        fi
+                    done
+                    ;;
+            esac
+        done
+    done
+}
+
 # TERM the given pids, wait up to 10s for them to exit, then KILL leftovers.
 # uvicorn shuts down gracefully and open frontend websockets can hold that
 # up for seconds - the old 'stop; sleep 1; start' raced it: the new
@@ -75,8 +107,9 @@ start() {
     # No (live) pidfile, but an untracked instance may still hold the port
     # (stale/lost pidfile, a stop that raced the graceful shutdown). It
     # would make our bind fail AND keep serving stale code - replace it.
-    orphans="$(_uvicorn_pids)"
-    if [ -n "$orphans" ]; then
+    # Sweep by cmdline AND by port ownership (see _port_holder_pids).
+    orphans="$(_uvicorn_pids) $(_port_holder_pids)"
+    if [ -n "$(echo $orphans)" ]; then
         _kill_and_wait "$orphans"
         printf "(replaced untracked instance) "
     fi
@@ -103,13 +136,38 @@ start() {
     # so /home/lava/.local/lib/python3.11/site-packages is discovered.
     HOME_LAVA="/home/lava"
     PATH_LAVA="${HOME_LAVA}/.local/bin:/usr/bin:/bin"
-    start-stop-daemon -S -b -m -p "$PIDFILE" \
-        -x /bin/sh -- -c "
-            export HOME='$HOME_LAVA' USER='$USER' PATH='$PATH_LAVA';
-            cd '$DAEMON_DIR' || exit 1;
-            exec $DAEMON $ARGS >>'$LOGFILE' 2>&1
-        "
-    echo "OK (waited ${n}s for Moonraker)"
+    _launch() {
+        start-stop-daemon -S -b -m -p "$PIDFILE" \
+            -x /bin/sh -- -c "
+                export HOME='$HOME_LAVA' USER='$USER' PATH='$PATH_LAVA';
+                cd '$DAEMON_DIR' || exit 1;
+                exec $DAEMON $ARGS >>'$LOGFILE' 2>&1
+            "
+    }
+    _launch
+    # VERIFY the launch instead of trusting it: a bind failure ('address
+    # already in use') kills uvicorn within ~1s while an unmatched old
+    # instance keeps serving stale code - exactly the 2026-08-05 field
+    # case, where every caller (installer incl.) got a green light.
+    sleep 2
+    newpid="$(cat "$PIDFILE" 2>/dev/null)"
+    if [ -n "$newpid" ] && kill -0 "$newpid" 2>/dev/null; then
+        echo "OK (waited ${n}s for Moonraker)"
+        return 0
+    fi
+    holders="$(_port_holder_pids)"
+    if [ -n "$(echo $holders)" ]; then
+        _kill_and_wait "$holders"
+        _launch
+        sleep 2
+        newpid="$(cat "$PIDFILE" 2>/dev/null)"
+        if [ -n "$newpid" ] && kill -0 "$newpid" 2>/dev/null; then
+            echo "OK (replaced :7126 holder)"
+            return 0
+        fi
+    fi
+    echo "FAIL (uvicorn exited right after start - see $LOGFILE)"
+    return 1
 }
 
 stop() {
@@ -121,7 +179,7 @@ stop() {
     # Sweep untracked instances too, and WAIT for the exit (see
     # _kill_and_wait) - a stop that returns while uvicorn still drains
     # its websockets is what produced the bind-error double starts.
-    pids="$pids $(_uvicorn_pids)"
+    pids="$pids $(_uvicorn_pids) $(_port_holder_pids)"
     if [ -n "$(echo $pids)" ]; then
         _kill_and_wait "$pids"
         echo "OK"
@@ -138,11 +196,29 @@ case "$1" in
     stop)         stop;;
     restart|reload) restart;;
     status)
-        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-            echo "$NAME running (pid $(cat "$PIDFILE"))"
-        else
-            echo "$NAME not running"
+        # Exit code carries the verdict (0 = healthy) so callers stop
+        # grepping for 'running' - which also matched 'not running' and
+        # made the installer report success unconditionally (the lying
+        # green light of 2026-08-05). Healthy = OUR pid is alive AND it
+        # is the process holding :7126.
+        pid="$(cat "$PIDFILE" 2>/dev/null)"
+        if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+            echo "$NAME stopped"
+            exit 1
         fi
+        holders="$(_port_holder_pids)"
+        case " $(echo $holders) " in
+            *" $pid "*)
+                echo "$NAME running (pid $pid)"
+                exit 0
+                ;;
+        esac
+        if [ -n "$(echo $holders)" ]; then
+            echo "$NAME UNHEALTHY: :7126 held by pid(s) $(echo $holders), our pid $pid serves nothing"
+            exit 1
+        fi
+        echo "$NAME starting (pid $pid alive, :7126 not bound yet)"
+        exit 0
         ;;
     *) echo "Usage: $0 {start|stop|restart|status}"; exit 1;;
 esac

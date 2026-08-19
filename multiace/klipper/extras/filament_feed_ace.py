@@ -133,13 +133,33 @@ FEED_DEFAULT_CONFIG = {
 
 FEED_FILAMENT_TEMP_DEFAULT                          = 250
 
+
+
+
+
+
 SWAP_PROBE_COOL_DELTA                               = 45
+
+
+
+
 
 FEED_SWAP_PRECOOL_TEMP                              = 0
 
 FEED_UNLOAD_TRIGGER_SETTLE                          = 0.5
 
+
+
+
+
+
+
 FEED_UNLOAD_PROBE_RETRACT                           = 150
+
+
+
+
+
 UNLOAD_DECODER_DIAG                                 = True
 
 class FeedLight:
@@ -254,18 +274,62 @@ class FeedPort:
 
     def get_filament_detected(self):
         if self.ace is not None:
+
+
+
+
+
+
+
+
+
             try:
                 if (not self.ace.head_uses_ace(self.index)
                         and not self.ace.head_is_manual(self.index)):
                     return self._filament_detected
             except Exception:
                 pass
+
+
+
+
+
+
+
+
+
             slot = self.ace._ace_slot_for_head(self.index)
+
+
+
+
+
+
+
+
+
+
+
+
+
             src = self.ace._head_source.get(self.index)
             ace_idx = None
             if src is not None and isinstance(src.get('ace_index'), int):
                 ace_idx = src['ace_index']
             else:
+
+
+
+
+
+
+
+
+
+
+
+
+
                 try:
                     if (getattr(self.ace, '_ace_mode', 'multi') == 'head'
                             and self.ace.head_uses_ace(self.index)):
@@ -604,6 +668,9 @@ class FilamentFeed:
 
         for ch in range(FEED_CHANNEL_NUMS):
             if extruder == self.filament_ch[ch]:
+
+
+
                 if self.channel_state[ch] in (FEED_STA_LOAD_FEEDING,
                                               FEED_STA_LOAD_EXTRUDING,
                                               FEED_STA_LOAD_FLUSHING):
@@ -659,7 +726,7 @@ class FilamentFeed:
         self.channel_state[channel] = state
         self._last_print_time = print_time
 
-        if state not in [FEED_STA_INITED, FEED_STA_WAIT_INSERT, FEED_STA_TEST] and \
+        if state not in [FEED_STA_INITED, FEED_STA_WAIT_INSERT, FEED_STA_TEST] and\
                 not state.startswith('preload_'):
             self.channel_action_state[channel] = state
 
@@ -688,13 +755,13 @@ class FilamentFeed:
         self._port_event_handler(detected, FEED_CHANNEL_2)
 
     def _port_event_handler(self, detected, channel):
-        if self.config['auto_mode'][channel] == False or \
+        if self.config['auto_mode'][channel] == False or\
                 self.module_exist[channel] == False:
             return
 
         self.printer.send_event("filament_feed:port", self.filament_ch[channel], detected)
 
-        if self.runout_sensor[channel] is None or \
+        if self.runout_sensor[channel] is None or\
                 self.runout_sensor[channel].get_status(0)['enabled'] == False:
             return
 
@@ -720,7 +787,11 @@ class FilamentFeed:
         homed_axes_list = self.toolhead.get_status(curtime)['homed_axes']
         return ('x' in homed_axes_list and 'y' in homed_axes_list)
 
-    def _get_filament_temp(self, channel):
+    def _get_filament_temp_db(self, channel):
+
+
+
+
         print_task_config = self.printer.lookup_object('print_task_config', None)
         filament_parameters = self.printer.lookup_object('filament_parameters', None)
         if print_task_config is None or filament_parameters is None:
@@ -731,7 +802,36 @@ class FilamentFeed:
                 status['filament_vendor'][self.filament_ch[channel]],
                 status['filament_type'][self.filament_ch[channel]],
                 status['filament_sub_type'][self.filament_ch[channel]])
+
+    def _get_filament_temp(self, channel):
+
+
+
+
+
+        if self.ace is not None:
+            try:
+                _ov_fn = getattr(self.ace, 'tipform_load_temp_for', None)
+                _ov = (_ov_fn(self.filament_ch[channel],
+                              soft=self._get_filament_soft(channel))
+                       if _ov_fn else None)
+            except Exception:
+                _ov = None
+            if _ov:
+                return max(int(_ov), 175)
+        return self._get_filament_temp_db(channel)
     def _get_filament_unload_temp(self, channel):
+
+
+
+
+
+
+
+
+
+
+
         if self.ace is not None:
             try:
                 _ov_fn = getattr(self.ace, 'tipform_unload_temp_for', None)
@@ -757,6 +857,12 @@ class FilamentFeed:
                 status['filament_sub_type'][self.filament_ch[channel]])
 
     def _ms_after_feed_op(self):
+
+
+
+
+
+
         if self.ace is not None:
             self.ace._machine_state_after_feed_op()
         else:
@@ -836,6 +942,17 @@ class FilamentFeed:
             logging.error("[feed] snapshot INNER_RESUME failed: %s", str(e))
 
     def _swap_probe_temp(self, cool_probe, filament_feed_temp):
+
+
+
+
+
+
+
+
+
+
+
         if not cool_probe:
             return filament_feed_temp
         floor = getattr(self.ace, 'swap_probe_temp', 175)
@@ -875,7 +992,7 @@ class FilamentFeed:
             logging.error("[feed] parameter error!")
             return
 
-        if action in [FEED_ACT_PRELOAD, FEED_ACT_LOAD] and \
+        if action in [FEED_ACT_PRELOAD, FEED_ACT_LOAD] and\
                 (self.config['auto_mode'][ch] == False or self.module_exist[ch] == False):
             return
 
@@ -898,6 +1015,10 @@ class FilamentFeed:
 
         filament_feed_temp = self._get_filament_temp(ch)
         filament_unload_temp = self._get_filament_unload_temp(ch)
+
+
+
+        filament_feed_temp_db = self._get_filament_temp_db(ch)
         filament_soft = self._get_filament_soft(ch)
 
         motor_dir = FEED_MOTOR_DIR_A
@@ -1009,7 +1130,7 @@ class FilamentFeed:
                                 self.channel_error[ch] = FEED_ERR_NO_FILAMENT
                                 self.exception_code[ch] = 13
                                 break
-                            if (wheel_cnt_a_2 - wheel_cnt_a_1) / self.wheel[ch].ppr > self._feed_preload_counts or \
+                            if (wheel_cnt_a_2 - wheel_cnt_a_1) / self.wheel[ch].ppr > self._feed_preload_counts or\
                                     (wheel_cnt_b_2 - wheel_cnt_b_1) / self.wheel_2[ch].ppr > self._feed_preload_counts:
                                 self.channel_error[ch] = FEED_OK
                                 break
@@ -1024,7 +1145,7 @@ class FilamentFeed:
                                     break
                             else:
                                 motor_speed_err_max = FEED_PRELOAD_MOTOR_ERR_CNT_MAX
-                            if wheel_speed_a * FEED_MOTOR_REDUCTION_R < motor_speed * (1 - FEED_MOTOR_SLIP_RATE) and \
+                            if wheel_speed_a * FEED_MOTOR_REDUCTION_R < motor_speed * (1 - FEED_MOTOR_SLIP_RATE) and\
                                 wheel_speed_b * FEED_MOTOR_REDUCTION_R < motor_speed * (1 - FEED_MOTOR_SLIP_RATE):
                                 logging.info("[feed_preload] extruder[%d], wheel speed error, wheel_speed_a:%d, wheel_speed_b:%d, motor_speed:%d",
                                              self.filament_ch[ch], wheel_speed_a, wheel_speed_b, motor_speed)
@@ -1080,6 +1201,11 @@ class FilamentFeed:
 
                 fa_gate_opened = False
                 if self.ace is not None:
+
+
+
+
+
                     self.ace._ensure_active_ace_for_head(self.filament_ch[ch])
                     self.ace._fa_trace('FEED_ACT_LOAD enter: ch=%d head=%d active_ace=%d'
                                        % (ch, self.filament_ch[ch], self.ace._active_device_index))
@@ -1092,6 +1218,11 @@ class FilamentFeed:
                     self.exception_code[ch] = 30
                     self.manual_feeding[ch] = False
                     self.channel_error_state[ch] = FEED_STA_NONE
+
+
+
+
+
                     is_last_preload_normal = bool(
                         self.channel_state[ch] == FEED_STA_PRELOAD_FINISH)
                     self._set_channel_state(ch, FEED_STA_LOAD_PREPARE, True)
@@ -1136,9 +1267,9 @@ class FilamentFeed:
 
                         try:
                             self.toolhead.wait_moves()
-                            self.gcode.run_script_from_command( \
+                            self.gcode.run_script_from_command(\
                                 f"G90\nG0 Y{self._feed_load_position_y} F18000\r\n")
-                            self.gcode.run_script_from_command( \
+                            self.gcode.run_script_from_command(\
                                 f"G90\nG0 X{self._feed_load_position_x} F18000\r\n")
                             self.toolhead.wait_moves()
                         except:
@@ -1155,9 +1286,27 @@ class FilamentFeed:
                         wheel_err_max_cnt = FEED_LOAD_WHEEL_ERR_CNT_MAX
                         one_step_cnt = self.wheel[ch].ppr * 2.0 * 10.0 / FEED_WHEEL_CIRCUMFERENCE
 
-                        if self.ace is not None \
-                                and not self.ace.head_uses_ace(self.filament_ch[ch]) \
+                        if self.ace is not None\
+                                and not self.ace.head_uses_ace(self.filament_ch[ch])\
                                 and not self.ace.head_is_manual(self.filament_ch[ch]):
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                             logging.info(
                                 "[feed_loading] feeder head %d: native side-feed (no ACE)"
                                 % self.filament_ch[ch])
@@ -1184,7 +1333,7 @@ class FilamentFeed:
                                     self.channel_error[ch] = FEED_ERR_TIMEOUT
                                     self.exception_code[ch] = 34
                                     break
-                                if (wheel_cnt_a_2 - wheel_cnt_a_0) / self.wheel[ch].ppr > self._feed_load_counts_max or \
+                                if (wheel_cnt_a_2 - wheel_cnt_a_0) / self.wheel[ch].ppr > self._feed_load_counts_max or\
                                         (wheel_cnt_b_2 - wheel_cnt_b_0) / self.wheel_2[ch].ppr > self._feed_load_counts_max:
                                     self.channel_error[ch] = FEED_ERR_DISTANCE
                                     self.exception_code[ch] = 35
@@ -1241,6 +1390,12 @@ class FilamentFeed:
                                 load_retries = self.ace.head_load_retry[_head_idx]
                                 load_retry_retract = self.ace.head_load_retry_retract[_head_idx]
 
+
+
+
+
+
+                                self.ace._dwell_fan(True)
                                 for load_attempt in range(load_retries + 1):
                                     if load_attempt > 0:
                                         logging.info("[feed_loading] retry %d/%d: retracting %dmm",
@@ -1251,6 +1406,12 @@ class FilamentFeed:
                                     _ll = self.ace.get_load_length(self.ace._active_device_index, _ace_slot)
                                     self.ace._feed(_ace_slot, _ll, self.ace.feed_speed, 0)
                                     self.reactor.pause(self.reactor.monotonic() + 4.0)
+
+
+
+
+
+
 
                                     _feed_deadline = (self.reactor.monotonic()
                                         + _ll / max(self.ace.feed_speed, 1)
@@ -1276,6 +1437,19 @@ class FilamentFeed:
                                         if self.ace.is_ace_ready():
                                             break
                                         if port_detect == False:
+
+
+
+
+
+
+
+
+
+
+
+
+
                                             _src_ace = self.ace._active_device_index
                                             _raw_gate = -1
                                             try:
@@ -1314,12 +1488,13 @@ class FilamentFeed:
                                 if not load_found and self.channel_error[ch] != FEED_ERR_NO_FILAMENT:
                                     self.channel_error[ch] = FEED_ERR_TIMEOUT
                                     self.exception_code[ch] = 34
+                                self.ace._dwell_fan(False)
 
                         if self.channel_error[ch] != FEED_OK:
                             self._hang_neutral(ch)
                             raise ValueError('logic error!')
-                    if self.ace is not None \
-                            and self.ace.head_uses_ace(self.filament_ch[ch]) \
+                    if self.ace is not None\
+                            and self.ace.head_uses_ace(self.filament_ch[ch])\
                             and self.ace._active_device_index not in self.ace._fa_load_disable:
 
                         self.ace.wait_ace_ready()
@@ -1350,6 +1525,17 @@ class FilamentFeed:
                         self.channel_error[ch] = FEED_ERR_HEAT
                         raise
 
+
+
+
+
+
+
+
+
+
+
+
                     _seat_pressed = False
                     _press = (int(getattr(self.ace, 'seat_overshoot_length', 0))
                               if self.ace is not None else 0)
@@ -1376,16 +1562,83 @@ class FilamentFeed:
                                     self.reactor.pause(
                                         self.reactor.monotonic() + 2.0)
                             if _p_ok:
-                                self.reactor.pause(self.reactor.monotonic()
-                                                   + _press / 20. + 1.0)
-                                self.ace._tipform_send(_p_idx, {
-                                    'method': 'stop_feed_filament',
-                                    'params': {'index': _p_slot}})
+
+
+
+
+
+
+
+
+
+                                def _do_press():
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                    _t_end = (self.reactor.monotonic()
+                                              + _press / 20. + 1.0)
+                                    try:
+                                        self.gcode.run_script_from_command(
+                                            "M83\r\n")
+                                        self.gcode.run_script_from_command(
+                                            "G1 E%d F300\r\n" % _press)
+                                        self.toolhead.wait_moves()
+                                    except Exception as _ge:
+                                        logging.info(
+                                            '[feed_loading] press extruder '
+                                            'couple failed (%s) - ACE-only '
+                                            'window' % _ge)
+                                    _rem = _t_end - self.reactor.monotonic()
+                                    if _rem > 0:
+                                        self.reactor.pause(
+                                            self.reactor.monotonic() + _rem)
+                                    self.ace._tipform_send(_p_idx, {
+                                        'method': 'stop_feed_filament',
+                                        'params': {'index': _p_slot}})
+                                _psp = (None, 0, None, None)
+                                try:
+                                    _psp = self.ace._retract_with_decoder_span(
+                                        _p_idx, _p_slot, _do_press)
+                                except Exception:
+                                    _do_press()
+                                try:
+                                    _fl = getattr(self.ace, '_feedlog', None)
+                                    if _fl is not None:
+                                        _fl.info(
+                                            'unload-dec head=%d slot=%d '
+                                            'kind=seat-press len=%d span=%s '
+                                            'n=%s min=%s max=%s'
+                                            % (_p_head, _p_slot, _press,
+                                               _psp[0], _psp[1], _psp[2],
+                                               _psp[3]))
+                                except Exception:
+                                    pass
                                 _seat_pressed = True
                                 logging.info(
                                     "[feed_loading] hot seat press %dmm done "
-                                    "(ace %d slot %d, attempt %d)",
-                                    _press, _p_idx, _p_slot, _pa + 1)
+                                    "(ace %d slot %d, attempt %d, moved %s)",
+                                    _press, _p_idx, _p_slot, _pa + 1,
+                                    _psp[0] if _psp[0] is not None
+                                    else 'n/a (V1)')
+
+
+
+                                try:
+                                    self.ace.note_seat_press_span(
+                                        _p_idx, _p_slot, _psp[0])
+                                except Exception:
+                                    pass
                             else:
                                 logging.info(
                                     "[feed_loading] hot seat press rejected "
@@ -1421,6 +1674,9 @@ class FilamentFeed:
 
                         ace_idx_p3 = None
                         slot_p3 = None
+
+
+
                         if self.ace is not None and self.ace.head_uses_ace(self.filament_ch[ch]):
                             head_idx_p3 = self.filament_ch[ch]
                             src_p3 = self.ace._head_source.get(head_idx_p3)
@@ -1516,11 +1772,96 @@ class FilamentFeed:
                                         extruded = True
                                         break
                                 elif self.check_wheel_data == 0 and self.check_coil_freq != 0:
+
+
+
+
+
+
+
+
                                     if (retry > 0 or _seat_pressed) and inductance_coil is not None:
-                                        if abs(coil_freq_end_min - coil_freq_start) >= coil_freq_threshold or \
+                                        if abs(coil_freq_end_min - coil_freq_start) >= coil_freq_threshold or\
                                                 abs(coil_freq_end_max - coil_freq_start) >= coil_freq_threshold:
-                                            extruded = True
-                                            break
+
+
+
+
+
+
+
+
+
+
+                                            _lp_ok = True
+                                            if (retry == 0 and self.ace is not None
+                                                    and ace_idx_p3 is not None):
+                                                try:
+                                                    _lp_ok, _lp_b, _lp_r =\
+                                                        self.ace.coil_lowpass_check(
+                                                            self.filament_ch[ch],
+                                                            ace_idx_p3, slot_p3,
+                                                            coil_freq_end_max
+                                                            - coil_freq_end_min)
+                                                except Exception:
+                                                    _lp_ok = True
+                                                if not _lp_ok:
+
+
+
+
+
+
+
+
+
+
+                                                    if _lp_b is None:
+                                                        _lp_msg = (
+                                                            '[feed_loading] phase3: '
+                                                            'retry-0 pass %d has '
+                                                            'no clean lane '
+                                                            'baseline yet - '
+                                                            'shortcut denied, '
+                                                            'seeding at retry 1'
+                                                            % (coil_freq_end_max
+                                                               - coil_freq_end_min))
+                                                    else:
+                                                        _lp_msg = (
+                                                            '[feed_loading] phase3: '
+                                                            'retry-0 pass %d well '
+                                                            'below lane baseline %d '
+                                                            '(ratio %.2f) - shortcut '
+                                                            'denied, verifying at '
+                                                            'retry 1'
+                                                            % (coil_freq_end_max
+                                                               - coil_freq_end_min,
+                                                               _lp_b, _lp_r))
+                                                    logging.info(_lp_msg)
+                                                    if _wlog_push is not None:
+                                                        if _lp_b is None:
+                                                            _wlog_push.info(
+                                                                'phase3 head=%d ace=%s '
+                                                                'slot=%s LOWPASS '
+                                                                'seed-deny delta=%d',
+                                                                self.filament_ch[ch],
+                                                                ace_idx_p3, slot_p3,
+                                                                coil_freq_end_max
+                                                                - coil_freq_end_min)
+                                                        else:
+                                                            _wlog_push.info(
+                                                                'phase3 head=%d ace=%s '
+                                                                'slot=%s LOWPASS demote '
+                                                                'delta=%d baseline=%d '
+                                                                'ratio=%.2f',
+                                                                self.filament_ch[ch],
+                                                                ace_idx_p3, slot_p3,
+                                                                coil_freq_end_max
+                                                                - coil_freq_end_min,
+                                                                _lp_b, _lp_r)
+                                            if _lp_ok:
+                                                extruded = True
+                                                break
                                 else:
 
                                     wheel_ok = (wheel_cnt_a_2 - wheel_cnt_a_1 >= 5 or
@@ -1536,6 +1877,100 @@ class FilamentFeed:
                                 prev_a_p3 = wheel_cnt_a_2
                                 prev_b_p3 = wheel_cnt_b_2
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                            if (extruded and retry >= 2
+                                    and inductance_coil is not None
+                                    and self.ace is not None
+                                    and ace_idx_p3 is not None):
+                                try:
+                                    _rv_weak, _rv_b, _rv_r =\
+                                        self.ace.rescue_verify_check(
+                                            self.filament_ch[ch], ace_idx_p3,
+                                            slot_p3,
+                                            coil_freq_end_max
+                                            - coil_freq_end_min)
+                                except Exception:
+                                    _rv_weak, _rv_b, _rv_r = (False, None, None)
+                                if _rv_weak:
+                                    logging.info(
+                                        '[feed_loading] phase3: RESCUE pass '
+                                        '%d at retry %d is weak vs baseline '
+                                        '%s (ratio %s) - purge + re-measure',
+                                        coil_freq_end_max - coil_freq_end_min,
+                                        retry,
+                                        '%d' % _rv_b if _rv_b else 'none',
+                                        '%.2f' % _rv_r if _rv_r else '-')
+                                    self.gcode.run_script_from_command(
+                                        "G1 E25 F400\r\n")
+                                    self.toolhead.wait_moves()
+                                    self.reactor.pause(
+                                        self.reactor.monotonic() + 0.5)
+                                    _c0 = inductance_coil.get_coil_freq()
+                                    _cmin = _cmax = _c0
+                                    self.gcode.run_script_from_command(
+                                        f"G1 E{extrude_length} "
+                                        f"F{extrude_speed}\r\n")
+                                    self.reactor.pause(
+                                        self.reactor.monotonic() + 0.5)
+                                    for _i in range(coil_freq_sample_times):
+                                        _cf = inductance_coil.get_coil_freq()
+                                        if _cf > _cmax:
+                                            _cmax = _cf
+                                        elif _cf < _cmin:
+                                            _cmin = _cf
+                                        self.reactor.pause(
+                                            self.reactor.monotonic()
+                                            + coil_freq_time_interval)
+                                    self.toolhead.wait_moves()
+                                    _d2 = _cmax - _cmin
+                                    _abs_ok = (
+                                        abs(_cmin - _c0) >= coil_freq_threshold
+                                        or abs(_cmax - _c0)
+                                        >= coil_freq_threshold)
+                                    _rel_ok = (_rv_b is None
+                                               or _d2 >= _rv_b * 0.7)
+                                    _verdict = _abs_ok and _rel_ok
+                                    logging.info(
+                                        '[feed_loading] phase3: RESCUE '
+                                        're-measure delta %d (was %d) -> %s',
+                                        _d2,
+                                        coil_freq_end_max - coil_freq_end_min,
+                                        'ok' if _verdict else
+                                        'STILL WEAK - failing the load')
+                                    _wlog_rv = (getattr(self.ace,
+                                                        '_wiggle_log', None))
+                                    if _wlog_rv is not None:
+                                        _wlog_rv.info(
+                                            'phase3 head=%d ace=%s slot=%s '
+                                            'RESCUE_VERIFY first=%d '
+                                            're=%d baseline=%s verdict=%s',
+                                            self.filament_ch[ch], ace_idx_p3,
+                                            slot_p3,
+                                            coil_freq_end_max
+                                            - coil_freq_end_min,
+                                            _d2,
+                                            '%d' % _rv_b if _rv_b else '-',
+                                            'ok' if _verdict else 'weak')
+                                    if _verdict:
+                                        coil_freq_start = _c0
+                                        coil_freq_end_min = _cmin
+                                        coil_freq_end_max = _cmax
+                                    else:
+                                        extruded = False
+
                             if extruded == True:
                                 _wlog = (getattr(self.ace, '_wiggle_log', None)
                                          if self.ace else None)
@@ -1547,6 +1982,52 @@ class FilamentFeed:
                                         retry, phase3_wiggles_used or '(none)',
                                         coil_freq_start, coil_freq_end_min, coil_freq_end_max,
                                         coil_freq_end_max - coil_freq_end_min)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                if (self.ace is not None
+                                        and ace_idx_p3 is not None
+                                        and inductance_coil is not None):
+                                    try:
+                                        _resv, _, _ = self.ace._resistance_note(
+                                            'phase3', self.filament_ch[ch],
+                                            ace_idx_p3, slot_p3,
+                                            coil_freq_end_max - coil_freq_end_min,
+                                            noisy=(retry == 0))
+                                        if _resv == 'pause_due':
+                                            self.ace._resistance_pause_pending = (
+                                                self.filament_ch[ch],
+                                                ace_idx_p3, slot_p3)
+                                    except Exception:
+                                        pass
                                 break
 
                             if retry == 0:
@@ -1737,6 +2218,9 @@ class FilamentFeed:
                     self._set_channel_state(ch, FEED_STA_LOAD_FLUSHING)
                     try:
                         self.toolhead.wait_moves()
+
+
+
                         _purge_len = self.ace.get_purge_length() if self.ace else 0
                         _flush_cmd = ("INNER_FLUSH_FILAMENT TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f" %
                                       (filament_feed_temp, int(filament_soft),
@@ -1754,6 +2238,20 @@ class FilamentFeed:
 
                     if self.ace is not None and self.ace.head_uses_ace(self.filament_ch[ch]):
                         head_idx = self.filament_ch[ch]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                         _src = self.ace._head_source.get(head_idx)
                         if _src is not None and isinstance(_src.get('ace_index'), int):
                             ace_idx = int(_src['ace_index'])
@@ -1769,13 +2267,27 @@ class FilamentFeed:
                             si = slot_info[ace_slot]
                         else:
                             si = {}
-                        self.ace._head_source[head_idx] = {
+                        _ident = {
                             'ace_index': ace_idx,
                             'slot': ace_slot,
                             'type': si.get('type', 'PLA'),
                             'color': self.ace.rgb2hex(*si.get('color', (0, 0, 0))),
                             'brand': si.get('brand', 'Generic'),
                         }
+
+
+
+
+
+
+
+                        _ovl = getattr(self.ace, '_overlay_override', None)
+                        if _ovl is not None:
+                            _ident = _ovl(ace_idx, ace_slot, _ident)
+                        _inh = getattr(self.ace, '_inherit_prev_capture', None)
+                        if _inh is not None:
+                            _ident = _inh(head_idx, ace_idx, ace_slot, _ident)
+                        self.ace._head_source[head_idx] = _ident
                         self.ace._save_head_source()
                         self.ace._ghost_heads.discard(head_idx)
                         logging.info('[multiACE] FEED_AUTO LOAD: head_source[%d] -> ACE %d / Slot %d' % (
@@ -1807,10 +2319,17 @@ class FilamentFeed:
 
             elif action == FEED_ACT_UNLOAD:
 
+
+
+
                 if self.ace is not None:
                     self.ace._ensure_active_ace_for_head(self.filament_ch[ch])
 
-                if self.ace is not None \
+
+
+
+
+                if self.ace is not None\
                         and self.ace.head_uses_ace(self.filament_ch[ch]):
                     try:
                         self.ace._v2_arm_fa_for_unload(self.filament_ch[ch])
@@ -1836,6 +2355,14 @@ class FilamentFeed:
                     try:
 
                         self._set_channel_state(ch, FEED_STA_UNLOAD_PREPARE, True)
+
+
+
+
+
+
+
+
 
                         _precool = (FEED_SWAP_PRECOOL_TEMP
                                     if (self.ace is not None and
@@ -1873,6 +2400,9 @@ class FilamentFeed:
                         try:
                             self._set_channel_state(ch, FEED_STA_UNLOAD_HEATING)
                             if _precool > 0:
+
+
+
                                 self.gcode.run_script_from_command(
                                     'TEMPERATURE_WAIT SENSOR="%s" MAXIMUM=%d\r\n'
                                     % (self.toolhead.get_extruder().get_name(), _precool))
@@ -1934,14 +2464,31 @@ class FilamentFeed:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
                             raise ValueError('custom gcode error!')
 
-                        if self.ace is not None \
+
+
+
+
+
+                        if self.ace is not None\
                                 and self.ace.head_uses_ace(self.filament_ch[ch]):
+
+
+
+
+
+
+
+
+
+
+
                             cool_probe = (getattr(self.ace, 'swap_cool_probe', False)
                                           and getattr(self.ace, '_swap_in_progress', False))
                             probe_temp = self._swap_probe_temp(
                                 cool_probe, filament_unload_temp)
                             probe_push = getattr(self.ace, 'swap_probe_push', 5)
                             probe_pull = (probe_push * 3) // 2
+
                             precool_temp = (FEED_SWAP_PRECOOL_TEMP
                                             if getattr(self.ace, '_swap_in_progress', False) else 0)
                             if getattr(self.ace, '_swap_in_progress', False):
@@ -1952,6 +2499,13 @@ class FilamentFeed:
                                     "(cool_probe=%s, unload_temp=%d)",
                                     probe_temp, cool_probe, filament_unload_temp)
                             else:
+
+
+
+
+
+
+
                                 self.gcode.run_script_from_command(
                                     "M104 S%d\r\n" % filament_unload_temp)
                                 logging.info(
@@ -1970,10 +2524,31 @@ class FilamentFeed:
                                 logging.info(
                                     "[feed][unload] head %d unloads to ACE slot %d (slot!=head)",
                                     head_idx, _ace_slot)
+
+
+
+
+
+
+
+
                             _full_retract = self.ace._resolve_retract_length(_ace_slot)
                             _short_retract = min(FEED_UNLOAD_PROBE_RETRACT, _full_retract)
                             _retract_speed = self.ace.get_retract_speed(
                                 self.ace._active_device_index)
+
+
+
+
+
+
+
+
+
+
+
+
+
                             _gate_empty = False
                             try:
                                 _gate_ace = (source['ace_index'] if source
@@ -1992,6 +2567,15 @@ class FilamentFeed:
                                     ace=self.ace._disp(_gate_ace),
                                     slot=self.ace._disp(_ace_slot)))
                             for unload_attempt in range(unload_max):
+
+
+
+
+
+
+
+
+
                                 self.ace.wait_ace_ready()
                                 _usp = self.ace._retract_with_decoder_span(
                                     self.ace._active_device_index, _ace_slot,
@@ -2002,6 +2586,22 @@ class FilamentFeed:
                                 self._unload_dec_log(
                                     head_idx, _ace_slot, 'short', _short_retract,
                                     _usp, unload_attempt + 1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
                                 self.reactor.pause(self.reactor.monotonic() + FEED_UNLOAD_TRIGGER_SETTLE)
                                 _pin = None
@@ -2034,8 +2634,16 @@ class FilamentFeed:
                                         self.filament_ch[ch],
                                         unload_attempt + 1, unload_max)
                                 else:
+
+
+
+
                                     try:
                                         if not getattr(self.ace, '_swap_in_progress', False):
+
+
+
+
                                             self.gcode.run_script_from_command(
                                                 'TEMPERATURE_WAIT SENSOR="%s" MINIMUM=%d\r\n'
                                                 % (self.toolhead.get_extruder().get_name(),
@@ -2059,6 +2667,10 @@ class FilamentFeed:
                                     _cleared = not self.runout_sensor[ch].get_status(0)['filament_detected']
                                     if (_cleared and _pin is True
                                             and bool(getattr(self.ace, 'unload_gpio', True))):
+
+
+
+
                                         logging.info(
                                             "[feed][gpio] head %d VETO: probe cleared "
                                             "but pin still PRESENT - false-positive "
@@ -2077,6 +2689,9 @@ class FilamentFeed:
 
                                 if _last_attempt:
                                     break
+
+
+
                                 if pushed:
                                     try:
                                         self.gcode.run_script_from_command("M83\r\n")
@@ -2087,6 +2702,11 @@ class FilamentFeed:
                                     except:
                                         logging.info("[feed][unload] probe pull-back failed")
                                 try:
+
+
+
+
+
                                     if precool_temp > 0:
                                         self.gcode.run_script_from_command("M104 S%d\r\n" % precool_temp)
                                         self.gcode.run_script_from_command(
@@ -2094,21 +2714,43 @@ class FilamentFeed:
                                             % (self.toolhead.get_extruder().get_name(), precool_temp))
                                         logging.info("[feed][unload] retry %d/%d: pre-cool to <=%d C (heat-soak reset)",
                                                      unload_attempt + 1, unload_max, precool_temp)
+
+
+
+
                                     self.gcode.run_script_from_command("M109 S%d\r\n"
-                                        % (max(filament_feed_temp, filament_unload_temp)))
+                                        % (max(filament_feed_temp_db, filament_unload_temp)))
                                     self.toolhead.wait_moves()
                                     self.ace._run_tipform(
                                         self.filament_ch[ch],
-                                        max(filament_feed_temp, filament_unload_temp),
+                                        max(filament_feed_temp_db, filament_unload_temp),
                                         int(filament_soft),
                                         self.toolhead.get_extruder().nozzle_diameter)
                                     self.toolhead.wait_moves()
+
+
+
+
+
                                     self.gcode.run_script_from_command("M104 S%d\r\n" % probe_temp)
                                 except:
                                     logging.info("[feed][unload] toolhead unload retry failed")
+
+
+
+
                             if unload_ok:
                                 _rest = _full_retract - _short_retract
                                 if _rest > 0:
+
+
+
+
+                                    self.ace._dwell_fan(True)
+
+
+
+
                                     self.ace.wait_ace_ready()
                                     _rsp = self.ace._retract_with_decoder_span(
                                         self.ace._active_device_index, _ace_slot,
@@ -2116,6 +2758,7 @@ class FilamentFeed:
                                             _ace_slot, _rest,
                                             _retract_speed, head=head_idx))
                                     self.ace.wait_ace_ready()
+                                    self.ace._dwell_fan(False)
                                     self._unload_dec_log(
                                         head_idx, _ace_slot, 'rest', _rest,
                                         _rsp, '-')
@@ -2124,6 +2767,13 @@ class FilamentFeed:
 
                             if self.ace is not None:
                                 self.ace._last_unload_ok = unload_ok
+
+
+
+
+
+
+
                                 self.ace._v2_active_rev_assist = False
                         self.gcode.run_script_from_command("M104 S0\r\n")
                         self.channel_error[ch] = FEED_OK
@@ -2131,6 +2781,12 @@ class FilamentFeed:
 
                         if self.ace is not None and self.ace.head_uses_ace(self.filament_ch[ch]):
                             head_idx = self.filament_ch[ch]
+
+
+
+
+
+
                             if not getattr(self.ace, '_last_unload_ok', True):
                                 logging.info('[multiACE] FEED_AUTO UNLOAD: unload '
                                              'NOT verified (stuck) - keeping '
@@ -2217,14 +2873,31 @@ class FilamentFeed:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
                             raise ValueError('custom gcode error!')
 
-                        if self.ace is not None \
+
+
+
+
+
+                        if self.ace is not None\
                                 and self.ace.head_uses_ace(self.filament_ch[ch]):
+
+
+
+
+
+
+
+
+
+
+
                             cool_probe = (getattr(self.ace, 'swap_cool_probe', False)
                                           and getattr(self.ace, '_swap_in_progress', False))
                             probe_temp = self._swap_probe_temp(
                                 cool_probe, filament_unload_temp)
                             probe_push = getattr(self.ace, 'swap_probe_push', 5)
                             probe_pull = (probe_push * 3) // 2
+
                             precool_temp = (FEED_SWAP_PRECOOL_TEMP
                                             if getattr(self.ace, '_swap_in_progress', False) else 0)
                             if getattr(self.ace, '_swap_in_progress', False):
@@ -2235,6 +2908,13 @@ class FilamentFeed:
                                     "(cool_probe=%s, unload_temp=%d)",
                                     probe_temp, cool_probe, filament_unload_temp)
                             else:
+
+
+
+
+
+
+
                                 self.gcode.run_script_from_command(
                                     "M104 S%d\r\n" % filament_unload_temp)
                                 logging.info(
@@ -2253,10 +2933,31 @@ class FilamentFeed:
                                 logging.info(
                                     "[feed][unload] head %d unloads to ACE slot %d (slot!=head)",
                                     head_idx, _ace_slot)
+
+
+
+
+
+
+
+
                             _full_retract = self.ace._resolve_retract_length(_ace_slot)
                             _short_retract = min(FEED_UNLOAD_PROBE_RETRACT, _full_retract)
                             _retract_speed = self.ace.get_retract_speed(
                                 self.ace._active_device_index)
+
+
+
+
+
+
+
+
+
+
+
+
+
                             _gate_empty = False
                             try:
                                 _gate_ace = (source['ace_index'] if source
@@ -2275,6 +2976,15 @@ class FilamentFeed:
                                     ace=self.ace._disp(_gate_ace),
                                     slot=self.ace._disp(_ace_slot)))
                             for unload_attempt in range(unload_max):
+
+
+
+
+
+
+
+
+
                                 self.ace.wait_ace_ready()
                                 _usp = self.ace._retract_with_decoder_span(
                                     self.ace._active_device_index, _ace_slot,
@@ -2285,6 +2995,22 @@ class FilamentFeed:
                                 self._unload_dec_log(
                                     head_idx, _ace_slot, 'short', _short_retract,
                                     _usp, unload_attempt + 1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
                                 self.reactor.pause(self.reactor.monotonic() + FEED_UNLOAD_TRIGGER_SETTLE)
                                 _pin = None
@@ -2317,8 +3043,16 @@ class FilamentFeed:
                                         self.filament_ch[ch],
                                         unload_attempt + 1, unload_max)
                                 else:
+
+
+
+
                                     try:
                                         if not getattr(self.ace, '_swap_in_progress', False):
+
+
+
+
                                             self.gcode.run_script_from_command(
                                                 'TEMPERATURE_WAIT SENSOR="%s" MINIMUM=%d\r\n'
                                                 % (self.toolhead.get_extruder().get_name(),
@@ -2342,6 +3076,10 @@ class FilamentFeed:
                                     _cleared = not self.runout_sensor[ch].get_status(0)['filament_detected']
                                     if (_cleared and _pin is True
                                             and bool(getattr(self.ace, 'unload_gpio', True))):
+
+
+
+
                                         logging.info(
                                             "[feed][gpio] head %d VETO: probe cleared "
                                             "but pin still PRESENT - false-positive "
@@ -2360,6 +3098,9 @@ class FilamentFeed:
 
                                 if _last_attempt:
                                     break
+
+
+
                                 if pushed:
                                     try:
                                         self.gcode.run_script_from_command("M83\r\n")
@@ -2370,6 +3111,11 @@ class FilamentFeed:
                                     except:
                                         logging.info("[feed][unload] probe pull-back failed")
                                 try:
+
+
+
+
+
                                     if precool_temp > 0:
                                         self.gcode.run_script_from_command("M104 S%d\r\n" % precool_temp)
                                         self.gcode.run_script_from_command(
@@ -2377,21 +3123,43 @@ class FilamentFeed:
                                             % (self.toolhead.get_extruder().get_name(), precool_temp))
                                         logging.info("[feed][unload] retry %d/%d: pre-cool to <=%d C (heat-soak reset)",
                                                      unload_attempt + 1, unload_max, precool_temp)
+
+
+
+
                                     self.gcode.run_script_from_command("M109 S%d\r\n"
-                                        % (max(filament_feed_temp, filament_unload_temp)))
+                                        % (max(filament_feed_temp_db, filament_unload_temp)))
                                     self.toolhead.wait_moves()
                                     self.ace._run_tipform(
                                         self.filament_ch[ch],
-                                        max(filament_feed_temp, filament_unload_temp),
+                                        max(filament_feed_temp_db, filament_unload_temp),
                                         int(filament_soft),
                                         self.toolhead.get_extruder().nozzle_diameter)
                                     self.toolhead.wait_moves()
+
+
+
+
+
                                     self.gcode.run_script_from_command("M104 S%d\r\n" % probe_temp)
                                 except:
                                     logging.info("[feed][unload] toolhead unload retry failed")
+
+
+
+
                             if unload_ok:
                                 _rest = _full_retract - _short_retract
                                 if _rest > 0:
+
+
+
+
+                                    self.ace._dwell_fan(True)
+
+
+
+
                                     self.ace.wait_ace_ready()
                                     _rsp = self.ace._retract_with_decoder_span(
                                         self.ace._active_device_index, _ace_slot,
@@ -2399,6 +3167,7 @@ class FilamentFeed:
                                             _ace_slot, _rest,
                                             _retract_speed, head=head_idx))
                                     self.ace.wait_ace_ready()
+                                    self.ace._dwell_fan(False)
                                     self._unload_dec_log(
                                         head_idx, _ace_slot, 'rest', _rest,
                                         _rsp, '-')
@@ -2406,6 +3175,13 @@ class FilamentFeed:
                                 logging.info("[feed][unload] filament genuinely stuck after %d unload attempts (sensor never cleared)", unload_max)
                             if self.ace is not None:
                                 self.ace._last_unload_ok = unload_ok
+
+
+
+
+
+
+
                                 self.ace._v2_active_rev_assist = False
                         self.gcode.run_script_from_command("M104 S0\r\n")
                         self.channel_error[ch] = FEED_OK
@@ -2413,6 +3189,12 @@ class FilamentFeed:
 
                         if self.ace is not None and self.ace.head_uses_ace(self.filament_ch[ch]):
                             head_idx = self.filament_ch[ch]
+
+
+
+
+
+
                             if not getattr(self.ace, '_last_unload_ok', True):
                                 logging.info('[multiACE] FEED_AUTO UNLOAD: unload '
                                              'NOT verified (stuck) - keeping '
@@ -2568,8 +3350,8 @@ class FilamentFeed:
                         if self._port[ch].get_filament_detected() == False:
                             self._set_channel_state(ch, FEED_STA_WAIT_INSERT)
                         else:
-                            if self.runout_sensor[ch] is not None and \
-                                    self.runout_sensor[ch].get_status(0)['enabled'] == True and \
+                            if self.runout_sensor[ch] is not None and\
+                                    self.runout_sensor[ch].get_status(0)['enabled'] == True and\
                                     self.runout_sensor[ch].get_status(0)['filament_detected'] == True:
                                 self._set_channel_state(ch, FEED_STA_LOAD_FINISH, True)
                             else:
@@ -2601,24 +3383,37 @@ class FilamentFeed:
             self.channel_active = None
 
     def _emit_feed_pause(self, channel, key):
+
+
+
+
+
+
         if self.ace is None or getattr(self.ace, '_ace_mode', '') != 'multi':
             return None
         head = self.filament_ch[channel]
         hd = self.ace._disp(head)
         src = (getattr(self.ace, '_head_source', None) or {}).get(head) or {}
         a, s = src.get('ace_index'), src.get('slot')
-        loc = ' (ACE %d / Slot %d)' % (self.ace._disp(a), self.ace._disp(s)) \
+        loc = ' (ACE %d / Slot %d)' % (self.ace._disp(a), self.ace._disp(s))\
             if a is not None and s is not None else ''
         return self.ace._t(key, head=hd, loc=loc)
 
     def _feed_load_fail_details(self, channel):
-        """(detail, steps) for a failed LOAD, classified the way the swap path
-        classifies it: no transport vs no flow vs a dead ACE-side feed.
 
-        (None, None) = cannot classify (no ace object, not multi, no
-        head_source, or an ace.py without the helper); the caller then keeps
-        the flat 'Load jam' message.
-        """
+
+
+
+
+
+
+
+
+
+
+
+
+
         if self.ace is None or getattr(self.ace, '_ace_mode', '') != 'multi':
             return None, None
         detail_fn = getattr(self.ace, '_load_slip_details', None)
@@ -2649,23 +3444,88 @@ class FilamentFeed:
             except Exception:
                 return None
 
-        _printing = False
-        try:
-            _ps = self.printer.lookup_object('print_stats', None)
-            if _ps is not None:
-                _printing = _ps.get_status(0).get('state') in (
-                    'printing', 'paused')
-        except Exception:
-            _printing = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        _ace = getattr(self, 'ace', None)
+        _replenish = bool(getattr(_ace, '_replenish_check_active', False))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         for _ch in (FEED_CHANNEL_1, FEED_CHANNEL_2):
-            if _printing and filament_detected[_ch] and _runout(_ch) is False:
+            if _replenish and filament_detected[_ch] and _runout(_ch) is False:
                 try:
-                    _hd = self.filament_ch[_ch]
-                    if (self.ace.head_uses_ace(_hd)
-                            and self.ace._head_source.get(_hd) is not None):
+                    if _ace.head_uses_ace(self.filament_ch[_ch]):
                         filament_detected[_ch] = False
                 except Exception:
                     pass
+
+
+
+
 
         in_ace_1 = (self.ace.gate_status[self.ace._ace_slot_for_head(self.filament_ch[FEED_CHANNEL_1])] == 1
                     if self._port[FEED_CHANNEL_1].ace is not None else None)
@@ -2915,6 +3775,8 @@ class FilamentFeed:
                 if feed_msg is not None:
                     head_idx = self.filament_ch[channel]
                     head_disp = self.ace._disp(head_idx)
+
+
                     if feed_steps is None:
                         feed_steps = (
                             'Reload Head %s filament (display load menu or web "Reload")' % head_disp,
@@ -2944,7 +3806,12 @@ class FilamentFeed:
                         action = 'pause',
                         id = 525,
                         index = self.filament_ch[channel],
-                        code = self.exception_code[channel],
+
+
+
+
+
+                        code = 210,
                         oneshot = 1,
                         level = 2)
 
@@ -3001,7 +3868,12 @@ class FilamentFeed:
                         action = 'pause',
                         id = 525,
                         index = self.filament_ch[channel],
-                        code = self.exception_code[channel],
+
+
+
+
+
+                        code = 210,
                         oneshot = 1,
                         level = 2)
 
@@ -3066,7 +3938,8 @@ class FilamentFeed:
                     action = 'pause',
                     id = 525,
                     index = self.filament_ch[channel],
-                    code = self.exception_code[channel],
+
+                    code = 210,
                     oneshot = 1,
                     level = 2)
         elif stage == FEED_MANUAL_STAGE_FINISH:

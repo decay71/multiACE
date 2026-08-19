@@ -30,6 +30,8 @@ ACE_PY="multiace/klipper/extras/ace.py"
 # Files that should trigger a build-tag bump when changed.
 TRACKED_FILES=(
     "multiace/klipper/extras/ace.py"
+    "multiace/klipper/extras/ace_bg_swap.py"
+    "multiace/klipper/extras/ace_tipform.py"
     "multiace/klipper/extras/ace_protocol.py"
     "multiace/klipper/extras/ace_protocol_v1.py"
     "multiace/klipper/extras/ace_protocol_v2.py"

@@ -1,4 +1,5 @@
 
+
 import sys, re, os, json
 import urllib.request, urllib.error
 from collections import defaultdict
@@ -144,6 +145,11 @@ _TC_BARE_RE = re.compile(r'^T(\d{1,2})\b')
 _TC_M73_RE = re.compile(r'^M73\b.*?\bR(\d+(?:\.\d+)?)')
 
 def _toolchanges_with_times(lines_iter, has_change):
+
+
+
+
+
     events = []
     times = []
     last_r = None
@@ -195,6 +201,12 @@ def lookup_live_slots(host, port=80, path='/multiace/api/state', timeout=5.0):
         for slot in ace.get('slots', []) or []:
             if slot.get('state') == 'empty':
                 continue
+
+
+
+
+
+
             if 'source' in slot and slot['source'] not in ('rfid', 'override'):
                 continue
             color = (slot.get('color') or '').strip().lower()
@@ -312,7 +324,9 @@ def _find_color_match(candidates, slicer_color, strict_color, fuzzy_max_distance
 def match_colors_to_slots(color_names, live_slots, num_heads=4,
                           filament_types=None,
                           strict_color=False,
-                          fuzzy_max_distance=None):
+                          fuzzy_max_distance=None,
+                          nozzle_groups=None,
+                          head_of_ace=None):
     """Build a remap {original_T -> synthetic_T} for the rewrite formula
     (ace = T // num_heads, slot = T % num_heads), choosing the physical
     slot whose colour best matches the slicer's colour for that T.
@@ -392,13 +406,38 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
     info: dict = {}
     pending = list(t_meta.keys())
 
+    def _head_of(s):
+        """Which physical head a slot feeds - the axis the nozzle gate
+        constrains. MULTI: head == slot index (synthetic_T = ace*4 + slot,
+        and head = T % 4), so the slot index IS the head. HEAD MODE: each
+        ACE is wired to exactly one head, so the head comes from
+        head_of_ace and the slot index means nothing - using the slot index
+        there would gate on the wrong axis entirely."""
+        if head_of_ace:
+            return head_of_ace.get(int(s['ace']))
+        return s['slot']
+
     def _candidate_slots(t, strict_mat):
         """Iterate unclaimed slot_meta entries, optionally restricted
-        to the slicer T's material."""
+        to the slicer T's material.
+
+        NOZZLE GATE (2026-08-07): with mixed nozzles the slicer bakes each
+        tool's own line WIDTH into that tool's extrusions, so a tool may
+        only land on a head carrying the SAME nozzle diameter - the head
+        is s['slot'] here (synthetic_T = ace*num_heads + slot, so slot IS
+        the physical head). nozzle_groups maps head -> the heads sharing
+        its diameter; None/empty (uniform nozzles, unknown diameters, or
+        any non-FOrca file) means no constraint and this stays
+        byte-identical. Without it an ordinary reload in a different slot
+        order remapped 4 of 4 tools onto wrong-sized nozzles, silently
+        (HW-reproduced on FOrcaSlicer 2.3.2 cubes, 0.2/0.8/0.4/0.6)."""
         t_mat = t_meta[t]['mat']
+        allowed = nozzle_groups.get(t) if nozzle_groups else None
         for sm in slot_meta:
             s = sm['slot']
             if (s['ace'], s['slot']) in used:
+                continue
+            if allowed is not None and _head_of(s) not in allowed:
                 continue
             if strict_mat and t_mat and sm['mat'] != t_mat:
                 continue
@@ -454,13 +493,40 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
             continue
         _match_pass(tier_name, True, pred)
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     for t in list(pending):
         tm = t_meta[t]
         t_mat = (tm.get('mat') or '').strip().lower()
+        allowed = nozzle_groups.get(t) if nozzle_groups else None
         chosen = None
         for sm in slot_meta:
             s = sm['slot']
             if (s['ace'], s['slot']) in used:
+                continue
+            if allowed is not None and _head_of(s) not in allowed:
                 continue
             if t_mat and sm['mat'] and sm['mat'] != t_mat:
                 continue
@@ -483,9 +549,18 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
         for t in list(pending):
             tm = t_meta[t]
             t_mat = (tm.get('mat') or '').strip().lower()
+
+
+
+
+
+
+            allowed = nozzle_groups.get(t) if nozzle_groups else None
             candidates = [sm for sm in already
-                          if not t_mat or not sm['mat']
-                          or sm['mat'] == t_mat]
+                          if (not t_mat or not sm['mat']
+                              or sm['mat'] == t_mat)
+                          and (allowed is None
+                               or _head_of(sm['slot']) in allowed)]
             best = None
             best_d = None
             if tm['rgb'] is not None:
@@ -522,7 +597,8 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
     return remap, info, used
 
 def compute_head_mode_layout(slicer_colors, slicer_types, pinned_heads,
-                             ace_slots, ace_head_of_ace, fuzzy_max_distance=None):
+                             ace_slots, ace_head_of_ace, fuzzy_max_distance=None,
+                             nozzle_groups=None):
     """Head-mode layout: K ACE-driven heads each print colours multiplexed via
     slot-swaps on THEIR OWN ACE (each ACE head is wired to exactly one ACE); the
     feeder heads are PINNED to a single fixed colour each (no swap).
@@ -564,15 +640,25 @@ def compute_head_mode_layout(slicer_colors, slicer_types, pinned_heads,
     assignment = {}
     pinned_t = set()
 
+
+
+
     for t in sorted(slicer_colors.keys()):
         c = (slicer_colors.get(t) or '').strip().lstrip('#').lower()
         if not c:
             continue
         mat = (slicer_types.get(t) or '').strip().lower()
+
+
+
+
+        allowed = nozzle_groups.get(t) if nozzle_groups else None
         cands = []
         for head, p in pins.items():
             pmat = (p.get('material') or '').strip().lower()
             if mat and pmat and pmat != mat:
+                continue
+            if allowed is not None and head not in allowed:
                 continue
             cands.append({'head': head,
                           'color': (p.get('color') or '').strip().lstrip('#').lower()})
@@ -582,13 +668,21 @@ def compute_head_mode_layout(slicer_colors, slicer_types, pinned_heads,
             assignment[t] = {'kind': 'pin', 'head': match['head'], 'tier': tier}
             pinned_t.add(t)
 
+
+
+
+
     usable_slots = [s for s in (ace_slots or []) if int(s['ace']) in head_of_ace]
     rest_colors = {t: slicer_colors[t] for t in slicer_colors if t not in pinned_t}
     rest_types = {t: (slicer_types.get(t) or '') for t in rest_colors}
+
+
+
     _remap, info, _used = match_colors_to_slots(
         rest_colors, usable_slots, num_heads=4,
         filament_types=rest_types, strict_color=False,
-        fuzzy_max_distance=fuzzy_max_distance)
+        fuzzy_max_distance=fuzzy_max_distance,
+        nozzle_groups=nozzle_groups, head_of_ace=head_of_ace)
     for t, entry in info.items():
         s = entry.get('slot')
         if s is None:
@@ -626,6 +720,31 @@ def head_mode_swap_count(events, assignment):
             swaps += 1
             cur[head] = key
     return swaps
+
+def head_mode_flush_cost(events, assignment, flush_matrix):
+    """Total same-nozzle transition volume (mm3, slicer flush matrix) a
+    head-mode `assignment` incurs over the toolchange sequence - the colour
+    objective of compute_head_mode_optimize(objective='color'), computable
+    for ANY assignment so plans are comparable in the preview. Pinned
+    colours and cross-head switches cost nothing; the first load on a head
+    purges no old colour. None when no matrix."""
+    if flush_matrix is None:
+        return None
+    cur = {}
+    total = 0.0
+    for t in events:
+        e = assignment.get(t)
+        if not e or e.get('kind') != 'ace':
+            continue
+        head = e.get('head')
+        key = (e['ace'], e['slot'])
+        if cur.get(head) is not None and cur[head][0] != key:
+            p_t = cur[head][1]
+            if (0 <= p_t < len(flush_matrix)
+                    and 0 <= t < len(flush_matrix)):
+                total += flush_matrix[p_t][t]
+        cur[head] = (key, t)
+    return total
 
 def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None):
     """Background-unload balance of a head-mode assignment: for every unload
@@ -690,7 +809,8 @@ def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None):
 
 def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                                num_slots, layer_color_sets=None, max_colors=12,
-                               event_times=None, bg_heads=None):
+                               event_times=None, bg_heads=None,
+                               flush_matrix=None, objective='time'):
     """Head-mode loadout OPTIMIZER - the swap-minimal PROPOSED loadout that
     IGNORES the current physical load (plan 'optimize' + plan 'layer'/Belady).
 
@@ -751,6 +871,8 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
     if n > max_colors:
         return None, None
 
+
+
     best_c2b = None
     best_key = None
     for combo in product(range(F + K), repeat=n):
@@ -773,6 +895,8 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
 
         c2b = {colors_list[i]: combo[i] for i in range(n)}
 
+
+
         if layer_color_sets is not None:
             conflict = False
             for lset in layer_color_sets:
@@ -789,6 +913,12 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
             if conflict:
                 continue
 
+
+
+
+
+
+
         have_t = bool(event_times) and len(event_times) == len(events)
         bg_set = set(bg_heads or [])
         cur = {}
@@ -796,6 +926,7 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
         prev_bin = None
         swaps = 0
         bg_ok = 0
+        flush = 0.0
         for i, t in enumerate(events):
             b = c2b[t]
             r_now = event_times[i] if have_t else None
@@ -813,19 +944,38 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                             and r_now is not None
                             and rr - r_now >= BG_UNLOAD_MIN_WINDOW_MIN):
                         bg_ok += 1
+
+
+
+
+                    if flush_matrix is not None:
+                        p_t = cur.get(b)
+                        if (0 <= p_t < len(flush_matrix)
+                                and 0 <= t < len(flush_matrix)):
+                            flush += flush_matrix[p_t][t]
                 cur[b] = t
             released_r.pop(b, None)
 
         pins = sum(1 for b in combo if b < F)
+
+
+
+
         cost = ((swaps - bg_ok) * BG_SWAP_COST_INLINE_S
                 + bg_ok * BG_SWAP_COST_BG_S)
-        key = (cost, swaps, pins)
+        if objective == 'color' and flush_matrix is not None:
+            key = (flush, cost, swaps, pins)
+        else:
+            key = (cost, swaps, pins)
         if best_key is None or key < best_key:
             best_key = key
             best_c2b = c2b
 
     if best_c2b is None:
         return None, None
+
+
+
 
     feeder_bin_to_head = {}
     next_feeder = 0
@@ -856,15 +1006,329 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
 
     return assignment, head_mode_swap_count(events, assignment)
 
+
+
+
+
+
 ANTI_OOZE_NO_UNRETRACT = 1.0
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 BG_UNLOAD_MIN_WINDOW_MIN = 1
+
+
+
+
+
+
+
 
 BG_SWAP_COST_INLINE_S = 210
 BG_SWAP_COST_BG_S = 30
 BG_UNLOAD_INLINE_SAVING_S = BG_SWAP_COST_INLINE_S - BG_SWAP_COST_BG_S
 
-BG_INITIAL_LOAD = True
+
+
+
+
+
+
+
+
+
+
+
+BG_INITIAL_LOAD = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+PP_FORMAT_VERSION = 4
+
+def detect_processed(text):
+    """(processed: bool, fmt: int|None) for a gcode HEAD chunk or plan
+    proxy: fmt is the stamped PP_FORMAT_VERSION, None = processed by a
+    pre-versioning build (only the auto-load marker present)."""
+    m = re.search(r'^;\s*multiACE processed:\s*format=(\d+)', text, re.M)
+    if m:
+        return True, int(m.group(1))
+    if re.search(r'^;\s*multiACE auto-load:', text, re.M):
+        return True, None
+    return False, None
+
+
+
+STANDBY_MIN_EXTRUDE_C = 170
+
+def scan_cooling_standbys(in_path, head_of_tool):
+    """Line numbers of M104/M109 lines that PROVABLY leave the printing head
+    below min_extrude_temp - the ones the rewrite has to drop.
+
+    Slicers with ooze prevention set every INACTIVE tool to a standby
+    temperature (OrcaSlicer: nozzle_temperature + standby_temperature_delta,
+    e.g. 240-150=90). Those lines address a slicer TOOL, and the remap
+    collapses several tools onto one physical head - so a standby meant for a
+    parked colour can land on the head that prints the next one.
+
+    Most of them are HARMLESS and must be kept: a pre-toolchange cooldown
+    parks its own head (that is the anti-ooze measure, S35 dock drooling),
+    and even after a collision the arriving tool's M109 overrides it one line
+    later. A 6-colour Snapmaker Orca file with the same setting and two
+    colours on one head has 831 of them and 0 of 1,024,850 extrusions below
+    the limit. Dangerous is only the case where nothing re-heats before the
+    head extrudes again: at an object start in print-by-object mode the
+    slicer sets all OTHER tools to standby AFTER the change, and the head
+    then cools through the limit mid-object (djfilament 2026-08-11: 144
+    extrusions at target 90 instead of 245, "under temp error").
+
+    Telling those apart needs the forward view, not a per-line test, so this
+    replays the file: track the active head and each head's target, and when
+    an extruding move runs on a head whose target is below the limit, blame
+    the line that set it. Only lines actually blamed get dropped, so a file
+    without the collision comes out byte-identical.
+    """
+    danger = set()
+
+
+
+
+    cold_setters = {}
+    target = {}
+    active = None
+    t_re = re.compile(r'^T(\d{1,2})\s*$')
+    m_re = re.compile(r'^M10[49]\b')
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
+        for no, line in enumerate(fin):
+            code = line.split(';')[0].strip()
+            if not code:
+                continue
+            mt = t_re.match(code)
+            if mt:
+                h = head_of_tool(int(mt.group(1)))
+                if h is not None:
+                    active = h
+                continue
+            if m_re.match(code):
+                ms = re.search(r'\bS(\d+)', code)
+                if ms is None:
+                    continue
+                mh = re.search(r'\bT(\d{1,2})', code)
+                h = head_of_tool(int(mh.group(1))) if mh else active
+                if h is None:
+                    continue
+                val = int(ms.group(1))
+                target[h] = val
+                if 0 < val < STANDBY_MIN_EXTRUDE_C:
+                    cold_setters.setdefault(h, []).append(no)
+                else:
+
+
+                    cold_setters[h] = []
+                continue
+            if code[:2] in ('G0', 'G1') and active is not None:
+                me = re.search(r'\bE(-?[\d.]+)', code)
+                if me is None:
+                    continue
+                try:
+                    if float(me.group(1)) <= 0:
+                        continue
+                except ValueError:
+                    continue
+                tg = target.get(active)
+
+                if tg is not None and 0 < tg < STANDBY_MIN_EXTRUDE_C:
+                    danger.update(cold_setters.get(active, ()))
+    return danger
+
+PURGE_MATRIX_ENABLE = True
+FILAMENT_MM3_PER_MM = 2.405
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+PURGE_MATRIX_TOPUP_FRAC = 0.45
+PURGE_MATRIX_MIN_MM = 40.
+PURGE_MATRIX_MAX_MM = 150.
+
+_FLUSH_MATRIX_RE = re.compile(
+    r'^;?\s*flush_volumes_matrix\s*=\s*([0-9.,\s]+)$')
+_FLUSH_MULT_RE = re.compile(
+    r'^;?\s*flush_multiplier\s*=\s*([0-9.]+)')
+
+def parse_flush_matrix(gcode):
+    """Text variant of parse_flush_matrix_from_file: same contract, takes
+    the gcode as a string (e.g. the preflight's filtered plan proxy - the
+    flush_ lines are on its keep-list)."""
+    raw = None
+    mult = 1.0
+    for line in gcode.splitlines():
+        m = _FLUSH_MATRIX_RE.match(line.strip())
+        if m:
+            raw = m.group(1)
+            continue
+        m = _FLUSH_MULT_RE.match(line.strip())
+        if m:
+            try:
+                mult = float(m.group(1))
+            except ValueError:
+                pass
+    return _flush_matrix_build(raw, mult)
+
+def parse_flush_matrix_from_file(in_path):
+    """Scan the slicer config block for flush_volumes_matrix (mm3, row-major
+    NxN, row = from-tool) and flush_multiplier. Returns the multiplied NxN
+    matrix as a list of lists, or None when the file carries none. Last
+    occurrence wins (header copies exist in some slicer exports)."""
+    raw = None
+    mult = 1.0
+    try:
+        with open(in_path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = _FLUSH_MATRIX_RE.match(line.strip())
+                if m:
+                    raw = m.group(1)
+                    continue
+                m = _FLUSH_MULT_RE.match(line.strip())
+                if m:
+                    try:
+                        mult = float(m.group(1))
+                    except ValueError:
+                        pass
+    except OSError:
+        return None
+    return _flush_matrix_build(raw, mult)
+
+def parse_flush_matrix_raw_from_file(in_path):
+    """The stamp basis: pair values as authored, with the file's
+    flush_multiplier applied UPWARD ONLY (max(1, mult) - Dirk 2026-08-17,
+    b/w squares test). The asymmetry is the whole point:
+      - mult < 1 is the user's TOWER-economy calibration (Dirk's own BUGY
+        trim ran 0.6) and must not scale our melt-zone top-up below the
+        HW-proven floor (black->red washed under ~80 mm) - so downward it
+        is ignored, exactly as before;
+      - mult > 1 is the one slicer-side knob a TOWER-LESS print has to
+        raise the stamps to the full transition (the b/w test: 0.45 x raw
+        left half of each into-black square as wash in the part; there is
+        no tower to absorb it). Deliberate per-pair reductions go through
+        the raw cells, which keep working 1:1 in both directions.
+    The multiplied variant stays the contract of the public parse
+    functions (optimizer/flush-cost = tower model; changing their return
+    would break preflight_core across a version skew, S21)."""
+    raw = None
+    mult = 1.0
+    try:
+        with open(in_path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = _FLUSH_MATRIX_RE.match(line.strip())
+                if m:
+                    raw = m.group(1)
+                    continue
+                mm = _FLUSH_MULT_RE.match(line.strip())
+                if mm:
+                    try:
+                        mult = float(mm.group(1))
+                    except ValueError:
+                        mult = 1.0
+    except OSError:
+        return None
+    return _flush_matrix_build(raw, max(1.0, mult))
+
+def _flush_matrix_build(raw, mult):
+    if not raw:
+        return None
+    try:
+        vals = [float(v) for v in raw.replace(' ', '').split(',') if v != '']
+    except ValueError:
+        return None
+    n = int(round(len(vals) ** 0.5))
+    if n < 2 or n * n != len(vals):
+        return None
+
+
+
+
+
+
+
+
+
+
+
+    if not mult or mult <= 0:
+        mult = 1.0
+    return [[vals[i * n + j] * mult for j in range(n)] for i in range(n)]
+
+def _matrix_purge_mm(matrix, t_from, t_to):
+    """Per-pair top-up flush length in mm, or None when the pair is
+    unknown/identity (caller then emits no stamp -> engine default)."""
+    if (matrix is None or t_from is None or t_to is None
+            or t_from == t_to):
+        return None
+    if not (0 <= t_from < len(matrix) and 0 <= t_to < len(matrix)):
+        return None
+    pair_mm = matrix[t_from][t_to] / FILAMENT_MM3_PER_MM
+    mm = pair_mm * PURGE_MATRIX_TOPUP_FRAC
+    mm = max(PURGE_MATRIX_MIN_MM, min(PURGE_MATRIX_MAX_MM, mm))
+    return int(round(mm))
+
+
 
 _UNRETRACT_RE = re.compile(
     r'^G[01]\s+(?:F[0-9.]+\s+)?E([0-9.]+)(?:\s+F[0-9.]+)?\s*$')
@@ -989,26 +1453,51 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
         return re.sub(r'T(\d{1,2})', repl, line)
 
     in_body = False
+
+
+    cooling_standbys = scan_cooling_standbys(in_path, head_of)
     cur = {}
+    cur_tool = {}
     active = 0
     skipped = 0
     primed_ace = set()
     primed_pin = set()
+
+
+
+
+
     post_t_unret = _scan_post_t_unretracts(in_path)
+
+
+
+    flush_matrix = (parse_flush_matrix_raw_from_file(in_path)
+                    if PURGE_MATRIX_ENABLE else None)
+
+
+
+
+
+
     body_tools, body_times, body_lines = _scan_body_tools(in_path)
     bt_idx = 0
     total = os.path.getsize(in_path) or 1
     seen = 0
     last_pr = 0
 
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
          open(out_path, 'w', encoding='utf-8') as fout:
         for line_no, line in enumerate(fin):
             seen += len(line.encode('utf-8', errors='ignore'))
             stripped = line.rstrip('\r\n')
 
             if m104_re.match(stripped):
-                fout.write(fix_m104(line))
+                if line_no in cooling_standbys:
+                    fout.write('; multiACE dropped: %s  ; would cool the '
+                               'printing head below %d C\n'
+                               % (stripped.strip(), STANDBY_MIN_EXTRUDE_C))
+                else:
+                    fout.write(fix_m104(line))
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
 
@@ -1017,12 +1506,27 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                 n = int(mp.group(1))
                 ae = ace_entry_of(n)
                 if ae is not None:
+
+
+
+
+
+
+
+
+
+
                     last_pr = _emit_progress(progress, seen, total, last_pr)
                     continue
                 h = head_of(n)
                 if h is None:
                     fout.write(line)
                 elif h not in primed_pin:
+
+
+
+
+
                     primed_pin.add(h)
                     fout.write(
                         'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d FORCE=1\n' % h)
@@ -1040,12 +1544,28 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                 h = head_of(n)
                 if h is None:
                     fout.write(line)
+
+
                     if (in_body and bt_idx < len(body_tools)
                             and body_tools[bt_idx] == n):
                         bt_idx += 1
                     last_pr = _emit_progress(progress, seen, total, last_pr)
                     continue
                 fout.write('T%d\n' % h)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 if (in_body and bt_idx < len(body_tools)
                         and body_tools[bt_idx] == n):
                     if bt_idx > 0:
@@ -1063,6 +1583,11 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                     nxt_j = j
                                     break
                             if nxt is not None and nxt != loaded_now:
+
+
+
+
+
                                 r_now = body_times[bt_idx]
                                 r_nxt = body_times[nxt_j]
                                 window = None
@@ -1077,18 +1602,41 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                         % (ae_rel[0], int(window),
                                            BG_UNLOAD_MIN_WINDOW_MIN))
                                 else:
+
+
+
+
+
+
+
+
+
                                     ao = post_t_unret.get(
                                         body_lines[nxt_j])
                                     if ao is None:
                                         ao = ANTI_OOZE_NO_UNRETRACT
+
+
+
+
+
+                                    _bgp = _matrix_purge_mm(
+                                        flush_matrix, rel_tool,
+                                        body_tools[nxt_j])
                                     fout.write(
                                         'ACE_BG_SWAP HEAD=%d ACE=%d '
-                                        'SLOT=%d ANTI_OOZE=%s QUIET=1\n'
+                                        'SLOT=%d ANTI_OOZE=%s%s QUIET=1\n'
                                         % (ae_rel[0], nxt[0], nxt[1],
-                                           _fmt_anti_ooze(ao)))
+                                           _fmt_anti_ooze(ao),
+                                           (' PURGE=%d' % _bgp)
+                                           if _bgp is not None else ''))
                     bt_idx += 1
                 ae = ace_entry_of(n)
                 if not in_body:
+
+
+
+
                     if ae is not None:
                         primed_ace.add(ae[0])
                 elif ae is not None:
@@ -1098,22 +1646,49 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                    '  ; skipped (already loaded)\n'
                                    % (head, a, s))
                         skipped += 1
+                        cur_tool[head] = n
+
+
                         if pickup_cleaning:
                             fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % head)
                     else:
+
+
+
+
+
+
+
+
                         v = post_t_unret.get(line_no)
                         if v is None:
                             v = ANTI_OOZE_NO_UNRETRACT
+
+
+
+
+                        _pp = _matrix_purge_mm(flush_matrix,
+                                               cur_tool.get(head), n)
+                        if _pp is not None:
+                            fout.write('ACE_SET_PURGE LENGTH=%d\n' % _pp)
                         fout.write('ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d'
                                    ' ANTI_OOZE=%s\n'
                                    % (head, a, s, _fmt_anti_ooze(v)))
                         cur[head] = (a, s)
+                        cur_tool[head] = n
                         active += 1
                     if head not in primed_ace:
+
+
+
+
+
                         primed_ace.add(head)
                         fout.write('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d '
                                    'FORCE=1\n' % head)
                 elif pickup_cleaning:
+
+
                     fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % h)
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
@@ -1144,6 +1719,122 @@ def parse_filament_types(gcode):
             if types:
                 break
     return types
+
+def parse_nozzle_diameters(gcode):
+    """T-index -> nozzle diameter (mm) from the slicer header line
+    `; nozzle_diameter = 0.2,0.8,0.4,0.6`.
+
+    The parser itself is slicer-agnostic (every Orca/Prusa descendant
+    emits the line), but the GATE that consumes it is deliberately scoped
+    to FOrcaSlicer files (Dirk 2026-08-07: "bitte erstmal an forca
+    haengen"). Rationale, verified in stock 1.5.2: a mixed-nozzle job
+    cannot reach the machine any other way. Stock Orca emits
+    SET_PRINT_TASK_PARAMETERS, whose guard compares the file's
+    nozzle_diameter[0] - index 0 ALWAYS - against every USED extruder
+    (print_task_config.py:1286, exception_code 14), so a file whose used
+    heads have differing actual diameters is refused outright; no other
+    reader consults the per-index list. FOrcaSlicer reaches the printer
+    only because it omits that whole briefing line. Scoping the gate to
+    FOrca therefore covers the entire exposed population while leaving
+    the normal workflow provably untouched.
+
+    Empty dict when the line is absent - callers must then treat the
+    diameters as UNKNOWN and skip the gate, never assume uniformity.
+
+    Why it matters (HW-proven 2026-08-07 on FOrcaSlicer 2.3.2 cubes): with
+    mixed nozzles the slicer bakes each tool's own line WIDTH into that
+    tool's extrusions - T0 tops out at 0.274mm on a 0.2 nozzle while T1
+    lays 0.8mm. match_colors_to_slots is colour/material driven and was
+    diameter-blind, so a perfectly ordinary reload in a different slot
+    order remapped all four tools onto wrong-sized nozzles (4/4) with no
+    error - a silently ruined print."""
+    dia = {}
+    all_lines = gcode.splitlines()
+    scan = all_lines[:300] + all_lines[-2000:]
+    for line in scan:
+        m = re.search(r';\s*nozzle[_ ]diameter\s*[:=]\s*(.+)', line, re.I)
+        if not m:
+            continue
+        for i, p in enumerate(re.split(r'[;,]', m.group(1))):
+            p = p.strip()
+            if not p:
+                continue
+            try:
+                v = float(p)
+            except ValueError:
+                continue
+            if v > 0:
+                dia[i] = v
+        if dia:
+            break
+    return dia
+
+def parse_slicer_name(gcode):
+    """The slicer's own '; generated by <name> <version>' banner, or ''."""
+    for line in gcode.splitlines()[:300]:
+        m = re.search(r';\s*generated by\s+(.+?)\s+on\s', line, re.I)
+        if m:
+            return m.group(1).strip()
+        m = re.search(r';\s*generated by\s+(.+)', line, re.I)
+        if m:
+            return m.group(1).strip()
+    return ''
+
+def is_forca_slicer(slicer_name):
+    """True for a FOrcaSlicer banner. The mixed-nozzle handling hangs off
+    this (see parse_nozzle_diameters for why that scoping is safe): FOrca
+    is the only slicer that can put a mixed-nozzle job on the machine at
+    all, so everything gated on it leaves the normal workflow untouched."""
+    return 'forcaslicer' in (slicer_name or '').replace(' ', '').lower()
+
+def nozzle_gate_groups(tool_dia, head_dia=None, num_heads=4):
+    """{tool T -> set of heads that tool may print on}.
+
+    TWO different things, deliberately kept apart (corrected 2026-08-07 after
+    a FOrcaSlicer PTP file made the difference visible):
+      tool_dia  {T: mm}    DEMAND - which nozzle each FILAMENT was sliced for.
+                           From the file's `nozzle_diameter` header, which is
+                           indexed PER FILAMENT (10 filaments -> 10 entries,
+                           every used tool matching its measured line width).
+      head_dia  {head: mm} SUPPLY - which nozzle each HEAD actually carries.
+                           From the printer. The file never states this: a
+                           mixed file declared 0.2,0.8,0.4,0.6 and nothing in
+                           it says whether that is the physical order.
+
+    Reading the first four demand entries as "head 0..3" is the old behaviour
+    and stays the FALLBACK when the printer could not be asked - it is right
+    whenever the slicer profile happens to list the nozzles in machine order,
+    and it is what shipped before, so falling back never makes things worse.
+
+    Empty dict = no constraint (uniform machine, no data). A tool whose
+    diameter is unknown is ABSENT from the result -> unconstrained, and the UI
+    flags it. A tool whose diameter no head carries maps to an EMPTY set ->
+    it cannot print anywhere, which the matcher turns into no_slot rather
+    than a silent wrong-nozzle assignment."""
+    if not tool_dia:
+        return {}
+    if not head_dia:
+        head_dia = {h: tool_dia.get(h) for h in range(num_heads)
+                    if tool_dia.get(h)}
+    if not head_dia:
+        return {}
+    groups = {}
+    for t, want in tool_dia.items():
+        if not want:
+            continue
+        groups[t] = {h for h, have in head_dia.items()
+                     if have and abs(have - want) < 0.001}
+
+
+
+
+
+
+
+    every = set(head_dia)
+    if all(v == every for v in groups.values()):
+        return {}
+    return groups
 
 def parse_color_names(gcode):
     """Best-effort lookup table T-index -> color name. Orca writes
@@ -2197,6 +2888,8 @@ def inject_auto_load(gcode):
             continue
         cleaned.append(ln)
     lines = cleaned
+
+
     inject_idx = _structural_inject_idx(lines)
 
     if inject_idx is None:
@@ -2227,6 +2920,28 @@ def inject_auto_load(gcode):
     used_heads = set()
 
     body_start = inject_idx if inject_idx is not None else 0
+
+
+
+
+
+
+    _in_old_block = False
+    for i in range(0, body_start):
+        ls_pre = lines[i].strip()
+        if _in_old_block:
+            if ls_pre.startswith('; multiACE auto-load: end'):
+                _in_old_block = False
+            continue
+        if ls_pre.startswith('; multiACE auto-load: load'):
+            _in_old_block = True
+            continue
+        m_pre = re.match(
+            r'^ACE_SWAP_HEAD HEAD=(\d+) ACE=(\d+) SLOT=(\d+)'
+            r'(?:\s+\S+=\S+)*\s*$', ls_pre)
+        if m_pre:
+            initial[int(m_pre.group(1))] = (int(m_pre.group(2)),
+                                            int(m_pre.group(3)))
     for i in range(body_start, len(lines)):
         line = lines[i]
         ls = line.strip()
@@ -2237,9 +2952,16 @@ def inject_auto_load(gcode):
             if head not in initial:
 
                 j = i + 1
+
+
+
+
+
                 while j < len(lines):
                     sj = lines[j].strip()
-                    if sj == '' or sj.startswith(';') or sj.startswith('ACE_BG_'):
+                    if (sj == '' or sj.startswith(';')
+                            or sj.startswith('ACE_BG_')
+                            or sj.startswith('ACE_SET_PURGE')):
                         j += 1
                         continue
                     break
@@ -2271,7 +2993,11 @@ def inject_auto_load(gcode):
     inject = ['', '; multiACE auto-load: load initial filaments']
     for head in sorted(initial):
         ace, slot = initial[head]
-        inject.append('ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d' % (head, ace, slot))
+
+
+
+        inject.append('ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d INITIAL=1'
+                      % (head, ace, slot))
     inject.append('; multiACE auto-load: end')
     inject.append('')
     new_lines = lines[:inject_idx] + inject + lines[inject_idx:]
@@ -2374,7 +3100,7 @@ def apply_remap_to_file(in_path, out_path, remap, progress=None):
     total = os.path.getsize(in_path) or 1
     seen = 0
     last_pr = 0
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
          open(out_path, 'w', encoding='utf-8') as fout:
         for line in fin:
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -2406,6 +3132,11 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     drop_pre  = re.compile(r'^SM_PRINT_PREEXTRUDE_FILAMENT INDEX=([4-9]|1[0-5])\b')
     low_pre   = re.compile(r'^SM_PRINT_PREEXTRUDE_FILAMENT INDEX=([0-3])\b')
     change_t  = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*\d+')
+
+
+
+
+    change_to = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*(\d+)')
     bare_hi   = re.compile(r'^T([4-9]|1[0-5])\s*$')
     bare_lo   = re.compile(r'^T([0-3])\s*$')
     swap_re   = re.compile(
@@ -2418,10 +3149,58 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
 
     in_body = False
     head_loaded = {0: (0, 0), 1: (0, 1), 2: (0, 2), 3: (0, 3)}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    head_slicer = {}
+
+
+    flush_matrix = (parse_flush_matrix_raw_from_file(in_path)
+                    if PURGE_MATRIX_ENABLE else None)
     active = 0
     skipped = 0
     swapbacks = 0
+
+
+
+    cooling_standbys = scan_cooling_standbys(in_path, lambda n: n % 4)
+
+
+
+
+
+
+
+
+
+
+
     primed_first = set()
+
+
+
+
+
+
+
+
+
+
+
 
     post_t_unret = _scan_post_t_unretracts(in_path)
 
@@ -2432,6 +3211,28 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     pending_head = None
     pending_line_no = None
     pending_blanks: list[str] = []
+
+
+    pending_slicer = None
+    pending_slicer_tool = None
+
+    def _purge_pair(head, arriving_virtual, arriving_slicer):
+        """(t_from, t_to) for the flush matrix, as SLICER filament indices.
+
+        With '; Change Tool' data present those indices are authoritative,
+        so they are used even when the head's previous filament is not known
+        yet (first arrival) - _matrix_purge_mm then returns None and the swap
+        goes out unstamped, i.e. on the engine default. That is deliberate:
+        the default is the value with field history behind it, so an unknown
+        pair falls back to what has always been printed rather than to a
+        guess from the wrong row."""
+        if arriving_slicer is not None:
+            return head_slicer.get(head), arriving_slicer
+
+
+
+        prev = head_loaded.get(head)
+        return ((prev[0] * 4 + head) if prev else None), arriving_virtual
 
     total = os.path.getsize(in_path) or 1
     seen = 0
@@ -2444,41 +3245,58 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
         in-memory rewrite() counts every ACE_SWAP_HEAD line in the
         output, regardless of provenance."""
         nonlocal pending_head, pending_line_no, swapbacks, active
+        nonlocal pending_slicer_tool
         if pending_head is None:
             return
         head = pending_head
         t_no = pending_line_no
+        arriving = pending_slicer_tool
         pending_head = None
         pending_line_no = None
+        pending_slicer_tool = None
         initial_key = (0, head)
         fout.write('T%d\n' % head)
         for b in pending_blanks:
             fout.write(b)
         pending_blanks.clear()
+
+
+
+        _pf, _pt = _purge_pair(head, head, arriving)
+        if arriving is not None:
+            head_slicer[head] = arriving
         if head_loaded.get(head) != initial_key:
+            _pp = _matrix_purge_mm(flush_matrix, _pf, _pt)
+            if _pp is not None:
+                fout.write('ACE_SET_PURGE LENGTH=%d\n' % _pp)
             fout.write('ACE_SWAP_HEAD HEAD=%d ACE=0 SLOT=%d ANTI_OOZE=%s\n'
                        % (head, head, _ao_for(t_no)))
             swapbacks += 1
             active += 1
             head_loaded[head] = initial_key
         elif pickup_cleaning:
+
+
             fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % head)
 
     def flush_pending_paired(fout):
         """Pending bare T was followed by ACE_SWAP_HEAD - emit it
         and let the swap handler update head_loaded."""
-        nonlocal pending_head, pending_line_no
+        nonlocal pending_head, pending_line_no, pending_slicer_tool
         if pending_head is None:
             return
         head = pending_head
+        if pending_slicer_tool is not None:
+            head_slicer[head] = pending_slicer_tool
         pending_head = None
         pending_line_no = None
+        pending_slicer_tool = None
         fout.write('T%d\n' % head)
         for b in pending_blanks:
             fout.write(b)
         pending_blanks.clear()
 
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
          open(out_path, 'w', encoding='utf-8') as fout:
         for _raw_no, line in enumerate(fin):
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -2487,7 +3305,12 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             if m104_re.match(stripped):
                 if pending_head is not None:
                     flush_pending_unmatched(fout)
-                fout.write(fix_m104(line))
+                if _raw_no in cooling_standbys:
+                    fout.write('; multiACE dropped: %s  ; would cool the '
+                               'printing head below %d C\n'
+                               % (stripped.strip(), STANDBY_MIN_EXTRUDE_C))
+                else:
+                    fout.write(fix_m104(line))
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
 
@@ -2495,6 +3318,12 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             if mdp:
                 if pending_head is not None:
                     flush_pending_unmatched(fout)
+
+
+
+
+
+
                 hpre = int(mdp.group(1)) % 4
                 if hpre not in primed_first:
                     primed_first.add(hpre)
@@ -2505,6 +3334,14 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
 
             if not in_body and change_t.match(stripped):
                 in_body = True
+
+
+
+
+
+            _mct = change_to.match(stripped)
+            if _mct:
+                pending_slicer = int(_mct.group(1))
 
             if not in_body:
                 if pending_head is not None:
@@ -2528,6 +3365,15 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
 
                 else:
                     flush_pending_unmatched(fout)
+
+
+
+
+
+
+
+
+
 
             mlp = low_pre.match(stripped)
             if mlp:
@@ -2560,11 +3406,18 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
                 ace = n // 4
                 fout.write('T%d\n' % head)
                 key = (ace, head)
+
+                _pf, _pt = _purge_pair(head, n, pending_slicer)
+                if pending_slicer is not None:
+                    head_slicer[head] = pending_slicer
                 if head_loaded.get(head) == key:
                     fout.write('; ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d  ; skipped (already loaded)\n' % (
                         head, ace, head))
                     skipped += 1
                 else:
+                    _pp = _matrix_purge_mm(flush_matrix, _pf, _pt)
+                    if _pp is not None:
+                        fout.write('ACE_SET_PURGE LENGTH=%d\n' % _pp)
                     fout.write('ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d '
                                'ANTI_OOZE=%s\n' % (
                         head, ace, head, _ao_for(_raw_no)))
@@ -2577,6 +3430,8 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             if m:
                 pending_head = int(m.group(1))
                 pending_line_no = _raw_no
+
+                pending_slicer_tool = pending_slicer
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
 
@@ -2626,6 +3481,13 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
       4. First ACE_SWAP_HEAD HEAD= line."""
     preextr_re = re.compile(r'^SM_PRINT_PREEXTRUDE_FILAMENT\b')
     chg_re     = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*(\d+)')
+
+
+
+
+
+
+
     swap_re    = re.compile(
         r'^ACE_SWAP_HEAD HEAD=(\d+) ACE=(\d+) SLOT=(\d+)(?:\s+\S+=\S+)*\s*$')
     bare_t_re  = re.compile(r'^T([0-3])\s*$')
@@ -2635,6 +3497,7 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     first_chg     = None
     first_preextr = None
     first_swap    = None
+
     first_ext     = None
     ext_boundary  = None
     last_boundary = None
@@ -2682,6 +3545,9 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     if in_old_block and block_start is not None:
         old_block_ranges.append((block_start, last_line_no))
 
+
+
+
     structural = ext_boundary if ext_boundary is not None else first_ext
     anchor_line_no = None
     for candidate in (structural, first_huaqi, first_chg, first_preextr, first_swap):
@@ -2700,6 +3566,34 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     first_seen_head: int | None = None
 
     if anchor_line_no is not None:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
+            for line_no, line in enumerate(fin):
+                if line_no >= anchor_line_no:
+                    break
+                if line_no in in_block_set:
+                    continue
+                m_s = swap_re.match(line.strip())
+                if m_s:
+                    initial[int(m_s.group(1))] = (int(m_s.group(2)),
+                                                  int(m_s.group(3)))
         with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
             for line_no, line in enumerate(fin):
                 if line_no < anchor_line_no:
@@ -2709,8 +3603,18 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                 stripped = line.strip()
 
                 if pending_t_head is not None:
+
+
+
+
+
+
+
+
+
                     if (stripped == '' or stripped.startswith(';')
-                            or stripped.startswith('ACE_BG_')):
+                            or stripped.startswith('ACE_BG_')
+                            or stripped.startswith('ACE_SET_PURGE')):
                         continue
                     m_s = swap_re.match(stripped)
                     if m_s and int(m_s.group(1)) == pending_t_head:
@@ -2752,6 +3656,10 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
         if head not in initial:
             initial[head] = (0, head)
 
+
+
+
+
     if only_heads is not None:
         initial = {h: v for h, v in initial.items() if h in only_heads}
 
@@ -2760,6 +3668,22 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
         inject_heads = sorted(initial.keys())
         inject_block.append('; multiACE auto-load: load %d head(s)\n' %
                             len(inject_heads))
+        inject_block.append('; multiACE processed: format=%d\n'
+                            % PP_FORMAT_VERSION)
+
+
+
+
+        inject_block.append('ACE_SET_PURGE RESET=1\n')
+
+
+
+
+
+
+
+
+
         _bg_set = set(bg_heads or ())
         _use_bg = (BG_INITIAL_LOAD and only_heads is not None and bool(_bg_set))
         i = 0
@@ -2772,15 +3696,31 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                 inject_block.append(
                     'ACE_BG_SWAP HEAD=%d ACE=%d SLOT=%d ANTI_OOZE=%s QUIET=1\n'
                     % (hb, ab, sb, _fmt_anti_ooze(ANTI_OOZE_NO_UNRETRACT)))
+
+
+
+
+
                 inject_block.append(
-                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d\n' % (h, a, s))
+                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d INITIAL=1\n'
+                    % (h, a, s))
                 inject_block.append(
-                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d\n' % (hb, ab, sb))
+                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d INITIAL=1\n'
+                    % (hb, ab, sb))
                 i += 2
             else:
                 inject_block.append(
-                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d\n' % (h, a, s))
+                    'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d INITIAL=1\n'
+                    % (h, a, s))
                 i += 1
+
+
+
+
+
+
+
+
         if (only_heads is not None and first_seen_head is not None
                 and first_seen_head in initial):
             inject_block.append('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d '
@@ -2790,7 +3730,7 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     seen = 0
     last_pr = 0
     injected = False
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
          open(out_path, 'w', encoding='utf-8') as fout:
         for line_no, line in enumerate(fin):
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -2822,7 +3762,7 @@ def apply_layer_remap_to_file(in_path, out_path, layer_info, progress=None):
         total = os.path.getsize(in_path) or 1
         seen = 0
         last_pr = 0
-        with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
+        with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
              open(out_path, 'w', encoding='utf-8') as fout:
             for line in fin:
                 seen += len(line.encode('utf-8', errors='ignore'))
@@ -2882,7 +3822,7 @@ def apply_layer_remap_to_file(in_path, out_path, layer_info, progress=None):
     total = os.path.getsize(in_path) or 1
     seen = 0
     last_pr = 0
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
          open(out_path, 'w', encoding='utf-8') as fout:
         for line in fin:
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -3002,6 +3942,10 @@ def main():
               '(override with --aces N if needed)' % num_aces)
 
     if live_lookup_host is not None:
+
+
+
+
         if host_has_manual_head(live_lookup_host):
             print('ERROR: a toolhead is set to manual - live-lookup '
                   'colour matching is disabled (cannot place a hand-fed manual '

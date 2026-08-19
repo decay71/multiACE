@@ -1,5 +1,73 @@
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import logging
+import os
+import re
 
 TOKEN_MOVE = 'move'
 TOKEN_PAUSE = 'pause'
@@ -12,6 +80,10 @@ MAX_FEEDRATE = 6000.
 MAX_PAUSE_MS = 60000.
 MAX_TEMP = 350.
 MIN_WAITTEMP = 100.
+
+
+
+
 MIN_MOVE_TEMP = 175.
 
 def parse_table(raw):
@@ -22,6 +94,7 @@ def parse_table(raw):
     tokens = []
     net = 0.
     unload_temp = None
+    load_temp = None
     last_waittemp = None
     for part in str(raw).replace('\n', ',').split(','):
         part = part.strip()
@@ -41,6 +114,10 @@ def parse_table(raw):
                                  % (int(MAX_TEMP), part))
             tokens.append((TOKEN_TEMP, c))
         elif low.startswith('waittemp:'):
+
+
+
+
             c = float(low.split(':', 1)[1])
             if not MIN_WAITTEMP <= c <= MAX_TEMP:
                 raise ValueError('waittemp out of range (%d-%d C): %r'
@@ -53,11 +130,22 @@ def parse_table(raw):
                 raise ValueError('fan out of range (0-255): %r' % part)
             tokens.append((TOKEN_FAN, v))
         elif low.startswith('unloadtemp:'):
+
+
             c = float(low.split(':', 1)[1])
             if not MIN_MOVE_TEMP <= c <= MAX_TEMP:
                 raise ValueError('unloadtemp out of range (%d-%d C): %r'
                                  % (int(MIN_MOVE_TEMP), int(MAX_TEMP), part))
             unload_temp = c
+        elif low.startswith('loadtemp:'):
+
+
+
+            c = float(low.split(':', 1)[1])
+            if not MIN_MOVE_TEMP <= c <= MAX_TEMP:
+                raise ValueError('loadtemp out of range (%d-%d C): %r'
+                                 % (int(MIN_MOVE_TEMP), int(MAX_TEMP), part))
+            load_temp = c
         elif '@' in part:
             mm_s, f_s = part.split('@', 1)
             try:
@@ -83,51 +171,157 @@ def parse_table(raw):
             tokens.append((TOKEN_MOVE, mm, feedrate))
         else:
             raise ValueError("unrecognised token %r (expected mm@feedrate, "
-                             "pause:ms, temp:C, waittemp:C, fan:0-255 "
-                             "or unloadtemp:C)"
+                             "pause:ms, temp:C, waittemp:C, fan:0-255, "
+                             "unloadtemp:C or loadtemp:C)"
                              % part)
     if tokens and not any(t[0] == TOKEN_MOVE for t in tokens):
         raise ValueError('table has no moves')
-    if not tokens and unload_temp is None:
+    if not tokens and unload_temp is None and load_temp is None:
         raise ValueError('table has no moves')
     if net > 0.:
         raise ValueError('table pushes a NET %+.1f mm - the tip must end '
                          'retracted out of the melt zone' % net)
-    return tokens, unload_temp
+    return tokens, unload_temp, load_temp
 
 class AceTipform:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.mode = config.get('mode', 'stock').strip().lower()
-        if self.mode not in ('stock', 'custom'):
+        mode = config.get('mode', 'stock').strip().lower()
+        if mode not in ('stock', 'custom'):
             raise config.error(
                 "[ace_tipform] mode must be 'stock' or 'custom' (got %r)"
-                % self.mode)
+                % mode)
         self.tables = {}
         self.unload_temps = {}
-        for opt in config.get_prefix_options(''):
-            if opt == 'mode':
-                continue
-            raw = config.get(opt)
+        self.load_temps = {}
+
+
+
+        items = [(opt, config.get(opt))
+                 for opt in config.get_prefix_options('') if opt != 'mode']
+        self._apply(mode, items)
+        gcode = self.printer.lookup_object('gcode')
+        gcode.register_command(
+            'ACE_TIPFORM_RELOAD', self.cmd_ACE_TIPFORM_RELOAD,
+            desc='[multiACE] Re-read the [ace_tipform] section from ace.cfg '
+                 'and apply it live (no Klipper restart). Usage: '
+                 'ACE_TIPFORM_RELOAD [FILE=<path>]')
+
+    def _apply(self, mode, items):
+        """Parse + swap the table state. Shared by startup and the live
+        reload so both paths validate and degrade identically (a bad table
+        is dropped LOUDLY, never a halt - S14 class: validation rules
+        evolve and a previously-saved table can turn invalid on an update;
+        the web editor is the strict gate). Built into locals first, so a
+        reload that dies mid-parse cannot leave half-swapped state."""
+        tables, unload_temps, load_temps = {}, {}, {}
+        dropped = []
+        for opt, raw in items:
             try:
-                _toks, _utemp = parse_table(raw)
+                _toks, _utemp, _ltemp = parse_table(raw)
                 if _toks:
-                    self.tables[opt.strip().lower()] = _toks
+                    tables[opt.strip().lower()] = _toks
                 if _utemp is not None:
-                    self.unload_temps[opt.strip().lower()] = _utemp
+                    unload_temps[opt.strip().lower()] = _utemp
+                if _ltemp is not None:
+                    load_temps[opt.strip().lower()] = _ltemp
             except ValueError as e:
+                dropped.append(opt)
                 logging.error('[multiACE] ace_tipform: table %r DISABLED '
                               '(falls back to stock): %s' % (opt, e))
+        self.mode = mode
+        self.tables = tables
+        self.unload_temps = unload_temps
+        self.load_temps = load_temps
         logging.info('[multiACE] ace_tipform: mode=%s tables=%s '
-                     'unload_temps=%s'
+                     'unload_temps=%s load_temps=%s'
                      % (self.mode, sorted(self.tables.keys()) or 'none',
-                        sorted(self.unload_temps.keys()) or 'none'))
-        if self.unload_temps and self.mode != 'custom':
+                        sorted(self.unload_temps.keys()) or 'none',
+                        sorted(self.load_temps.keys()) or 'none'))
+        if (self.unload_temps or self.load_temps) and self.mode != 'custom':
+
             logging.error(
-                "[multiACE] ace_tipform: unloadtemp set for %s but mode is "
-                "'stock' - IGNORED. Set 'mode: custom' to activate "
+                "[multiACE] ace_tipform: unloadtemp/loadtemp set for %s but "
+                "mode is 'stock' - IGNORED. Set 'mode: custom' to activate "
                 "(choreography stays stock for param-only tables)."
-                % sorted(self.unload_temps.keys()))
+                % sorted(set(self.unload_temps.keys())
+                         | set(self.load_temps.keys())))
+        return dropped
+
+    def _default_cfg_path(self):
+
+
+
+        try:
+            sv = self.printer.lookup_object('save_variables', None)
+            if sv is not None:
+                cand = os.path.join(
+                    os.path.dirname(os.path.abspath(sv.filename)),
+                    'extended', 'ace.cfg')
+                if os.path.exists(cand):
+                    return cand
+        except Exception:
+            pass
+        return '/home/lava/printer_data/config/extended/ace.cfg'
+
+    @staticmethod
+    def _parse_section_text(text):
+        """Extract 'key: value' options of the [ace_tipform] section from
+        raw cfg text. Line-based on purpose (no configparser: Klipper's
+        dialect differs and a parse error here must never raise) - the web
+        editor writes single-line 'key: value' options, which is all this
+        needs to read back. Returns (mode, [(key, value)...], found)."""
+        in_sec, found, mode, items = False, False, 'stock', []
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s[0] in '#;':
+                continue
+            if s.startswith('['):
+                in_sec = re.match(r'^\[\s*ace_tipform\s*\]', s) is not None
+                found = found or in_sec
+                continue
+            if not in_sec:
+                continue
+            m = re.match(r'^([A-Za-z0-9_\-]+)\s*[:=]\s*(.*)$', s)
+            if not m:
+                continue
+            k, v = m.group(1).strip().lower(), m.group(2).strip()
+            if k == 'mode':
+                mode = v.lower()
+            elif v:
+                items.append((k, v))
+        return mode, items, found
+
+    def cmd_ACE_TIPFORM_RELOAD(self, gcmd):
+        """Live re-read of the section, so a web tipform save applies
+        without a Klipper restart (Dirk 2026-08-16 - the [ace] parameters
+        went write-through+live in S48, the tipform tables lagged behind).
+        The web backend fires this after writing the cfg; on an older
+        build without the command it degrades to the old restart hint."""
+        path = gcmd.get('FILE', None) or self._default_cfg_path()
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except Exception as e:
+            raise gcmd.error('[multiACE] tipform reload: cannot read %s: %s'
+                             % (path, e))
+        mode, items, found = self._parse_section_text(text)
+        if not found:
+            raise gcmd.error('[multiACE] tipform reload: no [ace_tipform] '
+                             'section in %s' % path)
+        if mode not in ('stock', 'custom'):
+            raise gcmd.error("[multiACE] tipform reload: mode must be "
+                             "'stock' or 'custom' (got %r) - nothing "
+                             "changed" % mode)
+        dropped = self._apply(mode, items)
+        msg = ('[multiACE] tipform reloaded live: mode=%s, %d table(s)%s'
+               % (self.mode,
+                  len(set(self.tables) | set(self.unload_temps)
+                      | set(self.load_temps)),
+                  (', DROPPED invalid: %s' % ', '.join(dropped))
+                  if dropped else ''))
+        gcmd.respond_info(msg)
+        logging.info(msg)
 
     def table_for(self, material, vendor=None, soft=False):
         """The custom table for a (vendor, material), or None = use the stock
@@ -177,12 +371,36 @@ class AceTipform:
             return self.unload_temps['soft']
         return self.unload_temps.get('default')
 
+    def load_temp_for(self, material, vendor=None, soft=False):
+        """The custom LOAD temp for a (vendor, material), or None = fall
+        through to the DB chain (get_load_temp -> 250). Same precedence,
+        key normalisation and mode gate as unload_temp_for."""
+        if self.mode != 'custom':
+            return None
+        mat = (material or '').strip().lower()
+        ven = '_'.join((vendor or '').strip().lower().split())
+        if mat and ven and ven not in ('none', 'generic'):
+            vkey = '%s_%s' % (ven, mat)
+            if vkey in self.load_temps:
+                return self.load_temps[vkey]
+        if mat and mat in self.load_temps:
+            return self.load_temps[mat]
+        if soft and 'soft' in self.load_temps:
+            return self.load_temps['soft']
+        return self.load_temps.get('default')
+
     def get_status(self, eventtime):
+
+
+
+
         return {
             'mode': self.mode,
             'tables': sorted(set(self.tables.keys())
-                             | set(self.unload_temps.keys())),
+                             | set(self.unload_temps.keys())
+                             | set(self.load_temps.keys())),
             'unload_temps': dict(self.unload_temps),
+            'load_temps': dict(self.load_temps),
         }
 
 def load_config(config):

@@ -111,6 +111,33 @@ def pb_decode(data):
         fields.setdefault(fnum, []).append((wtype, val))
     return fields
 
+def _unparsed_fields(fields, known):
+    """Everything the decoder below does NOT read, in a printable form.
+
+    DIAGNOSTIC ONLY - the answer to "does the ACE hand out a card UID at
+    all?". We decode a fixed set of protobuf field numbers per command and
+    silently drop the rest, so a UID (or anything else the firmware adds)
+    would be invisible even though it arrived. This collects the leftovers
+    so ACE_RAW_PROBE can show them; bytes are hex-encoded because a UID is
+    4/7/8 raw bytes, not text. Returns {} when nothing is left over, so the
+    caller can omit the key entirely and normal operation stays unchanged.
+    """
+    out = {}
+    for num, entries in fields.items():
+        if num in known:
+            continue
+        vals = []
+        for wtype, val in entries:
+            if isinstance(val, bytes):
+                vals.append({'wt': wtype, 'len': len(val),
+                             'hex': val.hex(),
+                             'ascii': ''.join(chr(b) if 32 <= b < 127 else '.'
+                                              for b in val)})
+            else:
+                vals.append({'wt': wtype, 'val': val})
+        out[str(num)] = vals
+    return out
+
 def _fval(fields, num, default=0):
     return fields.get(num, [(0, default)])[0][1]
 
@@ -131,6 +158,11 @@ FEED_MODE_ROLLBACK_ASSIST = 3
 class AceProtocolV2(AceProtocol):
     NAME = 'v2'
     DEFAULT_BAUD = 230400
+
+
+
+
+
     EXTRA_USB_IDS = ()
     SERIAL_KWARGS = {
         'timeout': 0.1,
@@ -148,7 +180,7 @@ class AceProtocolV2(AceProtocol):
             vendor, product = cls._read_usb_ids(real_dev)
             if vendor is None:
                 continue
-            if (vendor == V2_VENDOR_ID and product in V2_PRODUCT_IDS) \
+            if (vendor == V2_VENDOR_ID and product in V2_PRODUCT_IDS)\
                     or (vendor, product) in cls.EXTRA_USB_IDS:
                 ace_devices.append(full_path)
         return ace_devices
@@ -435,6 +467,37 @@ class AceProtocolV2(AceProtocol):
                 'color': color,
                 'rfid': 2 if ftype else 0,
             }
+
+
+
+
+
+
+
+
+
+
+
+
+            _tag = {}
+            if 8 in fields:
+                _tag['diameter_mm'] = round(_fval(fields, 8, 0) / 100.0, 2)
+            if 9 in fields:
+                _tag['length_m'] = _fval(fields, 9, 0)
+            for _fnum, _key in ((6, 'group6'), (7, 'group7')):
+                _blob = fields.get(_fnum, [(2, b'')])[0][1]
+                if isinstance(_blob, bytes) and _blob:
+                    _sub = pb_decode(_blob)
+                    _tag[_key] = [_sub[k][0][1] for k in sorted(_sub)]
+            if 2 in fields:
+                _tag['field2'] = _fval(fields, 2, 0)
+            if _tag:
+                ret['result']['tag'] = _tag
+
+
+            _extra = _unparsed_fields(fields, (1, 2, 3, 4, 5, 6, 7, 8, 9))
+            if _extra:
+                ret['result']['_unparsed'] = _extra
         elif cmd == Cmd.GET_FEED_INFO:
 
             slots = []
@@ -454,6 +517,18 @@ class AceProtocolV2(AceProtocol):
             ret['result'] = {'fields': {
                 str(k): _fval(fields, k, 0) for k in fields
             }}
+        elif cmd == Cmd.RFID_TEST:
+
+
+
+
+
+
+            code = _fval(fields, 1, 0)
+            if isinstance(code, int) and code != 0:
+                ret['code'] = code
+                ret['msg'] = 'error_%d' % code
+            ret['result'] = {'raw': _unparsed_fields(fields, ())}
         else:
             code = _fval(fields, 1, 0)
             if isinstance(code, int) and code != 0:
