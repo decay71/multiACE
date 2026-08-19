@@ -11,7 +11,8 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 ## What's new in multiACE 0.99.8b "Resupply Run" (Update, mod and firmware.bin available)
 - Quad Replenish - ACE Refill - When a spool runs out mid-print, multiACE loads a matching spool from another ace or slot and continues.
-- Spool management - A list of your spools with material, colour, vendor and remaining weight, linked to the slots. Consumption is booked while printing, so the remaining weight stays current on its own. Spools can be assigned by hand or automatically from an RFID tag (sku field, Spoolman: sku = or cards_uid). Synced with an external stock system. (Spoolman or SpoolLink (paxx) the inventory degrades to a cache.
+- Spool management - A list of your spools with material, colour, vendor and remaining weight, linked to the slots. Consumption is booked while printing, so the remaining weight stays current on its own. Spools can be assigned by hand or automatically from an RFID tag. Synced with an external stock system. (Spoolman or SpoolLink (paxx) the inventory degrades to a cache.
+ACE units do not read or expose the spools uid so it uses the sku field. (Spoolman: sku = id or cards_uid)
 - Humidity-controlled drying - An ACE 2 regulates its dryer by its own humidity reading instead of a fixed timer, and takes any connected ACE Pro along, which cannot measure humidity itself.
 - Per-pair purge - The flush volume for a colour change is now taken from the slicer's own flush matrix instead of one fixed length for every pair. Similar colours purge less, hard transitions purge more.
 - Air Print Detection - Watches the flow sensor during loading and while printing and catches the cases where filament is present but nothing actually comes out of the nozzle.
