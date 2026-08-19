@@ -601,10 +601,12 @@ All content is reviewed by humans before inclusion.
 
 - **Popstar (forum.snapmaker.com)**
   - **the default PLA swap temperature is set to 220 °C**
-
+ 
+    
+ 
 ## Credits
 
-- **[ Hakimio](https://github.com/hakimio)** for ACE Pro 2 reverse engineering and support
+- **[ Hakimio](https://github.com/hakimio)** for ACE Pro 2 reverse engineering and support, firmware flash
 - **[SnapACE](https://github.com/BlackFrogKok/SnapACE)** by BlackFrogKok - Foundation for ACE Pro Klipper integration
 - **[DuckACE](https://github.com/utkabobr/DuckACE)** - ACE Pro reverse engineering and protocol documentation
 - **[ACE Research](https://github.com/printers-for-people/ACEResearch)** by Printers for People - ACE Pro protocol research
