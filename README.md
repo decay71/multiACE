@@ -15,7 +15,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 ACE units do not read or expose the spools uid so it uses the sku field. (Spoolman: sku = id or cards_uid)
 - Humidity-controlled drying - An ACE 2 regulates its dryer by its own humidity reading instead of a fixed timer, and takes any connected ACE Pro along, which cannot measure humidity itself.
 - Per-pair purge - The flush volume for a colour change is now taken from the slicer's own flush matrix instead of one fixed length for every pair. Similar colours purge less, hard transitions purge more.
-- Air Print Detection - Watches the flow sensor during loading and while printing and catches the cases where filament is present but nothing actually comes out of the nozzle.
+- Air Print Detection - Watches the flow sensor during loading and while printing and catches cases where filament is present but nothing actually comes out of the nozzle.
 - Updated Compact panel view - Renders a reduced view that can be embedded in Fluidd as a cam, so the ACE status stays visible next to the print.
 - Firmware flash: ACE 2 firmware updates from the web UI. Duration now 10sec instead of 30minutes.
 
