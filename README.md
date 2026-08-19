@@ -6,6 +6,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 [![Guides & Downloads](visitbutton.png)](https://postapocalyptic-diy.com/multiace/)
 
+(manuals will be updated soon)
 
 
 ## What's new in multiACE 0.99.8b "Resupply Run" (Update, mod and firmware.bin available)
