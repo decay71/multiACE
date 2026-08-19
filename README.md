@@ -9,7 +9,12 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 (manuals will be updated soon)
 
 
+
+
 ## What's new in multiACE 0.99.8b "Resupply Run" (Update, mod and firmware.bin available)
+
+## Fresh install on stock Firmware does not work, will be fixed soon
+
 - Quad Replenish - ACE Refill - When a spool runs out mid-print, multiACE loads a matching spool from another ace or slot and continues.
 - Spool management - A list of your spools with material, colour, vendor and remaining weight, linked to the slots. Consumption is booked while printing, so the remaining weight stays current on its own. Spools can be assigned by hand or automatically from an RFID tag. Synced with an external stock system. (Spoolman or SpoolLink (paxx) the inventory degrades to a cache.
 ACE units do not read or expose the spools uid so it uses the sku field. (Spoolman: sku = id or cards_uid)
