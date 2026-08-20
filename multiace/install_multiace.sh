@@ -71,6 +71,18 @@ do
     fi
 done
 log "All source files found"
+# CONFIG_DIR is OURS to create - the klipper dirs are not. printer_data/
+# config/extended exists on a PAXX box (S49extended-config mirrors it) and
+# on any box that ran an earlier install, but NOT on clean stock firmware:
+# there the installer aborted with "Target directory not found" and the user
+# had to mkdir it by hand (forum report, stock 1.5.2, 2026-08-19). Our
+# include points straight at extended/ace.cfg, so the directory needs no
+# PAXX machinery behind it - creating it is enough.
+if [ ! -d "$CONFIG_DIR" ]; then
+    if mkdir -p "$CONFIG_DIR" 2>/dev/null; then
+        log "Created config directory: $CONFIG_DIR"
+    fi
+fi
 for d in "$EXTRAS_DIR" "$KINEMATICS_DIR" "$CONFIG_DIR"; do
     if [ ! -d "$d" ]; then
         log "ERROR: Target directory not found: $d"
