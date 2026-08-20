@@ -159,10 +159,6 @@ class AceProtocolV2(AceProtocol):
     NAME = 'v2'
     DEFAULT_BAUD = 230400
 
-
-
-
-
     EXTRA_USB_IDS = ()
     SERIAL_KWARGS = {
         'timeout': 0.1,
@@ -468,17 +464,6 @@ class AceProtocolV2(AceProtocol):
                 'rfid': 2 if ftype else 0,
             }
 
-
-
-
-
-
-
-
-
-
-
-
             _tag = {}
             if 8 in fields:
                 _tag['diameter_mm'] = round(_fval(fields, 8, 0) / 100.0, 2)
@@ -493,7 +478,6 @@ class AceProtocolV2(AceProtocol):
                 _tag['field2'] = _fval(fields, 2, 0)
             if _tag:
                 ret['result']['tag'] = _tag
-
 
             _extra = _unparsed_fields(fields, (1, 2, 3, 4, 5, 6, 7, 8, 9))
             if _extra:
@@ -518,11 +502,6 @@ class AceProtocolV2(AceProtocol):
                 str(k): _fval(fields, k, 0) for k in fields
             }}
         elif cmd == Cmd.RFID_TEST:
-
-
-
-
-
 
             code = _fval(fields, 1, 0)
             if isinstance(code, int) and code != 0:

@@ -1,70 +1,5 @@
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import logging
 import os
 import re
@@ -80,9 +15,6 @@ MAX_FEEDRATE = 6000.
 MAX_PAUSE_MS = 60000.
 MAX_TEMP = 350.
 MIN_WAITTEMP = 100.
-
-
-
 
 MIN_MOVE_TEMP = 175.
 
@@ -115,9 +47,6 @@ def parse_table(raw):
             tokens.append((TOKEN_TEMP, c))
         elif low.startswith('waittemp:'):
 
-
-
-
             c = float(low.split(':', 1)[1])
             if not MIN_WAITTEMP <= c <= MAX_TEMP:
                 raise ValueError('waittemp out of range (%d-%d C): %r'
@@ -131,15 +60,12 @@ def parse_table(raw):
             tokens.append((TOKEN_FAN, v))
         elif low.startswith('unloadtemp:'):
 
-
             c = float(low.split(':', 1)[1])
             if not MIN_MOVE_TEMP <= c <= MAX_TEMP:
                 raise ValueError('unloadtemp out of range (%d-%d C): %r'
                                  % (int(MIN_MOVE_TEMP), int(MAX_TEMP), part))
             unload_temp = c
         elif low.startswith('loadtemp:'):
-
-
 
             c = float(low.split(':', 1)[1])
             if not MIN_MOVE_TEMP <= c <= MAX_TEMP:
@@ -195,8 +121,6 @@ class AceTipform:
         self.unload_temps = {}
         self.load_temps = {}
 
-
-
         items = [(opt, config.get(opt))
                  for opt in config.get_prefix_options('') if opt != 'mode']
         self._apply(mode, items)
@@ -249,8 +173,6 @@ class AceTipform:
         return dropped
 
     def _default_cfg_path(self):
-
-
 
         try:
             sv = self.printer.lookup_object('save_variables', None)
@@ -390,9 +312,6 @@ class AceTipform:
         return self.load_temps.get('default')
 
     def get_status(self, eventtime):
-
-
-
 
         return {
             'mode': self.mode,

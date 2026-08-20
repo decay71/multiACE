@@ -90,6 +90,30 @@ for d in "$EXTRAS_DIR" "$KINEMATICS_DIR" "$CONFIG_DIR"; do
     fi
 done
 log "Target directories verified"
+# OVERLAY PERSISTENCE GATE. Root is an overlay whose upper layer lives at
+# /oem/overlay/upper, and the firmware WIPES that layer on every boot unless
+# /oem/.debug exists. Everything we write under /home/lava/klipper/ is in
+# that layer; ace.cfg is not (printer_data is persistent). So without the
+# flag an install looks perfect, survives until the next reboot, and then
+# Klipper halts with "Section 'ace' is not a valid config section" - the
+# config is still included but the extras are gone. Clean stock firmware
+# ships WITHOUT the flag (HW 2026-08-20, stock 1.5.2), so this bit people
+# who never had to think about it. Creating the flag only takes effect at
+# the NEXT boot, which is why we set it and say so rather than trying to
+# work around it.
+if [ ! -e /oem/.debug ]; then
+    if touch /oem/.debug 2>/dev/null; then
+        sync 2>/dev/null || true
+        OVERLAY_FLAG_CREATED=1
+        log "  NOTE: /oem/.debug was missing - created it."
+        log "        Without it the firmware wipes /home/lava/klipper on"
+        log "        every boot and multiACE would vanish after a reboot."
+    else
+        log "  WARNING: /oem/.debug is missing and could not be created"
+        log "           (run the installer as root). Without it this"
+        log "           install will NOT survive a reboot."
+    fi
+fi
 log "Backing up current files..."
 for f in "filament_feed.py" "filament_switch_sensor.py"; do
     if [ -f "$EXTRAS_DIR/$f" ] && [ ! -f "$EXTRAS_DIR/${f%.py}_pre_multiace.py" ]; then
@@ -617,4 +641,12 @@ fi
 log ""
 log "=== Installation complete ==="
 log "Please reboot the printer to activate multiACE."
+# Repeat the overlay note at the END too: the install output is long and a
+# line from the top scrolls away long before the user reads the result.
+if [ "${OVERLAY_FLAG_CREATED:-0}" = "1" ]; then
+    log ""
+    log "NOTE: /oem/.debug did not exist and was created by this install."
+    log "      It makes the Klipper-side files survive a reboot; it takes"
+    log "      effect from the next boot on. Reboot now."
+fi
 log ""

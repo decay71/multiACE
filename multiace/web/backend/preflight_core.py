@@ -1,54 +1,20 @@
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 from __future__ import annotations
 
 import re
 from collections import deque
 
-
-
 DEFAULT_FUZZY = 30
-
-
 
 _TOOLCHANGE_RE = re.compile(
     r"^;\s*Change Tool\s*(\d+)\s*->\s*Tool\s*(\d+)", re.MULTILINE)
-
-
 
 _PLAN_KEEP_RE = re.compile(
     r'^(;\s*Change Tool|;\s*LAYER_CHANGE|;\s*filament\b|T\d{1,2}\s*$|M73\b'
     r'|;?\s*flush_(volumes_matrix|multiplier)\s*='
     r'|;\s*multiACE (processed:|auto-load:))',
     re.IGNORECASE)
-
-
-
 
 class PreflightRejected(ValueError):
     """The FILE is unacceptable and no amount of retrying will change that -
@@ -60,10 +26,6 @@ class PreflightRejected(ValueError):
     refuses identically, just slower and after a large upload. Subclasses
     ValueError so the backend's existing handler still turns it into a 409
     with the message as detail."""
-
-
-
-
 
 def parse_meta(pp, line_iter):
     """One streaming pass over the gcode lines → everything the report/rewrite
@@ -101,7 +63,6 @@ def parse_meta(pp, line_iter):
     slicer_types  = pp.parse_filament_types(meta_buf)
     num_aces      = pp.infer_num_aces(meta_buf)
 
-
     if used:
         slicer_colors = {t: c for t, c in slicer_colors.items() if t in used}
         slicer_types  = {t: m for t, m in slicer_types.items() if t in used}
@@ -111,7 +72,6 @@ def parse_meta(pp, line_iter):
         slicer_name = pp.parse_slicer_name(meta_buf)
         nozzles = pp.parse_nozzle_diameters(meta_buf)
     except AttributeError:
-
 
         pass
     meta = {
@@ -150,9 +110,6 @@ def nozzle_context(pp, meta, head_ctx=None, num_heads=4):
             meta.get('nozzles') or {}, head_dia or None, num_heads)
     except (AttributeError, TypeError):
 
-
-
-
         return None, False
     return (groups or None), bool(groups)
 
@@ -170,10 +127,6 @@ def used_tool_indices(pp, gcode: str) -> set:
         except Exception:
             used = set()
     return used
-
-
-
-
 
 def _slot_to_dict(s):
     if s is None:
@@ -271,7 +224,6 @@ def build_one_plan(pp, plan_name, result, mapping,
                 c2h, slicer_colors, slicer_types),
         }
 
-
     layer_info = result.get("layer_info") or {}
     layer_color_sets_raw = layer_info.get("layer_color_sets") or []
     layer_color_sets = [set(s) for s in layer_color_sets_raw]
@@ -301,15 +253,6 @@ def build_one_plan(pp, plan_name, result, mapping,
             c2h, slicer_colors, slicer_types),
         "reason":       "",
     }
-
-
-
-
-
-
-
-
-
 
 _HEAD_MODE_PP_FUNCS = (
     "compute_head_mode_layout", "compute_head_mode_optimize",
@@ -476,8 +419,6 @@ def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
                             "ace": e.get("ace"), "slot": e.get("slot"),
                             "tier": e.get("tier")})
 
-
-
     _kind_rank = {"pin": 0, "ace": 1}
     mapping.sort(key=lambda m: (
         _kind_rank.get(m.get("kind"), 2),
@@ -489,7 +430,6 @@ def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
     bg = _bg_stats_for(pp, events, assignment, event_times, bg_heads)
     if bg is not None:
         out["bg"] = bg
-
 
     fc_fn = getattr(pp, "head_mode_flush_cost", None)
     if flush_matrix is not None and fc_fn is not None:
@@ -528,11 +468,8 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
     lcs = (result.get("layer_info") or {}).get("layer_color_sets") or []
     layer_sets = [set(s) for s in lcs] if lcs else None
 
-
-
     event_times, bg_heads, bg_available = _bg_context(
         pp, head_ctx, plan_proxy, events)
-
 
     nz_groups, nz_mixed = nozzle_context(pp, meta, head_ctx)
     layout = pp.compute_head_mode_layout(
@@ -554,9 +491,7 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
     if bg_loadout is not None:
         plans["loadout"]["bg"] = bg_loadout
 
-
     num_slots = 4
-
 
     flush_matrix = None
     _pfm = getattr(pp, "parse_flush_matrix", None)
@@ -575,9 +510,6 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
         flush_matrix=flush_matrix)
     if flush_matrix is not None:
 
-
-
-
         plans["color"] = _head_proposal_plan(
             pp, events, slicer_colors, feeder_heads, ace_heads,
             ace_num_of_head, num_slots, None,
@@ -589,18 +521,12 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
         "head_mode": True, "ace_head": (ace_heads[0] if ace_heads else 3),
         "ace_heads": ace_heads,
 
-
-
         "slicer": (meta or {}).get("slicer") or "",
         "forca": bool((meta or {}).get("forca")),
         "nozzles": {str(t): d
                     for t, d in ((meta or {}).get("nozzles") or {}).items()},
         "head_nozzles": dict((head_ctx or {}).get("head_nozzles") or {}),
         "nozzles_mixed": nz_mixed,
-
-
-
-
 
         "live_slots": [
             {"ace": s["ace"], "slot": s["slot"],
@@ -621,10 +547,6 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
         "events": events,
         "plans": plans,
     }
-
-
-
-
 
 def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
                  live_slots, head_ctx, token, filename, size,
@@ -650,10 +572,6 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
         except Exception:
             _proc, _fmt = False, None
         if _proc:
-
-
-
-
 
             raise PreflightRejected(
                 "This file has already been processed by multiACE (%s), so "
@@ -709,8 +627,6 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
         proxy_remapped = pp.apply_remap(plan_proxy, remap) if remap else plan_proxy
         result = pp.plan_loadout(proxy_remapped, num_aces=num_aces) or {}
 
-
-
         out["events"] = list(result.get("events") or [])
         for mode in ("slicer", "optimize", "layer"):
             out["plans"][mode] = build_one_plan(
@@ -718,10 +634,6 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
                 slicer_colors=slicer_colors, slicer_types=slicer_types,
                 num_aces=num_aces)
     return out
-
-
-
-
 
 def _noop_stage(stage, percent):
     pass
@@ -751,8 +663,6 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
     set_stage = set_stage or _noop_stage
     stage_cb  = stage_cb  or _noop_stage_cb
 
-
-
     _dp = getattr(pp, "detect_processed", None)
     if _dp is not None:
         try:
@@ -771,7 +681,6 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
 
     if mode != "head":
 
-
         missing_mats = pp.check_material_availability(slicer_types, live_slots)
         if missing_mats:
             raise RuntimeError(
@@ -784,7 +693,6 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
             head_maps(head_ctx)
         targets = head_mode_targets(pp, feeders, live_slots, ace_head_of_ace)
 
-
         hm_bg_heads = [int(h) for h in
                        ((head_ctx or {}).get("bg_heads") or [])]
         if head_plan in ("optimize", "layer", "color"):
@@ -796,7 +704,6 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
                 lcs = (hm_result.get("layer_info") or {}).get(
                     "layer_color_sets") or []
                 hm_layer_sets = [set(s) for s in lcs] if lcs else None
-
 
             hm_times = None
             parse_tf = getattr(pp, "parse_toolchanges_with_times_from_file",
@@ -862,16 +769,13 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
                 bg_heads=set(hm_bg_heads))
         except TypeError:
 
-
             pp.inject_auto_load_to_file(
                 str(cur), str(nxt), stage_cb(70.0, 12.0), set(ace_heads))
         cur, nxt = nxt, cur
         return str(cur)
 
-
     if mode == "slicer":
         if remap_override is not None:
-
 
             remap = {}
             for k, v in remap_override.items():

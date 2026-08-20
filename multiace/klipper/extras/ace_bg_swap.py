@@ -1,139 +1,29 @@
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import logging
 import chelper
 from . import force_move
 
 BG_SWAP_VERSION = 'v0.9'
 
-
-
-
-
-
-
-
-
-
 BG_LOAD_GRIP_SEAT = 60.
 BG_LOAD_GRIP_SPEED = 5.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 BG_LOAD_PRESS_V2 = 50.
 BG_LOAD_PRESS_V1 = 30.
 BG_LOAD_PRESS_SPEED = 20.
 
-
-
-
-
-
 BG_LOAD_PRESS_RETRIES = 3
 BG_LOAD_PRESS_RETRY_DELAY = 2.0
 BG_LOAD_PRIME_SPEED = 4.
 
-
-
-
-
-
-
-
-
-
 BG_LOAD_PRIME_CHUNK = 5.
-
-
-
-
-
-
-
-
 
 BG_LOAD_PRIME_EXTRA = 40.
 BG_LOAD_RETRACT_SPEED = 25.
 BG_FEED_MIN_MOVE = 100
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 BG_FEED_FA_RESCUE = 20.
-
 
 COLD_PULL_NORMAL = [
     (57.0, 400.),
@@ -149,33 +39,17 @@ COLD_PULL_SOFT = [
     (-37.5, 1500.),
 ]
 
-
 CHOREO_ACCEL = 300.
 HEAT_TIMEOUT = 240.
 HEAT_HYST = 4.0
 ACE_UNWIND_SPEED_FALLBACK = 80
 MOVE_SETTLE = 0.30
 
-
-
-
-
 BG_UNLOAD_DECODER_DIAG = True
-
-
-
-
 
 BG_UNLOAD_PROBE_RETRACT = 150.
 
-
-
-
-
 BG_UNLOAD_STALL_FRAC = 0.3
-
-
-
 
 SCHEDULE_DELAY = 0.250
 
@@ -197,23 +71,9 @@ class AceBgSwap:
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
 
-
-
-
-
         heads_raw = config.get('heads', '')
 
-
-
-
-
         self.pick_gate = config.getboolean('pick_gate', True)
-
-
-
-
-
-
 
         self.load_enabled = config.getboolean('load_enabled', True)
         self.enabled_heads = set()
@@ -224,9 +84,6 @@ class AceBgSwap:
                     self.enabled_heads.add(h)
             except ValueError:
                 pass
-
-
-
 
         save_vars = self.printer.lookup_object('save_variables', None)
         if save_vars is not None:
@@ -250,8 +107,6 @@ class AceBgSwap:
         self.state = {}
         self._busy = set()
 
-
-
         self._dwell_fan_prev = {}
 
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -273,13 +128,6 @@ class AceBgSwap:
                                     desc=self.cmd_ACE_BG_SWAP_help)
 
     def get_status(self, eventtime):
-
-
-
-
-
-
-
 
         return {
             'version': self.version,
@@ -305,13 +153,6 @@ class AceBgSwap:
         else:
             self.enabled_heads.discard(head)
 
-
-
-
-
-
-
-
         _ace = self.printer.lookup_object('ace', None)
         _wt = getattr(_ace, '_wt_persist', None)
         if _wt is not None:
@@ -331,13 +172,7 @@ class AceBgSwap:
 
     def is_busy(self, head):
 
-
-
-
-
-
         return head in self._busy
-
 
     def _say(self, msg):
         logging.info('[multiACE] [bg-unload] %s' % msg)
@@ -351,9 +186,6 @@ class AceBgSwap:
 
     def _dh(self, idx):
 
-
-
-
         ace = self.printer.lookup_object('ace', None)
         try:
             if ace is not None:
@@ -363,12 +195,6 @@ class AceBgSwap:
         return idx
 
     def _bg_error(self, gcmd, text, head=None):
-
-
-
-
-
-
 
         ace = self.printer.lookup_object('ace', None)
         helper = getattr(ace, '_ace_error', None)
@@ -393,10 +219,6 @@ class AceBgSwap:
         an unwind sent while the previous rollback still ran was ACCEPTED
         on the wire but not executed - 'done' alone is no truth."""
         done = [None]
-
-
-
-
 
         def _cb(self, response):
             try:
@@ -483,20 +305,11 @@ class AceBgSwap:
 
     def _check_docked(self, toolhead, ext, head):
 
-
-
-
-
-
         if toolhead.get_extruder() is ext:
             raise RuntimeError('head %d was PICKED mid-sequence - aborted, '
                                'inline paths take over' % self._dh(head))
 
     def _bg_fan_obj(self, head):
-
-
-
-
 
         if head == 0:
             o = self.printer.lookup_object('fan', None)
@@ -553,9 +366,6 @@ class AceBgSwap:
 
     def _slot_status(self, ace, ace_idx, slot):
 
-
-
-
         try:
             st = ace._v2_get_slot_status(ace_idx, slot)
             if st:
@@ -610,10 +420,6 @@ class AceBgSwap:
         rollback-lock') - v0 skipped it when the FA cache was empty and the
         device dropped ALL unwinds (HW 2026-07-06: lamp never blinked)."""
         if not ace._is_v2_idx(ace_idx):
-
-
-
-
 
             for attempt in range(1, retries + 1):
                 resp = self._ace_send(ace, ace_idx, {
@@ -738,14 +544,10 @@ class AceBgSwap:
             return 'stale', (None, 0, None, None)
         if _detected():
 
-
-
             return 'stale', (None, 0, None, None)
         if length <= 0:
             return 'ok', (None, 0, None, None)
         is_v2 = ace._is_v2_idx(ace_idx)
-
-
 
         self._ace_send(ace, ace_idx, {
             'method': 'stop_feed_assist', 'params': {'index': slot}})
@@ -779,8 +581,6 @@ class AceBgSwap:
                     dmin = d if dmin is None else min(dmin, d)
                     dmax = d if dmax is None else max(dmax, d)
 
-
-
                 st = self._slot_status(ace, ace_idx, slot) or ''
                 if 'feeding' not in st and 'rollback' not in st:
                     if device_idle_since is None:
@@ -801,8 +601,6 @@ class AceBgSwap:
         if is_v2 and (span is None or span < BG_FEED_MIN_MOVE):
             return 'none', (span, n, dmin, dmax)
 
-
-
         resp = self._ace_send(ace, ace_idx, {
             'method': 'start_feed_assist', 'params': {'index': slot}})
         if not self._resp_rejected(resp):
@@ -819,8 +617,6 @@ class AceBgSwap:
         self._ace_send(ace, ace_idx, {
             'method': 'stop_feed_assist', 'params': {'index': slot}})
         ace._feed_assist_per_ace[ace_idx] = -1
-
-
 
         return 'partial', (span, n, dmin, dmax)
 
@@ -851,8 +647,6 @@ class AceBgSwap:
 
     def _schedule_start(self, toolhead, name):
 
-
-
         est = toolhead.mcu.estimated_print_time(self.reactor.monotonic())
         return max(toolhead.print_time,
                    getattr(toolhead, 'step_gen_time', 0.),
@@ -863,7 +657,6 @@ class AceBgSwap:
         stepper_enable = self.printer.lookup_object('stepper_enable')
         enable = stepper_enable.lookup_enable(stepper_name)
         if not enable.is_motor_enabled():
-
 
             enable.motor_enable(max(print_time - 0.100, 0.))
             return True
@@ -880,10 +673,6 @@ class AceBgSwap:
         start = self._schedule_start(toolhead, name)
         enabled_now = self._ensure_enabled(stepper.get_name(), start)
 
-
-
-
-
         prev_pos = stepper.get_commanded_position()
         prev_sk = stepper.set_stepper_kinematics(self.stepper_kinematics)
         prev_trapq = stepper.set_trapq(self.trapq)
@@ -898,8 +687,6 @@ class AceBgSwap:
         self.trapq_finalize_moves(self.trapq, end + 99999.9, end + 99999.9)
         stepper.set_trapq(prev_trapq)
         stepper.set_stepper_kinematics(prev_sk)
-
-
 
         stepper.set_position((prev_pos, 0., 0.))
 
@@ -953,7 +740,6 @@ class AceBgSwap:
         logging.info('[multiACE] %s (start=%.3f end=%.3f print_time=%.3f)'
                      % (msg, start, end, toolhead.print_time))
 
-
     cmd_ACE_BG_UNLOAD_help = (
         '[EXPERIMENTAL] Unload a PARKED ACE head in the background (heat + '
         'cold-pull via bg moves + ACE retract) while printing. '
@@ -968,8 +754,6 @@ class AceBgSwap:
         force = gcmd.get_int('FORCE', 0)
 
         def _refuse(msg):
-
-
 
             if quiet:
                 self._say('skip (quiet): %s' % msg)
@@ -988,13 +772,6 @@ class AceBgSwap:
             return _refuse('head %d already running (%s)'
                            % (self._dh(head), self.state.get(head)))
         if self._busy:
-
-
-
-
-
-
-
 
             return _refuse('another bg op is running (head %s) - bg ops are '
                            'serialized (shared move queue), one at a time'
@@ -1038,8 +815,6 @@ class AceBgSwap:
             return _refuse('ACE %d comms not healthy' % self._dh(ace_idx))
 
         if temp <= 0.:
-
-
 
             temp = 250.
             try:
@@ -1087,11 +862,6 @@ class AceBgSwap:
         force = gcmd.get_int('FORCE', 0)
         anti_ooze = gcmd.get_float('ANTI_OOZE', -1.)
 
-
-
-
-
-
         purge = gcmd.get_float('PURGE', None, minval=0., maxval=200.)
 
         def _refuse(msg):
@@ -1100,9 +870,6 @@ class AceBgSwap:
                 self._say('skip (quiet): %s' % msg)
                 return
             raise self._bg_error(gcmd, '[bg-swap] %s' % msg, head=head)
-
-
-
 
         if head not in self.enabled_heads and not force:
             return _refuse('head %d not bg-enabled ([ace_bg_swap] heads: - '
@@ -1115,13 +882,6 @@ class AceBgSwap:
             return _refuse('head %d already running (%s)'
                            % (self._dh(head), self.state.get(head)))
         if self._busy:
-
-
-
-
-
-
-
 
             return _refuse('another bg op is running (head %s) - bg ops are '
                            'serialized (shared move queue), one at a time'
@@ -1141,13 +901,11 @@ class AceBgSwap:
             return _refuse('head %d is the ACTIVE toolhead - bg swaps are '
                            'for parked heads' % self._dh(head))
 
-
         un = None
         source = ace._head_source.get(head)
         if source and source.get('ace_index') is not None\
                 and source.get('slot') is not None:
             un = (source['ace_index'], source['slot'])
-
 
         if ace_ld < 0:
             if un is not None:
@@ -1180,10 +938,6 @@ class AceBgSwap:
 
         u_temp = temp
         if temp <= 0.:
-
-
-
-
 
             temp = 250.
             u_temp = 0.
@@ -1252,8 +1006,6 @@ class AceBgSwap:
         except Exception:
             pass
 
-
-
     def _run_unload(self, head, ace_idx, slot, temp, soft):
         ace = self.printer.lookup_object('ace')
         toolhead = self.printer.lookup_object('toolhead')
@@ -1284,11 +1036,6 @@ class AceBgSwap:
             pass
         if isinstance(e, ToolheadNotClear):
 
-
-
-
-
-
             msg = ('head %d: unload NOT verified - toolhead still holds '
                    'filament (remnant/stretched tail); the arrival swap '
                    'unloads inline (hot retry ladder)' % self._dh(head))
@@ -1318,11 +1065,7 @@ class AceBgSwap:
         head as unloaded)."""
         if True:
 
-
-
             ace._runout_suppress_heads.add(head)
-
-
 
             self.state[head] = 'FA_STOP'
             armed = ace._feed_assist_per_ace.get(ace_idx, -1)
@@ -1333,7 +1076,6 @@ class AceBgSwap:
                 self._say('head %d: FA stopped on ACE %d slot %d'
                           % (self._dh(head), self._dh(ace_idx),
                              self._dh(armed)))
-
 
             self.state[head] = 'HEAT'
             pheaters.set_temperature(heater, temp)
@@ -1358,13 +1100,7 @@ class AceBgSwap:
                                        % (cur, temp))
                 self._pause(0.5)
 
-
-
-
             self.state[head] = 'PULL'
-
-
-
 
             seq = None
             try:
@@ -1385,11 +1121,6 @@ class AceBgSwap:
             except Exception:
                 pass
 
-
-
-
-
-
             reclaimed = 0.
             fwd_assist = False
             _fan_warned = False
@@ -1401,15 +1132,9 @@ class AceBgSwap:
                     continue
                 if kind == 'temp':
 
-
                     pheaters.set_temperature(heater, float(tok[1]))
                     continue
                 if kind == 'waittemp':
-
-
-
-
-
 
                     c = float(tok[1])
                     pheaters.set_temperature(heater, c)
@@ -1428,7 +1153,6 @@ class AceBgSwap:
                     continue
                 if kind == 'fan':
 
-
                     if not _fan_warned:
                         self._say('head %d: tip-form fan: token skipped '
                                   '(not addressable on a parked head)'
@@ -1441,27 +1165,14 @@ class AceBgSwap:
                     ln = int(round(-dist))
                     if ln < 3:
 
-
-
-
-
-
-
-
-
                         _s, end, _en = self.queue_move(ext, dist, speed,
                                                           CHOREO_ACCEL)
                         self._wait_move(toolhead, end)
                         continue
                     if fwd_assist:
 
-
                         ace._feed_assist_per_ace[ace_idx] = -1
                         fwd_assist = False
-
-
-
-
 
                     ok = self._ace_unwind(ace, ace_idx, slot, ln,
                                           unwind_speed, wait=False)
@@ -1477,15 +1188,6 @@ class AceBgSwap:
                                   % (self._dh(head), ln))
                 else:
                     if not fwd_assist and ace._is_v2_idx(ace_idx):
-
-
-
-
-
-
-
-
-
 
                         resp = self._ace_send(ace, ace_idx, {
                             'method': 'start_feed_assist',
@@ -1503,15 +1205,7 @@ class AceBgSwap:
             self._say('head %d: cold-pull done (%d mm confirmed reclaimed '
                       'at ACE)' % (self._dh(head), int(reclaimed)))
 
-
             pheaters.set_temperature(heater, 0.)
-
-
-
-
-
-
-
 
             self.state[head] = 'RETRACT'
             try:
@@ -1535,17 +1229,7 @@ class AceBgSwap:
             self._pause(1.0)
             if rest > 0:
 
-
-
-
-
-
-
-
                 short = min(int(BG_UNLOAD_PROBE_RETRACT), rest)
-
-
-
 
                 self._dwell_fan(ace, head, True)
                 self._say('head %d: ACE %d slot %d retract %d mm (%d short + '
@@ -1567,18 +1251,10 @@ class AceBgSwap:
                 _span = _sps[0]
                 if _span is not None and _span < short * BG_UNLOAD_STALL_FRAC:
 
-
-
-
                     raise RuntimeError(
                         'bg short retract STALLED (decoder span %s < %d of '
                         '%dmm) - filament likely stuck, handing to inline'
                         % (_span, int(short * BG_UNLOAD_STALL_FRAC), short))
-
-
-
-
-
 
                 self._gpio_diag(head, 'after short retract (expected clear)')
 
@@ -1596,23 +1272,6 @@ class AceBgSwap:
                         raise RuntimeError('bg rest retract not confirmed by '
                                            'the device (slot %d)' % slot)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
                 self._dwell_fan(ace, head, False)
                 _pin = self._gpio_diag(head,
                                        'after full retract (pin gate)')
@@ -1622,10 +1281,6 @@ class AceBgSwap:
                         'ACE retract (presence pin) - remnant or stretched '
                         'tail')
             retract_done['v'] = True
-
-
-
-
 
             self.state[head] = 'BOOKKEEP'
             try:
@@ -1638,8 +1293,6 @@ class AceBgSwap:
                           'next inline unload probe will clear it'
                           % (self._dh(head), e))
             ace._head_source[head] = None
-
-
 
             try:
                 ace._bg_load_unverified.discard(head)
@@ -1686,9 +1339,6 @@ class AceBgSwap:
             return
         if not self.load_enabled:
 
-
-
-
             self.state[head] = 'DONE'
             self._say('head %d: %s (load_enabled=False) - the arrival '
                       'swap loads inline'
@@ -1701,8 +1351,6 @@ class AceBgSwap:
             self._load_core(head, ace, toolhead, ext, heater, pheaters,
                             ld[0], ld[1], temp, anti_ooze, purge=purge)
             self.state[head] = 'DONE'
-
-
 
             _deficit = None
             try:
@@ -1757,10 +1405,6 @@ class AceBgSwap:
             'brand': si.get('brand', 'Generic'),
         }
 
-
-
-
-
         _ovl = getattr(ace, '_overlay_override', None)
         if _ovl is not None:
             _ident = _ovl(ace_idx, slot, _ident)
@@ -1773,9 +1417,6 @@ class AceBgSwap:
             ace._ghost_heads.discard(head)
         except Exception:
             pass
-
-
-
 
         try:
             ace._bg_load_unverified.add(head)
@@ -1814,12 +1455,6 @@ class AceBgSwap:
         except AttributeError:
             pass
 
-
-
-
-
-
-
         self.state[head] = 'LD_FEED'
         pheaters.set_temperature(heater, temp)
         feed_speed = ACE_UNWIND_SPEED_FALLBACK
@@ -1834,14 +1469,6 @@ class AceBgSwap:
                   % (self._dh(head), self._dh(ace_idx), self._dh(slot),
                      feed_len, feed_speed, temp))
 
-
-
-
-
-
-
-
-
         _retries = 0
         try:
             _retries = int(ace.head_load_retry.get(head, ace.load_retry))
@@ -1854,9 +1481,6 @@ class AceBgSwap:
             _retry_back = 50
         feed_res, _fsp = 'none', (None, 0, None, None)
         _ever_moved = False
-
-
-
 
         self._dwell_fan(ace, head, True)
         for _attempt in range(_retries + 1):
@@ -1887,13 +1511,6 @@ class AceBgSwap:
             pheaters.set_temperature(heater, 0.)
             if feed_res == 'partial' or _ever_moved:
 
-
-
-
-
-
-
-
                 try:
                     ace._bg_left_empty.add(head)
                     getattr(ace, '_bg_staged', {})[head] = (ace_idx, slot)
@@ -1904,13 +1521,6 @@ class AceBgSwap:
                           'mid-bowden); the arrival load continues it'
                           % (self._dh(head), _retries + 1))
             raise RuntimeError('feed not confirmed by the device')
-
-
-
-
-
-
-
 
         fa_armed = self._fa_on(ace, ace_idx, slot)
         self._say('head %d: fed to the toolhead sensor, FA %s'
@@ -1929,10 +1539,6 @@ class AceBgSwap:
                     break
                 if _tgt < temp - HEAT_HYST:
 
-
-
-
-
                     if not _retgt_said:
                         self._say('head %d: heater target was reset '
                                   'externally (%.0f) - re-asserting %.0f'
@@ -1945,11 +1551,6 @@ class AceBgSwap:
                 self._check_docked(toolhead, ext, head)
                 self._pause(0.5)
 
-
-
-
-
-
             if purge is not None:
                 prime_target = float(purge) + BG_LOAD_PRIME_EXTRA
             else:
@@ -1958,29 +1559,9 @@ class AceBgSwap:
             primed = 0.
             ooze_done = False
 
-
-
-
-
             self.state[head] = 'LD_GRIP'
 
-
-
-
-
-
-
-
-
-
-
             self._check_docked(toolhead, ext, head)
-
-
-
-
-
-
 
             if ace._is_v2_idx(ace_idx):
                 press = BG_LOAD_PRESS_V2
@@ -2013,27 +1594,10 @@ class AceBgSwap:
                               % (self._dh(head), BG_LOAD_PRESS_RETRIES))
                 else:
 
-
-
-
-
-
-
-
-
-
                     def _do_press():
                         pdeadline = (self.reactor.monotonic()
                                      + press / float(BG_LOAD_PRESS_SPEED)
                                      + 1.0)
-
-
-
-
-
-
-
-
 
                         _e_len = (press / float(BG_LOAD_PRESS_SPEED)
                                   + 1.0) * BG_LOAD_GRIP_SPEED
@@ -2057,7 +1621,6 @@ class AceBgSwap:
                         _do_press()
                     self._bg_dec_log(ace, head, slot, 'bg-press', press, _psp)
 
-
                     try:
                         if hasattr(ace, 'note_seat_press_span'):
                             ace.note_seat_press_span(ace_idx, slot, _psp[0])
@@ -2071,9 +1634,6 @@ class AceBgSwap:
                                  ', attempt %d' % (_pa + 1) if _pa else ''))
             self._fa_on(ace, ace_idx, slot)
 
-
-
-
             grip = BG_LOAD_GRIP_SEAT
             seg = grip / 4.
             for _i in range(4):
@@ -2083,15 +1643,7 @@ class AceBgSwap:
                 self._wait_move(toolhead, end)
             gripped = True
 
-
-
-
-
             self.state[head] = 'LD_PRIME'
-
-
-
-
 
             while primed < prime_target - 1e-6:
                 self._check_docked(toolhead, ext, head)
@@ -2102,17 +1654,10 @@ class AceBgSwap:
                 self._wait_move(toolhead, end)
                 primed += seg
 
-
-
-
                 try:
                     ace.book_spool_use(head, seg, 'bg-prime')
                 except AttributeError:
                     pass
-
-
-
-
 
             if anti_ooze > 0.:
                 self._check_docked(toolhead, ext, head)
@@ -2126,18 +1671,6 @@ class AceBgSwap:
                 'method': 'stop_feed_assist', 'params': {'index': slot}})
             ace._feed_assist_per_ace[ace_idx] = -1
             if gripped:
-
-
-
-
-
-
-
-
-
-
-
-
 
                 deficit = max(0., prime_target - primed)
                 if deficit > 0. or not ooze_done:
@@ -2157,16 +1690,6 @@ class AceBgSwap:
                 self._load_bookkeeping(head, ace, ace_idx, slot)
                 return
 
-
-
-
-
-
-
-
-
-
-
             self._say('head %d: abort before grip (%s) - filament stays '
                       'STAGED at the toolhead sensor; the arrival/inline '
                       'load continues from there'
@@ -2174,18 +1697,12 @@ class AceBgSwap:
             pheaters.set_temperature(heater, 0.)
             self._gpio_diag(head, 'staged after abort (expected present)')
 
-
-
-
             try:
                 ace._bg_left_empty.add(head)
                 getattr(ace, '_bg_staged', {})[head] = (ace_idx, slot)
             except Exception:
                 pass
             raise RuntimeError(str(e) or e.__class__.__name__)
-
-
-
 
         self._ace_send(ace, ace_idx, {
             'method': 'stop_feed_assist', 'params': {'index': slot}})

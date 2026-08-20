@@ -26,12 +26,6 @@ import tarfile
 import time
 import zipfile
 
-
-
-
-
-
-
 BAUD              = 230400
 PREAMBLE          = b'\xff\xaa'
 END_MARKER        = 0xFE
@@ -50,26 +44,10 @@ T_START   = 2.0
 T_CHUNK   = 2.0
 T_FINISH  = 5.0
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 KNOWN_FIRMWARE = {
     "1.1.31": {
         "crc": 0x91A8, "size": 71592,
         "swu": "ACE2_V1.1.31_20260306.swu",
-
-
 
         "md5": "79fb22e7914bae1dc75ac91b30739c19",
         "source": "ACE2_V1.1.31_20260306.bin",
@@ -247,13 +225,6 @@ class ACE2Transport:
                     if p and p["is_resp"] and p["cmd"] == cmd:
                         results.append(p)
 
-
-
-
-
-
-
-
                 if results:
                     return results
             else:
@@ -270,8 +241,6 @@ def get_ace_version(transport: ACE2Transport):
             boot = get_field(f, 2, b'').decode(errors='replace')
             return version, boot
     return None
-
-
 
 _ACE_KEYWORDS = ('ace', 'filament_hub', 'filament-hub')
 _CPIO_MAGIC = (b'070701', b'070702')
@@ -430,14 +399,11 @@ def flash(port: str, fw, progress,
                             "image_error": image_error})
             return out
 
-
-
         if fw is None:
             raise FlashError(image_error or "no firmware image")
         if not (fw.version or '').strip():
             raise FlashError("a target version is required to flash "
                              "(it is announced to the ACE)")
-
 
         check_known(fw)
         if current is None:

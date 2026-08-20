@@ -58,10 +58,6 @@ OVERRIDE_FILE = os.environ.get(
     "/home/lava/printer_data/config/extended/multiace/slot_overrides.json",
 )
 
-
-
-
-
 FILAMENT_PARAMS_PATHS = tuple(
     os.environ.get(
         "MULTIACE_FILAMENT_PARAMS",
@@ -74,7 +70,6 @@ FILAMENT_PARAMS_PATHS = tuple(
 _FIL_DB_META_KEYS = {
     "version", "hard_filaments_max_flow_k", "soft_filaments_max_flow_k",
 }
-
 
 DEFAULT_MATERIALS = [
     "PLA", "PLA-CF",
@@ -91,13 +86,6 @@ I18N_DIR = os.environ.get(
 )
 SCREEN_PROBE_URL = os.environ.get("SCREEN_PROBE_URL", "http://127.0.0.1:8092/snapshot")
 
-
-
-
-
-
-
-
 HOMING_FLAG_PATH = os.environ.get(
     "MULTIACE_HOMING_FLAG", "/tmp/multiace_homing_active")
 HOMING_GATE_TTL = float(os.environ.get("MULTIACE_HOMING_GATE_TTL", "2.0"))
@@ -110,11 +98,6 @@ def _homing_active() -> bool:
     except OSError:
         return False
     return 0.0 <= age < HOMING_GATE_TTL
-
-
-
-
-
 
 _LAST_STATUS: dict = {}
 _LAST_STATUS_TS: float = 0.0
@@ -238,8 +221,6 @@ def _parse_state(status: dict) -> dict:
     head_manual = ace.get("head_manual", {}) or {}
     head_feeder = ace.get("head_feeder", {}) or {}
 
-
-
     head_reader = ace.get("head_reader_spool", {}) or {}
     raw_aces = ace.get("aces", []) or []
 
@@ -267,10 +248,6 @@ def _parse_state(status: dict) -> dict:
         return {
             "material": mat if mat != "NONE" else "",
 
-
-
-
-
             "sku":      sub if sub != "NONE" else "",
             "brand":    vendor if vendor != "NONE" else "",
             "color":    color_hex,
@@ -292,10 +269,6 @@ def _parse_state(status: dict) -> dict:
         src = head_source.get(str(t)) or head_source.get(t)
         if isinstance(src, dict):
 
-
-
-
-
             if not (src.get("type") or "").strip():
                 return True
         return False
@@ -316,15 +289,6 @@ def _parse_state(status: dict) -> dict:
             continue
         if _head_in_op(t_idx):
             continue
-
-
-
-
-
-
-
-
-
 
         if _head_has_filament(t_idx) is False:
             continue
@@ -351,18 +315,6 @@ def _parse_state(status: dict) -> dict:
                 or (raw_status == "" and gate is None)
             )
 
-
-
-
-
-
-
-
-
-
-
-
-
             if gate == 0:
                 _now = time.time()
                 _pending = _eject_pending_since.get((i, s))
@@ -388,12 +340,9 @@ def _parse_state(status: dict) -> dict:
             override = _override_for(i, s)
             loaded_t = loaded_by_source.get((i, s))
 
-
-
             if override is not None:
                 ptc_overlay = {
                     "material": override.get("material", ""),
-
 
                     "sku":      "",
                     "brand":    override.get("brand", ""),
@@ -414,8 +363,6 @@ def _parse_state(status: dict) -> dict:
             else:
                 ptc_overlay = None
                 source = None
-
-
 
             if override is not None:
                 disp_subtype = (override.get("subtype") or "").strip()
@@ -491,11 +438,6 @@ def _parse_state(status: dict) -> dict:
             "dryer":        a.get("dryer_status") or {},
             "feed_assist":  a.get("feed_assist", -1),
 
-
-
-
-
-
             "serial_path":  a.get("serial_path", ""),
             "fw_hold":      bool(a.get("fw_hold")),
             "slots":        slots_out,
@@ -512,8 +454,6 @@ def _parse_state(status: dict) -> dict:
 
         _src_raw = head_source.get(str(t)) or head_source.get(t)
         d_explicit, sl_explicit = _resolve_head_source(_src_raw)
-
-
 
         load_failed = bool(isinstance(_src_raw, dict)
                            and _src_raw.get("load_failed"))
@@ -536,26 +476,16 @@ def _parse_state(status: dict) -> dict:
                     color = slot_obj.get("color")
                     material = slot_obj.get("material", "")
 
-
-
-
                     subtype = slot_obj.get("subtype", "")
                     sku = slot_obj.get("sku", "")
                     source = slot_obj.get("source")
         is_manual = bool(head_manual.get(str(t), head_manual.get(t, False)))
-
-
-
 
         op_mode = ace.get("mode", "multi")
         is_feeder = (op_mode == "head"
                      and bool(head_feeder.get(str(t), head_feeder.get(t, False)))
                      and not is_manual)
         if is_manual or is_feeder:
-
-
-
-
 
             d_explicit = sl_explicit = None
             ace_field = slot_field = None
@@ -637,17 +567,13 @@ def _parse_state(status: dict) -> dict:
         "spools": ace.get("spools", {}) or {},
         "spool_binding": ace.get("spool_binding", {}) or {},
 
-
         "head_tag_seen": ace.get("head_tag_seen", {}) or {},
         "spoolman_url": ace.get("spoolman_url", "") or "",
         "spoolman_auto": bool(ace.get("spoolman_auto", False)),
 
-
-
         "spool_mode": (ace.get("spool_mode")
                        or ("spoolman" if (ace.get("spoolman_url") or "")
                            else "local")),
-
 
         "spoollink": bool(ace.get("spoollink", False)),
         "spoollink_agent": bool(ace.get("spoollink_agent", False)),
@@ -664,8 +590,6 @@ def _parse_state(status: dict) -> dict:
         "wiring":             wiring,
         "save_variables":     sv_vars,
 
-
-
         "bg_swap": {
             "available":     bool(bg.get("version")),
             "version":       bg.get("version"),
@@ -673,15 +597,11 @@ def _parse_state(status: dict) -> dict:
             "busy":          bg.get("busy", []) or [],
         },
 
-
-
         "tipform": {
             "available": bool(tf.get("mode")),
             "mode":      tf.get("mode"),
             "tables":    tf.get("tables", []) or [],
         },
-
-
 
         "preflight_inbox": _inbox_status(),
     }
@@ -738,12 +658,6 @@ class MacroBatchRequest(BaseModel):
 class ConfigUpdate(BaseModel):
     content: str
     restart_klipper: bool = False
-
-
-
-
-
-
 
     base_sha1: str | None = None
 
@@ -824,16 +738,6 @@ _PREFLIGHT_FUZZY = 30
 _PREFLIGHT_MAX_SIZE = int(os.environ.get(
     "MULTIACE_PREFLIGHT_MAX_MB", "110")) * 1024 * 1024
 
-
-
-
-
-
-
-
-
-
-
 _INBOX_DIR = _PREFLIGHT_DIR / "inbox"
 
 def _inbox_max_size() -> int:
@@ -849,8 +753,6 @@ def _inbox_max_size() -> int:
     except (TypeError, ValueError):
         v = 256
     return max(1, min(v, 4096)) * 1024 * 1024
-
-
 
 _INBOX_PROCESSED_MARKERS = (b"; multiACE processed:", b"; multiACE auto-load:")
 
@@ -948,10 +850,6 @@ async def _live_slots_async() -> list[dict]:
             if slot.get("state") == "empty":
                 continue
 
-
-
-
-
             if slot.get("source") not in ("rfid", "override"):
                 continue
             out.append({
@@ -1014,11 +912,6 @@ async def _head_mode_context() -> dict:
         feeders.append({"head": int(th["idx"]), "material": mat, "color": col})
     bgs = parsed.get("bg_swap") or {}
 
-
-
-
-
-
     return {"mode": mode, "ace_head": ace_head, "ace_heads": ace_heads,
             "head_ace": head_ace, "feeders": feeders,
             "head_nozzles": {str(h): d
@@ -1035,8 +928,6 @@ async def preflight(file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=400, detail="invalid filename")
     if not safe_name.lower().endswith((".gcode", ".gco", ".g")):
         raise HTTPException(status_code=400, detail="not a g-code file")
-
-
 
     if await _any_head_manual():
         raise HTTPException(
@@ -1082,9 +973,6 @@ async def preflight(file: UploadFile = File(...)) -> dict:
                             detail="no slots are loaded on the printer")
     head_ctx = await _head_mode_context()
 
-
-
-
     try:
         return preflight_core.build_report(
             pp, slicer_colors=slicer_colors, slicer_types=slicer_types,
@@ -1093,10 +981,8 @@ async def preflight(file: UploadFile = File(...)) -> dict:
             fuzzy=_PREFLIGHT_FUZZY, meta=meta)
     except ValueError as e:
 
-
         raise HTTPException(status_code=409, detail=str(e))
     except RuntimeError as e:
-
 
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -1192,21 +1078,12 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
         else:
             head_ctx = {"mode": "multi"}
 
-
-
-
         if "pickup_cleaning" not in head_ctx:
             try:
                 head_ctx["pickup_cleaning"] = bool(_parse_state(
                     await _query_state_gated()).get("pickup_cleaning"))
             except Exception:
                 head_ctx["pickup_cleaning"] = False
-
-
-
-
-
-
 
         final = await asyncio.to_thread(
             preflight_core.rewrite_pipeline, pp,
@@ -1262,24 +1139,12 @@ class _PreflightPrint(BaseModel):
     token: str
     mode:  str
 
-
-
-
     bed_mesh: bool = False
     camera:   bool = False
 
-
-
-
-
     remap: dict[str, int] | None = None
 
-
-
-
     head_assignment: dict[str, str] | None = None
-
-
 
     head_plan: str = "loadout"
 
@@ -1437,10 +1302,6 @@ def _read_update_cfg() -> dict[str, str]:
 async def _run_update_script(args: list[str], timeout: float) -> dict:
     """Exec the bundled multiace_update.sh and capture stdout+rc."""
 
-
-
-
-
     update_script = None
     for candidate in (
         "/home/lava/multiace_update.sh",
@@ -1548,7 +1409,6 @@ async def preflight_inbox_status() -> dict:
 @app.get("/api/preflight/inbox/file")
 async def preflight_inbox_file() -> Response:
 
-
     gpath, _ = _inbox_paths()
     st = _inbox_status()
     if not st["pending"]:
@@ -1636,15 +1496,6 @@ async def reboot() -> dict:
 
 FLUIDD_CAMERA_NAME = "multiACE"
 
-
-
-
-
-
-
-
-
-
 FLUIDD_CAMERA = {
     "name": FLUIDD_CAMERA_NAME,
     "location": "printer",
@@ -1719,10 +1570,6 @@ async def get_state() -> dict:
     try:
         status = await _query_state_gated()
     except httpx.HTTPStatusError as e:
-
-
-
-
 
         if e.response is not None and e.response.status_code == 503:
             return {"klippy": "disconnected"}
@@ -1870,26 +1717,10 @@ async def import_spools(file: UploadFile = File(...),
         "/printer/gcode/script",
         {"script": f"ACE_SPOOL_IMPORT PATH={tmp} MODE={mode}"})
 
-
-
-
-
-
-
 _spoolman_lock = asyncio.Lock()
 _spoolman_last: dict = {"ts": 0.0, "ok": None, "msg": "", "pulled": 0, "pushed": 0}
 
-
-
 _SPOOLMAN_TIMEOUT = 15.0
-
-
-
-
-
-
-
-
 
 _MR_SPOOL_GCODE_TIMEOUT = 180.0
 
@@ -1939,7 +1770,6 @@ def _spoolman_subtype_guess(name: str, material: str) -> str:
         return ""
     for sub in _known_subtypes_for(m):
 
-
         if re.search(r"(?<!\w)%s(?!\w)" % re.escape(sub), n, re.IGNORECASE):
             return sub
     if not m:
@@ -1985,9 +1815,6 @@ def _spoolman_to_local(sp: dict, existing: dict | None,
         "color": color.lstrip("#").upper()[:6],
         "label": (fil.get("name") or "").strip(),
 
-
-
-
         "used_mm": 0.0,
         "spoolman_synced_mm": 0.0,
     }
@@ -2004,11 +1831,6 @@ def _spoolman_to_local(sp: dict, existing: dict | None,
     except (TypeError, ValueError):
         pass
     ex = existing or {}
-
-
-
-
-
 
     _ex_sku = (ex.get("sku") or "").strip()
     _gen = "SM%s" % sp.get("id", "")
@@ -2038,12 +1860,6 @@ async def _spoolman_refresh_known(base: str, spools: dict,
         return 0, "no linked spools"
 
     def _row_changed(new_row, ex):
-
-
-
-
-
-
 
         if ex is None:
             return True
@@ -2080,11 +1896,6 @@ async def _spoolman_refresh_known(base: str, spools: dict,
             ex = (spools or {}).get(key)
             entry = _spoolman_to_local(sp, ex)
 
-
-
-
-
-
             if not force and not _row_changed(entry, ex):
                 continue
             out[str(n)] = entry
@@ -2097,10 +1908,6 @@ async def _spoolman_refresh_known(base: str, spools: dict,
                    {"script": f"ACE_SPOOL_IMPORT PATH={tmp} MODE=merge"},
                    timeout=_MR_SPOOL_GCODE_TIMEOUT)
     return n, ""
-
-
-
-
 
 _spoolman_cache: dict = {"ts": 0.0, "base": "", "rows": []}
 
@@ -2215,24 +2022,6 @@ async def spoolman_adopt(payload: dict | None = None) -> dict:
         raise HTTPException(400, "spool mode is local - adopt disabled")
     return {"ok": True, "id": await _spoolman_adopt_one(smid)}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 _sweep_tried: dict[str, str] = {}
 
 @app.post("/api/spoolman/adopt_by_tags")
@@ -2269,8 +2058,6 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
     base = (state.get("spoolman_url") or "").strip().rstrip("/")
     if not base or state.get("spool_mode") == "local":
 
-
-
         if strict:
             raise HTTPException(400, "no Spoolman URL configured"
                                 if not base else "spool mode is local")
@@ -2278,8 +2065,6 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
     binding = state.get("spool_binding") or {}
     adopted, errs = 0, []
     coll = None
-
-
 
     items: list = []
     for ace in state.get("aces") or []:
@@ -2291,10 +2076,6 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
                           f"ACE_SPOOL_ASSIGN ACE={ace.get('idx')} "
                           f"SLOT={sl.get('idx')} ID={{lid}}",
                           True))
-
-
-
-
 
     for hk, code in (state.get("head_tag_seen") or {}).items():
         try:
@@ -2312,14 +2093,9 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
         sku = sku_raw.lstrip("#").lower()
         m = re.fullmatch(r"(?:sm)?(\d+)" if bare_id_ok else r"sm(\d+)", sku)
 
-
         if not m and not (3 <= len(sku) <= 19):
             continue
         if not strict and _sweep_tried.get(key) == sku:
-
-
-
-
 
             continue
         tag_sku = None
@@ -2338,11 +2114,6 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
                     if isinstance(sp, dict) and not sp.get("archived")
                     and uid in _spool_card_uids(sp)]
             if not hits:
-
-
-
-
-
 
                 continue
             if len(hits) > 1:
@@ -2366,27 +2137,13 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
                         " via card_uid" if tag_sku else "")
         except HTTPException as e:
 
-
             errs.append(f"{key}: {e.detail}")
         except Exception as e:
 
-
             _sweep_tried.pop(key, None)
-
-
-
 
             errs.append(f"{key}: {str(e) or type(e).__name__}")
     return {"ok": not errs, "adopted": adopted, "errors": errs}
-
-
-
-
-
-
-
-
-
 
 _SPOOL_UNMATCHED_RE = re.compile(
     r"\[spool\] tag .+ matches no table entry")
@@ -2413,13 +2170,6 @@ async def _sweep_kick_run() -> None:
     except Exception as e:
         _trace.warning("spoolman tag sweep (kick) failed: %s", e)
 
-
-
-
-
-
-
-
 _ACEFW_DIR = Path("/tmp/multiace-acefw")
 _acefw = {"state": "idle", "pct": None, "msg": "", "ace": None,
           "result": None, "error": "", "file": "", "size": 0}
@@ -2444,9 +2194,6 @@ async def acefw_upload(file: UploadFile = File(...)) -> dict:
                    "size": len(data), "state": "idle",
                    "msg": "", "error": "", "result": None, "pct": None})
 
-
-
-
     guess = ""
     try:
         import ace2_ota
@@ -2464,7 +2211,6 @@ async def _acefw_run(ace: int, port: str, version: str,
     try:
         _acefw["state"] = "flashing"
 
-
         import ace2_ota
         upload = str(_ACEFW_DIR / "upload.bin")
         fw, image_error = None, ""
@@ -2473,8 +2219,6 @@ async def _acefw_run(ace: int, port: str, version: str,
                 ace2_ota.load_image, upload, version, md5, password)
         except Exception as e:
             image_error = str(e)
-
-
 
             if not dry_run:
                 raise
@@ -2491,7 +2235,6 @@ async def _acefw_run(ace: int, port: str, version: str,
                            {"script": f"ACE_FW_RESUME ACE={ace}"})
             _acefw["state"] = "error" if _acefw["error"] else "done"
         except Exception as e:
-
 
             _acefw["error"] = ((_acefw["error"] + "; ") if _acefw["error"]
                                else "") + f"resume failed: {e}"
@@ -2514,11 +2257,8 @@ async def acefw_flash(payload: dict | None = None) -> dict:
     dry_run = bool(p.get("dry_run"))
     version = str(p.get("version") or "").strip()
 
-
-
     if not version and not dry_run:
         raise HTTPException(400, "target version required (e.g. 1.1.31)")
-
 
     if version and not dry_run:
         try:
@@ -2548,7 +2288,6 @@ async def acefw_flash(payload: dict | None = None) -> dict:
     except Exception as e:
         _acefw.update({"state": "error", "error": f"release failed: {e}"})
         raise HTTPException(500, f"ACE_FW_RELEASE failed: {e}")
-
 
     state2 = _parse_state(await _query_state_gated())
     entry2 = next((a for a in (state2.get("aces") or [])
@@ -2581,7 +2320,6 @@ async def acefw_versions() -> dict:
         return {"versions": [
             {"version": v, "size": e.get("size"),
              "crc": "0x%04X" % e["crc"], "source": e.get("source", ""),
-
 
              "swu": e.get("swu", "")}
             for v, e in sorted(ace2_ota.KNOWN_FIRMWARE.items())]}
@@ -2633,14 +2371,10 @@ async def _spoolman_sync(pull: bool = True, push: bool = True) -> dict:
     async with _spoolman_lock:
         pushed, pulled, errs = 0, 0, []
 
-
-
         if push:
             pushed, errs = await _spoolman_push(base, state.get("spools") or {})
         if pull:
             state2 = _parse_state(await _query_state_gated()) if push else state
-
-
 
             pulled, _ = await _spoolman_refresh_known(
                 base, state2.get("spools") or {}, force=True)
@@ -2688,13 +2422,6 @@ async def run_macro(req: MacroRequest) -> dict:
             parts.append(_gcode_kv(k, v))
     script = " ".join(parts)
     try:
-
-
-
-
-
-
-
 
         result = await _mr_post("/printer/gcode/script",
                                 {"script": script}, timeout=1800.0)
@@ -2896,17 +2623,9 @@ async def set_tipform(payload: TipformUpdate) -> dict:
     if payload.restart_klipper:
         try:
 
-
-
-
-
             restart = await _mr_post("/printer/firmware_restart", {})
         except httpx.HTTPError as e:
             restart = {"error": str(e)}
-
-
-
-
 
     reloaded = False
     if not payload.restart_klipper:
@@ -2945,9 +2664,6 @@ async def update_config(payload: ConfigUpdate) -> dict:
         raise HTTPException(404, f"config file not found: {MULTIACE_CFG_PATH}")
     if payload.base_sha1:
 
-
-
-
         cur = p.read_text(encoding="utf-8")
         cur_sha1 = _cfg_sha1(cur)
         if cur_sha1 != payload.base_sha1:
@@ -2963,10 +2679,6 @@ async def update_config(payload: ConfigUpdate) -> dict:
     restart: dict | None = None
     if payload.restart_klipper:
         try:
-
-
-
-
 
             restart = await _mr_post("/printer/firmware_restart", {})
         except httpx.HTTPError as e:
@@ -3049,8 +2761,6 @@ async def screen_available() -> dict:
 _SNAP_NAME_RE = re.compile(r"^[A-Za-z0-9_\- ]{1,64}$")
 
 def _snap_dir(mode: str | None) -> Path:
-
-
 
     base = Path(SNAPSHOT_DIR)
     return base / "head" if (mode or "") == "head" else base
@@ -3269,8 +2979,6 @@ async def apply_snapshot(name: str, mode: str | None = None) -> dict:
         for head in sorted(by_ace[ace_idx]):
             actions.append({"name": "ACE_LOAD_HEAD", "args": {"HEAD": head, "ACE": ace_idx}})
 
-
-
     for idx, dt in sorted(desired.items()):
         if dt.get("kind") != "feeder":
             continue
@@ -3484,8 +3192,6 @@ def _is_error_gcode_response(text: str) -> bool:
         return False
     body = s[3:].strip() if s.startswith("// ") else s
 
-
-
     if body.startswith("[warn]") and "[multiACE]" in s:
         return True
     is_error = (
@@ -3512,8 +3218,6 @@ def _record_notification(text: str) -> dict | None:
         if msg.startswith(prefix):
             msg = msg[len(prefix):].strip()
             break
-
-
 
     level = "error"
     if msg.startswith("[warn]"):
@@ -3556,14 +3260,6 @@ async def _on_status_update(params: list) -> None:
     prev, _print_state_last = _print_state_last, st
     if st == "paused" and prev == "printing":
 
-
-
-
-
-
-
-
-
         try:
             await _spoolman_push_now("pause")
         except Exception as e:
@@ -3590,11 +3286,6 @@ async def _on_status_update(params: list) -> None:
     except Exception as e:
         _trace.warning("spoolman auto-sync failed: %s", e)
 
-
-
-
-
-
 _SPOOLMAN_PRINT_SYNC_S = 180.0
 
 async def _spoolman_push_now(why: str, sl_pull: bool = True) -> None:
@@ -3620,14 +3311,6 @@ async def _spoolman_push_now(why: str, sl_pull: bool = True) -> None:
         if not sl_pull:
             return
 
-
-
-
-
-
-
-
-
         async with _spoolman_lock:
             pulled, perr = await _spoolman_refresh_known(
                 base, state.get("spools") or {})
@@ -3649,18 +3332,6 @@ async def _spoolman_push_now(why: str, sl_pull: bool = True) -> None:
         _trace.info("spoolman %s sync: pushed=%d%s", why, pushed,
                     (" errs=" + "; ".join(errs)[:200]) if errs else "")
 
-
-
-
-
-
-
-
-
-
-
-
-
 _SPOOLMAN_IDLE_PUSH_COOLDOWN_S = 60.0
 _spoolman_idle_push_last = 0.0
 
@@ -3676,7 +3347,6 @@ async def _spoolman_push_if_idle(why: str) -> dict:
     try:
         await _spoolman_push_now(why, sl_pull=False)
     except Exception as e:
-
 
         _trace.info("spoolman %s push failed: %s", why, e)
         return {"ok": False, "pushed": False, "error": str(e)[:200]}
@@ -3761,9 +3431,6 @@ async def _moonraker_log_listener() -> None:
                     }))
                     _trace.info("moonraker WS identify sent")
 
-
-
-
                     await ws.send(json.dumps({
                         "jsonrpc": "2.0",
                         "method": "printer.objects.subscribe",
@@ -3780,12 +3447,6 @@ async def _moonraker_log_listener() -> None:
                     if debug_recv:
                         _trace.warning("moonraker WS recv #%d: %s", msg_count, str(raw)[:240])
 
-
-
-
-
-
-
                     if _homing_active():
                         continue
                     try:
@@ -3794,12 +3455,6 @@ async def _moonraker_log_listener() -> None:
                         continue
                     if (msg.get("id") == 2
                             and isinstance(msg.get("result"), dict)):
-
-
-
-
-
-
 
                         _st = (((msg["result"].get("status") or {})
                                 .get("print_stats") or {})
@@ -3819,7 +3474,6 @@ async def _moonraker_log_listener() -> None:
                     text = params[0]
                     if (isinstance(text, str)
                             and _SPOOL_UNMATCHED_RE.search(text)):
-
 
                         _sweep_kick()
                     rec = _record_notification(text)
@@ -4208,8 +3862,6 @@ async def ws(websocket: WebSocket) -> None:
                     last_seen_notif_id = n["id"]
             if now - last_ts >= 1.0 and not _homing_active():
 
-
-
                 try:
                     status = await _query_state()
                     payload = _parse_state(status)
@@ -4217,9 +3869,6 @@ async def ws(websocket: WebSocket) -> None:
                     payload["ts"] = now
                     await websocket.send_json(payload)
                 except httpx.HTTPStatusError as e:
-
-
-
 
                     if e.response is not None and e.response.status_code == 503:
                         await websocket.send_json(
@@ -4234,20 +3883,6 @@ async def ws(websocket: WebSocket) -> None:
         return
     except Exception:
         return
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 _SHELL_PATHS = {"/", "/index.html", "/app.js", "/style.css"}
 
