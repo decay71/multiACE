@@ -22,7 +22,7 @@ ACE units do not read or expose the spools uid so it uses the sku field. (Spoolm
 - Updated Compact panel view - Renders a reduced view that can be embedded in Fluidd as a cam, so the ACE status stays visible next to the print.
 - Firmware flash: ACE 2 firmware updates from the web UI. Duration now 10sec instead of 30minutes.
 
-(The flash engine is based on hakimio's OTA updater and is used with his permission. Thanks to hakimio for doing the reverse engineering that made this possible in the first place, and for letting multiACE build on it.
+(The flash engine is based on hakimio's OTA updater and is used with his permission. Thanks to hakimio for doing the reverse engineering that made this possible in the first place, and for letting multiACE build on it.)
 
   
 **Nozzle wiper updated to version 2 — new, larger purge bin.**
