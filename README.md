@@ -9,6 +9,10 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 (manuals will be updated soon)
 
 
+Known issues: 
+
+- starting the ACE 2 Pro dryer directly above 50 °C can trigger a ptc_error in the ACE firmware, which then needs a power cycle. This is a firmware limitation, not multiACE, but the automatic humidity control runs into it every time it restarts the heater at a stored higher target. The next version works around it with a soft ramp: start at 50 °C and raise to the configured target after a few minutes.
+
 
 
 ## What's new in multiACE 0.99.8b "Resupply Run" (Update, mod and firmware.bin available)
