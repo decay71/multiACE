@@ -88,7 +88,7 @@ See it in action: https://youtu.be/9uLE1uydWmo
 ## 🌐 Web-Preflight
 - **Just upload unprocessed GCode via Multiace-Web**, print in actual loaded order or organize spools according to optimized layout to save swaps. Autoloads needed spools, no need to preload.
 
-### In-Print Color Swaps (layer / mid-layer)
+##  In-Print Color Swaps (layer / mid-layer)
 
 Color swaps during an active print can be triggered two ways:
 
