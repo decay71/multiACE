@@ -97,6 +97,13 @@ Color swaps during an active print can be triggered two ways:
 
 Both paths use the same hardened load/unload logic as normal toolchanges. See [How to Do Toolswaps](#how-to-do-toolswaps) below for the exact command format and post-processing setup.
 
+## 📺 On-Printer Touchscreen (community, beta)
+
+
+multiACE's own surfaces are browser-based. If you'd rather drive it from the
+printer itself, [physicsG's HelixScreen fork](https://github.com/physicsG/helixscreen)
+adds multiACE support to [HelixScreen](https://github.com/prestonbrown/helixscreen),
+replacing the stock U1 touchscreen UI.
 
 
 ## Features
