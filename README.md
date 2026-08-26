@@ -108,8 +108,8 @@ replacing the stock U1 touchscreen UI.
 
 
 ## FOrca Slicer support (community)
-(https://github.com/jiyang1018/FOrcaSlicer)
-Support for FOrca Slicer Gcode, Upload via WebUI or directly sent from new 
+
+Support for FOrca Slicer (https://github.com/jiyang1018/FOrcaSlicer) Gcode, Upload via WebUI or directly sent from new 
 Foraca Slicer [Version ](https://github.com/jiyang1018/FOrcaSlicer/releases/tag/v2.3.2-fos.8.6.0)
 
 
