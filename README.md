@@ -113,11 +113,6 @@ Support for FOrca Slicer (https://github.com/jiyang1018/FOrcaSlicer) Gcode, Uplo
 Foraca Slicer [Version ](https://github.com/jiyang1018/FOrcaSlicer/releases/tag/v2.3.2-fos.8.6.0)
 
 
-multiACE's own surfaces are browser-based. If you'd rather drive it from the
-printer itself, [physicsG's HelixScreen fork](https://github.com/physicsG/helixscreen)
-adds multiACE support to [HelixScreen](https://github.com/prestonbrown/helixscreen),
-replacing the stock U1 touchscreen UI.
-
 
 ## Features
 
