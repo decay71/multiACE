@@ -1,0 +1,99 @@
+name: Bug report
+description: Report a problem with multiACE
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        Please note: I support the **current release line** of multiACE, installed
+        either through the SSH installer or the PAXX overlay published in this
+        repository. Older versions and third-party firmware images that bundle
+        multiACE are not supported here.
+
+  - type: dropdown
+    id: install_source
+    attributes:
+      label: How did you install multiACE?
+      options:
+        - Official release, SSH installer
+        - Official PAXX overlay from this repository
+        - Third-party firmware image that bundles multiACE
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version_banner
+    attributes:
+      label: Startup banner
+      description: >
+        Run this on the printer and paste the whole line. The `build=` tag
+        identifies the exact build and is required to diagnose anything.
+        `grep -m1 "\[multiACE\] Version" /home/lava/printer_data/logs/klippy.log`
+      placeholder: "[multiACE] Version 0.99.6.2b (Persistent Pesterers) build=a1b2c3d file=2026-08-01 12:34:56"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Operating mode
+      options:
+        - multi
+        - head
+        - normal
+        - not sure
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: ACE units
+      description: How many, and which type (ACE Pro / ACE 2 Pro). Mixed setups are fine, just say which is which.
+      placeholder: "2x ACE 2 Pro, 2x ACE Pro"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: >
+        What did you trigger (button, macro, g-code), what happened instead of
+        what you expected, and what was going on before (mid-print, during a
+        load, after a restart).
+    validations:
+      required: true
+
+  - type: input
+    id: timestamp
+    attributes:
+      label: Time of the error
+      description: Exact time, so the moment can be found in the logs. Please state your timezone.
+      placeholder: "2026-08-06 14:32 (UTC+2)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Please attach `klippy.log` (in `printer_data/logs/klippylogs/`) and, if
+        present, `multiace_state.log` and `multiace_usb.log`. Drag the files
+        into this field. Truncated excerpts often cut off the part that matters.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I am running the current release, or I have checked that the problem still exists on it.
+          required: true
+        - label: This build was installed from this repository, not from a third-party firmware image.
+          required: true

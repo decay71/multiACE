@@ -1,0 +1,55 @@
+name: Build release tarball
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compose tarball
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          OUT="dist/release"
+          mkdir -p "$OUT"
+          # Bundle the multiACE source tree at its repo layout so the
+          # updater can just call install_multiace.sh from inside.
+          tar -czf "$OUT/multiace-${TAG}.tar.gz" \
+              --transform "s,^multiace,multiace," \
+              multiace/install_multiace.sh \
+              multiace/uninstall_multiace.sh \
+              multiace/klipper \
+              multiace/kinematics 2>/dev/null \
+              || true
+          # Rebuild with the right set of paths (some don't exist on every
+          # branch). The line above tolerates that.
+          rm -f "$OUT/multiace-${TAG}.tar.gz"
+          tar -czf "$OUT/multiace-${TAG}.tar.gz" \
+              multiace/install_multiace.sh \
+              multiace/uninstall_multiace.sh \
+              multiace/klipper \
+              multiace/config \
+              multiace/i18n \
+              multiace/tools \
+              multiace/web 2>/dev/null || \
+          tar -czf "$OUT/multiace-${TAG}.tar.gz" multiace/
+          (cd "$OUT" && sha256sum "multiace-${TAG}.tar.gz" \
+              > "multiace-${TAG}.tar.gz.sha256")
+          ls -la "$OUT/"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/multiace-*.tar.gz
+            dist/release/multiace-*.tar.gz.sha256
+          generate_release_notes: true
