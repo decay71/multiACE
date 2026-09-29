@@ -610,8 +610,8 @@ def _resolve_multiace_paths(config):
         except Exception:
             printer_args = {}
     cfg_file = printer_args.get('config_file', '')
-    env_cfg = os.environ.get('KLIPPER_CONFIG_DIR', '')
-    env_data = os.environ.get('PRINTER_DATA', '')
+    env_cfg = os.environ.get('MULTIACE_CONFIG_DIR', '')
+    env_data = os.environ.get('MULTIACE_PRINTER_DATA', '')
 
     if env_cfg and os.path.isdir(env_cfg):
         config_dir = os.path.abspath(env_cfg)
@@ -678,7 +678,9 @@ class MultiAce:
 
         self.paths = _resolve_multiace_paths(config)
         self.host = self.paths['host_type']
-        self.ACE_CFG_PATH = config.get('ace_cfg', self.paths['ace_cfg'])
+        # Derived, never a config option: the web backend edits the same
+        # file (MULTIACE_CFG_PATH), so the two must not be able to diverge.
+        self.ACE_CFG_PATH = self.paths['ace_cfg']
 
         self.gate_status = [GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN]
         if self._name.startswith('ace '):
@@ -7923,10 +7925,12 @@ class MultiAce:
             if last_rx is not None:
                 silence = time.monotonic() - last_rx
                 if silence >= 8.0:
-                    logging.warning(
-                        '[multiACE] ACE %d transport silence >= 8.0s (mute detected), '
-                        'triggering reconnect recovery' % idx)
+                    # Log the transition only: a unit that stays dead until
+                    # resume must not add a line per heartbeat tick.
                     if not self._serial_failed_per_ace.get(idx, False):
+                        logging.warning(
+                            '[multiACE] ACE %d transport silence >= 8.0s (mute detected), '
+                            'triggering reconnect recovery' % idx)
                         self._serial_failed_per_ace[idx] = True
                         try:
                             self.reactor.register_async_callback(
@@ -7938,10 +7942,6 @@ class MultiAce:
                                 'ACE %d: %s' % (idx, str(re)))
                             self._handle_per_ace_failure(idx, 'transport silence >= 8.0s')
                     return eventtime + 1.0
-                elif silence >= 5.0:
-                    logging.info(
-                        '[multiACE] ACE %d transport silence >= 5.0s, '
-                        'issuing status probe' % idx)
 
             is_active = (idx == self._active_device_index)
 
