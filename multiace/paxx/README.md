@@ -38,6 +38,12 @@ When managed mode is active, multiACE must refuse its own online updater and
 must not copy ACE files over the stock Klipper tree. Updates are staged and
 activated by PAXX instead.
 
+Read-only translation catalogs are provider data, not persistent user
+configuration. The web backend prefers the package-root `i18n/` directory and
+falls back to the historical standalone `web/i18n/` layout. An explicit
+`MULTIACE_I18N_DIR` override remains available for deployments with a custom
+layout, but the standard managed package does not need to set it.
+
 The marker file is a durable fallback for SSH sessions or services that do not
 inherit the activation hook's environment. Standalone install and uninstall
 also refuse to run when the marker exists; an intentional manual override is

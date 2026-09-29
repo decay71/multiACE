@@ -28,9 +28,11 @@ jobs:
         run: |
           python -m py_compile \
             klipper/extras/ace.py \
+            web/backend/i18n_path.py \
             web/backend/main.py \
             paxx/build_package.py \
-            paxx/tests/test_package.py
+            paxx/tests/test_package.py \
+            paxx/tests/test_i18n_path.py
           node --check web/frontend/app.js
           bash -n \
             install_multiace.sh \
