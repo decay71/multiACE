@@ -55,6 +55,17 @@ class I18nPathTests(unittest.TestCase):
             with patch.dict(os.environ, {"MULTIACE_I18N_DIR": str(override)}):
                 self.assertEqual(resolve_i18n_dir(module_file), override)
 
+    def test_managed_app_dir_override(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="multiace-i18n-app-override-") as tmp:
+            app_root = Path(tmp) / "active-package"
+            catalog = app_root / "i18n"
+            catalog.mkdir(parents=True)
+            module_file = self._module_file(Path(tmp) / "fallback")
+
+            with patch.dict(os.environ, {"MULTIACE_APP_DIR": str(app_root)}):
+                os.environ.pop("MULTIACE_I18N_DIR", None)
+                self.assertEqual(resolve_i18n_dir(module_file), catalog)
+
 
 if __name__ == "__main__":
     unittest.main()

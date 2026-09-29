@@ -17,6 +17,12 @@ def resolve_i18n_dir(module_file: str | os.PathLike[str]) -> Path:
     if configured:
         return Path(configured)
 
+    app_dir = os.environ.get("MULTIACE_APP_DIR", "").strip()
+    if app_dir:
+        app_catalog = Path(app_dir).expanduser() / "i18n"
+        if app_catalog.is_dir():
+            return app_catalog
+
     backend_dir = Path(module_file).resolve().parent
     web_dir = backend_dir.parent
     package_dir = web_dir.parent

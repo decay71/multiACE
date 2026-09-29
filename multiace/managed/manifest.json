@@ -3,13 +3,14 @@
   "package": "multiace",
   "version_file": "VERSION",
   "release": {
-    "asset_prefix": "multiace-paxx-",
+    "asset_prefix": "multiace-managed-",
     "archive_suffix": ".tar.gz",
     "checksum_suffix": ".sha256"
   },
   "managed_config": {
     "path": "config/extended/ace.cfg",
     "remove_sections": [
+      "save_variables",
       "gcode_macro ACEH__Update_Check",
       "gcode_macro ACEH__Update_Apply"
     ]

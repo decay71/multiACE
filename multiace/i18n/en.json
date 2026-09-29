@@ -281,7 +281,7 @@
       "update_failed": "Update failed",
       "update_intro": "Pulls the latest multiACE release and installs it.",
       "update_latest": "Available",
-      "update_managed": "Updates are managed by the host firmware. Use PAXX Firmware Config to install a tested multiACE release.",
+      "update_managed": "Updates are managed by the platform. Use your printer's multiACE integration to install a tested release.",
       "update_not_checked": "not checked yet",
       "update_title": "multiACE updates"
     },

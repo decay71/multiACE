@@ -8,8 +8,12 @@ trusts every request that reaches it.
 
 Environment variables:
   MOONRAKER_URL          default http://127.0.0.1:7125
-  MULTIACE_CFG_PATH      default /home/lava/printer_data/config/extended/ace.cfg
+  MULTIACE_CONFIG_DIR    printer_data/config directory
+  MULTIACE_PRINTER_DATA  printer data root
+  MULTIACE_CFG_PATH      legacy explicit config-file override
   MULTIACE_FRONTEND_DIR  default ../frontend (relative to this file)
+  MULTIACE_MANAGED       set to 1 when the platform owns installation/updates
+  MULTIACE_MANAGED_MARKER durable neutral managed-install marker path
   MULTIACE_WEB_VERSION   default "0.1.0"
 """
 from __future__ import annotations
@@ -43,8 +47,23 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import preflight_core
+from i18n_path import resolve_i18n_dir
 
 MOONRAKER_URL = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+MULTIACE_MANAGED_MARKER = os.environ.get(
+    "MULTIACE_MANAGED_MARKER", "").strip() or os.path.join(
+        os.environ.get("MULTIACE_CONFIG_DIR", "/home/lava/printer_data/config"),
+        "extended", "multiace", ".multiace-managed")
+MULTIACE_MANAGED = (
+    _env_flag("MULTIACE_MANAGED")
+    or os.path.exists(MULTIACE_MANAGED_MARKER))
 
 
 def _user_paths(rel: str) -> list[str]:
@@ -70,11 +89,18 @@ def _first_existing(candidates: list[str]) -> str:
     return candidates[0]
 
 
-# Anchor on printer_data/config, which exists wherever Klipper runs. Probing
-# for 'extended' or 'persistent' instead would fall back to the U1 path on
-# any host that does not have those multiACE subfolders yet, which is every
-# fresh generic install.
-_CFG_DIR = _first_existing(_user_paths("printer_data/config"))
+# These two roots are the shared host-path contract. Keep fallback discovery
+# for standalone installs, but let managed platforms supply canonical paths.
+_CONFIG_DIR_ENV = os.environ.get("MULTIACE_CONFIG_DIR", "").strip()
+_PRINTER_DATA_ENV = os.environ.get("MULTIACE_PRINTER_DATA", "").strip()
+if _PRINTER_DATA_ENV:
+    MULTIACE_PRINTER_DATA = os.path.abspath(_PRINTER_DATA_ENV)
+elif _CONFIG_DIR_ENV:
+    MULTIACE_PRINTER_DATA = os.path.dirname(os.path.abspath(_CONFIG_DIR_ENV))
+else:
+    MULTIACE_PRINTER_DATA = _first_existing(_user_paths("printer_data"))
+_CFG_DIR = os.path.abspath(_CONFIG_DIR_ENV) if _CONFIG_DIR_ENV else os.path.join(
+    MULTIACE_PRINTER_DATA, "config")
 _CFG_EXT_DIR = os.path.join(_CFG_DIR, "extended")
 
 def _resolve_cfg_path() -> str:
@@ -128,10 +154,7 @@ DEFAULT_MATERIALS = [
     "PC", "PC-ABS",
     "PVA",
 ]
-I18N_DIR = os.environ.get(
-    "MULTIACE_I18N_DIR",
-    str((Path(__file__).resolve().parent.parent / "i18n")),
-)
+I18N_DIR = str(resolve_i18n_dir(__file__))
 SCREEN_PROBE_URL = os.environ.get("SCREEN_PROBE_URL", "http://127.0.0.1:8092/snapshot")
 
 # 0003 mitigation: ace.py (the Klipper module) touches this tmpfs flag on
@@ -1703,10 +1726,16 @@ def _read_update_cfg() -> dict[str, str]:
 async def _run_update_script(args: list[str], timeout: float) -> dict:
     """Exec the bundled multiace_update.sh and capture stdout+rc."""
 
-    # Canonical install location first. The PAXX-baked
-    # /home/lava/multiace/tools/multiace_update.sh comes from the
-    # squashfs and never gets refreshed by online updates, so it
-    # serves only as a last-resort fallback.
+    if MULTIACE_MANAGED:
+        raise HTTPException(
+            status_code=409,
+            detail="multiACE updates are managed by the platform.",
+        )
+
+    # The installed updater is preferred. The legacy
+    # /home/lava/multiace/tools/multiace_update.sh path comes from the
+    # firmware image and is not refreshed by online updates, so it serves
+    # only as a last-resort standalone fallback.
     # The two U1 entries keep their exact order; the home-relative
     # pair is appended for a generic Klipper host and can never reorder them.
     update_script = None
@@ -1835,8 +1864,21 @@ async def preflight_inbox_clear() -> dict:
 async def update_check() -> dict:
     return await _run_update_script(["check"], timeout=30.0)
 
+@app.get("/api/update/status")
+async def update_status() -> dict:
+    return {
+        "managed": MULTIACE_MANAGED,
+        "owner": "platform" if MULTIACE_MANAGED else "multiACE",
+    }
+
 @app.post("/api/update/apply")
 async def update_apply(force: bool = False) -> dict:
+
+    if MULTIACE_MANAGED:
+        raise HTTPException(
+            status_code=409,
+            detail="multiACE updates are managed by the platform.",
+        )
 
     if not _DEBUG_FLAG_PATH.exists():
         raise HTTPException(

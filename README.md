@@ -106,28 +106,30 @@ ACE units do not read or expose the spools uid so it uses the sku field. (Spoolm
 - **PAXX Firmware Compatible / Installer** - Works with PAXX firmware which provides display mirroring, allowing full load/unload control from your computer / Integrated PAXX Firmware
 - **Clean Install/Uninstall** - One-command scripts with automatic backup and restore
 
-### PAXX-managed package
+### Platform-managed package
 
-The repository also provides a separate package contract for PAXX firmware in
-`multiace/paxx/`. PAXX selects a pinned multiACE release, verifies its SHA-256
-checksum, installs it under a versioned application directory, and activates
-the selected files at startup without overwriting the stock Klipper files on
-disk. PAXX owns activation, compatibility checks, persistent configuration,
-updates, rollback, and the firmware-config UI.
+The repository also provides a platform-neutral managed package in
+`multiace/managed/`. A host platform can pin the archive and SHA-256 checksum,
+install the payload under its own application root, and own activation,
+persistent configuration, updates, rollback, and user-facing controls. The
+managed package is intended to share the same contract across platform
+integrations, including PAXX and the planned Bespok3d packaging.
 
 The managed package does not include the standalone SSH installer, uninstaller,
-online updater, init scripts, or file-copy mode switch helper. When PAXX sets
-`MULTIACE_MANAGED=1`, multiACE refuses self-updates and reports that PAXX owns
-the update path. Ordinary standalone multiACE installation remains available.
+self-updater, boot service, or file-copy mode switch helper. Those remain in
+the repository for stock-firmware users who choose a standalone installation.
+Managed hosts pass `MULTIACE_MANAGED=1` and the shared path variables described
+in `multiace/managed/README.md`; multiACE then defers update and installation
+ownership to the platform.
 
-Build and test the package from the repository root with:
+Build the managed archive and matching checksum from the repository root with:
 
 ```bash
-python3 multiace/paxx/build_package.py
+python3 multiace/managed/build_package.py
 ```
 
-The `paxx-package.yml` workflow runs the package tests and publishes the
-versioned archive and checksum for tags named `multiace-v<version>`.
+The `release.yml` workflow publishes both the standalone source archive and
+the managed archive with their checksums for each `v<version>` release tag.
 
 
 ## ACE Pro 2 Support 

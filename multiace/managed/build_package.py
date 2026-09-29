@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build the allowlisted PAXX-managed multiACE archive.
+"""Build the allowlisted host-managed multiACE archive.
 
 The regular multiACE repository contains an SSH installer and maintenance
-scripts for standalone users. Those scripts must not be shipped as the
-PAXX-managed payload, because PAXX owns installation and update lifecycle.
+scripts for standalone users. Those scripts must not be shipped in a managed
+payload, because the host platform owns installation and update lifecycle.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ def _copy_payload(stage: Path, manifest: dict) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
 
-    manifest_destination = stage / "paxx" / "manifest.json"
+    manifest_destination = stage / "managed" / "manifest.json"
     manifest_destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(MANIFEST_PATH, manifest_destination)
 
@@ -146,7 +146,7 @@ def build(output: Path) -> tuple[Path, str]:
     root_name = f"multiace-{version}"
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="multiace-paxx-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="multiace-managed-") as temporary:
         stage = Path(temporary) / root_name
         stage.mkdir()
         _copy_payload(stage, manifest)

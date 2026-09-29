@@ -27,6 +27,20 @@ ACE_API_VERSION = 1
 MULTIACE_BUILD_TAG = "eed86c9b"
 MULTIACE_BUNDLE_SHA1 = "40a00eb"
 
+
+def _env_flag(name):
+    return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+_MULTIACE_CONFIG_DIR = os.environ.get(
+    'MULTIACE_CONFIG_DIR', '/home/lava/printer_data/config')
+MULTIACE_MANAGED_MARKER = os.environ.get(
+    'MULTIACE_MANAGED_MARKER', '').strip() or os.path.join(
+        _MULTIACE_CONFIG_DIR, 'extended', 'multiace', '.multiace-managed')
+MULTIACE_MANAGED = (
+    _env_flag('MULTIACE_MANAGED')
+    or os.path.exists(MULTIACE_MANAGED_MARKER))
+
 def _load_i18n_catalog(i18n_dir, lang):
     """Read <i18n_dir>/<lang>.json overlaid on en.json. Returns a dict
     (possibly empty if the i18n dir is missing) - caller falls back to
@@ -697,8 +711,9 @@ class MultiAce:
 
         self.paths = _resolve_multiace_paths(config)
         self.host = self.paths['host_type']
-        # Derived, never a config option: the web backend edits the same
-        # file (MULTIACE_CFG_PATH), so the two must not be able to diverge.
+        self._managed_by_host = MULTIACE_MANAGED
+        # Derived from the shared config-directory contract so Klipper and
+        # the web UI always write through to the same ace.cfg.
         self.ACE_CFG_PATH = self.paths['ace_cfg']
 
         self.gate_status = [GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN, GATE_UNKNOWN]
@@ -1433,7 +1448,11 @@ class MultiAce:
             'inbox_max_mb', 256, minval=1, maxval=4096)
 
         self._i18n_primary = config.get('i18n_dir', self.paths['i18n_primary'])
-        self._i18n_fallback = os.path.join(self._web_dir, 'i18n')
+        self._i18n_fallbacks = []
+        app_dir = os.environ.get('MULTIACE_APP_DIR', '').strip()
+        if app_dir:
+            self._i18n_fallbacks.append(os.path.join(app_dir, 'i18n'))
+        self._i18n_fallbacks.append(os.path.join(self._web_dir, 'i18n'))
         self._reload_i18n_catalog()
 
         self._head_source = {0: None, 1: None, 2: None, 3: None}
@@ -2347,8 +2366,9 @@ class MultiAce:
     def _reload_i18n_catalog(self):
         """(Re)load self._i18n for the current self._language. Used at startup
         and live by MULTIACE_SET_LANGUAGE."""
-        i18n_dir = self._i18n_primary if os.path.isdir(self._i18n_primary) \
-            else self._i18n_fallback
+        candidates = [self._i18n_primary] + self._i18n_fallbacks
+        i18n_dir = next((path for path in candidates if os.path.isdir(path)),
+                        self._i18n_primary)
         try:
             self._i18n = _load_i18n_catalog(i18n_dir, self._language)
         except Exception as e:
@@ -20732,7 +20752,13 @@ class MultiAce:
         # multi<->head stay on the SAME ace files -> pure runtime flip, no file
         # swap / reboot. Only transitions involving 'normal' (stock files) run
         # the file switch script below.
-        if mode in ('multi', 'head') and current in ('multi', 'head'):
+        if self._managed_by_host and mode == 'normal':
+            raise gcmd.error(
+                '[multiACE] Normal mode is controlled by the host platform. '
+                'Disable the managed multiACE integration and reboot.')
+
+        if mode in ('multi', 'head') and (
+                current in ('multi', 'head') or self._managed_by_host):
             self.gcode.run_script_from_command(
                 "SAVE_VARIABLE VARIABLE=ace__mode VALUE=\"'%s'\"" % mode)
             self._ace_mode = mode
@@ -20765,6 +20791,14 @@ class MultiAce:
             except Exception:
                 pass
             return
+
+        if self._managed_by_host:
+            # The host has already selected and activated the ACE modules.
+            # Managed mode changes runtime state only; it never invokes the
+            # standalone helper that copies over stock Klipper files.
+            raise gcmd.error(
+                '[multiACE] This mode change is not supported by the managed '
+                'runtime; the host platform controls file activation.')
 
         save_vars = self.printer.lookup_object('save_variables')
         vars_path = save_vars.filename
@@ -20818,6 +20852,9 @@ class MultiAce:
     _UPDATE_SCRIPT = '/home/lava/multiace_update.sh' if os.path.isfile('/home/lava/multiace_update.sh') else os.path.expanduser('~/multiace_update.sh')
 
     def _run_update_script(self, gcmd, sub_args, timeout):
+        if self._managed_by_host:
+            raise gcmd.error(
+                '[multiACE] Updates are managed by the platform.')
         if not os.path.isfile(self._UPDATE_SCRIPT):
             raise gcmd.error(
                 '[multiACE] Updater script not found at %s - re-run '

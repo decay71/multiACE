@@ -1,16 +1,51 @@
-name: Build release tarball
+name: Build and test multiACE packages
 
 on:
   push:
     tags:
       - 'v*'
+  pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate managed package sources
+        run: |
+          python -m py_compile \
+            multiace/klipper/extras/ace.py \
+            multiace/web/backend/i18n_path.py \
+            multiace/web/backend/main.py \
+            multiace/managed/build_package.py \
+            multiace/managed/tests/test_package.py \
+            multiace/managed/tests/test_i18n_path.py
+          node --check multiace/web/frontend/app.js
+          bash -n \
+            multiace/install_multiace.sh \
+            multiace/uninstall_multiace.sh \
+            multiace/tools/multiace_update.sh \
+            multiace/config/extended/multiace/ace_mode_switch.sh \
+            multiace/web/deploy/S98multiace-web
+          bash multiace/managed/tests/test_managed_guards.sh
+          python -m unittest discover -s multiace/managed/tests -v
+
+          python multiace/managed/build_package.py \
+            --output "$RUNNER_TEMP/multiace-managed-check.tar.gz"
+          (cd "$RUNNER_TEMP" && \
+            sha256sum --check multiace-managed-check.tar.gz.sha256)
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,6 +56,9 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           OUT="dist/release"
           mkdir -p "$OUT"
+          VERSION="$(tr -d '\r\n' < multiace/VERSION)"
+          test -n "$VERSION"
+          test "${TAG#v}" = "$VERSION"
           # The whole multiace/ tree at its repo layout (same as the
           # release recipe): the updater runs install_multiace.sh from
           # inside, and the installer needs deploy/, config/, tools/,
@@ -28,6 +66,8 @@ jobs:
           tar -czf "$OUT/multiace-${TAG}.tar.gz" multiace/
           (cd "$OUT" && sha256sum "multiace-${TAG}.tar.gz" \
               > "multiace-${TAG}.tar.gz.sha256")
+          python multiace/managed/build_package.py \
+            --output "$OUT/multiace-managed-${VERSION}.tar.gz"
           ls -la "$OUT/"
 
       - name: Publish
