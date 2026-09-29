@@ -21,26 +21,10 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           OUT="dist/release"
           mkdir -p "$OUT"
-          # Bundle the multiACE source tree at its repo layout so the
-          # updater can just call install_multiace.sh from inside.
-          tar -czf "$OUT/multiace-${TAG}.tar.gz" \
-              --transform "s,^multiace,multiace," \
-              multiace/install_multiace.sh \
-              multiace/uninstall_multiace.sh \
-              multiace/klipper \
-              multiace/kinematics 2>/dev/null \
-              || true
-          # Rebuild with the right set of paths (some don't exist on every
-          # branch). The line above tolerates that.
-          rm -f "$OUT/multiace-${TAG}.tar.gz"
-          tar -czf "$OUT/multiace-${TAG}.tar.gz" \
-              multiace/install_multiace.sh \
-              multiace/uninstall_multiace.sh \
-              multiace/klipper \
-              multiace/config \
-              multiace/i18n \
-              multiace/tools \
-              multiace/web 2>/dev/null || \
+          # The whole multiace/ tree at its repo layout (same as the
+          # release recipe): the updater runs install_multiace.sh from
+          # inside, and the installer needs deploy/, config/, tools/,
+          # i18n/ and web/ next to it.
           tar -czf "$OUT/multiace-${TAG}.tar.gz" multiace/
           (cd "$OUT" && sha256sum "multiace-${TAG}.tar.gz" \
               > "multiace-${TAG}.tar.gz.sha256")

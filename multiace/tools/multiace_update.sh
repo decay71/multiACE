@@ -1,4 +1,15 @@
 #!/bin/sh
+# Usage: multiace_update.sh [check | apply [--force] [--keep-web] [--install-web] | --help]
+#   check          compare the installed version with the latest release
+#   apply          download and install the latest release
+#     --force        reinstall even when already on latest / older release
+#     --keep-web     leave the web UI untouched
+#     --install-web  also (re)install the web UI
+# Environment:
+#   MULTIACE_UPDATE_REPO        GitHub repo for the release lookup (owner/name)
+#   MULTIACE_UPDATE_URL_BASE    static base URL with latest.txt / beta.txt instead of GitHub
+#   MULTIACE_UPDATE_PRERELEASE  1 = consider prereleases / beta.txt
+
 set -e
 REPO="${MULTIACE_UPDATE_REPO:-decay71/multiACE}"
 STATIC_BASE="${MULTIACE_UPDATE_URL_BASE:-}"
@@ -30,7 +41,7 @@ restart_klipper() {
                 return 0
             fi
         elif command -v wget >/dev/null 2>&1; then
-            if wget -q --method=POST -O /dev/null "$url" 2>/dev/null; then
+            if wget -q --post-data="" -O /dev/null "$url" 2>/dev/null; then
                 return 0
             fi
         fi
@@ -200,8 +211,11 @@ cmd_apply() {
             SUDO_BIN="sudo"
         fi
         if [ -n "$SUDO_BIN" ]; then
+            REEXEC_FLAGS=""
+            if [ "$FORCE" -eq 1 ]; then REEXEC_FLAGS="$REEXEC_FLAGS --force"; fi
+            if [ "$KEEP_WEB" -eq 1 ]; then REEXEC_FLAGS="$REEXEC_FLAGS --keep-web"; fi
             echo "STATUS: re-execing as root via $SUDO_BIN (klipper extras dir not writable)"
-            exec "$SUDO_BIN" -n "$0" apply ${FORCE:+--force} ${KEEP_WEB:+--keep-web} $INSTALL_WEB_FLAG
+            exec "$SUDO_BIN" -n "$0" apply $REEXEC_FLAGS $INSTALL_WEB_FLAG
         else
             echo "ERROR: klipper extras dir ($EXTRAS_DIR) not writable as $(id -un) and sudo not found - re-run install_multiace.sh as root to fix ownership" >&2
             return 1
@@ -235,16 +249,18 @@ cmd_apply() {
     }
     if [ -n "$SHA_URL" ]; then
         echo "STATUS: verifying sha256"
-        fetch_url "$SHA_URL" > "$TARBALL.sha256" || {
-            echo "WARN: sha256 download failed - skipping verification" >&2
-        }
-        EXPECTED="$(awk '{print $1}' "$TARBALL.sha256" | head -1)"
-        ACTUAL="$(sha256sum "$TARBALL" | awk '{print $1}')"
-        if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "ERROR: sha256 mismatch - expected $EXPECTED got $ACTUAL" >&2
-            return 1
+        if fetch_url "$SHA_URL" > "$TARBALL.sha256"; then
+            EXPECTED="$(awk '{print $1}' "$TARBALL.sha256" | head -1)"
+            ACTUAL="$(sha256sum "$TARBALL" | awk '{print $1}')"
+            if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo "ERROR: sha256 mismatch - expected $EXPECTED got $ACTUAL" >&2
+                return 1
+            fi
+            echo "STATUS: sha256_ok"
+        else
+            echo "WARN: sha256 download failed - skipping verification (tarball came over TLS)" >&2
+            echo "STATUS: sha256_skipped (sha256 download failed)"
         fi
-        echo "STATUS: sha256_ok"
     else
         echo "STATUS: sha256_skipped (no .sha256 asset on release - trust GitHub TLS)"
     fi
@@ -275,7 +291,7 @@ case "${1:-check}" in
     apply)
         shift; cmd_apply "$@" ;;
     -h|--help|help)
-        sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# *//'
+        sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^#//; s/^ //'
         ;;
     *)
         echo "ERROR: unknown command: $1" >&2

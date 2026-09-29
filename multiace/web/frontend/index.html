@@ -333,6 +333,8 @@
                      actionable. -->
                 <span class="ace-proto" v-if="ace.protocol"
                       :title="aceProtoTitle(ace)">({{ ace.protocol.toUpperCase() }})</span>
+                <span class="ace-cfw" v-if="ace.community_fw"
+                      :title="aceCfwTitle(ace)">CFW</span>
                 <small v-if="ace.idx === state.active_device">{{ t('ui.common.active') }}</small>
               </span>
               <span class="ace-status">
@@ -627,8 +629,8 @@
                 <span>{{ t('ui.dashboard.head_ace') }}</span>
                 <select :value="headAceOf(t_.idx)"
                         :disabled="t_.head_source_known || t_.filament_at_extruder"
-                        @change="setHeadAce(t_.idx, $event.target.value)">
-                  <option v-for="o in aceOptionsForHead(t_.idx)" :key="o.value" :value="o.value">{{ o.label }}</option>
+                        @change="headSelect($event, headAceOf(t_.idx), v => setHeadAce(t_.idx, v))">
+                  <option v-for="o in aceOptionsForHead(t_.idx)" :key="o.value" :value="o.value" :disabled="o.disabled">{{ o.label }}</option>
                 </select>
               </label>
               <label class="th-manual th-bg" v-if="state.bg_swap?.available"
