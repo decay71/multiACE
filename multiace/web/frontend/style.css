@@ -187,6 +187,7 @@ h3 { margin: 1.2rem 0 .5rem 0; color: var(--muted); font-size: .85rem; font-weig
 .pill.state-paused   strong { color: var(--warn); }
 .pill.state-error    strong { color: var(--error); }
 .ace-card h2 .ace-proto { color: var(--muted); font-size: .75rem; font-weight: 500; margin-left: .2rem; }
+.ace-card h2 .ace-cfw { color: var(--muted); font-size: .65rem; font-weight: 600; margin-left: .3rem; padding: 0 .3rem; border: 1px solid var(--muted); border-radius: .3rem; letter-spacing: .03em; vertical-align: middle; cursor: help; }
 .ace-card h2 .ace-state-text { color: var(--muted); font-size: .75rem; }
 .pill.action-group { padding: .25rem .35rem; }
 .pill button {

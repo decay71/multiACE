@@ -16,7 +16,7 @@ from .ace_protocol_v2 import AceProtocolV2
 
 KNOWN_PROTOCOLS = (AceProtocolV1, AceProtocolV2)
 
-MULTIACE_VERSION = "1.10b"
+MULTIACE_VERSION = "1.11b"
 
 # Engine API contract version (see docs/ENGINE_API.md). Distinct from
 # MULTIACE_VERSION (the product version): this only bumps on a breaking
@@ -24,8 +24,8 @@ MULTIACE_VERSION = "1.10b"
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "a5fd3df1"
-MULTIACE_BUNDLE_SHA1 = "6013fe1"
+MULTIACE_BUILD_TAG = "eed86c9b"
+MULTIACE_BUNDLE_SHA1 = "40a00eb"
 
 def _load_i18n_catalog(i18n_dir, lang):
     """Read <i18n_dir>/<lang>.json overlaid on en.json. Returns a dict
@@ -1061,6 +1061,7 @@ class MultiAce:
         # _v1_tag_bind_from_status); empty at start on purpose, so the
         # first status after boot binds every occupied slot once.
         self._v1_tag_seen = {}
+        self._native_name_seen = {}
         # Per-connection tag-rescan marker: set in _open_ace (boot AND
         # reconnect share that path), consumed by the first status merge
         # (_merge_v2_filament_info -> _v2_rfid_boot_rescan). V2 only -
@@ -1483,7 +1484,6 @@ class MultiAce:
         # pushes the remainder at the discard position), cleared on a
         # verified unload.
         self._bg_prime_deficit = {}
-        self._hotplug_gone = {}
 
         self._serial_failed = False
         self._serial_failed_at = 0.0
@@ -3034,7 +3034,7 @@ class MultiAce:
                     self._usb_log.info(
                         'RETRY [startup_connect] idx=%d attempt=%d/%d failed, retrying in 1s',
                         idx, attempt + 1, CONNECT_ATTEMPTS)
-                    time.sleep(1.0)
+                    self.reactor.pause(self.reactor.monotonic() + 1.0)
             if not ok:
                 self.log_error(self._t('msg.open_ace_failed_attempts',
                     ace=self._disp(idx), attempts=CONNECT_ATTEMPTS))
@@ -3043,46 +3043,6 @@ class MultiAce:
             self.log_error(self._t('msg.not_all_aces_opened'))
 
         self._set_active_idx(self._active_device_index)
-
-    def _hotplug_monitor(self, eventtime):
-
-        if self._auto_feed_enabled or self._swap_in_progress:
-            return eventtime + 2.0
-
-        try:
-            current = set(self._scan_ace_devices('hotplug'))
-            known = set(self._ace_devices)
-            now = self.reactor.monotonic()
-
-            for dev in known - current:
-                if dev not in self._hotplug_gone:
-                    self._hotplug_gone[dev] = now
-
-            for dev in list(self._hotplug_gone.keys()):
-                if dev in current:
-                    gone_time = now - self._hotplug_gone[dev]
-                    del self._hotplug_gone[dev]
-                    if gone_time >= 5.0:
-
-                        fresh_devices = sorted(current)
-                        if dev in fresh_devices:
-                            new_index = fresh_devices.index(dev)
-                            self.log_always(self._t('msg.ace_returned_switching',
-                                ace=self._disp(new_index), seconds=gone_time))
-                            self.reactor.register_async_callback(
-                                lambda et, idx=new_index: self.gcode.run_script_from_command(
-                                    'ACE_SWITCH TARGET=%d' % idx))
-                            return eventtime + 10.0  
-
-            for dev, gone_since in list(self._hotplug_gone.items()):
-                gone_time = now - gone_since
-                if gone_time >= 5.0 and gone_time < 7.0:
-                    self.log_always(self._t('msg.ace_removed_reenable'))
-
-        except Exception as e:
-            logging.info('[multiACE] Hotplug monitor error: %s' % str(e))
-
-        return eventtime + 2.0
 
     def _handle_disconnect(self):
         logging.info('[multiACE] Closing all ACE connections')
@@ -3279,19 +3239,39 @@ class MultiAce:
         return None
 
     def _is_open_fw_idx(self, idx):
-        """True when this ACE runs the ACE2-Open firmware (Simon-CR): the
-        runtime firmware string ends in the LETTER 'O' (V1.1.3O) - stock
-        versions are purely numeric (V1.1.31, V1.3.856). Flashed units
-        announce the O string at connect, so per-ACE auto-detection works
-        and a mixed O/stock fleet needs no per-ACE config. The insert
-        abort+read runs ONLY on O units - aborting the
-        stock firmware's procedure would throw away its Anycubic read and
-        give nothing back."""
+        """True when this ACE has the RC522 tag tunnel, i.e. runs the
+        ACE2-Open firmware (Simon-CR): the runtime firmware string ends in
+        the LETTER 'O' (V1.1.60O). This is a capability test, not a
+        "community firmware" flag: the Gen 1 community firmware for the
+        ACE Pro reports a leading C (CV1.3.863) and is deliberately NOT
+        matched, since it has no tunnel and every consumer of this test is
+        ACE 2 only anyway. Flashed units announce the string at connect, so
+        a mixed fleet needs no per-ACE config. The insert abort+read runs
+        ONLY on tunnel units - aborting a stock procedure would throw away
+        its own Anycubic read and give nothing back."""
         try:
             fw = (self._ace_models.get(idx) or ('', ''))[1]
         except Exception:
             return False
         return bool(fw) and fw.strip().upper().endswith('O')
+
+    def _community_fw_kind(self, idx):
+        """Which community firmware this ACE announces, for display only:
+        'ace2_open' (trailing O, ACE 2, has the tag tunnel), 'gen1_cfw'
+        (leading C, ACE Pro Gen 1 build that parses third-party tags
+        itself), '' for stock or unknown. Nothing gates on this; the
+        tunnel gate is _is_open_fw_idx."""
+        try:
+            fw = ((self._ace_models.get(idx) or ('', ''))[1] or '').strip().upper()
+        except Exception:
+            return ''
+        if not fw:
+            return ''
+        if fw.endswith('O'):
+            return 'ace2_open'
+        if fw.startswith('CV'):
+            return 'gen1_cfw'
+        return ''
 
     def _any_open_fw(self):
         """True when at least one ACE runs the ACE2-Open firmware."""
@@ -4127,9 +4107,25 @@ class MultiAce:
             logging.info('[multiACE] gcode load-sniff failed: %s' % e)
             return False
 
+    def _head_filament_present(self, sensor, head=None):
+        """Filament presence at a toolhead sensor for head_source bookkeeping.
+        The raw presence pin is the primary signal (it needs no extruder
+        motion, so it cannot latch a stale 'gone'); the motion helper is the
+        fallback when the pin is unreadable or unload_gpio is off."""
+        motion = bool(sensor.get_status(0)['filament_detected'])
+        if getattr(self, 'unload_gpio', True):
+            pin = getattr(sensor, 'runout_buttun_state', None)
+            if pin is not None:
+                if bool(pin) != motion and head is not None:
+                    logging.info('[multiACE] head %d presence: pin=%s motion=%s '
+                                 '- pin decides' % (head, bool(pin), motion))
+                return bool(pin)
+        return motion
+
     def _on_print_start(self, *args):
-        # Sniffed per print (print_stats:start does not fire on resume, so the
-        # flag holds across pause/resume within the print).
+        # Sniffed per print. print_stats:start fires on start AND on resume
+        # (note_start runs in the virtual_sdcard work handler), so the flag
+        # is refreshed on every resume as well.
         self._print_has_gcode_loads = self._sniff_print_gcode_loads()
         logging.info('[multiACE] print gcode carries multiACE loads: %s'
                      % self._print_has_gcode_loads)
@@ -4144,7 +4140,7 @@ class MultiAce:
                     'filament_motion_sensor e%d_filament' % head, None)
                 if sensor is None:
                     continue
-                detected = sensor.get_status(0)['filament_detected']
+                detected = self._head_filament_present(sensor, head)
                 src = self._head_source.get(head)
                 if detected and src is None:
                     if not self.head_uses_ace(head):
@@ -5144,10 +5140,12 @@ class MultiAce:
         return protocol.make_default_info()
 
     def _next_request_id_for(self, idx):
-
+        # The V2 frame carries the sequence in 16 bits and the reader looks
+        # the callback up by the id stored here, so the counter must never
+        # exceed 65535 or every later V2 response misses its callback.
         with self._seq_lock:
             rid = self._request_ids.get(idx, 0) + 1
-            if rid >= 300000:
+            if rid > 65535:
                 rid = 1
             self._request_ids[idx] = rid
             return rid
@@ -6886,6 +6884,36 @@ class MultiAce:
                 return fmt
         return ''
 
+    def _strip_native_tag_names(self, idx, result):
+        """Status-frame counterpart of the check in _v2_store_filament_read:
+        a slot whose firmware-read sku is one of the on-chip decoder's
+        format/material names gets an empty sku and that format as
+        tag_format, so the name can neither bind, be adopted by the sweep
+        nor prefill the picker. A V1 (ACE Pro community firmware) has no
+        other ingest than this status; on a V2 the cmd13 merge has already
+        done it and this is a no-op. Logged once per slot and name."""
+        try:
+            seen = self._native_name_seen.setdefault(idx, {})
+            for n, slot in enumerate(result.get('slots') or []):
+                if not isinstance(slot, dict) or slot.get('rfid') != 2:
+                    continue
+                fmt = self._native_tag_format(slot.get('sku'))
+                if not fmt:
+                    seen.pop(n, None)
+                    continue
+                if seen.get(n) != fmt:
+                    seen[n] = fmt
+                    logging.info(
+                        '[multiACE] [tag-data] ACE %d slot %d: %s tag decoded '
+                        'by the ACE firmware (sku field carries the format '
+                        'name, not an id) - dropped, bind by card UID only',
+                        self._disp(idx), self._disp(n), fmt)
+                slot['sku'] = ''
+                slot['tag_format'] = fmt
+        except Exception as e:
+            logging.info('[multiACE] [tag-data] native name strip failed '
+                         '(ignored): %s' % e)
+
     @staticmethod
     def _uid_from_sentinel(res):
         """The card UID when the reply's version field is one of the
@@ -7835,6 +7863,7 @@ class MultiAce:
                 prev_info = self._info_per_ace.get(idx, self._make_default_info(idx))
                 prev_slots = prev_info.get('slots', [])
                 self._merge_v2_filament_info(idx, result)
+                self._strip_native_tag_names(idx, result)
                 self._v1_tag_bind_from_status(idx, result)
                 # Split a merged RFID type ('PLA Glow') into base + subtype
                 # against the firmware material list, centrally, so type is a
@@ -8603,8 +8632,7 @@ class MultiAce:
         self._enable_feed_assist(index)
 
     def _disable_feed_assist(self, index=-1):
-
-        rt_index = self._feed_assist_index
+        rt_index = index if index >= 0 else self._feed_assist_index
         if rt_index == -1:
             return
         self.wait_ace_ready()
@@ -19676,7 +19704,7 @@ class MultiAce:
                     self.log_always(self._t('msg.ace_not_reachable_attempt',
                         ace=self._disp(source['ace_index']),
                         attempt=attempt + 1))
-                    time.sleep(1.0)
+                    self.reactor.pause(self.reactor.monotonic() + 1.0)
                 if not switched:
                     self.log_error(self._t('msg.ace_failed_after_retries',
                         ace=self._disp(source['ace_index']), head=self._disp(head)))
@@ -19740,7 +19768,7 @@ class MultiAce:
         for h in range(4):
             sensor = self.printer.lookup_object(
                 'filament_motion_sensor e%d_filament' % h, None)
-            detected = sensor and sensor.get_status(0)['filament_detected']
+            detected = sensor and self._head_filament_present(sensor, h)
             if not detected and self._head_source.get(h) is not None:
                 self._head_source[h] = None
                 cleared.append(h)
@@ -19912,6 +19940,24 @@ class MultiAce:
 
         self.log_always(self._t('msg.running_mode_switch', mode=mode.upper()))
 
+        # Swap the files first and persist the mode only when that worked:
+        # a persisted mode over unswapped files would boot stock modules
+        # under an ace config (S58 re-applies the swap on PAXX, an SSH
+        # install has no such boot hook).
+        import subprocess
+        try:
+            result = subprocess.run(['bash', script, file_mode],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=30)
+        except subprocess.TimeoutExpired:
+            raise gcmd.error('[multiACE] Mode switch script timed out after 30s')
+        except Exception as e:
+            raise gcmd.error('[multiACE] Failed to run mode switch script: %s' % str(e))
+        if result.returncode != 0:
+            raise gcmd.error(
+                '[multiACE] Mode switch script failed (rc=%d): %s' % (
+                    result.returncode, result.stderr.decode('utf-8', 'replace')))
+
         self.gcode.run_script_from_command(
             "SAVE_VARIABLE VARIABLE=ace__mode VALUE=\"'%s'\"" % mode)
         if mode == 'head' and legacy_head is not None:
@@ -19925,20 +19971,6 @@ class MultiAce:
             # The memo survives a trip through 'normal' (flags persist),
             # so multi->head->normal->multi still restores the manual heads.
             self._convert_feeder_to_manual()
-
-        try:
-            import subprocess
-            result = subprocess.run(['bash', script, file_mode],
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    timeout=30)
-            if result.returncode != 0:
-                raise gcmd.error(
-                    '[multiACE] Mode switch script failed (rc=%d): %s' % (
-                        result.returncode, result.stderr.decode('utf-8', 'replace')))
-        except subprocess.TimeoutExpired:
-            raise gcmd.error('[multiACE] Mode switch script timed out after 30s')
-        except Exception as e:
-            raise gcmd.error('[multiACE] Failed to run mode switch script: %s' % str(e))
 
         self.gcode.run_script_from_command(
             'RAISE_EXCEPTION ID=6666 INDEX=6 CODE=6 MESSAGE="[multiACE] Switched to %s mode. Please reboot!" ONESHOT=0 LEVEL=2' % mode.upper())
@@ -20632,6 +20664,7 @@ class MultiAce:
                 # OTA updater).
                 'model':        (self._ace_models.get(i) or ('', ''))[0],
                 'firmware':     (self._ace_models.get(i) or ('', ''))[1],
+                'community_fw': self._community_fw_kind(i),
                 'status':       info.get('status', 'unknown'),
                 'temp':         info.get('temp', 0),
 

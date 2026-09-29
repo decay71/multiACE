@@ -270,6 +270,18 @@ def _int_or(v, default):
         return default
 
 
+def _community_fw_kind(fw):
+    """Same rule as ace._community_fw_kind, for status from an older ace.py."""
+    fw = str(fw or "").strip().upper()
+    if not fw:
+        return ""
+    if fw.endswith("O"):
+        return "ace2_open"
+    if fw.startswith("CV"):
+        return "gen1_cfw"
+    return ""
+
+
 def _parse_state(status: dict) -> dict:
     """
     Translate the raw multi-object status block into the dashboard schema.
@@ -557,6 +569,12 @@ def _parse_state(status: dict) -> dict:
             # letter O (V1.1.3O) - same rule as ace._is_open_fw_idx. The
             # RC522 tag read/write live only there.
             "open_fw":      str(a.get("firmware", "") or "").strip().upper().endswith("O"),
+            # Display-only badge: 'ace2_open' | 'gen1_cfw' | ''. Klipper sends
+            # it since 1.20b; derived here from the firmware string for an
+            # older ace.py (same rules).
+            "community_fw": (a.get("community_fw")
+                             if a.get("community_fw") is not None
+                             else _community_fw_kind(a.get("firmware", ""))),
             "status":       a.get("status"),
             "temp":         a.get("temp"),
 
@@ -1843,26 +1861,44 @@ async def _sudo_run(argv: list[str], timeout: float = 5.0) -> tuple[int, str]:
 async def debug_mode_get() -> dict:
     return {"enabled": _DEBUG_FLAG_PATH.exists()}
 
-@app.post("/api/debug-mode/enable")
-async def debug_mode_enable() -> dict:
-    rc, out = await _sudo_run(["/usr/bin/touch", str(_DEBUG_FLAG_PATH)])
+async def _set_debug_flag(enable: bool) -> str:
+    """Create or remove /oem/.debug. The service normally runs as root
+    (S98), so the direct file operation is the primary path; sudo with
+    the multiace-debug sudoers rule is the fallback for a service that
+    runs as lava."""
+    try:
+        if enable:
+            _DEBUG_FLAG_PATH.touch()
+        else:
+            _DEBUG_FLAG_PATH.unlink()
+        return "direct"
+    except FileNotFoundError:
+        return "already removed"
+    except PermissionError:
+        pass
+    argv = (["/usr/bin/touch", str(_DEBUG_FLAG_PATH)] if enable
+            else ["/bin/rm", "-f", str(_DEBUG_FLAG_PATH)])
+    rc, out = await _sudo_run(argv)
     if rc != 0:
         raise HTTPException(
             status_code=500,
-            detail=(f"sudo touch /oem/.debug failed (rc={rc}): {out.strip()}. "
-                    "Sudoers drop-in /etc/sudoers.d/multiace-debug may be "
-                    "missing - re-run install_multiace.sh."))
+            detail=(f"{'touch' if enable else 'rm'} /oem/.debug failed: no "
+                    f"write access as this user and sudo failed (rc={rc}): "
+                    f"{out.strip()}. Either run the web service as root "
+                    "(S98 default) or install the sudoers drop-in "
+                    "/etc/sudoers.d/multiace-debug via install_multiace.sh."))
+    return out
+
+@app.post("/api/debug-mode/enable")
+async def debug_mode_enable() -> dict:
+    out = await _set_debug_flag(True)
     return {"enabled": _DEBUG_FLAG_PATH.exists(), "stdout": out}
 
 @app.post("/api/debug-mode/disable")
 async def debug_mode_disable() -> dict:
     if not _DEBUG_FLAG_PATH.exists():
         return {"enabled": False, "stdout": "already disabled"}
-    rc, out = await _sudo_run(["/bin/rm", "-f", str(_DEBUG_FLAG_PATH)])
-    if rc != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"sudo rm /oem/.debug failed (rc={rc}): {out.strip()}")
+    out = await _set_debug_flag(False)
     return {"enabled": _DEBUG_FLAG_PATH.exists(), "stdout": out}
 
 @app.post("/api/reboot")
@@ -4641,7 +4677,7 @@ async def test_notification(payload: dict | None = None) -> dict:
         curl -X POST http://127.0.0.1:7126/api/notifications/test
     """
     msg = (payload or {}).get("msg") if payload else None
-    text = "!! " + (msg or "Test notification from /api/notifications/test")
+    text = "!! [multiACE] " + (msg or "Test notification from /api/notifications/test")
     rec = _record_notification(text)
     return {"ok": rec is not None, "notification": rec}
 
@@ -4898,29 +4934,36 @@ def _load_filament_db() -> dict:
                     flat = node.value
         if not isinstance(cfg, ast.Dict):
             # 1.6.0 flattened the DB into five per-nozzle literals with
-            # '{vendor}_{material}_{sub}_{param}' keys (vendor is always
-            # 'generic' in the shipped literals; material names carry
-            # dashes, never underscores). Rebuild the type -> vendor ->
-            # subtypes hierarchy from the '_load_temp' keys of the 04
-            # literal - the broadest one, the 02 table omits the
-            # forbidden-on-0.2 materials.
+            # '{vendor}_{material}_{sub}_{param}' keys. Rebuild the
+            # type -> vendor -> subtypes hierarchy from the 04 literal
+            # (the broadest one). Materials come from the 'generic_' rows
+            # only, which also drops the meta keys ('hard filaments max',
+            # 'process print slow'); vendor rows (Snapmaker, Polymaker)
+            # carry print_temp/flow keys but no load_temp, so every key is
+            # taken, not only '_load_temp'.
             if isinstance(flat, ast.Dict):
+                keys = [k.value for k in flat.keys
+                        if isinstance(k, ast.Constant)
+                        and isinstance(k.value, str)]
+                mats: list = []
+                for kv in keys:
+                    tok = kv.split("_")
+                    if len(tok) >= 4 and tok[0] == "generic" and tok[1] \
+                            and tok[1] not in mats:
+                        mats.append(tok[1])
                 db2: dict = {}
-                for k in flat.keys:
-                    if not (isinstance(k, ast.Constant)
-                            and isinstance(k.value, str)
-                            and k.value.endswith("_load_temp")):
+                for kv in keys:
+                    tok = kv.split("_")
+                    if len(tok) < 4 or tok[1] not in mats:
                         continue
-                    body = k.value[:-len("_load_temp")]
-                    if not body.startswith("generic_"):
-                        continue          # user-added vendor rows: skip here
-                    rest = body[len("generic_"):]
-                    mat, _, sub = rest.partition("_")
-                    if not mat:
+                    vendor, mat, sub = tok[0], tok[1], tok[2]
+                    if not vendor or not sub:
                         continue
+                    vendor = "Generic" if vendor == "generic" else vendor
                     vendors = db2.setdefault(mat, {"Generic": []})
-                    if sub and sub != "generic"                             and sub not in vendors["Generic"]:
-                        vendors["Generic"].append(sub)
+                    subs = vendors.setdefault(vendor, [])
+                    if sub != "generic" and sub not in subs:
+                        subs.append(sub)
                 if db2:
                     _FIL_DB_CACHE[path] = (mtime, db2)
                     return db2

@@ -1446,7 +1446,6 @@ class PrinterExtruder:
         action = None
         params = gcmd.get_command_parameters()
         is_grab_complete = False
-        ace = self.printer.lookup_object('ace')
         if 'ACTION' in params:
             action = params['ACTION']
 

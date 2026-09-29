@@ -2261,7 +2261,7 @@ class FilamentFeed:
                                                     'phase3 A wiggle: re-enabled %s'
                                                     % extruder_name)
                                             except Exception as e:
-                                                logging.info(
+                                                logging.warning(
                                                     '[multiACE] phase3 extruder re-enable failed: %s' % e)
                             else:
 
@@ -3710,8 +3710,10 @@ class FilamentFeed:
             raise gcmd.error('[feed] channel[%d] is out of range[0,%d]\n' % (channel, FEED_CHANNEL_NUMS - 1))
 
         adc_value = self._port[channel].get_adc_value()
-        present = None
-        present = "not detected"
+        if self._port[channel].get_filament_detected():
+            present = "detected"
+        else:
+            present = "not detected"
 
         msg = ("port[%d]: adc value = %f, filament: %s\n" % (
                 channel, adc_value, present))

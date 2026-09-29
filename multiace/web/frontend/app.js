@@ -67,6 +67,21 @@ createApp({
       if (!params) return v;
       return v.replace(/\{(\w+)\}/g, (_, k) => params[k] != null ? params[k] : `{${k}}`);
     }
+    function escapeHtml(v) {
+      return String(v).replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      })[c]);
+    }
+    // t() for a string that is rendered as HTML (the confirm dialog): the
+    // catalog text keeps its markup, the substituted values are escaped.
+    function tHtml(key, params) {
+      if (!params) return t(key);
+      const safe = {};
+      for (const k of Object.keys(params)) {
+        safe[k] = params[k] != null ? escapeHtml(params[k]) : params[k];
+      }
+      return t(key, safe);
+    }
     function dispIdx(n) {
       if (n == null) return "-";
       return Number(n) + indexBase.value;
@@ -1168,7 +1183,7 @@ createApp({
         setMacroLog(`${t("ui.queue.send_all_failed")}: ${e.message || e}`);
         confirm({
           title: t("ui.queue.send_all_failed"),
-          message: String(e.message || e),
+          message: escapeHtml(e.message || e),
           dismissOnly: true, okLabel: "OK", onOk: () => {},
         });
       } finally {
@@ -1581,7 +1596,7 @@ createApp({
       }
       const next = await new Promise(resolve => confirm({
         title: t("ui.dashboard.manual_intervention_title"),
-        message: t("ui.dashboard.manual_intervention_body", {head: dispIdx(idx)}),
+        message: tHtml("ui.dashboard.manual_intervention_body", {head: dispIdx(idx)}),
         okLabel: t("ui.dashboard.manual_intervention_next"),
         onOk: () => resolve(true),
         onCancel: () => resolve(false),
@@ -1972,7 +1987,7 @@ createApp({
         if (!plan) return;
         const yes = await new Promise(resolve => confirm({
           title: t("ui.spools.pa_calibrate"),
-          message: t(plan.unload ? "ui.spools.pa_load_ask_unload" : "ui.spools.pa_load_ask",
+          message: tHtml(plan.unload ? "ui.spools.pa_load_ask_unload" : "ui.spools.pa_load_ask",
                      {ace: dispIdx(plan.ace), slot: dispIdx(plan.slot), head: dispIdx(plan.head)}),
           okLabel: t("ui.common.ok"),
           onOk: () => resolve(true),
@@ -2298,11 +2313,11 @@ createApp({
       // Patching adds a SECOND warning: it flashes a community-modified,
       // NOT byte-tested image.
       const extra = patching
-        ? `<div class="acefw-danger">${t("ui.config.acefw_patch_warn",
+        ? `<div class="acefw-danger">${tHtml("ui.config.acefw_patch_warn",
             {target: tgt})}</div>` : "";
       confirm({
         title: t("ui.config.acefw_confirm_title"),
-        message: `<div class="acefw-danger">${t("ui.config.acefw_confirm_msg",
+        message: `<div class="acefw-danger">${tHtml("ui.config.acefw_confirm_msg",
                   {ace: dispIdx(Number(acefw.ace)),
                    version: tgt})}</div>${extra}`,
         okLabel: t("ui.config.acefw_confirm_ok"),
@@ -2606,7 +2621,7 @@ createApp({
         const other = (state.spools || {})[holder] || {};
         confirm({
           title: t("ui.spools.sku_taken_title"),
-          message: t("ui.spools.sku_taken_msg",
+          message: tHtml("ui.spools.sku_taken_msg",
                      {sku: _skuArg(sku), id: holder, spool: spoolTitle(other)}),
           inputLabel: t("ui.spools.sku"),
           // Pre-strip the '#': it never survives to the table (gcode cuts at
@@ -3281,7 +3296,7 @@ createApp({
     function spoolDelete(sp) {
       confirm({
         title: t('ui.spools.delete_title'),
-        message: t('ui.spools.delete_msg', {name: spoolTitle(sp)}),
+        message: tHtml('ui.spools.delete_msg', {name: spoolTitle(sp)}),
         okLabel: t('ui.common.delete'),
         onOk: () => spoolMacro("ACE_SPOOL_DELETE", {ID: sp.id, FORCE: 1}),
       });
@@ -3300,7 +3315,7 @@ createApp({
                               {method: "POST", body: fd});
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
       } catch (e) {
-        confirm({title: t('ui.spools.title'), message: String(e),
+        confirm({title: t('ui.spools.title'), message: escapeHtml(e),
                  dismissOnly: true, okLabel: "OK", onOk: () => {}});
       }
       reloadState();
@@ -3376,6 +3391,11 @@ createApp({
     // version, whichever the unit reported. Keeping the version out of the
     // visible text is what gives the header room -
     // 'Unknown' is the handshake's placeholder and is not worth showing.
+    // Community-firmware badge tooltip ('ace2_open' | 'gen1_cfw').
+    function aceCfwTitle(ace) {
+      const key = ace.community_fw === "gen1_cfw" ? "ui.common.cfw_gen1" : "ui.common.cfw_ace2_open";
+      return [t(key), ace.firmware].filter(Boolean).join(" · ");
+    }
     function aceProtoTitle(ace) {
       return [ace.model,
               (ace.firmware && ace.firmware !== "Unknown") ? ace.firmware : ""]
@@ -3386,17 +3406,34 @@ createApp({
       const a = ha[idx] ?? ha[String(idx)];
       return (a === undefined || a === null) ? idx : Number(a);
     }
-    // head mode: ACE options for one head's dropdown - exclude ACEs already
-    // wired to ANOTHER ACE head (one ACE feeds exactly one head), but always
-    // keep this head's own current selection.
+    // head mode: ACE options for one head's dropdown. Every connected ACE is
+    // listed; one wired to ANOTHER ACE head stays selectable and says so
+    // (ACE_SET_HEAD_ACE swaps the two wirings), unless that head is loaded,
+    // then the option is disabled (the engine refuses that case).
     function aceOptionsForHead(idx) {
-      const taken = new Set();
+      const mine = headAceOf(idx);
+      const holder = {};
       for (const h of (state.ace_heads || [])) {
         if (Number(h) === Number(idx)) continue;
-        taken.add(headAceOf(h));
+        holder[headAceOf(h)] = Number(h);
       }
-      const mine = headAceOf(idx);
-      return aceOptions.value.filter(o => o.value === mine || !taken.has(o.value));
+      return aceOptions.value.map(o => {
+        if (o.value === mine || holder[o.value] === undefined) return o;
+        const h = holder[o.value];
+        const th = (state.toolheads || []).find(tt => tt.idx === h);
+        const loaded = !!(th && (th.head_source_known || th.filament_at_extruder));
+        const note = loaded
+          ? t("ui.dashboard.head_ace_holder_loaded", {head: dispIdx(h)})
+          : t("ui.dashboard.head_ace_swap_with", {head: dispIdx(h)});
+        return {value: o.value, label: `${o.label} - ${note}`, disabled: loaded};
+      });
+    }
+    // Select twin of headToggle: put the DOM back on the current value at
+    // once; the state moves it when the engine accepted the change.
+    function headSelect(ev, current, fn) {
+      const wanted = ev.target.value;
+      ev.target.value = String(current);
+      return fn(wanted);
     }
     // head mode: true when every wired ACE head is a right-side head (internal
     // index >= 2, display 3/4) -> right-align the ACE grid so the cards start
@@ -4352,7 +4389,7 @@ createApp({
         const name = selectedSnapshot.value;
         confirm({
           title: t("ui.dialog.overwrite_snapshot_title", {name}),
-          message: t("ui.dialog.overwrite_snapshot_msg", {name}),
+          message: tHtml("ui.dialog.overwrite_snapshot_msg", {name}),
           okLabel: t("ui.common.save"),
           onOk: () => _doSaveSnapshot(name),
         });
@@ -4388,7 +4425,7 @@ createApp({
       if (errs.length) {
         confirm({
           title: t("ui.dialog.snapshot_errors_title"),
-          message: errs.map(e => "• " + e.message).join("<br>"),
+          message: errs.map(e => "• " + escapeHtml(e.message)).join("<br>"),
           okLabel: "OK",
           dismissOnly: true,
           onOk: () => {},
@@ -4418,7 +4455,7 @@ createApp({
       if (warns.length) {
         confirm({
           title: t("ui.dialog.snapshot_warnings_title"),
-          message: warns.map(w => "• " + w.message).join("<br>")
+          message: warns.map(w => "• " + escapeHtml(w.message)).join("<br>")
                    + "<br><br>" + t("ui.dialog.snapshot_warnings_hint"),
           okLabel: t("ui.dialog.apply_anyway"),
           checkboxLabel: proposals.length
@@ -4846,7 +4883,7 @@ createApp({
       if (updateState.busy) return;
       confirm({
         title: t("ui.config.update_apply_title"),
-        message: t("ui.config.update_apply_msg", {
+        message: tHtml("ui.config.update_apply_msg", {
           from: updateState.current || "?",
           to:   updateState.latest  || "latest",
         }),
@@ -4981,7 +5018,7 @@ createApp({
           const heads = loaded.map(th => th.name || ("T" + th.idx)).join(", ");
           confirm({
             title: t("ui.config.mode_locked_title"),
-            message: t("ui.config.mode_locked_msg", {heads}),
+            message: tHtml("ui.config.mode_locked_msg", {heads}),
             okLabel: "OK",
             dismissOnly: true,
           });
@@ -4991,7 +5028,7 @@ createApp({
       const args = {MODE: m};
       confirm({
         title: t("ui.dialog.switch_mode_title", {mode: m}),
-        message: t("ui.dialog.switch_mode_msg", {mode: m}),
+        message: tHtml("ui.dialog.switch_mode_msg", {mode: m}),
         okLabel: t("ui.dialog.switch"),
         onOk: async () => {
           // No web reboot banner for a mode change: a transition crossing
@@ -6345,7 +6382,7 @@ createApp({
         if (rejected) {
           confirm({
             title: t("ui.preflight.rejected_title"),
-            message: rejected,
+            message: escapeHtml(rejected),
             okLabel: t("ui.common.ok"),
             dismissOnly: true,      // one button: there is nothing to choose
             onOk: () => { closePreflight(); },
@@ -6354,7 +6391,7 @@ createApp({
         }
         confirm({
           title: t("ui.preflight.local_failed_title"),
-          message: t("ui.preflight.local_failed_msg", {error: msg}),
+          message: tHtml("ui.preflight.local_failed_msg", {error: msg}),
           okLabel: t("ui.preflight.local_fallback_ok"),
           // No altLabel: the dialog already renders its own Cancel, and
           // passing one labelled "Cancel" produced TWO identical buttons.
@@ -6758,7 +6795,7 @@ createApp({
       if (!total) return;
       confirm({
         title:   t("ui.preflight.apply_loadout"),
-        message: t("ui.preflight.apply_loadout_confirm", {count: total}),
+        message: tHtml("ui.preflight.apply_loadout_confirm", {count: total}),
         okLabel: t("ui.preflight.apply_loadout"),
         onOk: async () => {
           preflight.applying = (mode === "head") ? (headPlan || "loadout") : mode;
@@ -6901,7 +6938,7 @@ createApp({
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
       panelMini, fullUiHref,
-      slotTitle, switchAce, loadSlot, slotIsEmpty, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, aceOptionsForHead, headAceOf, aceProtoTitle, visibleAces, openHeadPicker, isToolheadOccupied, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
+      slotTitle, switchAce, loadSlot, slotIsEmpty, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, aceCfwTitle, visibleAces, openHeadPicker, isToolheadOccupied, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
       spoolBadgeCls, spoolBadgeLabel, headTileEmpty, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, FILAMENT_SWATCHES, knownColors, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, headRfidBusy, headRfidNote, readHeadRfid,

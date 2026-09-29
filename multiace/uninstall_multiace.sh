@@ -91,12 +91,22 @@ restore_file() {
 restore_file "$EXTRAS_DIR" "filament_feed"
 restore_file "$EXTRAS_DIR" "filament_switch_sensor"
 restore_file "$KINEMATICS_DIR" "extruder"
+# The installer patches TRSYNC_TIMEOUT in mcu.py and keeps the stock copy
+# next to it; put the stock file back when that backup exists.
+MCU_PY="${HOME_DIR}/klipper/klippy/mcu.py"
+if [ -f "${MCU_PY}.pre_multiace" ]; then
+    cp "${MCU_PY}.pre_multiace" "$MCU_PY"
+    rm -f "${MCU_PY}.pre_multiace"
+    log "  Restored mcu.py from .pre_multiace backup (TRSYNC_TIMEOUT patch removed)"
+fi
 rm -f "$CONFIG_DIR/ace.cfg"
 rm -f "$CONFIG_DIR/ace_pre_multiace.cfg"
 log "  Removed ace.cfg"
 log "Removing multiACE files..."
 rm -f "$EXTRAS_DIR/ace.py"
 rm -f "$EXTRAS_DIR/ace_tipform.py"
+rm -f "$EXTRAS_DIR/ace_bg_swap.py"
+rm -f "$EXTRAS_DIR/ace_rc522.py"
 rm -f "$EXTRAS_DIR/ace_protocol.py"
 rm -f "$EXTRAS_DIR/ace_protocol_v1.py"
 rm -f "$EXTRAS_DIR/ace_protocol_v2.py"
@@ -124,6 +134,16 @@ fi
 rm -f /usr/local/bin/multiace_v2d.py
 rm -f /tmp/multiace_v2.sock
 rm -f /var/run/multiace_v2d.pid
+PREWARM_INITD="/etc/init.d/S59multiace-prewarm"
+if [ -f "$PREWARM_INITD" ]; then
+    rm -f "$PREWARM_INITD"
+    log "  Prewarm init script removed: $PREWARM_INITD"
+fi
+rm -f /home/lava/multiace_update.sh
+rm -f /usr/local/bin/multiace_merge_cfg.py "${HOME_DIR}/bin/multiace_merge_cfg.py"
+rm -f "${HOME_DIR}/printer_data/config/tools/post_process_virtual_toolheads.py" \
+      "${HOME_DIR}/printer_data/config/tools/merge_ace_cfg.py"
+log "  Updater, cfg merger and tools removed"
 WEB_INITD="/etc/init.d/S98multiace-web"
 if [ -x "$WEB_INITD" ]; then
     "$WEB_INITD" stop 2>/dev/null || true
@@ -135,6 +155,10 @@ if [ -f /tmp/multiace_web.pid ]; then
     rm -f /tmp/multiace_web.pid
 fi
 pkill -TERM -f "uvicorn main:app" 2>/dev/null || true
+if [ -f /etc/sudoers.d/multiace-debug ]; then
+    rm -f /etc/sudoers.d/multiace-debug
+    log "  Sudoers drop-in removed"
+fi
 WEB_NGINX="/etc/nginx/fluidd.d/multiace-web.conf"
 if [ -f "$WEB_NGINX" ]; then
     rm -f "$WEB_NGINX"
@@ -195,14 +219,13 @@ fi
 if [ -f "$PRINTER_CFG" ]; then
     if grep -q "extended/ace.cfg" "$PRINTER_CFG"; then
         sed -i '/\[include extended\/ace.cfg\]/d' "$PRINTER_CFG"
-        sed -i '/^$/N;/^\n$/d' "$PRINTER_CFG"
         log "  Removed [include extended/ace.cfg] from printer.cfg"
     fi
 fi
-find "$EXTRAS_DIR/__pycache__" -name "ace*" -delete 2>/dev/null
-find "$EXTRAS_DIR/__pycache__" -name "filament_feed*" -delete 2>/dev/null
-find "$EXTRAS_DIR/__pycache__" -name "filament_switch_sensor*" -delete 2>/dev/null
-find "$KINEMATICS_DIR/__pycache__" -name "extruder*" -delete 2>/dev/null
+find "$EXTRAS_DIR/__pycache__" -name "ace*" -delete 2>/dev/null || true
+find "$EXTRAS_DIR/__pycache__" -name "filament_feed*" -delete 2>/dev/null || true
+find "$EXTRAS_DIR/__pycache__" -name "filament_switch_sensor*" -delete 2>/dev/null || true
+find "$KINEMATICS_DIR/__pycache__" -name "extruder*" -delete 2>/dev/null || true
 log "Python cache cleared"
 log ""
 log "=== Uninstall complete ==="
