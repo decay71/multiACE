@@ -50,13 +50,39 @@ def _validate_manifest(manifest: dict) -> None:
         _safe_relative(relative, "payload")
     for relative in manifest.get("excluded_from_package", []):
         _safe_relative(relative, "excluded")
-    for mount in manifest.get("klipper_mounts", []):
-        _safe_relative(mount["source"], "mount source")
-        if not mount["target"].startswith("/"):
-            raise ValueError(f"mount target is not absolute: {mount['target']}")
-    marker = manifest.get("runtime", {}).get("managed_marker", "")
-    if not marker.startswith("/"):
-        raise ValueError(f"managed marker is not absolute: {marker}")
+    managed_config = manifest.get("managed_config", {})
+    config_path = managed_config.get("path", "")
+    if not config_path:
+        raise ValueError("managed package has no config path contract")
+    _safe_relative(config_path, "managed config")
+    sections = managed_config.get("remove_sections", [])
+    if not sections:
+        raise ValueError("managed package has no config section contract")
+    if any(not isinstance(section, str) or not section.strip()
+           for section in sections):
+        raise ValueError("managed config section names must be non-empty strings")
+
+
+def _remove_ini_sections(text: str, section_names: set[str]) -> str:
+    """Remove exact INI sections while preserving all other config text."""
+    output: list[str] = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1]
+            skipping = section in section_names
+        if not skipping:
+            output.append(line)
+    return "".join(output)
+
+
+def _managed_config(manifest: dict, relative: str, text: str) -> str:
+    managed_config = manifest["managed_config"]
+    if relative != managed_config["path"]:
+        return text
+    sections = set(managed_config["remove_sections"])
+    return _remove_ini_sections(text, sections)
 
 
 def _copy_payload(stage: Path, manifest: dict) -> None:
@@ -70,7 +96,15 @@ def _copy_payload(stage: Path, manifest: dict) -> None:
             shutil.copytree(source, destination)
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            if relative == manifest["managed_config"]["path"]:
+                destination.write_text(
+                    _managed_config(
+                        manifest, relative, source.read_text(encoding="utf-8")),
+                    encoding="utf-8",
+                    newline="",
+                )
+            else:
+                shutil.copy2(source, destination)
 
     for relative in (manifest["version_file"], "LICENSE"):
         relative = _safe_relative(relative, "metadata")

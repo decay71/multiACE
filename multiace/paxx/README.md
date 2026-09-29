@@ -15,20 +15,21 @@ not install an arbitrary moving `latest` build.
 
 ## Runtime contract
 
-PAXX installs the package under `runtime.versioned_app_root` and exposes the
-selected version through `runtime.active_app_root` (`latest`). The PAXX hook then
-bind-mounts the listed Klipper modules at startup. The stock files are never
-overwritten on disk.
+PAXX installs the package under its own versioned application root and exposes
+the selected version through a `latest` link. The PAXX hook owns the host-side
+bind-mount map and applies it at startup. The stock files are never overwritten
+on disk.
 
 The package does not contain or run the standalone SSH installer, uninstaller,
 updater, init scripts, or mode-switch file-copy helper. Those operations are
 owned by the host firmware integration.
 
-The following environment variables are supplied to Klipper and the web
-service by PAXX:
+PAXX supplies the managed runtime environment to Klipper and the web service.
+The exact host paths are a PAXX concern rather than provider package metadata.
+The managed environment includes:
 
 - `MULTIACE_MANAGED=1`
-- `MULTIACE_MANAGED_MARKER=/oem/apps/multiace/.paxx-managed`
+- `MULTIACE_MANAGED_MARKER`
 - `MULTIACE_APP_DIR`
 - `MULTIACE_WEB_DIR`
 - `MULTIACE_CONFIG_DIR`
@@ -39,15 +40,19 @@ must not copy ACE files over the stock Klipper tree. Updates are staged and
 activated by PAXX instead.
 
 Read-only translation catalogs are provider data, not persistent user
-configuration. The web backend prefers the package-root `i18n/` directory and
-falls back to the historical standalone `web/i18n/` layout. An explicit
-`MULTIACE_I18N_DIR` override remains available for deployments with a custom
-layout, but the standard managed package does not need to set it.
+configuration. Both runtimes prefer the selected package's `i18n/` directory
+and retain the historical standalone layout as a fallback. An explicit
+`MULTIACE_I18N_DIR` override remains available for custom deployments, but the
+standard managed package does not need to copy catalogs into persistent state.
 
 The marker file is a durable fallback for SSH sessions or services that do not
 inherit the activation hook's environment. Standalone install and uninstall
 also refuse to run when the marker exists; an intentional manual override is
 available with `MULTIACE_IGNORE_FIRMWARE_MANAGED=1`.
+
+The managed package's configuration template omits the standalone update
+wrapper macros. PAXX may still perform a one-time migration of an older
+persistent configuration created by an earlier managed package.
 
 ## Building a package
 
