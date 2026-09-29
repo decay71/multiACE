@@ -13,8 +13,10 @@
     "active_app_root": "/oem/apps/multiace/latest",
     "config_dir": "/home/lava/printer_data/config/extended/multiace",
     "web_dir": "/oem/apps/multiace/latest/web",
+    "managed_marker": "/oem/apps/multiace/.paxx-managed",
     "managed_environment": {
       "MULTIACE_MANAGED": "1",
+      "MULTIACE_MANAGED_MARKER": "/oem/apps/multiace/.paxx-managed",
       "MULTIACE_APP_DIR": "/oem/apps/multiace/latest",
       "MULTIACE_WEB_DIR": "/oem/apps/multiace/latest/web",
       "MULTIACE_CONFIG_DIR": "/home/lava/printer_data/config/extended/multiace",

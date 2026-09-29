@@ -28,6 +28,7 @@ The following environment variables are supplied to Klipper and the web
 service by PAXX:
 
 - `MULTIACE_MANAGED=1`
+- `MULTIACE_MANAGED_MARKER=/oem/apps/multiace/.paxx-managed`
 - `MULTIACE_APP_DIR`
 - `MULTIACE_WEB_DIR`
 - `MULTIACE_CONFIG_DIR`
@@ -36,6 +37,11 @@ service by PAXX:
 When managed mode is active, multiACE must refuse its own online updater and
 must not copy ACE files over the stock Klipper tree. Updates are staged and
 activated by PAXX instead.
+
+The marker file is a durable fallback for SSH sessions or services that do not
+inherit the activation hook's environment. Standalone install and uninstall
+also refuse to run when the marker exists; an intentional manual override is
+available with `MULTIACE_IGNORE_FIRMWARE_MANAGED=1`.
 
 ## Building a package
 

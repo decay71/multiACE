@@ -1,9 +1,12 @@
 #!/bin/bash
 set -e
 
-if [ "${MULTIACE_MANAGED:-0}" = "1" ] || \
-   [ "${MULTIACE_MANAGED:-}" = "true" ]; then
+if [ "${MULTIACE_IGNORE_FIRMWARE_MANAGED:-0}" != "1" ] && \
+   { [ "${MULTIACE_MANAGED:-0}" = "1" ] || \
+     [ "${MULTIACE_MANAGED:-}" = "true" ] || \
+     [ -e "${MULTIACE_MANAGED_MARKER:-/oem/apps/multiace/.paxx-managed}" ]; }; then
     echo "multiACE is managed by the host firmware; use the host integration instead of install_multiace.sh" >&2
+    echo "Set MULTIACE_IGNORE_FIRMWARE_MANAGED=1 only for an intentional standalone override." >&2
     exit 2
 fi
 

@@ -38,6 +38,7 @@ jobs:
             tools/multiace_update.sh \
             config/extended/multiace/ace_mode_switch.sh \
             web/deploy/S98multiace-web
+          bash paxx/tests/test_managed_guards.sh
 
       - name: Run package tests
         run: python -m unittest discover -s paxx/tests -v

@@ -27,6 +27,7 @@ export MULTIACE_CFG_PATH="${MULTIACE_CFG_PATH:-/home/lava/printer_data/config/ex
 export MULTIACE_FRONTEND_DIR="${MULTIACE_FRONTEND_DIR:-$MULTIACE_WEB_DIR/frontend}"
 export MULTIACE_CONFIG_DIR="${MULTIACE_CONFIG_DIR:-/home/lava/printer_data/config/extended/multiace}"
 export MULTIACE_MANAGED="${MULTIACE_MANAGED:-0}"
+export MULTIACE_MANAGED_MARKER="${MULTIACE_MANAGED_MARKER:-/oem/apps/multiace/.paxx-managed}"
 export MULTIACE_DISABLE_UPDATES="${MULTIACE_DISABLE_UPDATES:-0}"
 
 # Every uvicorn instance we ever start matches this cmdline pattern.

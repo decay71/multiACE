@@ -15,7 +15,8 @@ set -e
 if [ "${MULTIACE_MANAGED:-0}" = "1" ] || \
    [ "${MULTIACE_MANAGED:-}" = "true" ] || \
    [ "${MULTIACE_DISABLE_UPDATES:-0}" = "1" ] || \
-   [ "${MULTIACE_DISABLE_UPDATES:-}" = "true" ]; then
+   [ "${MULTIACE_DISABLE_UPDATES:-}" = "true" ] || \
+   [ -e "${MULTIACE_MANAGED_MARKER:-/oem/apps/multiace/.paxx-managed}" ]; then
     echo "multiACE updates are managed by the host firmware; use PAXX Firmware Config" >&2
     exit 2
 fi

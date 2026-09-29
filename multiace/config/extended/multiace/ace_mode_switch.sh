@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
 if [ "${MULTIACE_MANAGED:-0}" = "1" ] || \
-   [ "${MULTIACE_MANAGED:-}" = "true" ]; then
+   [ "${MULTIACE_MANAGED:-}" = "true" ] || \
+   [ -e "${MULTIACE_MANAGED_MARKER:-/oem/apps/multiace/.paxx-managed}" ]; then
     echo "multiACE mode switching is managed by the host firmware; refusing to copy Klipper files" >&2
     exit 2
 fi

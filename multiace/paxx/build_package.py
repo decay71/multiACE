@@ -54,6 +54,9 @@ def _validate_manifest(manifest: dict) -> None:
         _safe_relative(mount["source"], "mount source")
         if not mount["target"].startswith("/"):
             raise ValueError(f"mount target is not absolute: {mount['target']}")
+    marker = manifest.get("runtime", {}).get("managed_marker", "")
+    if not marker.startswith("/"):
+        raise ValueError(f"managed marker is not absolute: {marker}")
 
 
 def _copy_payload(stage: Path, manifest: dict) -> None:

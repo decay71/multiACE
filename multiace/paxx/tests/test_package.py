@@ -22,6 +22,14 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(manifest["schema"], 1)
         self.assertEqual(manifest["release"]["asset_prefix"], "multiace-paxx-")
         self.assertIn("{version}", manifest["runtime"]["versioned_app_root"])
+        self.assertEqual(
+            manifest["runtime"]["managed_marker"],
+            "/oem/apps/multiace/.paxx-managed",
+        )
+        self.assertEqual(
+            manifest["runtime"]["managed_environment"]["MULTIACE_MANAGED_MARKER"],
+            manifest["runtime"]["managed_marker"],
+        )
         for relative in manifest["payload"]:
             self.assertTrue(
                 (build_package.ROOT / relative.rstrip("/")).exists(), relative)
