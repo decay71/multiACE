@@ -107,6 +107,7 @@
       "update_intro": "拉取最新的 multiACE 版本并安装。",
       "update_current": "已安装",
       "update_latest": "可用版本",
+      "update_managed": "更新由主机固件管理。请使用 PAXX Firmware Config 安装经过测试的 multiACE 版本。",
       "update_not_checked": "尚未检查",
       "update_check_btn": "检查更新",
       "update_checking": "检查中...",

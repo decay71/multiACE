@@ -1,5 +1,12 @@
 #!/bin/bash
 set -e
+
+if [ "${MULTIACE_MANAGED:-0}" = "1" ] || \
+   [ "${MULTIACE_MANAGED:-}" = "true" ]; then
+    echo "multiACE is managed by the host firmware; use the host integration instead of install_multiace.sh" >&2
+    exit 2
+fi
+
 INSTALL_WEB=0
 KEEP_CONFIG=0
 for arg in "$@"; do

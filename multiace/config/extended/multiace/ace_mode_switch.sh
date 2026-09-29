@@ -1,5 +1,11 @@
 #!/bin/bash
 set -e
+if [ "${MULTIACE_MANAGED:-0}" = "1" ] || \
+   [ "${MULTIACE_MANAGED:-}" = "true" ]; then
+    echo "multiACE mode switching is managed by the host firmware; refusing to copy Klipper files" >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="/home/lava"
 EXTRAS_DIR="${HOME_DIR}/klipper/klippy/extras"

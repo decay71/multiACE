@@ -1,0 +1,88 @@
+name: Build PAXX-managed multiACE package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "multiace-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: multiace
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate modified sources
+        run: |
+          python -m py_compile \
+            klipper/extras/ace.py \
+            web/backend/main.py \
+            paxx/build_package.py \
+            paxx/tests/test_package.py
+          node --check web/frontend/app.js
+          bash -n \
+            install_multiace.sh \
+            uninstall_multiace.sh \
+            tools/multiace_update.sh \
+            config/extended/multiace/ace_mode_switch.sh \
+            web/deploy/S98multiace-web
+
+      - name: Run package tests
+        run: python -m unittest discover -s paxx/tests -v
+
+      - name: Read package version
+        id: version
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release tag version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          test "${GITHUB_REF_NAME#multiace-v}" = "$PACKAGE_VERSION"
+
+      - name: Build package and checksum
+        run: python paxx/build_package.py
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiace-paxx-${{ steps.version.outputs.version }}
+          path: |
+            multiace/dist/multiace-paxx-${{ steps.version.outputs.version }}.tar.gz
+            multiace/dist/multiace-paxx-${{ steps.version.outputs.version }}.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: multiace
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          archive="dist/multiace-paxx-${PACKAGE_VERSION}.tar.gz"
+          checksum="${archive}.sha256"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$archive" "$checksum" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$archive" "$checksum" \
+              --title "multiACE PAXX package ${PACKAGE_VERSION}" \
+              --generate-notes
+          fi

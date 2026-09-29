@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "package": "multiace",
+  "version_file": "VERSION",
+  "release": {
+    "asset_prefix": "multiace-paxx-",
+    "archive_suffix": ".tar.gz",
+    "checksum_suffix": ".sha256"
+  },
+  "runtime": {
+    "install_root": "/oem/apps/multiace",
+    "versioned_app_root": "/oem/apps/multiace/{version}",
+    "active_app_root": "/oem/apps/multiace/latest",
+    "config_dir": "/home/lava/printer_data/config/extended/multiace",
+    "web_dir": "/oem/apps/multiace/latest/web",
+    "managed_environment": {
+      "MULTIACE_MANAGED": "1",
+      "MULTIACE_APP_DIR": "/oem/apps/multiace/latest",
+      "MULTIACE_WEB_DIR": "/oem/apps/multiace/latest/web",
+      "MULTIACE_CONFIG_DIR": "/home/lava/printer_data/config/extended/multiace",
+      "MULTIACE_DISABLE_UPDATES": "1"
+    }
+  },
+  "persistent_files": [
+    "ace_vars.cfg",
+    "slot_overrides.json",
+    "filament_snapshots/",
+    "i18n/"
+  ],
+  "payload": [
+    "klipper/extras/ace.py",
+    "klipper/extras/ace_protocol.py",
+    "klipper/extras/ace_protocol_v1.py",
+    "klipper/extras/ace_protocol_v2.py",
+    "klipper/extras/ace_bg_swap.py",
+    "klipper/extras/ace_tipform.py",
+    "klipper/extras/ace_rc522.py",
+    "klipper/extras/filament_feed_ace.py",
+    "klipper/extras/filament_switch_sensor_ace.py",
+    "klipper/kinematics/extruder_ace.py",
+    "config/extended/ace.cfg",
+    "config/extended/multiace/ace_vars.cfg",
+    "i18n/",
+    "web/backend/",
+    "web/frontend/"
+  ],
+  "klipper_mounts": [
+    {
+      "source": "klipper/extras/ace.py",
+      "target": "/home/lava/klipper/klippy/extras/ace.py"
+    },
+    {
+      "source": "klipper/extras/ace_protocol.py",
+      "target": "/home/lava/klipper/klippy/extras/ace_protocol.py"
+    },
+    {
+      "source": "klipper/extras/ace_protocol_v1.py",
+      "target": "/home/lava/klipper/klippy/extras/ace_protocol_v1.py"
+    },
+    {
+      "source": "klipper/extras/ace_protocol_v2.py",
+      "target": "/home/lava/klipper/klippy/extras/ace_protocol_v2.py"
+    },
+    {
+      "source": "klipper/extras/ace_bg_swap.py",
+      "target": "/home/lava/klipper/klippy/extras/ace_bg_swap.py"
+    },
+    {
+      "source": "klipper/extras/ace_tipform.py",
+      "target": "/home/lava/klipper/klippy/extras/ace_tipform.py"
+    },
+    {
+      "source": "klipper/extras/ace_rc522.py",
+      "target": "/home/lava/klipper/klippy/extras/ace_rc522.py"
+    },
+    {
+      "source": "klipper/extras/filament_feed_ace.py",
+      "target": "/home/lava/klipper/klippy/extras/filament_feed_ace.py"
+    },
+    {
+      "source": "klipper/extras/filament_feed_ace.py",
+      "target": "/home/lava/klipper/klippy/extras/filament_feed.py"
+    },
+    {
+      "source": "klipper/extras/filament_switch_sensor_ace.py",
+      "target": "/home/lava/klipper/klippy/extras/filament_switch_sensor_ace.py"
+    },
+    {
+      "source": "klipper/extras/filament_switch_sensor_ace.py",
+      "target": "/home/lava/klipper/klippy/extras/filament_switch_sensor.py"
+    },
+    {
+      "source": "klipper/kinematics/extruder_ace.py",
+      "target": "/home/lava/klipper/klippy/kinematics/extruder_ace.py"
+    },
+    {
+      "source": "klipper/kinematics/extruder_ace.py",
+      "target": "/home/lava/klipper/klippy/kinematics/extruder.py"
+    }
+  ],
+  "excluded_from_package": [
+    "install_multiace.sh",
+    "uninstall_multiace.sh",
+    "tools/",
+    "deploy/",
+    "config/extended/multiace/ace_mode_switch.sh",
+    "web/deploy/"
+  ]
+}

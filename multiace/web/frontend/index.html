@@ -1921,7 +1921,10 @@
       <p v-else class="muted small">{{ t('ui.config.tipform_unsupported') }}</p>
       <h3>{{ t('ui.config.update_title') }}</h3>
       <p class="muted small">{{ t('ui.config.update_intro') }}</p>
-      <div class="update-card">
+      <p v-if="updateState.managed" class="muted small">
+        {{ t('ui.config.update_managed') }}
+      </p>
+      <div class="update-card" v-else>
         <div class="update-row debug-row"
              :class="debugState.enabled ? 'debug-on' : 'debug-off'">
           <span>

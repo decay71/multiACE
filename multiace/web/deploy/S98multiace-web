@@ -10,7 +10,8 @@
 # Either way the same script controls the lifecycle.
 
 NAME="multiace-web"
-DAEMON_DIR="/home/lava/multiace_web/backend"
+MULTIACE_WEB_DIR="${MULTIACE_WEB_DIR:-/home/lava/multiace_web}"
+DAEMON_DIR="$MULTIACE_WEB_DIR/backend"
 DAEMON="/usr/bin/python3"
 ARGS="-m uvicorn main:app --host 127.0.0.1 --port 7126 --log-level warning"
 PIDFILE="/tmp/multiace_web.pid"
@@ -23,7 +24,10 @@ USER="root"
 
 export MOONRAKER_URL="${MOONRAKER_URL:-http://127.0.0.1:7125}"
 export MULTIACE_CFG_PATH="${MULTIACE_CFG_PATH:-/home/lava/printer_data/config/extended/ace.cfg}"
-export MULTIACE_FRONTEND_DIR="${MULTIACE_FRONTEND_DIR:-/home/lava/multiace_web/frontend}"
+export MULTIACE_FRONTEND_DIR="${MULTIACE_FRONTEND_DIR:-$MULTIACE_WEB_DIR/frontend}"
+export MULTIACE_CONFIG_DIR="${MULTIACE_CONFIG_DIR:-/home/lava/printer_data/config/extended/multiace}"
+export MULTIACE_MANAGED="${MULTIACE_MANAGED:-0}"
+export MULTIACE_DISABLE_UPDATES="${MULTIACE_DISABLE_UPDATES:-0}"
 
 # Every uvicorn instance we ever start matches this cmdline pattern.
 # /proc scan instead of pgrep: busybox builds here don't guarantee pgrep.
