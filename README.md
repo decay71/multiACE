@@ -103,33 +103,8 @@ ACE units do not read or expose the spools uid so it uses the sku field. (Spoolm
 - **Online Updates ** 
 - **Auto-Load** - Load all filaments autmatically, Parallel preload in bg mode
 - **RFID Handling** - Automatic RFID detection and display across ACE switches
-- **PAXX Firmware Compatible / Installer** - Works with PAXX firmware which provides display mirroring, allowing full load/unload control from your computer / Integrated PAXX Firmware
+- **PAXX Firmware Compatible / Installer** - Works with PAXX firmware which provides display mirroring, allowing full load/unload control from your computer / Integrated PAXX Firmware 
 - **Clean Install/Uninstall** - One-command scripts with automatic backup and restore
-
-### Platform-managed package
-
-The repository also provides a platform-neutral managed package in
-`multiace/managed/`. A host platform can pin the archive and SHA-256 checksum,
-install the payload under its own application root, and own activation,
-persistent configuration, updates, rollback, and user-facing controls. The
-managed package is intended to share the same contract across platform
-integrations, including PAXX and the planned Bespok3d packaging.
-
-The managed package does not include the standalone SSH installer, uninstaller,
-self-updater, boot service, or file-copy mode switch helper. Those remain in
-the repository for stock-firmware users who choose a standalone installation.
-Managed hosts pass `MULTIACE_MANAGED=1` and the shared path variables described
-in `multiace/managed/README.md`; multiACE then defers update and installation
-ownership to the platform.
-
-Build the managed archive and matching checksum from the repository root with:
-
-```bash
-python3 multiace/managed/build_package.py
-```
-
-The `release.yml` workflow publishes both the standalone source archive and
-the managed archive with their checksums for each `v<version>` release tag.
 
 
 ## ACE Pro 2 Support 

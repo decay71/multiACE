@@ -93,7 +93,14 @@ def _copy_payload(stage: Path, manifest: dict) -> None:
             raise FileNotFoundError(f"payload entry does not exist: {relative}")
         destination = stage / relative
         if source.is_dir():
-            shutil.copytree(source, destination)
+            # Validation compiles/imports provider modules before packaging.
+            # Do not ship host-specific Python bytecode or make the archive
+            # depend on which tests ran first.
+            shutil.copytree(
+                source,
+                destination,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+            )
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
             if relative == manifest["managed_config"]["path"]:

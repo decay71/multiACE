@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Branch, tag, or commit SHA to build for a test prerelease
+        description: Branch, tag, or commit SHA to build as a test artifact (no release is published)
         required: true
         default: main
         type: string
@@ -37,8 +37,10 @@ jobs:
         run: |
           python -m py_compile \
             multiace/klipper/extras/ace.py \
+            multiace/klipper/extras/ace_gen1_tunnel.py \
             multiace/web/backend/i18n_path.py \
             multiace/web/backend/main.py \
+            multiace/tools/post_process_virtual_toolheads.py \
             multiace/managed/build_package.py \
             multiace/managed/tests/test_package.py \
             multiace/managed/tests/test_i18n_path.py
@@ -58,20 +60,17 @@ jobs:
           (cd "$RUNNER_TEMP" && \
             sha256sum --check multiace-managed-check.tar.gz.sha256)
 
-  release:
+  package:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: validate
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout validated source
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.validate.outputs.source_sha }}
 
-      - name: Build release packages and notes
-        id: package
+      - name: Build packages and metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -82,51 +81,70 @@ jobs:
           test -n "$VERSION"
 
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            TAG="v${VERSION}-test.${GITHUB_RUN_ID}"
-            RELEASE_NAME="multiACE ${VERSION} test build (${GITHUB_RUN_NUMBER})"
-            cat > "$OUT/release-prefix.md" <<EOF
-          ## 🧪 Test prerelease — not a stable release
-
-          This package was published manually for compatibility testing. Do not treat it as a stable update.
-
-          - Source version: `$VERSION`
-          - Source commit: [`$SOURCE_SHA`](https://github.com/$GITHUB_REPOSITORY/commit/$SOURCE_SHA)
-          - Workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          EOF
+            BUILD_KIND="manual-test-artifact"
+            PACKAGE_TAG="v$VERSION-test-$GITHUB_RUN_ID"
           else
             TAG="$GITHUB_REF_NAME"
-            test "${TAG#v}" = "$VERSION"
-            RELEASE_NAME="$TAG"
-            cat > "$OUT/release-prefix.md" <<EOF
-          ## Release packages
-
-          - Standalone installer: `multiace-${TAG}.tar.gz` and its `.sha256` checksum.
-          - Platform-managed payload: `multiace-managed-${VERSION}.tar.gz` and its `.sha256` checksum.
-
-          Built from source commit [`$SOURCE_SHA`](https://github.com/$GITHUB_REPOSITORY/commit/$SOURCE_SHA).
-          EOF
+            test "$TAG" = "v$VERSION"
+            BUILD_KIND="stable-tag"
+            PACKAGE_TAG="$TAG"
           fi
 
           # Keep the existing standalone archive layout required by its installer.
-          tar -czf "$OUT/multiace-${TAG}.tar.gz" multiace/
-          (cd "$OUT" && sha256sum "multiace-${TAG}.tar.gz" \
-              > "multiace-${TAG}.tar.gz.sha256")
+          tar -czf "$OUT/multiace-$PACKAGE_TAG.tar.gz" multiace/
+          (cd "$OUT" && sha256sum "multiace-$PACKAGE_TAG.tar.gz" \
+              > "multiace-$PACKAGE_TAG.tar.gz.sha256")
           python multiace/managed/build_package.py \
-            --output "$OUT/multiace-managed-${VERSION}.tar.gz"
+            --output "$OUT/multiace-managed-$VERSION.tar.gz"
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          {
+            printf 'Build kind: %s\n' "$BUILD_KIND"
+            printf 'Version: %s\n' "$VERSION"
+            printf 'Source commit: %s\n' "$SOURCE_SHA"
+            printf 'Workflow run: https://github.com/%s/actions/runs/%s\n' \
+              "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > "$OUT/build-info.txt"
+
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            {
+              printf '## Release packages\n\n'
+              printf -- '- Standalone installer: multiace-%s.tar.gz and its SHA-256 checksum.\n' "$TAG"
+              printf -- '- Platform-managed payload: multiace-managed-%s.tar.gz and its SHA-256 checksum.\n\n' "$VERSION"
+              printf 'Built from source commit %s (https://github.com/%s/commit/%s).\n' \
+                "$SOURCE_SHA" "$GITHUB_REPOSITORY" "$SOURCE_SHA"
+            } > "$OUT/release-prefix.md"
+          fi
           ls -la "$OUT/"
 
-      - name: Publish stable release or test prerelease
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiace-packages-${{ github.run_id }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [validate, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download validated packages
+        uses: actions/download-artifact@v4
+        with:
+          name: multiace-packages-${{ github.run_id }}
+          path: dist/release
+
+      - name: Publish stable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.package.outputs.tag }}
+          tag_name: ${{ github.ref_name }}
           target_commitish: ${{ needs.validate.outputs.source_sha }}
-          name: ${{ steps.package.outputs.name }}
+          name: ${{ github.ref_name }}
           body_path: dist/release/release-prefix.md
           generate_release_notes: true
-          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           fail_on_unmatched_files: true
           files: |
             dist/release/*.tar.gz

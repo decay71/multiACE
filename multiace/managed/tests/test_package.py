@@ -41,6 +41,10 @@ class PackageTests(unittest.TestCase):
                 (build_package.ROOT / relative.rstrip("/")).exists(), relative)
         self.assertIn("install_multiace.sh", manifest["excluded_from_package"])
         self.assertIn("uninstall_multiace.sh", manifest["excluded_from_package"])
+        self.assertIn("klipper/extras/ace_gen1_tunnel.py", manifest["payload"])
+        self.assertIn("tools/post_process_virtual_toolheads.py", manifest["payload"])
+        self.assertIn("tools/multiace_update.sh", manifest["excluded_from_package"])
+        self.assertIn("tools/merge_ace_cfg.py", manifest["excluded_from_package"])
 
     def test_package_contains_only_managed_payload(self) -> None:
         with tempfile.TemporaryDirectory(prefix="multiace-managed-test-") as tmp:
@@ -57,8 +61,13 @@ class PackageTests(unittest.TestCase):
             self.assertTrue(any(name.endswith("/managed/manifest.json") for name in names))
             self.assertFalse(any(name.endswith("/install_multiace.sh") for name in names))
             self.assertFalse(any(name.endswith("/uninstall_multiace.sh") for name in names))
-            self.assertFalse(any("/tools/" in name for name in names))
+            self.assertTrue(any(name.endswith("/klipper/extras/ace_gen1_tunnel.py") for name in names))
+            self.assertTrue(any(name.endswith("/tools/post_process_virtual_toolheads.py") for name in names))
+            self.assertFalse(any(name.endswith("/tools/multiace_update.sh") for name in names))
+            self.assertFalse(any(name.endswith("/tools/merge_ace_cfg.py") for name in names))
             self.assertFalse(any("/deploy/" in name for name in names))
+            self.assertFalse(any("/__pycache__/" in name for name in names))
+            self.assertFalse(any(name.endswith((".pyc", ".pyo")) for name in names))
             self.assertNotIn("[gcode_macro ACEH__Update_Check]", config_text)
             self.assertNotIn("[gcode_macro ACEH__Update_Apply]", config_text)
             self.assertNotIn("[save_variables]", config_text)

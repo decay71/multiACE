@@ -23,11 +23,13 @@
     "klipper/extras/ace_bg_swap.py",
     "klipper/extras/ace_tipform.py",
     "klipper/extras/ace_rc522.py",
+    "klipper/extras/ace_gen1_tunnel.py",
     "klipper/extras/filament_feed_ace.py",
     "klipper/extras/filament_switch_sensor_ace.py",
     "klipper/kinematics/extruder_ace.py",
     "config/extended/ace.cfg",
     "config/extended/multiace/ace_vars.cfg",
+    "tools/post_process_virtual_toolheads.py",
     "i18n/",
     "web/backend/",
     "web/frontend/"
@@ -35,7 +37,8 @@
   "excluded_from_package": [
     "install_multiace.sh",
     "uninstall_multiace.sh",
-    "tools/",
+    "tools/multiace_update.sh",
+    "tools/merge_ace_cfg.py",
     "deploy/",
     "config/extended/multiace/ace_mode_switch.sh",
     "web/deploy/"

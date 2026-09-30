@@ -64,11 +64,12 @@ those runs do not publish release assets.
 
 After this workflow is present on the repository's default branch, a maintainer
 can manually run **Build and test multiACE packages** with a `source_ref`
-(branch, tag, or commit SHA). That publishes a uniquely tagged GitHub
-prerelease containing both the standalone archive and the managed archive,
-each with its SHA-256 sidecar. The release notes identify the exact source
-commit and clearly mark the build as a test prerelease. This is intended for
-deliberate compatibility testing and is not the stable update channel.
+(branch, tag, or commit SHA). The workflow uploads both archives, their SHA-256
+sidecars, and build metadata as a 14-day Actions artifact; it does not create a
+tag or GitHub Release. Anyone with repository read access can download the
+artifact from its workflow run, but these files are not release assets and are
+not offered by the standalone updater. This is intended for deliberate
+compatibility testing, not as an update channel.
 
 Stable releases keep the existing tag-driven process: pushing
 `v<VERSION>` runs validation, verifies that the tag matches `multiace/VERSION`,
