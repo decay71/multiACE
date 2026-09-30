@@ -9,7 +9,8 @@ self-update process.
 
 - multiACE owns ACE behavior, Klipper modules, and the web interface.
 - The host platform owns the selected multiACE version, package installation,
-  activation, persistent configuration, and upgrades.
+  activation, persistent configuration, updates, rollback, and user-facing
+  controls.
 - The package omits the standalone installer, uninstaller, updater, boot
   service, and file-copy mode-switch helper. The source repository still
   contains those standalone components.
@@ -56,7 +57,27 @@ From the repository root, a package and checksum can be built with:
 python3 multiace/managed/build_package.py
 ```
 
-The `release.yml` workflow builds both the standalone source archive and this
-managed archive from the same release tag, then publishes both checksums on
-that release. Package construction does not replace or alter the standalone
-installation path.
+## Release and test-build flow
+
+Every branch push and pull request runs validation and builds a check package;
+those runs do not publish release assets.
+
+After this workflow is present on the repository's default branch, a maintainer
+can manually run **Build and test multiACE packages** with a `source_ref`
+(branch, tag, or commit SHA). That publishes a uniquely tagged GitHub
+prerelease containing both the standalone archive and the managed archive,
+each with its SHA-256 sidecar. The release notes identify the exact source
+commit and clearly mark the build as a test prerelease. This is intended for
+deliberate compatibility testing and is not the stable update channel.
+
+Stable releases keep the existing tag-driven process: pushing
+`v<VERSION>` runs validation, verifies that the tag matches `multiace/VERSION`,
+and automatically publishes both package types with their checksums. GitHub
+generates the change list using the categories in `.github/release.yml`; no
+hand-maintained changelog is required.
+
+The standalone updater selects only the release's exact
+`multiace-<tag>.tar.gz` archive and matching checksum. It will fail closed if
+either asset is missing or if checksum verification fails. The managed archive
+is never a candidate for the standalone installer. Package construction and
+publishing do not replace or alter the standalone installation path.

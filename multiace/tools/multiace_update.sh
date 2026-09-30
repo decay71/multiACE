@@ -1,6 +1,7 @@
 #!/bin/sh
-# Usage: multiace_update.sh [check | apply [--force] [--keep-web] [--install-web] | --help]
+# Usage: multiace_update.sh [check | assets | apply [--force] [--keep-web] [--install-web] | --help]
 #   check          compare the installed version with the latest release
+#   assets         print the exact standalone archive and checksum selected
 #   apply          download and install the latest release
 #     --force        reinstall even when already on latest / older release
 #     --keep-web     leave the web UI untouched
@@ -144,8 +145,18 @@ resolve_latest() {
         echo "ERROR: could not parse latest tag from $API" >&2
         return 1
     fi
-    TARBALL_URL="$(echo "$JSON" | json_asset_urls | grep -E 'multiace-.*\.tar\.gz$' | head -1)"
-    SHA_URL="$(echo "$JSON" | json_asset_urls | grep -E 'multiace-.*\.tar\.gz\.sha256$' | head -1)"
+    TARBALL_NAME="multiace-${LATEST}.tar.gz"
+    SHA_NAME="${TARBALL_NAME}.sha256"
+    TARBALL_URL="$(printf '%s\n' "$JSON" | json_asset_url "$TARBALL_NAME" || true)"
+    SHA_URL="$(printf '%s\n' "$JSON" | json_asset_url "$SHA_NAME" || true)"
+    if [ -z "$TARBALL_URL" ]; then
+        echo "ERROR: release $LATEST is missing the exact standalone asset $TARBALL_NAME" >&2
+        return 1
+    fi
+    if [ -z "$SHA_URL" ]; then
+        echo "ERROR: release $LATEST is missing the matching checksum $SHA_NAME" >&2
+        return 1
+    fi
     return 0
 }
 json_field() {
@@ -153,6 +164,15 @@ json_field() {
 }
 json_asset_urls() {
     sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+json_asset_url() {
+    expected="$1"
+    json_asset_urls | while IFS= read -r url; do
+        if [ "${url##*/}" = "$expected" ]; then
+            printf '%s\n' "$url"
+            break
+        fi
+    done
 }
 normalize_version() {
     echo "${1:-}" | sed -n 's/^v\?\([0-9][0-9.]*[a-z]\?\).*/\1/p'
@@ -183,6 +203,12 @@ cmd_check() {
         echo "STATUS: up_to_date current=$CUR newer_than latest=$LATEST"
     fi
     return 0
+}
+cmd_assets() {
+    resolve_latest || return 1
+    printf 'STATUS: release=%s\n' "$LATEST"
+    printf 'TARBALL_URL=%s\n' "$TARBALL_URL"
+    printf 'SHA_URL=%s\n' "$SHA_URL"
 }
 cmd_apply() {
     FORCE=0
@@ -246,7 +272,11 @@ cmd_apply() {
         fi
     fi
     if [ -z "$TARBALL_URL" ]; then
-        echo "ERROR: release $LATEST has no multiace-*.tar.gz asset" >&2
+        echo "ERROR: release $LATEST has no exact standalone archive asset" >&2
+        return 1
+    fi
+    if [ -z "$SHA_URL" ]; then
+        echo "ERROR: release $LATEST has no matching SHA-256 checksum asset" >&2
         return 1
     fi
     echo "STATUS: downloading tarball=$TARBALL_URL"
@@ -257,23 +287,18 @@ cmd_apply() {
         echo "ERROR: tarball download failed from $TARBALL_URL" >&2
         return 1
     }
-    if [ -n "$SHA_URL" ]; then
-        echo "STATUS: verifying sha256"
-        if fetch_url "$SHA_URL" > "$TARBALL.sha256"; then
-            EXPECTED="$(awk '{print $1}' "$TARBALL.sha256" | head -1)"
-            ACTUAL="$(sha256sum "$TARBALL" | awk '{print $1}')"
-            if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
-                echo "ERROR: sha256 mismatch - expected $EXPECTED got $ACTUAL" >&2
-                return 1
-            fi
-            echo "STATUS: sha256_ok"
-        else
-            echo "WARN: sha256 download failed - skipping verification (tarball came over TLS)" >&2
-            echo "STATUS: sha256_skipped (sha256 download failed)"
-        fi
-    else
-        echo "STATUS: sha256_skipped (no .sha256 asset on release - trust GitHub TLS)"
+    echo "STATUS: verifying sha256"
+    if ! fetch_url "$SHA_URL" > "$TARBALL.sha256"; then
+        echo "ERROR: checksum download failed from $SHA_URL" >&2
+        return 1
     fi
+    EXPECTED="$(awk '{print $1}' "$TARBALL.sha256" | head -1)"
+    ACTUAL="$(sha256sum "$TARBALL" | awk '{print $1}')"
+    if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+        echo "ERROR: sha256 mismatch - expected $EXPECTED got $ACTUAL" >&2
+        return 1
+    fi
+    echo "STATUS: sha256_ok"
     echo "STATUS: extracting"
     mkdir "$TMP/extracted"
     tar xzf "$TARBALL" -C "$TMP/extracted"
@@ -298,6 +323,8 @@ cmd_apply() {
 case "${1:-check}" in
     check)
         shift; cmd_check "$@" ;;
+    assets)
+        shift; cmd_assets "$@" ;;
     apply)
         shift; cmd_apply "$@" ;;
     -h|--help|help)
