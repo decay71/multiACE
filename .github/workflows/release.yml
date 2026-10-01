@@ -54,6 +54,7 @@ jobs:
           bash multiace/managed/tests/test_managed_guards.sh
           bash multiace/managed/tests/test_updater_asset_selection.sh
           python -m unittest discover -s multiace/managed/tests -v
+          python -m unittest -v test_ace_protocol_v2_probe
 
           python multiace/managed/build_package.py \
             --output "$RUNNER_TEMP/multiace-managed-check.tar.gz"
