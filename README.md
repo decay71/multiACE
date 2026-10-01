@@ -257,6 +257,21 @@ Snapmaker U1 USB Port - HUB
 
 > **Note:** VCC (5V) is not connected in the USB cable - only data lines. Each ACE Pro is powered by its own external power supply.
 
+#### Generic USB-RS485 adapter discovery (experimental)
+
+multiACE can optionally scan USB serial ports that do not match the known ACE
+USB IDs. Set `enable_ace_v2: true` and `v2_probe_generic_usb: true` in the
+`[ace]` section of `ace.cfg` to enable it. The scan excludes serial paths configured in other
+Klipper sections and ports reported open by visible Linux processes. It sends
+only the V2 `DISCOVER_DEVICE` and `GET_INFO` queries, and accepts a candidate
+only when response frames pass CRC and sequence checks and contain a non-zero
+device UID plus ACE 2 firmware identity. On an ACE 2 these queries do not move
+filament or change settings. The process check is best-effort: serial
+exclusivity is advisory and cannot prove that a service with hidden process
+details has no open handle. Generic probes run only while the printer reports
+an idle state. The option is disabled by default, and enabling it sends the
+two protocol queries to candidate USB serial ports.
+
 
 ### PTFE Tube Splitters
 

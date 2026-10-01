@@ -1275,9 +1275,18 @@ class MultiAce:
         self._v2_extra_usb_ids = self._parse_v2_extra_usb_ids(
             config.get('v2_extra_usb_ids', ''))
         AceProtocolV2.EXTRA_USB_IDS = self._v2_extra_usb_ids
+        self._v2_probe_generic_usb = config.getboolean(
+            'v2_probe_generic_usb', False)
+        self._v2_generic_probe_cache = {}
+        self._v2_generic_probe_in_progress = set()
+        self._configured_serial_paths = self._read_configured_serial_paths(
+            config)
         if self._v2_extra_usb_ids:
             logging.info('[multiACE] V2 extra USB IDs (opt-in): %s' % (
                 ', '.join('%s:%s' % p for p in self._v2_extra_usb_ids)))
+        if self._v2_probe_generic_usb:
+            logging.info('[multiACE] V2 generic USB probing enabled; '
+                         'only verified ACE 2 devices will be accepted')
 
         # V2 print-time feed-assist mode:
         #   'constant' (default) - on extrusion just keep the ACE feed
@@ -2299,6 +2308,143 @@ class MultiAce:
                     % tok)
         return tuple(pairs)
 
+    def _read_configured_serial_paths(self, config):
+        """Capture configured serial devices so generic scans avoid them."""
+        paths = set()
+        try:
+            sections = config.get_prefix_sections('')
+        except Exception:
+            sections = []
+        if not sections:
+            try:
+                sections = ([config.getsection('mcu')]
+                            + config.get_prefix_sections('mcu '))
+            except Exception:
+                sections = []
+        own_section = getattr(config, 'get_name', lambda: 'ace')()
+        for section in sections:
+            try:
+                if section.get_name().lower() == own_section.lower():
+                    continue
+                path = (section.get('serial', None) or '').strip()
+            except Exception:
+                continue
+            if path.startswith('/dev/'):
+                paths.add(path)
+        return paths
+
+    def _is_printer_idle_for_generic_probe(self):
+        """Allow broad identification exchanges only while idle."""
+        try:
+            stats = self.printer.lookup_object('print_stats', None)
+            if stats is None:
+                return False
+            state = stats.get_status(self.reactor.monotonic()).get('state')
+            return state in ('standby', 'complete', 'cancelled', 'error')
+        except Exception:
+            return False
+
+    def _configured_serial_path_set(self):
+        return {os.path.realpath(path)
+                for path in self._configured_serial_paths}
+
+    def _probe_v2_generic_candidate(self, path, active_paths, probe_budget):
+        real_path = os.path.realpath(path)
+        if real_path in active_paths:
+            return True
+
+        if real_path in self._configured_serial_path_set():
+            logging.info('[multiACE] V2 probe skipped path=%s '
+                         'category=configured_serial_port', path)
+            return False
+
+        if not self._is_printer_idle_for_generic_probe():
+            return False
+
+        real_dev = os.path.basename(real_path)
+        vendor, product = AceProtocolV2._read_usb_ids(real_dev)
+        cache_key = (real_path, vendor, product)
+        now = time.monotonic()
+        cached = self._v2_generic_probe_cache.get(cache_key)
+        if cached is not None:
+            cached_at, verified, result = cached
+            # Keep positive identity results short-lived so unplug/replug on
+            # the same adapter path is re-identified on the next scan.
+            cache_ttl = 0.25 if verified else 5.0
+            if now - cached_at < cache_ttl:
+                return verified
+
+        if cache_key in self._v2_generic_probe_in_progress:
+            return False
+
+        if AceProtocolV2.serial_port_in_use(path):
+            result = {
+                'ok': False,
+                'category': 'port_in_use',
+                'error': 'path is open by a visible process',
+            }
+            self._v2_generic_probe_cache[cache_key] = (
+                now, False, result)
+            self._usb_log.info(
+                'PROBE skip path=%s reason=already-open', path)
+            logging.info('[multiACE] V2 probe skipped path=%s '
+                         'category=port_in_use', path)
+            return False
+
+        if probe_budget[0] <= 0:
+            return False
+        probe_budget[0] -= 1
+        probe_start = time.monotonic()
+        probe_done = threading.Event()
+        probe_result = {'result': None}
+        self._v2_generic_probe_in_progress.add(cache_key)
+
+        def _probe_worker():
+            try:
+                probe_result['result'] = AceProtocolV2.probe_device(
+                    path, query_timeout=0.35)
+            except Exception as e:
+                probe_result['result'] = {'ok': False, 'error': str(e)}
+            finally:
+                self._v2_generic_probe_in_progress.discard(cache_key)
+                probe_done.set()
+
+        threading.Thread(target=_probe_worker, daemon=True,
+                         name='multiace-v2-probe').start()
+        probe_deadline = self.reactor.monotonic() + 1.5
+        while not probe_done.is_set():
+            now_reactor = self.reactor.monotonic()
+            if now_reactor >= probe_deadline:
+                break
+            self.reactor.pause(min(probe_deadline, now_reactor + 0.025))
+        result = probe_result['result']
+        if result is None:
+            result = {
+                'ok': False,
+                'category': 'probe_timeout',
+                'error': 'probe exceeded 1.5s deadline',
+            }
+        verified = bool(result.get('ok'))
+        self._v2_generic_probe_cache[
+            cache_key] = (time.monotonic(), verified, result)
+        elapsed_ms = (time.monotonic() - probe_start) * 1000.0
+        if verified:
+            uid = '-'.join('%08x' % part for part in result['uid'])
+            self._usb_log.info(
+                'PROBE verified path=%s model=%s firmware=%s uid=%s '
+                'time=%.1fms', path, result['model'], result['firmware'],
+                uid, elapsed_ms)
+        else:
+            self._usb_log.info(
+                'PROBE rejected path=%s category=%s reason=%s time=%.1fms',
+                path, result.get('category', 'no_identity'),
+                result.get('error', 'no identity response'), elapsed_ms)
+            logging.info(
+                '[multiACE] V2 probe rejected path=%s category=%s reason=%s',
+                path, result.get('category', 'no_identity'),
+                result.get('error', 'no identity response'))
+        return verified
+
     def _scan_ace_devices(self, context='unknown'):
         scan_start = time.monotonic()
         self._usb_stats['scans'] += 1
@@ -2307,15 +2453,76 @@ class MultiAce:
 
         active_protocols = KNOWN_PROTOCOLS if self._enable_ace_v2 \
             else tuple(p for p in KNOWN_PROTOCOLS if p is not AceProtocolV2)
+        discovered_by_protocol = {
+            protocol_cls: protocol_cls.discover()
+            for protocol_cls in active_protocols
+        }
+        probe_budget = [1]
+        active_paths = set()
+        for idx, ser in self._serials.items():
+            if (ser is not None and getattr(ser, 'is_open', False)
+                    and idx < len(self._ace_devices)):
+                active_paths.add(os.path.realpath(self._ace_devices[idx]))
+        configured_serial_paths = self._configured_serial_path_set()
+
         for protocol_cls in active_protocols:
-            for path in protocol_cls.discover():
+            for path in discovered_by_protocol[protocol_cls]:
                 if path in ace_devices:
                     continue
+                real_path = os.path.realpath(path)
+                if real_path in configured_serial_paths:
+                    logging.info('[multiACE] Discovery skipped configured '
+                                 'serial path %s', path)
+                    continue
+                if protocol_cls is AceProtocolV2:
+                    if real_path not in active_paths:
+                        official = AceProtocolV2.is_official_usb_path(path)
+                        real_dev = os.path.basename(real_path)
+                        usb_ids = AceProtocolV2._read_usb_ids(real_dev)
+                        explicitly_configured = (
+                            usb_ids in self._v2_extra_usb_ids)
+                        if official or explicitly_configured:
+                            if AceProtocolV2.serial_port_in_use(path):
+                                logging.info(
+                                    '[multiACE] V2 discovery skipped '
+                                    'path=%s category=port_in_use', path)
+                                continue
+                        elif (not self._v2_probe_generic_usb
+                              or not self._probe_v2_generic_candidate(
+                                  path, active_paths, probe_budget)):
+                            continue
                 self._ace_path_protocol[path] = protocol_cls
                 ace_devices.append(path)
                 real_dev = os.path.basename(os.path.realpath(path))
                 logging.info('[multiACE] Found device %s (%s) protocol=%s' % (
                     path, real_dev, protocol_cls.NAME))
+
+        if (self._enable_ace_v2 and self._v2_probe_generic_usb
+                and self._is_printer_idle_for_generic_probe()):
+            known_paths = set(discovered_by_protocol.get(
+                AceProtocolV1, ()))
+            known_paths.update(discovered_by_protocol.get(
+                AceProtocolV2, ()))
+            known_real_paths = {os.path.realpath(path)
+                                for path in known_paths.union(ace_devices)}
+            for path in AceProtocolV2.discover_usb_serial_candidates():
+                real_path = os.path.realpath(path)
+                if real_path in known_real_paths:
+                    continue
+                if real_path in configured_serial_paths:
+                    logging.info('[multiACE] Generic V2 probe skipped '
+                                 'configured serial path %s', path)
+                    continue
+                if not self._probe_v2_generic_candidate(
+                        path, active_paths, probe_budget):
+                    continue
+                self._ace_path_protocol[path] = AceProtocolV2
+                ace_devices.append(path)
+                known_real_paths.add(real_path)
+                real_dev = os.path.basename(real_path)
+                logging.info(
+                    '[multiACE] Verified generic ACE 2 candidate %s (%s)' % (
+                        path, real_dev))
 
         ace_devices.sort(key=self._ace_path_sort_key)
 
