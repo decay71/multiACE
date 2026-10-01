@@ -1259,7 +1259,7 @@ class MultiAce:
         self._homing_flag_path = config.get(
             'homing_flag_path', '/tmp/multiace_homing_active')
 
-        self._enable_ace_v2 = config.getboolean('enable_ace_v2', False)
+        self._enable_ace_v2 = config.getboolean('enable_ace_v2', True)
 
         self._v2_order = config.getchoice('v2_order',
                                           {'usb': 'usb', 'first': 'first',
@@ -1276,7 +1276,8 @@ class MultiAce:
             config.get('v2_extra_usb_ids', ''))
         AceProtocolV2.EXTRA_USB_IDS = self._v2_extra_usb_ids
         self._v2_probe_generic_usb = config.getboolean(
-            'v2_probe_generic_usb', False)
+            'v2_probe_generic_usb', True)
+        self._v2_generic_probe_cursor = None
         self._v2_generic_probe_cache = {}
         self._v2_generic_probe_in_progress = set()
         self._configured_serial_paths = self._read_configured_serial_paths(
@@ -2311,16 +2312,16 @@ class MultiAce:
     def _read_configured_serial_paths(self, config):
         """Capture configured serial devices so generic scans avoid them."""
         paths = set()
+        self._configured_serial_paths_valid = True
         try:
             sections = config.get_prefix_sections('')
+            if not sections:
+                raise ValueError('configuration section inventory is empty')
         except Exception:
-            sections = []
-        if not sections:
-            try:
-                sections = ([config.getsection('mcu')]
-                            + config.get_prefix_sections('mcu '))
-            except Exception:
-                sections = []
+            self._configured_serial_paths_valid = False
+            logging.warning('[multiACE] Automatic USB probing suspended: '
+                            'cannot enumerate configured serial ports')
+            return paths
         own_section = getattr(config, 'get_name', lambda: 'ace')()
         for section in sections:
             try:
@@ -2328,6 +2329,7 @@ class MultiAce:
                     continue
                 path = (section.get('serial', None) or '').strip()
             except Exception:
+                self._configured_serial_paths_valid = False
                 continue
             if path.startswith('/dev/'):
                 paths.add(path)
@@ -2335,6 +2337,8 @@ class MultiAce:
 
     def _is_printer_idle_for_generic_probe(self):
         """Allow broad identification exchanges only while idle."""
+        if not self._configured_serial_paths_valid:
+            return False
         try:
             stats = self.printer.lookup_object('print_stats', None)
             if stats is None:
@@ -2370,7 +2374,10 @@ class MultiAce:
             cached_at, verified, result = cached
             # Keep positive identity results short-lived so unplug/replug on
             # the same adapter path is re-identified on the next scan.
-            cache_ttl = 0.25 if verified else 5.0
+            cache_ttl = (0.25 if verified else
+                         5.0 if result.get('category') in (
+                             'port_in_use', 'permission_denied', 'device_disconnected')
+                         else 30.0)
             if now - cached_at < cache_ttl:
                 return verified
 
@@ -2394,6 +2401,7 @@ class MultiAce:
         if probe_budget[0] <= 0:
             return False
         probe_budget[0] -= 1
+        self._v2_generic_probe_cursor = real_path
         probe_start = time.monotonic()
         probe_done = threading.Event()
         probe_result = {'result': None}
@@ -2505,7 +2513,14 @@ class MultiAce:
                 AceProtocolV2, ()))
             known_real_paths = {os.path.realpath(path)
                                 for path in known_paths.union(ace_devices)}
-            for path in AceProtocolV2.discover_usb_serial_candidates():
+            candidates = AceProtocolV2.discover_usb_serial_candidates()
+            # Resume after the last attempted port. A non-responsive adapter
+            # must not monopolize the one-probe budget on successive scans.
+            candidate_paths = [os.path.realpath(path) for path in candidates]
+            if self._v2_generic_probe_cursor in candidate_paths:
+                offset = candidate_paths.index(self._v2_generic_probe_cursor) + 1
+                candidates = candidates[offset:] + candidates[:offset]
+            for path in candidates:
                 real_path = os.path.realpath(path)
                 if real_path in known_real_paths:
                     continue
