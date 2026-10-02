@@ -7,10 +7,11 @@ frontend and any future mobile app. Auth is delegated to nginx
 trusts every request that reaches it.
 
 Environment variables:
-  MOONRAKER_URL          default http://127.0.0.1:7125
+MOONRAKER_URL          default http://127.0.0.1:7125
   MULTIACE_CONFIG_DIR    printer_data/config directory
   MULTIACE_PRINTER_DATA  printer data root
   MULTIACE_CFG_PATH      legacy explicit config-file override
+  MULTIACE_POST_PROCESS_SCRIPT  override path to post_process_virtual_toolheads.py
   MULTIACE_FRONTEND_DIR  default ../frontend (relative to this file)
   MULTIACE_MANAGED       set to 1 when the platform owns installation/updates
   MULTIACE_MANAGED_MARKER durable neutral managed-install marker path
@@ -28,7 +29,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import websockets
 
@@ -1063,6 +1064,24 @@ def _inbox_clear():
 _pp_module = None
 _pp_src_sig = None
 
+def post_process_script_path() -> Optional[Path]:
+    """Resolve the active post_process_virtual_toolheads.py script path.
+
+    Precedence:
+      1. MULTIACE_POST_PROCESS_SCRIPT environment variable (if file exists)
+      2. _CFG_DIR / tools / post_process_virtual_toolheads.py
+      3. Package tools/ directory relative to this file
+    """
+    override = os.environ.get("MULTIACE_POST_PROCESS_SCRIPT", "").strip()
+    if override and os.path.isfile(override):
+        return Path(override)
+    candidates = [
+        Path(_CFG_DIR) / "tools" / "post_process_virtual_toolheads.py",
+        Path(__file__).resolve().parent.parent.parent / "tools" / "post_process_virtual_toolheads.py",
+    ]
+    return next((p for p in candidates if p.is_file()), None)
+
+
 def _load_post_processor():
     """Lazy-load the post-processor as a Python module so its parsing
     and remap helpers can be reused server-side without a subprocess.
@@ -1072,13 +1091,7 @@ def _load_post_processor():
     whenever
     the source file changed (path/mtime/size signature)."""
     global _pp_module, _pp_src_sig
-    candidates = [
-        Path(p) for p in _user_paths(
-            "printer_data/config/tools/post_process_virtual_toolheads.py")
-    ] + [
-        Path(__file__).resolve().parent.parent.parent / "tools" / "post_process_virtual_toolheads.py",
-    ]
-    src = next((p for p in candidates if p.is_file()), None)
+    src = post_process_script_path()
     if src is None:
         raise HTTPException(status_code=503,
                             detail="post-processor script not installed")
@@ -1628,13 +1641,7 @@ async def preflight_pysrc() -> dict:
     """The two Python sources the in-browser Pyodide worker runs: the
     unmodified post-processor + preflight_core. Served so the browser executes
     the SAME code as the backend (one source of truth, no JS re-port/drift)."""
-    candidates = [
-        Path(p) for p in _user_paths(
-            "printer_data/config/tools/post_process_virtual_toolheads.py")
-    ] + [
-        Path(__file__).resolve().parent.parent.parent / "tools" / "post_process_virtual_toolheads.py",
-    ]
-    pp_src = next((p for p in candidates if p.is_file()), None)
+    pp_src = post_process_script_path()
     if pp_src is None:
         raise HTTPException(status_code=503,
                             detail="post-processor script not installed")
