@@ -1,7 +1,10 @@
+import errno
+import glob
 import json
 import logging
 import os
 import struct
+import time
 
 from .ace_protocol import AceProtocol
 
@@ -202,12 +205,240 @@ class AceProtocolV2(AceProtocol):
         return cls._scan_v2_serial_paths()
 
     @classmethod
+    def discover_usb_serial_candidates(cls):
+        """Return USB serial paths eligible for an explicit generic probe.
+
+        This deliberately does not infer that a USB serial adapter is an ACE;
+        callers must verify candidates with probe_device() before accepting
+        them.
+        """
+        candidates = []
+        seen_devices = set()
+        paths = []
+        # Prefer stable udev symlinks, then fall back to tty node names on
+        # systems that do not create /dev/serial/by-path or by-id entries.
+        for serial_dir in ('/dev/serial/by-path/', '/dev/serial/by-id/'):
+            if not os.path.isdir(serial_dir):
+                continue
+            try:
+                paths.extend(os.path.join(serial_dir, entry)
+                             for entry in sorted(os.listdir(serial_dir)))
+            except OSError:
+                pass
+        for pattern in ('/dev/ttyUSB*', '/dev/ttyACM*'):
+            paths.extend(sorted(glob.glob(pattern)))
+
+        for path in paths:
+            real_dev = os.path.basename(os.path.realpath(path))
+            vendor, product = cls._read_usb_ids(real_dev)
+            real_path = os.path.realpath(path)
+            if (vendor is not None and product is not None
+                    and real_path not in seen_devices):
+                candidates.append(path)
+                seen_devices.add(real_path)
+        return candidates
+
+    @classmethod
+    def is_official_usb_path(cls, path):
+        real_dev = os.path.basename(os.path.realpath(path))
+        vendor, product = cls._read_usb_ids(real_dev)
+        return vendor == V2_VENDOR_ID and product in V2_PRODUCT_IDS
+
+    @staticmethod
+    def serial_port_in_use(path):
+        """Check visible Linux process file descriptors for an open tty."""
+        proc_dir = '/proc'
+        if not os.path.isdir(proc_dir):
+            return True
+        try:
+            pids = os.listdir(proc_dir)
+        except OSError:
+            return True
+        target = os.path.realpath(path)
+        for pid in pids:
+            if not pid.isdigit():
+                continue
+            fd_dir = os.path.join(proc_dir, pid, 'fd')
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    opened = os.readlink(os.path.join(fd_dir, fd))
+                except OSError:
+                    continue
+                if opened.endswith(' (deleted)'):
+                    opened = opened[:-10]
+                if opened.startswith('/dev/') and os.path.realpath(opened) == target:
+                    return True
+        return False
+
+    @classmethod
+    def _probe_error_category(cls, error):
+        err_no = getattr(error, 'errno', None)
+        message = str(error).lower()
+        if ('resource busy' in message or 'device or resource busy' in message
+                or 'could not exclusively lock' in message):
+            return 'port_in_use'
+        if (err_no in (errno.EACCES, errno.EPERM)
+                or 'permission denied' in message):
+            return 'permission_denied'
+        if err_no == errno.EBUSY:
+            return 'port_in_use'
+        disconnected_errnos = {
+            errno.EIO, errno.ENODEV, errno.ENXIO, errno.ENOENT,
+            getattr(errno, 'ESHUTDOWN', -1),
+        }
+        if (err_no in disconnected_errnos or 'device disconnected' in message
+                or 'no such device' in message or 'input/output error' in message):
+            return 'device_disconnected'
+        return 'serial_error'
+
+    @classmethod
+    def probe_device(cls, path, query_timeout=0.4):
+        """Verify an ACE 2 using bounded, read-only V2 discovery/info queries."""
+        import serial
+
+        query_timeout = min(max(float(query_timeout), 0.1), 0.75)
+        protocol = cls()
+        try:
+            ser = serial.Serial(
+                port=path,
+                baudrate=cls.DEFAULT_BAUD,
+                timeout=0.05,
+                write_timeout=0.25,
+                exclusive=True,
+            )
+        except Exception as e:
+            return {'ok': False, 'category': cls._probe_error_category(e),
+                    'error': str(e)}
+
+        try:
+            try:
+                ser.reset_input_buffer()
+            except Exception:
+                pass
+            buffer = bytearray()
+            responses = []
+            diagnostics = {
+                'bytes_received': 0,
+                'crc_errors': 0,
+                'malformed_frames': 0,
+                'mismatched_frames': 0,
+            }
+            probes = (
+                (1, 'discover_device', Cmd.DISCOVER_DEVICE),
+                (2, 'get_info', Cmd.GET_INFO),
+            )
+            for seq, method, command in probes:
+                request = {'id': seq, 'method': method, 'params': {}}
+                ser.write(protocol.encode_request(request))
+                ser.flush()
+                query_diag_start = dict(diagnostics)
+                deadline = time.monotonic() + query_timeout
+                response = None
+                while time.monotonic() < deadline:
+                    chunk = ser.read(1)
+                    if chunk:
+                        waiting = ser.in_waiting
+                        if waiting:
+                            chunk += ser.read(waiting)
+                        diagnostics['bytes_received'] += len(chunk)
+                        buffer.extend(chunk)
+                        for frame in protocol.decode_frames(
+                                buffer, diagnostics=diagnostics):
+                            if (frame.get('id') != seq
+                                    or frame.get('cmd') != command):
+                                diagnostics['mismatched_frames'] += 1
+                                continue
+                            response = frame
+                            break
+                    if response is not None:
+                        break
+                if response is None or response.get('code') != 0:
+                    if not os.path.exists(path):
+                        return {
+                            'ok': False,
+                            'category': 'device_disconnected',
+                            'error': 'serial device disappeared during %s query'
+                                     % method,
+                        }
+                    if (diagnostics['bytes_received']
+                            == query_diag_start['bytes_received']):
+                        return {
+                            'ok': False,
+                            'category': 'no_response',
+                            'error': '%s query received no serial data before timeout'
+                                     % method,
+                        }
+                    details = []
+                    crc_errors = (diagnostics['crc_errors']
+                                  - query_diag_start['crc_errors'])
+                    malformed_frames = (
+                        diagnostics['malformed_frames']
+                        - query_diag_start['malformed_frames'])
+                    mismatched_frames = (
+                        diagnostics['mismatched_frames']
+                        - query_diag_start['mismatched_frames'])
+                    if crc_errors:
+                        details.append('%d CRC failure(s)' %
+                                       crc_errors)
+                    if malformed_frames:
+                        details.append('%d malformed frame(s)' %
+                                       malformed_frames)
+                    if mismatched_frames:
+                        details.append('%d command/sequence mismatch(es)' %
+                                       mismatched_frames)
+                    if not details:
+                        details.append('no matching response frame')
+                    return {
+                        'ok': False,
+                        'category': 'invalid_response',
+                        'error': '%s query received serial data but no valid '
+                                 'matching frame (%s)' %
+                                 (method, ', '.join(details)),
+                    }
+                responses.append(response.get('result') or {})
+
+            discovered, info = responses
+            uid = tuple(int(discovered.get(key, 0) or 0)
+                        for key in ('uid1', 'uid2', 'uid3'))
+            if not any(uid):
+                return {'ok': False, 'category': 'invalid_identity',
+                        'error': 'DISCOVER_DEVICE returned no device UID'}
+            firmware = str(info.get('firmware') or '').strip()
+            boot_version = str(info.get('boot_version') or '').strip()
+            if info.get('model') != 'ACE 2 Pro' or not (firmware or boot_version):
+                return {'ok': False, 'category': 'invalid_identity',
+                        'error': 'GET_INFO did not contain ACE 2 identity data'}
+            return {
+                'ok': True,
+                'category': 'verified',
+                'model': 'ACE 2 Pro',
+                'firmware': firmware,
+                'boot_version': boot_version,
+                'uid': uid,
+            }
+        except Exception as e:
+            category = cls._probe_error_category(e)
+            if not os.path.exists(path) and category != 'permission_denied':
+                category = 'device_disconnected'
+            return {'ok': False, 'category': category, 'error': str(e)}
+        finally:
+            try:
+                ser.close()
+            except Exception:
+                pass
+
+    @classmethod
     def open_transport(cls, path, baud, **kwargs):
 
         import serial
         return serial.Serial(
             port=path,
             baudrate=cls.DEFAULT_BAUD,
+            exclusive=True,
             **cls.SERIAL_KWARGS,
         )
 
@@ -229,7 +460,7 @@ class AceProtocolV2(AceProtocol):
         crc = crc16_kermit(bytes(inner))
         return bytes(PREAMBLE) + bytes(inner) + bytes([crc & 0xFF, (crc >> 8) & 0xFF, END_MARKER])
 
-    def decode_frames(self, buffer):
+    def decode_frames(self, buffer, diagnostics=None):
         results = []
         while len(buffer) >= MIN_FRAME_LEN:
             start = buffer.find(PREAMBLE)
@@ -245,6 +476,9 @@ class AceProtocolV2(AceProtocol):
                 break
             payload_len = buffer[6]
             if payload_len > MAX_PAYLOAD_LEN:
+                if diagnostics is not None:
+                    diagnostics['malformed_frames'] = (
+                        diagnostics.get('malformed_frames', 0) + 1)
                 del buffer[:2]
                 continue
             total_len = HEADER_LEN + payload_len + TRAILER_LEN
@@ -252,12 +486,18 @@ class AceProtocolV2(AceProtocol):
                 break
             end_marker = buffer[total_len - 1]
             if end_marker != END_MARKER:
+                if diagnostics is not None:
+                    diagnostics['malformed_frames'] = (
+                        diagnostics.get('malformed_frames', 0) + 1)
                 del buffer[:2]
                 continue
             inner = bytes(buffer[2:HEADER_LEN + payload_len])
             crc_in_frame = buffer[HEADER_LEN + payload_len] | (buffer[HEADER_LEN + payload_len + 1] << 8)
             crc_calc = crc16_kermit(inner)
             if crc_in_frame != crc_calc:
+                if diagnostics is not None:
+                    diagnostics['crc_errors'] = (
+                        diagnostics.get('crc_errors', 0) + 1)
                 logging.info('[multiACE] V2 CRC mismatch (calc=%04x frame=%04x), dropping frame',
                              crc_calc, crc_in_frame)
                 del buffer[:total_len]
@@ -435,7 +675,8 @@ class AceProtocolV2(AceProtocol):
         return Cmd.GET_STATUS, b''
 
     def _v2_response_to_v1(self, cmd, seq, payload):
-        ret = {'id': seq, 'code': 0, 'msg': 'success', 'result': {}}
+        ret = {'id': seq, 'cmd': cmd, 'code': 0, 'msg': 'success',
+               'result': {}}
         if not payload:
             return ret
         try:

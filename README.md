@@ -264,6 +264,28 @@ Snapmaker U1 USB Port - HUB
 
 > **Note:** VCC (5V) is not connected in the USB cable - only data lines. Each ACE Pro is powered by its own external power supply.
 
+#### Automatic USB-RS485 adapter discovery (experimental)
+
+multiACE automatically identifies ACE 2 units on generic USB serial adapters.
+No adapter VID/PID or discovery setting is required. ACE 2 support and generic
+USB probing are enabled by default; existing explicit `false` settings are
+respected. Existing `v2_extra_usb_ids` entries remain supported as manual overrides.
+
+The scan runs while the printer is idle, excludes serial paths configured in
+other Klipper sections and ports reported open by visible Linux processes,
+and uses only the V2 `DISCOVER_DEVICE` and `GET_INFO` queries. A candidate must
+pass CRC, command and sequence checks and return a non-zero UID plus ACE 2
+firmware identity. Each scan probes at most one new port, rotates through the
+candidates, and backs off after failures. These queries do not move filament
+or change settings on an ACE 2.
+
+Port ownership checks are best-effort and serial exclusivity is advisory.
+Automatic discovery sends protocol bytes to eligible USB serial ports;
+unrelated devices may interpret those bytes differently. Set
+`v2_probe_generic_usb: false` in `[ace]` to disable generic probing if needed.
+Host serial permissions must still allow Klipper to open the device.
+Hardware validation of the automatic flow is pending.
+
 
 ### PTFE Tube Splitters
 

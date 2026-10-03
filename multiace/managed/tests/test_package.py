@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import sys
@@ -58,6 +59,10 @@ class PackageTests(unittest.TestCase):
                     member for member in archive.getmembers()
                     if member.name.endswith("/config/extended/ace.cfg"))
                 config_text = archive.extractfile(config_member).read().decode()
+                ace_member = next(
+                    member for member in archive.getmembers()
+                    if member.name.endswith('/klipper/extras/ace.py'))
+                ace_source = archive.extractfile(ace_member).read().decode()
             self.assertTrue(any(name.endswith("/managed/manifest.json") for name in names))
             self.assertFalse(any(name.endswith("/install_multiace.sh") for name in names))
             self.assertFalse(any(name.endswith("/uninstall_multiace.sh") for name in names))
@@ -73,7 +78,26 @@ class PackageTests(unittest.TestCase):
             self.assertNotIn("[save_variables]", config_text)
             self.assertIn("[ace]", config_text)
             self.assertRegex(config_text, r"(?m)^ace_device_count:\s*1$")
-            self.assertRegex(config_text, r"(?m)^enable_ace_v2:\s*true$")
+            # Fresh installs rely on the packaged code's automatic defaults.
+            # Verify those defaults and retain the explicit disable switches.
+            tree = ast.parse(ace_source)
+            default_calls = {
+                node.args[0].value: node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'getboolean'
+                and len(node.args) == 2
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in (
+                    'enable_ace_v2', 'v2_probe_generic_usb')
+            }
+            for option in ('enable_ace_v2', 'v2_probe_generic_usb'):
+                call = default_calls[option]
+                self.assertIsInstance(call.args[1], ast.Constant)
+                self.assertIs(call.args[1].value, True)
+                self.assertNotRegex(config_text, rf'(?m)^{option}:')
+                self.assertRegex(config_text, rf'(?m)^#{option}:\s*false$')
             source_config = (build_package.ROOT / "config/extended/ace.cfg").read_text()
             self.assertIn("[gcode_macro ACEH__Update_Check]", source_config)
             self.assertIn("[gcode_macro ACEH__Update_Apply]", source_config)
