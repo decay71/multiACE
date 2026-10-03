@@ -80,20 +80,20 @@ DEFAULT_ANNOUNCE  = "1.3.863"
 # size/CRC/MD5 off the result, verify on hardware, then add the entry.
 # Keep "tested" empty until a multiACE bench flash has actually run.
 KNOWN_FIRMWARE = {
-    "1.3.863-opencubic": {
-        "version": "1.3.863",
-        # What iap_upgrade tells the bootloader - the base the image is
-        # built on. All current Gen-1 images here are 1.3.863-based.
+    "1.3.871-tunnel": {
+        "version": "1.3.871",
+        # Reports CV1.3.871; the bootloader is announced the 1.3.863 base
+        # like every other Gen-1 image (the bench flasher always did).
         "announce": "1.3.863",
-        "label": "1.3.863 - OpenCubic CFW",
-        "file": "ACE_V1.3.863_20260716.bin",
-        "size": 113720,
-        "crc": 0xC110,
-        "md5": "9f7b9a678a96caf98d6a08842d3ff971",
-        "source": "OpenCubic ACE 1 Pro CFW v1.1.1 (2026-08-17) release "
-                  "asset ACE_V1.3.863_20260716.bin, "
-                  "md5 9f7b9a678a96caf98d6a08842d3ff971",
-        "tested": "",
+        "label": "CV1.3.871 - CFW + UID stub + RC522 tunnel",
+        "file": "ACE_V1.3.863_tunnel_ops.bin",
+        "size": 114632,
+        "crc": 0x1AC9,
+        "md5": "219df3df77f7c7e1e15a79d580a2379e",
+        "source": "Godless50/ACE-PRO-v1.-NFC-UID (OpenCubic CFW base + UID "
+                  "stub + RC522 tunnel), asset ACE_V1.3.863_tunnel_ops.bin, "
+                  "md5 219df3df77f7c7e1e15a79d580a2379e",
+        "tested": "2026-09-29 HW: ACE Pro V1.3.856 -> CV1.3.871 verified",
     },
     "1.3.863-stock": {
         "version": "1.3.863",
@@ -106,7 +106,7 @@ KNOWN_FIRMWARE = {
         "source": "clean stock image ACE_V1.3.863_20250518.bin "
                   "(OpenCubic originalFirmware), "
                   "md5 dcd04589dcadd5b4feab66d33e772531",
-        "tested": "",
+        "tested": "2026-10-03 HW: ACE Pro CV1.3.871 -> V1.3.863 verified",
     },
 }
 
@@ -468,8 +468,14 @@ def flash(port: str, fw, progress,
 
         _p(100.0, "committing (iap_upgrade_finish) - ACE reboots")
         # The reply is optional: the commit reboots the unit, which can
-        # cut the answer off - the bench flasher expects exactly that.
-        transport.rpc("iap_upgrade_finish", {}, timeout=T_FINISH)
+        # cut the answer off - the bench flasher expects exactly that. The
+        # cut can also surface as a serial error (the USB device vanishes
+        # mid-read); that is the reboot, not a failure - the wait below
+        # reopens the port and proves the result.
+        try:
+            transport.rpc("iap_upgrade_finish", {}, timeout=T_FINISH)
+        except Exception as e:
+            _p(100.0, "link dropped at commit (%s) - unit rebooting" % e)
 
         _p(None, "waiting for the ACE to come back")
         deadline = time.time() + BOOT_WAIT

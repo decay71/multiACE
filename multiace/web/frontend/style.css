@@ -256,6 +256,9 @@ h3 { margin: 1.2rem 0 .5rem 0; color: var(--muted); font-size: .85rem; font-weig
 header h1 .hl { color: var(--accent); }
 .ace-card.clickable { cursor: pointer; }
 .ace-card.clickable:hover { border-color: var(--accent); }
+/* Not connected: the slots show the last known state, not the live one. */
+.ace-card.offline > :not(h2) { opacity: .4; pointer-events: none; }
+.ace-offline-text { color: var(--error); font-weight: 600; font-size: .8rem; text-transform: uppercase; }
 .ace-card h2 { margin: 0 0 .6rem 0; font-size: 1.05rem; font-weight: 600;
                display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .6rem; }
 .ace-card h2 .ace-name { display: inline-flex; align-items: center; gap: .4rem;
@@ -1556,14 +1559,20 @@ body.panel-embedded .sm-right { font-size: .68rem; }
 .acefw-err { color: var(--error); }
 .acefw-force-row { display: inline-flex; align-items: center;
   gap: .45rem; }
-/* The version option carries the googleable .swu name in brackets, which
-   does not fit the shared 200px cap of .config-row controls - lift it for
-   THIS select only (and for the password, which is a long base64 string).
-   Same for the file button, whose label is the uploaded file name. */
-.acefw-card .config-row select.acefw-version,
-.acefw-card .config-row input.acefw-pw { max-width: 26rem; }
-.acefw-file-btn { max-width: 26rem; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
+/* The ACE and version options carry long labels (the version shows the
+   file name in brackets), too long for the shared 200px cap of .config-row
+   controls: lifted for this card, the password and the file button
+   (labelled with the uploaded file name) included. */
+.acefw-card .config-row select,
+.acefw-card .config-row input.acefw-pw { max-width: 40rem;
+  height: auto; min-height: 2.1rem; line-height: 1.3; }
+.acefw-file-btn { max-width: 40rem; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  padding: .4rem .6rem; min-height: 2.1rem; font-size: .9rem;
+  background: #111; color: var(--fg); border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer; text-align: left; }
+.acefw-file-btn:hover { border-color: var(--accent); }
+.acefw-card p { overflow-wrap: anywhere; }
 /* The BIG RED own-risk box inside the confirm dialog. */
 .acefw-danger { color: #ff5252; border: 2px solid #ff5252;
   border-radius: 6px; padding: .8rem .9rem; font-weight: 700;
@@ -1915,3 +1924,4 @@ body:has(.panel) .overlay .dialog {
 .config-log-inline { margin: .4rem 0 .8rem; padding: .5rem .6rem;
   background: var(--card); border: 1px solid var(--border);
   border-radius: 4px; white-space: pre-wrap; font-size: .8rem; }
+

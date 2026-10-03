@@ -8,6 +8,17 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style-new.css">
+  <!-- Set the chosen design before the first paint, so the page never
+       flashes the other one. -->
+  <script>
+    // The new design is the default; only an explicit "classic" keeps the
+    // old one.
+    var _th = "new";
+    try { if (localStorage.getItem("multiace.uiTheme") === "classic") _th = "classic"; }
+    catch (e) {}
+    if (_th === "new") document.documentElement.dataset.theme = "new";
+  </script>
 </head>
 <body>
 <div id="app">
@@ -50,9 +61,13 @@
       <div class="panel-head">
         <span>ACE {{ dispIdx(panelAce.idx) }}</span>
         <span class="panel-temp">
+          <span v-if="panelAce.connected === false" class="ace-offline-text"
+                :title="panelAce.connect_error || null">{{ t('ui.common.offline') }}</span>
+          <template v-else>
           <span v-if="panelAce.temp != null">{{ panelAce.temp }} °C</span>
           <span v-if="typeof panelAce.humidity === 'number'">
             · {{ Math.round(panelAce.humidity) }} %rH</span>
+          </template>
         </span>
         <!-- Always a NEW tab: a plain link would navigate the camera tile
              itself, leaving the full interface squeezed into a 190px box
@@ -99,7 +114,9 @@
             <!-- Spool seen from the side: two flanges, the filament colour
                  as the core. Reads at a glance far better than a colour
                  chip, which is the one thing the AFC card does really well. -->
-            <svg class="panel-spool" viewBox="0 0 24 34" aria-hidden="true">
+            <span v-if="uiTheme === 'new'" class="nt-spool nt-spool-panel"><i></i><span class="nt-core"><span class="nt-fill"
+                  :style="{'--p': slotGaugePct(panelAce.idx, slot), '--c': gaugeColor(slot.color)}"></span></span><i></i></span>
+            <svg v-else class="panel-spool" viewBox="0 0 24 34" aria-hidden="true">
               <rect x="0.5" y="1" width="6" height="32" rx="2.5"
                     class="panel-spool-side"/>
               <rect x="17.5" y="1" width="6" height="32" rx="2.5"
@@ -125,6 +142,7 @@
           <div class="panel-card-label">{{ panelSlotLabel(panelAce.idx, slot.idx) }}</div>
           <div class="panel-card-actions">
             <button class="panel-btn"
+                    :class="{reload: needsReload(panelAce.idx, slot.idx)}"
                     @click="loadSlot(panelAce.idx, slot.idx)"
                     :disabled="isPrinting || slotIsEmpty(panelAce.idx, slot.idx) || (state.mode === 'head' ? (slotLoadedInHead(panelAce.idx, slot.idx) && !needsReload(panelAce.idx, slot.idx)) : (!needsReload(panelAce.idx, slot.idx) && isToolheadOccupied(panelAce.idx, slot.idx)))"
                     :title="isPrinting ? t('ui.dashboard.blocked_printing') : (slotIsEmpty(panelAce.idx, slot.idx) ? t('ui.dashboard.slot_empty_hint', {ace: dispIdx(panelAce.idx), slot: dispIdx(slot.idx)}) : '')">{{
@@ -190,12 +208,14 @@
                           :class="spoolBadgeCls(spoolForHead(th.idx))"
                           :title="spoolTitle(spoolForHead(th.idx))">{{
                         spoolBadgeLabel(spoolForHead(th.idx)) }}</span>
-                    <span class="panel-card-head">{{ t(th.manual ? 'ui.dashboard.manual' : 'ui.dashboard.feeder') }}</span>
+                    <span class="panel-card-head" :class="th.manual ? 'nt-kind-manual' : 'nt-kind-feeder'">{{ t(th.manual ? 'ui.dashboard.manual' : 'ui.dashboard.feeder') }}</span>
                   </div>
                   <div class="panel-card-body panel-card-pick"
                        @click="openHeadPicker(th)"
                        :title="t('ui.dashboard.head_set_filament')">
-                    <svg class="panel-spool" viewBox="0 0 24 34" aria-hidden="true">
+                    <span v-if="uiTheme === 'new'" class="nt-spool nt-spool-panel"><i></i><span class="nt-core"><span class="nt-fill"
+                          :style="{'--p': (th.color && !headTileEmpty(th) ? 100 : 0), '--c': gaugeColor(th.color)}"></span></span><i></i></span>
+                    <svg v-else class="panel-spool" viewBox="0 0 24 34" aria-hidden="true">
                       <rect x="0.5" y="1" width="6" height="32" rx="2.5"
                             class="panel-spool-side"/>
                       <rect x="17.5" y="1" width="6" height="32" rx="2.5"
@@ -321,9 +341,14 @@
           {{ t('ui.dashboard.no_aces') }}
         </p>
         <div class="ace-grid" :class="{'ace-grid-right': state.mode === 'head' && aceHeadsRightSide}">
+          <!-- connected === false (explicit): the unit is not connected and
+               everything below is its LAST known state, so the card is
+               dimmed and says offline. null = older backend, shown as before. -->
           <article v-for="ace in visibleAces" :key="ace.idx" class="ace-card"
-                   :class="{primary: ace.idx === state.active_device, clickable: ace.idx !== state.active_device}"
-                   @click="ace.idx !== state.active_device && switchAce(ace.idx)">
+                   :class="{primary: ace.idx === state.active_device,
+                            clickable: ace.idx !== state.active_device && ace.connected !== false,
+                            offline: ace.connected === false}"
+                   @click="ace.idx !== state.active_device && ace.connected !== false && switchAce(ace.idx)">
             <h2>
               <span class="ace-name">ACE {{ dispIdx(ace.idx) }}
                 <!-- Firmware rides in the TOOLTIP, not in the visible text: the header is a tight three-column
@@ -338,11 +363,15 @@
                 <small v-if="ace.idx === state.active_device">{{ t('ui.common.active') }}</small>
               </span>
               <span class="ace-status">
+                <span v-if="ace.connected === false" class="ace-offline-text"
+                      :title="ace.connect_error || null">{{ t('ui.common.offline') }}</span>
+                <template v-else>
                 <span v-if="ace.temp != null">{{ ace.temp }} °C</span>
                 <span v-if="typeof ace.humidity === 'number'" class="ace-humidity">
                   · {{ Math.round(ace.humidity) }} %rH
                 </span>
                 <span v-if="ace.status" class="ace-state-text"> · {{ ace.status }}</span>
+                </template>
               </span>
               <span class="ace-card-actions" @click.stop>
                 <button class="ace-dry-btn"
@@ -363,6 +392,12 @@
                         :style="slot.color ? {background: slot.color} : {}"
                         @click.stop="openPicker(ace, slot)"
                         :title="slotTitle(ace, slot)">
+                  <span v-if="uiTheme === 'new'" class="nt-slot-img">
+                    <span class="nt-slot-n">S{{ dispIdx(slot.idx) }}</span>
+                    <span class="nt-slot-pct" v-if="slotGaugeLabel(ace.idx, slot)">{{ slotGaugeLabel(ace.idx, slot) }}</span>
+                    <span class="nt-spool"><i></i><span class="nt-core"><span class="nt-fill"
+                          :style="{'--p': slotGaugePct(ace.idx, slot), '--c': gaugeColor(slot.color)}"></span></span><i></i></span>
+                  </span>
                   <span class="slot-num">{{ dispIdx(slot.idx) }}</span>
                   <!-- Format on the tile only for a UID-only slot (nothing
                        else to show there); with an identity the picker
@@ -513,7 +548,8 @@
           </article>
         </div>
         <h3 class="th-section-head">
-          <span>{{ t('ui.dashboard.toolheads') }}</span>
+          <span>{{ t('ui.dashboard.toolheads') }}<em v-if="uiTheme === 'new' && state.mode === 'head'"
+                class="nt-hm-tag">{{ t('ui.dashboard.nt_head_mode') }}</em></span>
           <!-- Both buttons in one box so the header keeps TWO flex children:
                with space-between a third child moved "Unload All" from the
                right edge into the middle the moment the cancel appeared. And
@@ -533,8 +569,9 @@
           <article v-for="t_ in state.toolheads" :key="t_.idx"
                    :ref="el => setThEl(t_.idx, el)"
                    class="toolhead-card"
-                   :class="{empty: !t_.module_exist, present: t_.head_source_known && !t_.load_failed, 'load-failed': t_.load_failed, unknown: !t_.head_source_known && t_.filament_at_extruder && !t_.manual && !t_.feeder, manual: t_.manual, feeder: t_.feeder, 'feeder-empty': t_.feeder && !t_.filament_detected, 'op-loading': toolheadOps[t_.idx] === 'loading', 'op-unloading': toolheadOps[t_.idx] === 'unloading'}">
-            <h2>T{{ dispIdx(t_.idx) }}
+                   :class="{empty: !t_.module_exist, present: t_.head_source_known && !t_.load_failed, 'load-failed': t_.load_failed, unknown: !t_.head_source_known && t_.filament_at_extruder && !t_.manual && !t_.feeder, manual: t_.manual, feeder: t_.feeder, 'feeder-empty': t_.feeder && !t_.filament_detected, 'op-loading': toolheadOps[t_.idx] === 'loading', 'op-unloading': toolheadOps[t_.idx] === 'unloading', 'nt-head': state.mode === 'head', 'nt-set-open': !!thSettingsOpen[t_.idx]}">
+            <h2>T{{ dispIdx(t_.idx) }}<em v-if="uiTheme === 'new' && state.mode === 'head' && t_.module_exist"
+                class="nt-th-tag" :class="{'nt-tag-feeder': t_.feeder}">{{ t_.feeder ? t('ui.dashboard.feeder') : 'ACE ' + dispIdx(headAceOf(t_.idx)) }}</em>
               <small v-if="!t_.module_exist">{{ t('ui.common.offline') }}</small>
               <!-- Feeder AND manual heads carry the big feeder-tile instead
                    of this dot (same colour twice reads as two facts). The
@@ -544,6 +581,9 @@
                     v-if="t_.color && !t_.feeder && !t_.manual && t_.head_source_known && !toolheadOps[t_.idx]"
                     :style="{background: t_.color}"></span>
             </h2>
+            <span v-if="uiTheme === 'new'" class="nt-th-mat">{{ headGaugeText(t_) }}</span>
+            <span v-if="uiTheme === 'new' && !t_.feeder && !t_.manual" class="nt-spool nt-spool-th"><i></i><span class="nt-core"><span class="nt-fill"
+                  :style="{'--p': headGaugePct(t_), '--c': gaugeColor(t_.color)}"></span></span><i></i></span>
             <!-- The tile is a SIBLING of the title, not inside it: in the h2
                  it made the title row 5rem tall, so "T3" centred downward
                  and everything below slid with it. The card grid (CSS .feeder/.manual)
@@ -572,7 +612,7 @@
             </p>
             <p class="meta" v-else-if="t_.head_source_known">
               <span v-if="t_.ace != null && t_.slot != null">ACE {{ dispIdx(t_.ace) }} / Slot {{ dispIdx(t_.slot) }}</span>
-              <span v-if="t_.material && !t_.load_failed"> · {{ t_.material }}</span>
+              <span v-if="t_.material && !t_.load_failed" class="th-meta-mat"> · {{ t_.material }}</span>
               <span v-if="t_.load_failed" class="error-inline"
                     :title="t('ui.dashboard.load_failed_hint')"> · {{ t('ui.dashboard.load_failed') }}</span>
               <br v-if="t_.material && subText(t_.subtype) && !t_.load_failed">
@@ -584,7 +624,7 @@
             <p class="meta" v-else-if="t_.filament_at_extruder">
               <span class="muted">{{ t('ui.common.unknown_source') }}</span>
             </p>
-            <p class="meta" v-else>
+            <p class="meta meta-empty" v-else>
               <span class="muted">{{ t('ui.common.empty') }}</span>
             </p>
             <p class="meta meta-channel" v-if="t_.channel_state">
@@ -593,12 +633,19 @@
                 · {{ t_.channel_error }}
               </span>
             </p>
+            <div class="nt-src-note" v-if="uiTheme === 'new' && state.mode === 'head' && t_.feeder && t_.module_exist">
+              <span>{{ t('ui.dashboard.nt_source') }}</span>{{ t('ui.dashboard.nt_feeder_note') }}
+            </div>
             <div class="toolhead-actions" v-if="t_.module_exist">
               <button v-if="t_.feeder && !t_.filament_at_extruder" @click="loadFeederHead(t_.idx)"
                       :disabled="isPrinting" :title="isPrinting ? t('ui.dashboard.blocked_printing') : ''">{{ t('ui.dashboard.load') }}</button>
               <button class="warn" @click="unloadHead(t_.idx)"
                       :disabled="(!t_.head_source_known && !t_.filament_at_extruder) || isPrinting"
                       :title="isPrinting ? t('ui.dashboard.blocked_printing') : ''">{{ t('ui.dashboard.unload') }}</button>
+              <button v-if="uiTheme === 'new'" class="nt-th-gear"
+                      :class="{active: !!thSettingsOpen[t_.idx]}"
+                      @click="thSettingsOpen[t_.idx] = !thSettingsOpen[t_.idx]"
+                      :title="t('ui.dashboard.nt_head_settings')">⚙</button>
             </div>
             <label class="th-manual" v-if="t_.module_exist && state.mode !== 'head'"
                    :class="{disabled: t_.head_source_known || t_.filament_at_extruder}"
@@ -627,7 +674,16 @@
                        ? t('ui.dashboard.head_ace_unload_first')
                        : t('ui.dashboard.head_ace_hint')">
                 <span>{{ t('ui.dashboard.head_ace') }}</span>
-                <select :value="headAceOf(t_.idx)"
+                <em v-if="uiTheme === 'new' && (t_.head_source_known || t_.filament_at_extruder)"
+                    class="nt-unload-first">{{ t('ui.dashboard.nt_unload_first') }}</em>
+                <span v-if="uiTheme === 'new'" class="nt-seg">
+                  <button v-for="o in aceOptionsForHead(t_.idx)" :key="'seg'+o.value" type="button"
+                          :class="{active: Number(headAceOf(t_.idx)) === Number(o.value)}"
+                          :title="o.label"
+                          :disabled="o.disabled || t_.head_source_known || t_.filament_at_extruder"
+                          @click.prevent="Number(headAceOf(t_.idx)) !== Number(o.value) && setHeadAce(t_.idx, o.value)">ACE {{ dispIdx(o.value) }}</button>
+                </span>
+                <select v-if="uiTheme !== 'new'" :value="headAceOf(t_.idx)"
                         :disabled="t_.head_source_known || t_.filament_at_extruder"
                         @change="headSelect($event, headAceOf(t_.idx), v => setHeadAce(t_.idx, v))">
                   <option v-for="o in aceOptionsForHead(t_.idx)" :key="o.value" :value="o.value" :disabled="o.disabled">{{ o.label }}</option>
@@ -1258,7 +1314,7 @@
         </div>
       </div>
     </section>
-    <section v-show="tab==='spools'">
+    <section v-show="tab==='spools'" class="nt-spools-tab">
       <h2>{{ t('ui.spools.title') }}
         <span v-if="state.spool_mode !== 'local'" class="src-badge"
               :class="state.spoollink ? 'src-spoolman src-sl-mode' : 'src-spoolman'">{{
@@ -1358,7 +1414,7 @@
         <input v-model="spoolQuery" class="spool-query"
                :placeholder="t('ui.spools.search_ph')">
         <button class="spool-add-btn" @click="spoolNewForm()"
-                :title="t('ui.spools.add')">+</button>
+                :title="t('ui.spools.add')">+<span v-if="uiTheme === 'new'">{{ '\u00a0' + t('ui.spools.nt_add') }}</span></button>
       </div>
       <!-- Spoolman dialog: pick a result, then the adopt bar DEMANDS a
            target - binding is mandatory at adopt, an unbound SM entry
@@ -1419,6 +1475,7 @@
              Default = assigned: bound first in slot
              order, the list mirrors the printer. -->
         <tr>
+          <th v-if="uiTheme === 'new'" class="nt-sp-g"></th>
           <th class="spool-th-sort" :class="{active: spoolSort === 'label'}"
               @click="spoolSort = 'label'">{{ t('ui.spools.label') }}</th>
           <th class="spool-th-sort" :class="{active: spoolSort === 'sku'}"
@@ -1433,19 +1490,22 @@
              a local one via label/colour. -->
         <tr v-for="sp in spoolListShown()" :key="'spool-' + sp.id"
             :class="{editing: spoolEditId === sp.id}">
+          <td v-if="uiTheme === 'new'" class="nt-sp-g"><span class="nt-spool nt-spool-mini"><i></i><span class="nt-core"><span class="nt-fill"
+                :style="{'--p': spoolPct(sp) === null ? 100 : spoolPct(sp), '--c': gaugeColor(sp.color ? '#' + String(sp.color).replace('#', '') : '')}"></span></span><i></i></span></td>
           <td><span v-if="sp.spoolman_id"
                 class="spool-sm" :title="t('ui.spools.spoolman_id')">SM{{ sp.spoolman_id }}</span>
             <span class="spool-dot" v-if="sp.color"
                   :style="{background: '#' + sp.color}"></span>
             <span v-if="sp.label">{{ sp.label }}</span>
-            <span class="muted small" v-if="spoolDetails(sp)">{{ sp.label ? ' · ' : '' }}{{ spoolDetails(sp) }}</span>
+            <span class="muted small" v-if="spoolDetails(sp)">{{ sp.label && uiTheme !== 'new' ? ' · ' : '' }}{{ spoolDetails(sp) }}</span>
           </td>
           <!-- The tag id in full, as its OWN column since it became
                sortable: which spool carries which tag is exactly what you
                need when writing or re-writing tags. -->
           <td class="spool-sku-cell"><span class="spool-sku" v-if="sp.sku"
                 :title="t('ui.spools.sku')">{{ sp.sku }}</span></td>
-          <td>{{ spoolWeightLabel(sp) || '-' }}</td>
+          <td class="nt-sp-w">{{ spoolWeightLabel(sp) || '-' }}<span v-if="uiTheme === 'new' && spoolPct(sp) !== null"
+                class="nt-sp-bar"><span :style="{width: spoolPct(sp) + '%', background: gaugeColor(sp.color ? '#' + String(sp.color).replace('#', '') : '')}"></span></span></td>
           <td>
             <select class="spool-slot-sel" :value="spoolSlotKey(sp)"
                     @change="spoolAssignTo(sp, $event.target.value)"
@@ -1509,8 +1569,19 @@
       </div>
     </section>
 
-    <section v-show="tab==='config'">
+    <section v-show="tab==='config'" class="nt-config-tab">
       <p v-if="configLoadError" class="error">{{ configLoadError }}</p>
+      <div class="nt-cfg-top">
+      <div class="nt-cfg-theme">
+      <h3>{{ t('ui.config.ui_theme') }}</h3>
+      <div class="mode-row">
+        <button v-for="th in ['classic','new']" :key="th"
+                :class="{active: uiTheme === th}"
+                @click="setUiTheme(th)">{{ t('ui.config.ui_theme_' + th) }}</button>
+      </div>
+      <p class="muted small">{{ t('ui.config.ui_theme_hint') }}</p>
+      </div>
+      <div class="nt-cfg-mode">
       <h3>{{ t('ui.config.mode') }}</h3>
       <div class="mode-row">
         <button v-for="m in ['normal','multi','head']"
@@ -1519,42 +1590,58 @@
                 @click="setMode(m)">{{ m }}</button>
       </div>
       <p v-if="state.mode === 'head'" class="muted small">{{ t('ui.config.head_mode_hint') }}</p>
+      </div>
+      </div>
+      <div class="nt-behave">
+      <div class="nt-tile">
       <h3>{{ t('ui.config.confirm_commands') }}</h3>
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="state.confirm_commands"
                @change="setConfirmCommands($event.target.checked)">
         {{ t('ui.config.confirm_commands_label') }}
       </label>
-      <p class="muted small">{{ t('ui.config.confirm_commands_hint') }}</p>
+      <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.confirm_commands_hint') : null">{{
+        uiTheme === 'new' ? t('ui.config.nt_confirm_commands_short') : t('ui.config.confirm_commands_hint') }}</p>
+      </div>
+      <div class="nt-tile">
       <h3>{{ t('ui.config.airprint_detection') }}</h3>
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="state.airprint_detection"
                @change="setAirprintDetection($event.target.checked)">
         {{ t('ui.config.airprint_detection_label') }}
       </label>
-      <p class="muted small">{{ t('ui.config.airprint_detection_hint') }}</p>
+      <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.airprint_detection_hint') : null">{{
+        uiTheme === 'new' ? t('ui.config.nt_airprint_detection_short') : t('ui.config.airprint_detection_hint') }}</p>
+      </div>
+      <div class="nt-tile">
       <h3>{{ t('ui.config.quad_replenish') }}</h3>
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="state.quad_replenish"
                @change="setQuadReplenish($event.target.checked)">
         {{ t('ui.config.quad_replenish_label') }}
       </label>
-      <p class="muted small">{{ t('ui.config.quad_replenish_hint') }}</p>
+      <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.quad_replenish_hint') : null">{{
+        uiTheme === 'new' ? t('ui.config.nt_quad_replenish_short') : t('ui.config.quad_replenish_hint') }}</p>
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="!state.quad_first"
                :disabled="!state.quad_replenish"
                @change="setQuadFirst(!$event.target.checked)">
         {{ t('ui.config.stock_first_label') }}
       </label>
-      <p class="muted small">{{ t('ui.config.stock_first_hint') }}</p>
-
+      <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.stock_first_hint') : null">{{
+        uiTheme === 'new' ? t('ui.config.nt_stock_first_short') : t('ui.config.stock_first_hint') }}</p>
+      </div>
+      <div class="nt-tile">
       <h3>{{ t('ui.config.pickup_cleaning') }}</h3>
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="state.pickup_cleaning"
                @change="setPickupCleaning($event.target.checked)">
         {{ t('ui.config.pickup_cleaning_label') }}
       </label>
-      <p class="muted small">{{ t('ui.config.pickup_cleaning_hint') }}</p>
+      <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.pickup_cleaning_hint') : null">{{
+        uiTheme === 'new' ? t('ui.config.nt_pickup_cleaning_short') : t('ui.config.pickup_cleaning_hint') }}</p>
+      </div>
+      </div>
 
       <h3>{{ t('ui.config.fluidd_panel') }}</h3>
       <div class="row">
@@ -1567,6 +1654,7 @@
 
       <h3>{{ t('ui.config.parameters') }}</h3>
       <div class="config-form">
+        <div class="nt-pgroup nt-pg-ace">
         <div class="config-row">
           <label>{{ t('ui.config.ace_count') }}</label>
           <select v-model.number="configForm.ace_device_count">
@@ -1580,6 +1668,8 @@
             <option value="last">{{ t('ui.config.ace2_after') }}</option>
           </select>
         </div>
+        </div>
+        <div class="nt-pgroup nt-pg-display">
         <div class="config-row">
           <label>{{ t('ui.config.display_index_base') }}</label>
           <select v-model.number="configForm.display_index_base">
@@ -1587,6 +1677,9 @@
             <option :value="1">1</option>
           </select>
         </div>
+        </div>
+        <div class="config-sep"></div>
+        <div class="nt-pgroup nt-pg-move">
         <div class="config-row">
           <label>{{ t('ui.config.feed_speed') }}</label>
           <input type="number" v-model.number="configForm.feed_speed" min="1" max="500">
@@ -1604,6 +1697,18 @@
           <input type="number" v-model.number="configForm.retract_length" min="0" max="5000">
         </div>
         <div class="config-row">
+          <label>{{ t('ui.config.swap_retract_length') }}</label>
+          <input type="number" v-model.number="configForm.swap_retract_length"
+                 min="0" max="2000" step="1" placeholder="900">
+        </div>
+        <div class="config-row">
+          <label>{{ t('ui.config.seat_overshoot') }}</label>
+          <input type="number" v-model.number="configForm.seat_overshoot_length"
+                 min="0" max="100" step="1" placeholder="20">
+        </div>
+        </div>
+        <div class="nt-pgroup nt-pg-retry">
+        <div class="config-row">
           <label>{{ t('ui.config.load_retry') }}</label>
           <input type="number" v-model.number="configForm.load_retry" min="0" max="20" step="1" placeholder="-">
         </div>
@@ -1615,16 +1720,9 @@
           <label>{{ t('ui.config.unload_retry') }}</label>
           <input type="number" v-model.number="configForm.unload_retry" min="0" max="20" step="1" placeholder="-">
         </div>
-        <div class="config-row">
-          <label>{{ t('ui.config.seat_overshoot') }}</label>
-          <input type="number" v-model.number="configForm.seat_overshoot_length"
-                 min="0" max="100" step="1" placeholder="20">
         </div>
-        <div class="config-row">
-          <label>{{ t('ui.config.swap_retract_length') }}</label>
-          <input type="number" v-model.number="configForm.swap_retract_length"
-                 min="0" max="2000" step="1" placeholder="900">
-        </div>
+        <div class="config-sep"></div>
+        <div class="nt-pgroup nt-pg-purge">
         <div class="config-row">
           <label>{{ t('ui.config.swap_purge_length') }}</label>
           <input type="number" v-model.number="configForm.swap_purge_length"
@@ -1642,7 +1740,9 @@
           </label>
         </div>
         <p class="muted small config-row-hint">{{ t('ui.config.purge_matrix_hint') }}</p>
+        </div>
         <div class="config-sep"></div>
+        <div class="nt-pgroup nt-pg-dryer">
         <div class="config-row">
           <label>{{ t('ui.config.dryer_temp') }}</label>
           <input type="number" v-model.number="configForm.dryer_temp" min="0" max="80" step="1" placeholder="-">
@@ -1650,6 +1750,7 @@
         <div class="config-row">
           <label>{{ t('ui.config.dryer_duration') }}</label>
           <input type="number" v-model.number="configForm.dryer_duration" min="0" max="600" step="5" placeholder="-">
+        </div>
         </div>
         <div class="config-sep"></div>
         <!-- Spoolman: url + after-print sync. Live like the checkbox below
@@ -1832,7 +1933,7 @@
           </details>
         </div>
       </div>
-      <div class="row">
+      <div class="row nt-cfg-save">
         <button @click="loadConfig">{{ t('ui.common.reload') }}</button>
         <button @click="saveConfigForm" class="primary">{{ t('ui.config.save_restart') }}</button>
         <button @click="showRawConfig = !showRawConfig">{{ showRawConfig ? t('ui.config.form_view') : t('ui.config.raw_view') }}</button>
@@ -2017,6 +2118,10 @@ reboot</pre>
                       }}{{ v.file ? ' (' + v.file + ')' : '' }}</option>
             </select>
           </div>
+          <div class="config-row" v-if="acefwGen1Unknown">
+            <label></label>
+            <span class="warn">{{ t('ui.config.acefw_gen1_unknown') }}</span>
+          </div>
           <!-- Patch stock 1.1.31 -> ACE2-Open (Simon-CR UID passthrough):
                only shown when 1.1.31 is selected and the backend has the
                patch. The base upload stays the stock 1.1.31 package. -->
@@ -2154,7 +2259,7 @@ reboot</pre>
     </div>
   </div>
   <div v-if="picker.show" class="overlay" @click.self="closePicker">
-    <div class="dialog">
+    <div class="dialog nt-picker" :class="{'nt-head-picker': picker.head !== null && picker.head !== undefined}">
       <!-- Tag format ABOVE the header, like the tiles:
            Anycubic / OpenSpool / MIFARE / unknown = the slot's last read. -->
       <p v-if="pickerTagFormat || pickerRfidSku" class="muted picker-note picker-fmt">
@@ -2165,9 +2270,14 @@ reboot</pre>
         <span v-if="pickerUidExtra"> · {{ t('ui.dialog.tag_uid') }}: {{ pickerUidExtra }}</span>
       </p>
       <h3>
-        {{ picker.head !== null && picker.head !== undefined
+        <span v-if="uiTheme === 'new'" class="nt-spool nt-spool-dlg"><i></i><span class="nt-core"><span class="nt-fill"
+              :style="{'--p': pickerGaugePct, '--c': gaugeColor(picker.color)}"></span></span><i></i></span>
+        <span class="nt-dlg-title"><span>{{ picker.head !== null && picker.head !== undefined
              ? t('ui.dialog.picker_title_head', {head: dispIdx(picker.head)})
-             : t('ui.dialog.picker_title', {ace: dispIdx(picker.ace), slot: dispIdx(picker.slot)}) }}
+             : t('ui.dialog.picker_title', {ace: dispIdx(picker.ace), slot: dispIdx(picker.slot)}) }}<span
+             v-if="uiTheme === 'new' && pickerHeadKind" class="nt-kind-tag" :class="pickerHeadKind">{{
+             t('ui.dashboard.' + pickerHeadKind) }}</span></span>
+          <small v-if="uiTheme === 'new' && pickerSubline" class="nt-dlg-sub">{{ pickerSubline }}</small></span>
         <span v-if="pickerHeadTag" class="picker-sku" :title="pickerHeadTag">{{ pickerHeadTag }}</span>
         <button v-if="pickerHasRfid" class="rfid-btn" @click="readPickerRfid"
                 :style="pickerRfidStyle"
@@ -2187,6 +2297,8 @@ reboot</pre>
                 :title="t('ui.dialog.head_read_rfid_hint')">
           {{ headRfidBusy ? '…' : t('ui.dialog.picker_read_rfid') }}
         </button>
+        <button v-if="uiTheme === 'new'" class="nt-dlg-x" @click="closePicker"
+                :title="t('ui.common.cancel')">✕</button>
       </h3>
       <p v-if="headRfidNote" class="muted picker-note">{{ headRfidNote }}</p>
       <!-- picker-form: own column widths. The page's 200px label column eats
@@ -2226,7 +2338,29 @@ reboot</pre>
                  follows the luminance, same as the preflight dropdowns): a
                  native <option> supports no swatch element, so the fill IS
                  the swatch - and it shows more colour than a square would. -->
-            <select v-model="picker.spool">
+            <div v-if="uiTheme === 'new'" class="nt-dd" :class="{open: spoolDdOpen}">
+              <button type="button" class="nt-dd-btn" @click="spoolDdOpen = !spoolDdOpen"
+                      @keydown.esc="spoolDdOpen = false" @blur="spoolDdOpen = false">
+                <span class="nt-dd-chip" :class="{none: !(spoolDdCurrent && spoolDdCurrent.bg)}"
+                      :style="spoolDdCurrent && spoolDdCurrent.bg ? {background: spoolDdCurrent.bg} : {}"></span>
+                <span class="nt-dd-label">{{ spoolDdCurrent ? spoolDdCurrent.name : t('ui.spools.unassigned') }}</span>
+                <span class="nt-dd-caret">{{ spoolDdOpen ? '▴' : '▾' }}</span>
+              </button>
+              <div v-if="spoolDdOpen" class="nt-dd-list">
+                <div class="nt-dd-item" :class="{sel: !picker.spool}" @mousedown.prevent="spoolDdPick('')">
+                  <span class="nt-dd-chip none"></span>
+                  <span class="nt-dd-main muted">{{ t('ui.spools.unassigned') }}</span>
+                </div>
+                <div v-for="o in spoolPickerOptions" :key="'nd-'+o.id" class="nt-dd-item"
+                     :class="{sel: o.id === picker.spool}" @mousedown.prevent="spoolDdPick(o.id)">
+                  <span class="nt-dd-chip" :class="{none: !o.bg}" :style="o.bg ? {background: o.bg} : {}"></span>
+                  <span class="nt-dd-main"><b>{{ o.name }}</b><small>{{ o.meta }}</small></span>
+                  <span class="nt-dd-at" :class="{free: !o.at}">{{ o.at || t('ui.spools.nt_free') }}</span>
+                  <span class="nt-dd-tick">{{ o.id === picker.spool ? '✓' : '' }}</span>
+                </div>
+              </div>
+            </div>
+            <select v-else v-model="picker.spool">
               <option value="">{{ t('ui.spools.unassigned') }}</option>
               <option v-for="o in spoolPickerOptions" :key="'ps-'+o.id" :value="o.id"
                       :style="o.bg ? {background: o.bg, color: o.fg} : {}">
@@ -2292,11 +2426,11 @@ reboot</pre>
                  :title="picker.spool ? t('ui.spools.correct_weight')
                                       : t('ui.spools.new_weight_hint')">
         </div>
-        <div class="config-row">
+        <div class="config-row" v-if="uiTheme !== 'new'">
           <label>{{ t('ui.dialog.picker_color') }}</label>
           <input type="color" v-model="picker.color" class="picker-short picker-color" @input="pickerTouch()">
         </div>
-        <div class="config-row">
+        <div class="config-row" v-if="uiTheme !== 'new'">
           <label>{{ t('ui.dialog.picker_swatches') }}</label>
           <div class="swatches">
             <button v-for="c in FILAMENT_SWATCHES" :key="c" type="button"
@@ -2305,7 +2439,7 @@ reboot</pre>
                     @click="picker.color = c; pickerTouch()"></button>
           </div>
         </div>
-        <div class="config-row" v-if="knownColors.length">
+        <div class="config-row" v-if="uiTheme !== 'new' && knownColors.length">
           <label>{{ t('ui.dialog.picker_known') }}</label>
           <div class="swatches">
             <button v-for="c in knownColors" :key="c" type="button"
@@ -2315,15 +2449,74 @@ reboot</pre>
           </div>
         </div>
       </div>
-      <div class="row">
-        <button @click="closePicker">{{ t('ui.common.cancel') }}</button>
-        <button @click="savePicker(false)" class="primary">{{ t('ui.dialog.picker_save') }}</button>
-        <button v-if="picker.head === null || picker.head === undefined"
+      <!-- New design: colour block with a large field, hex input, the
+           native picker behind "own colour", standard grid and the known
+           colours as named chips. -->
+      <div v-if="uiTheme === 'new'" class="nt-color">
+        <div class="nt-color-top">
+          <label class="nt-color-big" :style="{background: picker.color}">
+            <input type="color" v-model="picker.color" @input="pickerTouch()">
+          </label>
+          <div class="nt-field">
+            <span class="nt-lbl">{{ t('ui.dialog.picker_color') }}</span>
+            <input class="nt-hex" :value="(picker.color || '').toUpperCase()"
+                   maxlength="7" spellcheck="false"
+                   @input="pickerHexInput($event.target.value)">
+          </div>
+          <label class="nt-own-color">
+            <input type="color" v-model="picker.color" @input="pickerTouch()">
+            <span class="nt-rainbow"></span>{{ t('ui.dialog.nt_own_color') }}
+          </label>
+        </div>
+        <span class="nt-lbl">{{ t('ui.dialog.picker_swatches') }}</span>
+        <div class="nt-swatches">
+          <button v-for="c in FILAMENT_SWATCHES" :key="'n'+c" type="button"
+                  class="nt-sw" :class="{sel: sameSwatch(picker.color, c)}"
+                  :style="{background: c, color: textOn(c)}" :title="c"
+                  @click="picker.color = c; pickerTouch()"><span v-if="sameSwatch(picker.color, c)">✓</span></button>
+        </div>
+        <template v-if="knownColorChips.length">
+          <span class="nt-lbl">{{ t('ui.dialog.picker_known') }}</span>
+          <div class="nt-swatches">
+            <button v-for="k in knownColorChips" :key="'k'+k.hex" type="button"
+                    class="nt-sw" :class="{sel: sameSwatch(picker.color, k.hex)}"
+                    :style="{background: k.hex, color: textOn(k.hex)}"
+                    :title="k.name === k.hex ? k.hex : k.name + ' ' + k.hex"
+                    @click="picker.color = k.hex; pickerTouch()"><span v-if="sameSwatch(picker.color, k.hex)">✓</span></button>
+          </div>
+        </template>
+      </div>
+      <div v-if="uiTheme === 'new' && (picker.head === null || picker.head === undefined) && aceTagRead(picker.ace)"
+           class="nt-rfid-bar">
+        <span class="nt-lbl">{{ t('ui.dialog.nt_rfid_tag') }}</span>
+        <template v-if="aceOpenFw(picker.ace)">
+        <select :value="tagWriteFormat()" @change="picker.tagFormat = $event.target.value"
+                :title="t('ui.dialog.write_tag_format_title')">
+          <option value="openspool">{{ t('ui.dialog.write_tag_format_openspool') }}</option>
+          <option value="anycubic">{{ t('ui.dialog.write_tag_format_anycubic') }}</option>
+        </select>
+        <label v-if="tagWriteFormat() === 'anycubic'" class="nt-rfid-uid" :title="t('ui.dialog.write_tag_uid_sku_title')">
+          <input type="checkbox" :checked="tagWriteUidSku()"
+                 @change="picker.tagUidSku = $event.target.checked"> {{ t('ui.dialog.write_tag_uid_sku') }}
+        </label>
+        <button @click="tagWrite()"
+                :disabled="!slotOccupied(picker.ace, picker.slot) || !picker.material"
+                :title="t('ui.dialog.write_tag_title')">{{ t('ui.dialog.picker_write_tag') }}</button>
+        </template>
+        <button @click="tagRead()"
+                :disabled="!slotOccupied(picker.ace, picker.slot) || (state.tag_op && state.tag_op.busy)"
+                :title="t('ui.dialog.read_tag_title')">{{ t('ui.dialog.picker_read_tag') }}</button>
+      </div>
+      <div class="row nt-dlg-foot">
+        <button class="nt-cancel" @click="closePicker">{{ t('ui.common.cancel') }}</button>
+        <button @click="savePicker(false)" class="primary nt-main">{{ t('ui.dialog.picker_save') }}</button>
+        <button v-if="picker.head === null || picker.head === undefined" class="nt-second"
                 @click="savePicker(true)" :disabled="isToolheadOccupied(picker.ace, picker.slot)">{{ t('ui.dialog.picker_load_after') }}</button>
         <!-- Write the picked identity onto the physical tag as OpenSpool.
              Slot target only (a head has no ACE tag); needs ACE2-Open firmware and
              a spool at the gate. -->
-        <template v-if="state.rc522 && (picker.head === null || picker.head === undefined) && aceOpenFw(picker.ace)">
+        <template v-if="uiTheme !== 'new' && (picker.head === null || picker.head === undefined) && aceTagRead(picker.ace)">
+          <template v-if="aceOpenFw(picker.ace)">
           <select :value="tagWriteFormat()" @change="picker.tagFormat = $event.target.value"
                   :title="t('ui.dialog.write_tag_format_title')">
             <option value="openspool">{{ t('ui.dialog.write_tag_format_openspool') }}</option>
@@ -2336,6 +2529,7 @@ reboot</pre>
           <button @click="tagWrite()"
                   :disabled="!slotOccupied(picker.ace, picker.slot) || !picker.material"
                   :title="t('ui.dialog.write_tag_title')">{{ t('ui.dialog.picker_write_tag') }}</button>
+          </template>
           <button @click="tagRead()"
                   :disabled="!slotOccupied(picker.ace, picker.slot) || (state.tag_op && state.tag_op.busy)"
                   :title="t('ui.dialog.read_tag_title')">{{ t('ui.dialog.picker_read_tag') }}</button>
@@ -2358,9 +2552,17 @@ reboot</pre>
   <!-- Spool PA dialog: view/edit pa_matrix entries, copy/paste between
        spools (paClip survives closing). Values save via ACE_SPOOL_PA. -->
   <div v-if="paDlg" class="overlay overlay-top" @click.self="paDlg = null">
-    <div class="dialog">
-      <h3>PA - {{ spoolTitle(paDlg.sp) }}</h3>
-      <p class="muted small">{{ t('ui.spools.pa_hint') }}</p>
+    <div class="dialog nt-pa">
+      <h3>
+        <span v-if="uiTheme === 'new'" class="nt-spool nt-spool-dlg"><i></i><span class="nt-core"><span class="nt-fill"
+              :style="{'--p': (spoolPct(paDlg.sp) || 100), '--c': gaugeColor(paDlg.sp.color ? '#' + String(paDlg.sp.color).replace('#', '') : '')}"></span></span><i></i></span>
+        <span class="nt-dlg-title"><span>PA - {{ spoolTitle(paDlg.sp) }}</span>
+          <small v-if="uiTheme === 'new' && paSpoolHead(paDlg.sp) !== null" class="nt-dlg-sub">{{
+              t('ui.spools.nt_feeds_head', {head: dispIdx(paSpoolHead(paDlg.sp))}) }}</small></span>
+        <button v-if="uiTheme === 'new'" class="nt-dlg-x" @click="paDlg = null"
+                :title="t('ui.common.cancel')">✕</button>
+      </h3>
+      <p class="muted small nt-dlg-hint">{{ t('ui.spools.pa_hint') }}</p>
       <p v-if="!paDlg.rows.length" class="muted small">{{ t('ui.spools.pa_empty') }}</p>
       <div v-for="(r, i) in paDlg.rows" :key="'pa-'+i" class="dialog-input pa-row">
         <label style="min-width:8rem">{{ r.key }}</label>
@@ -2370,7 +2572,7 @@ reboot</pre>
         <button class="danger" @click="paRowDel(i)"
                 :title="t('ui.common.delete')">✕</button>
       </div>
-      <div class="dialog-input pa-row">
+      <div class="dialog-input pa-row pa-new">
         <!-- Key: a SELECT of the machine's real nozzle keys (engine
              nozzle_keys, minus rows already shown). Older Klipper without
              the field -> free-text fallback (mixed-deploy rule). -->
@@ -2388,8 +2590,8 @@ reboot</pre>
         <button @click="paAddRow"
                 :disabled="!paKeyValid(paDlg.newKey.trim()) || !paValueValid(paDlg.newValue)">+</button>
       </div>
-      <div class="row">
-        <button @click="paCalibrate" :disabled="!paCanCalibrate()"
+      <div class="row nt-dlg-foot">
+        <button class="nt-second" @click="paCalibrate" :disabled="!paCanCalibrate()"
                 :title="paSpoolHead(paDlg.sp) !== null ? t('ui.spools.pa_calibrate_title')
                         : paSpoolLoadPlan(paDlg.sp) ? t('ui.spools.pa_calibrate_load_title')
                         : t('ui.spools.pa_calibrate_nohead')">
@@ -2399,13 +2601,13 @@ reboot</pre>
                 :title="t('ui.spools.pa_copy_title')">{{ t('ui.spools.pa_copy') }}</button>
         <button @click="paPaste" :disabled="!paClip"
                 :title="t('ui.spools.pa_paste_title')">{{ t('ui.spools.pa_paste') }}</button>
-        <button @click="paDlg = null">{{ t('ui.common.cancel') }}</button>
-        <button class="primary" @click="paSave" :disabled="!paDirty()">{{ t('ui.common.save') }}</button>
+        <button class="nt-cancel-r" @click="paDlg = null">{{ t('ui.common.cancel') }}</button>
+        <button class="primary nt-main" @click="paSave" :disabled="!paDirty()">{{ t('ui.common.save') }}</button>
       </div>
     </div>
   </div>
   <div v-if="confirmDialog.show" class="overlay overlay-top" @click.self="cancelConfirm">
-    <div class="dialog">
+    <div class="dialog nt-confirm">
       <h3>{{ confirmDialog.title }}</h3>
       <p v-html="confirmDialog.message"></p>
       <label v-if="confirmDialog.checkboxLabel" class="dialog-checkbox">
@@ -2422,10 +2624,10 @@ reboot</pre>
         <div v-if="confirmInputError" class="dialog-input-err">{{ confirmInputError }}</div>
         <div v-else-if="confirmDialog.inputHint" class="muted small">{{ confirmDialog.inputHint }}</div>
       </div>
-      <div class="row">
-        <button v-if="!confirmDialog.dismissOnly" @click="cancelConfirm">{{ t('ui.common.cancel') }}</button>
-        <button v-if="confirmDialog.altLabel" @click="altConfirm">{{ confirmDialog.altLabel }}</button>
-        <button @click="okConfirm" class="primary" :disabled="!!confirmInputError">{{ confirmDialog.okLabel || 'OK' }}</button>
+      <div class="row nt-dlg-foot">
+        <button v-if="!confirmDialog.dismissOnly" class="nt-cancel-r" @click="cancelConfirm">{{ t('ui.common.cancel') }}</button>
+        <button v-if="confirmDialog.altLabel" class="nt-alt" @click="altConfirm">{{ confirmDialog.altLabel }}</button>
+        <button @click="okConfirm" class="primary nt-main" :disabled="!!confirmInputError">{{ confirmDialog.okLabel || 'OK' }}</button>
       </div>
     </div>
   </div>
@@ -2657,6 +2859,7 @@ reboot</pre>
           </div>
           <p class="muted small">{{ t('ui.preflight.copies_multi_hint') }}</p>
         </div>
+        <div class="nt-pf-top"><div class="nt-pf-col">
         <h4>{{ t('ui.preflight.printer_loadout') }}</h4>
         <div class="preflight-grid">
           <div v-for="s in preflight.report.live_slots"
@@ -2672,6 +2875,7 @@ reboot</pre>
             </div>
           </div>
         </div>
+        </div><div class="nt-pf-col">
         <h4>{{ t('ui.preflight.slicer_colors') }}</h4>
         <div class="preflight-grid">
           <div v-for="c in slicerColorsInPrintOrder()"
@@ -2687,6 +2891,7 @@ reboot</pre>
             </div>
           </div>
         </div>
+        </div></div>
         <div v-if="preflight.report.missing_materials.length"
              class="preflight-warn">
           <strong>{{ t('ui.preflight.missing_mat_title') }}</strong>
@@ -2697,9 +2902,22 @@ reboot</pre>
             </li>
           </ul>
         </div>
+<div v-if="uiTheme === 'new' && pfPlanList().length" class="nt-plan-cards">
+          <button v-for="p in pfPlanList()" :key="'pc-'+p" type="button" class="nt-plan-card"
+                  :class="{sel: pfSelected() === p, off: !pfPlanFeasible(p)}" @click="pfPlanSel = p">
+            <span class="nt-pc-head"><span class="nt-pc-radio"></span><b>{{ pfPlanTitle(p) }}</b>
+              <span v-if="pfRecommended() === p" class="nt-pc-rec">{{ t('ui.preflight.nt_recommended') }}</span></span>
+            <span v-if="pfPlanFeasible(p)" class="nt-pc-nums">
+              <span><b>{{ pfPlanSwaps(p) }}</b><small>{{ t('ui.preflight.swaps_label') }}</small></span>
+              <span v-if="pfPlanFlush(p) !== null"><b>{{ pfPlanFlush(p) }}<i>g</i></b><small>{{ t('ui.preflight.nt_contamination') }}</small></span>
+            </span>
+            <span v-else class="nt-pc-off">{{ t('ui.preflight.not_feasible') }}</span>
+          </button>
+        </div>
         <template v-for="mode in ['slicer', 'optimize', 'layer']"
                   :key="'plan-' + mode">
-          <div v-if="preflight.report.plans[mode]" class="preflight-plan">
+          <div v-if="preflight.report.plans[mode]" class="preflight-plan"
+               :class="{'nt-pf-off': uiTheme === 'new' && pfSelected() !== mode}">
             <div class="preflight-plan-head">
               <h4>{{ t('ui.preflight.plan_' + mode) }}</h4>
               <span v-if="preflight.report.plans[mode].feasible"
@@ -2773,7 +2991,7 @@ reboot</pre>
                      ? t('ui.preflight.applying')
                      : t('ui.preflight.apply_loadout') }}
               </button>
-              <button class="primary"
+              <button class="primary nt-pf-go"
                       :disabled="preflight.sending !== ''"
                       @click="startPreflightPrint(mode)">
                 {{ preflight.sending === mode
@@ -2795,6 +3013,7 @@ reboot</pre>
             <span class="muted small">- {{ t('ui.preflight.feeder') }} + ACE {{ t('ui.preflight.head') }} {{ (preflight.report.ace_heads && preflight.report.ace_heads.length ? preflight.report.ace_heads : [preflight.report.ace_head]).map(h => 'T' + dispIdx(h)).join(', ') }}</span>
           </h4>
 
+          <div class="nt-pf-top"><div class="nt-pf-col">
           <h4>{{ t('ui.preflight.head_targets') }}</h4>
           <div class="preflight-grid">
             <div v-for="tg in preflight.report.targets" :key="'ht-'+tg.id"
@@ -2808,6 +3027,7 @@ reboot</pre>
               </div>
             </div>
           </div>
+          </div><div class="nt-pf-col">
           <h4>{{ t('ui.preflight.slicer_colors') }}</h4>
           <div class="preflight-grid">
             <div v-for="c in slicerColorsInPrintOrder()" :key="'hsc-'+c.t"
@@ -2822,6 +3042,7 @@ reboot</pre>
               </div>
             </div>
           </div>
+          </div></div>
 
           <!-- Multifilament-Optimierung (colour copies): one colour on several
                heads. The setting is the printer's (write-through); copies in
@@ -2847,9 +3068,22 @@ reboot</pre>
                class="muted small">{{ t('ui.preflight.copies_none') }}</p>
           </div>
 
+<div v-if="uiTheme === 'new' && pfPlanList().length" class="nt-plan-cards">
+          <button v-for="p in pfPlanList()" :key="'pc-'+p" type="button" class="nt-plan-card"
+                  :class="{sel: pfSelected() === p, off: !pfPlanFeasible(p)}" @click="pfPlanSel = p">
+            <span class="nt-pc-head"><span class="nt-pc-radio"></span><b>{{ pfPlanTitle(p) }}</b>
+              <span v-if="pfRecommended() === p" class="nt-pc-rec">{{ t('ui.preflight.nt_recommended') }}</span></span>
+            <span v-if="pfPlanFeasible(p)" class="nt-pc-nums">
+              <span><b>{{ pfPlanSwaps(p) }}</b><small>{{ t('ui.preflight.swaps_label') }}</small></span>
+              <span v-if="pfPlanFlush(p) !== null"><b>{{ pfPlanFlush(p) }}<i>g</i></b><small>{{ t('ui.preflight.nt_contamination') }}</small></span>
+            </span>
+            <span v-else class="nt-pc-off">{{ t('ui.preflight.not_feasible') }}</span>
+          </button>
+        </div>
           <template v-for="hp in ['loadout', 'optimize', 'layer', 'color']"
                     :key="'hplan-'+hp">
-            <div v-if="preflight.report.plans[hp]" class="preflight-plan">
+            <div v-if="preflight.report.plans[hp]" class="preflight-plan"
+                 :class="{'nt-pf-off': uiTheme === 'new' && pfSelected() !== hp}">
               <div class="preflight-plan-head">
                 <h4>{{ t('ui.preflight.head_plan_' + hp) }}</h4>
                 <span v-if="headPlanFeasible(hp)" class="muted small">
@@ -2999,7 +3233,7 @@ reboot</pre>
                        ? t('ui.preflight.applying')
                        : t('ui.preflight.apply_loadout') }}
                 </button>
-                <button class="primary"
+                <button class="primary nt-pf-go"
                         :disabled="preflight.sending !== ''
                                    || !headPlanFeasible(hp)"
                         @click="startPreflightPrint('head', hp)">
@@ -3012,9 +3246,12 @@ reboot</pre>
           </template>
         </template>
       </template>
-      <div class="row">
-        <button @click="closePreflight"
+      <div class="row nt-dlg-foot nt-pf-foot">
+        <button class="nt-cancel-r" @click="closePreflight"
                 :disabled="preflight.sending !== ''">{{ t('ui.common.cancel') }}</button>
+        <button v-if="uiTheme === 'new' && pfSelected()" class="primary nt-main"
+                :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
+                @click="pfPrintSelected()">{{ pfGoLabel() }}</button>
       </div>
     </div>
   </div>
