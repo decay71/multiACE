@@ -13,7 +13,7 @@ This is a prerelease: new features to try out before the next release. Please re
 **A big thank you to our new collaborators.** Three developers joined the project and brought their own features with them:
 
 - **Simon-CR** - the ACE2-Open community firmware for the ACE 2 Pro, which lets multiACE read and write spool tags. multiACE now also runs on other Klipper printers, not only the Snapmaker U1 (his Voron is the first one), and a watchdog notices when an ACE silently stops answering and reconnects it.
-- **Tareku99** - multiACE as a ready-made package for the paxx Extended Firmware, so the firmware installs and updates it for you. A big thank you to [paxx12](https://github.com/paxx12) for the plan to ship multiACE with the rolling releases of the Extended Firmware.
+- **Tareku99** - multiACE as a ready-made package for the paxx Extended Firmware, so the firmware installs and updates it for you. A big thank you to [paxx12](https://github.com/paxx12) for the plan to ship this multiACE integration with the rolling releases of the Extended Firmware.
 - **Godless50** - the ACE Pro gets its community firmware: flash it straight from the web UI, and read the tags of your spools on an ACE Pro too. Auto-dry can also follow an external humidity sensor.
 
 **New look for the web UI.** The web UI opens in a new design - the classic one is still there, one click in the Config tab.
