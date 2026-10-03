@@ -15,7 +15,7 @@ On the printer (or a dev box) with real images, also verify the shipped
 tested-images entries byte-for-byte:
 
     python3 tests/gen1_flasher_selfcheck.py \
-        --image ACE_V1.3.863_20260716.bin --entry 1.3.863-opencubic
+        --image ACE_V1.3.863_tunnel_ops.bin --entry 1.3.871-tunnel
 
 Exit codes:
     0  every check passed

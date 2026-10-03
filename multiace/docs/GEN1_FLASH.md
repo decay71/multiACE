@@ -82,7 +82,7 @@ sequence, but nothing on the wire:
 
 | entry id | image | size | CRC-16 | md5 |
 |---|---|---|---|---|
-| `1.3.863-opencubic` | OpenCubic ACE 1 Pro CFW v1.1.1 release asset `ACE_V1.3.863_20260716.bin` | 113720 | `0xC110` | `9f7b9a678a96caf98d6a08842d3ff971` |
+| `1.3.871-tunnel` | Godless50/ACE-PRO-v1.-NFC-UID asset `ACE_V1.3.863_tunnel_ops.bin` (OpenCubic CFW base + UID stub + RC522 tunnel, reports CV1.3.871) | 114632 | `0x1AC9` | `219df3df77f7c7e1e15a79d580a2379e` |
 | `1.3.863-stock` | clean stock `ACE_V1.3.863_20250518.bin` (rollback target) | 105652 | `0xDEFB` | `dcd04589dcadd5b4feab66d33e772531` |
 
 To add an image: flash a dry run with it, read size/CRC/MD5 off the

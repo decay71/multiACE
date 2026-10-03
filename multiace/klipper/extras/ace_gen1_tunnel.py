@@ -34,10 +34,8 @@
 # and 3). The reader CHANNEL for a slot is the bit-swap 0,1,2,3 -> 0,2,1,3,
 # i.e. channel = ((slot & 1) << 1) | ((slot >> 1) & 1) (slot_channel()).
 # The partner slot sharing the same antenna is SLOT ^ 1; the partner
-# reader CHANNEL is CHANNEL ^ 2. The tag must face the coil: there is no
-# host-side motor control on a Gen-1 that could rotate a spool to look for
-# it (feed/unwind are refused by the stock firmware), so a read is
-# opportunistic by construction.
+# reader CHANNEL is CHANNEL ^ 2. The tag must face the coil; ace.py rotates
+# the spool with feed/unwind to bring it there (_gen1_search_read).
 #
 # Read sequence (tunnel-verified host order, inside ONE acquire/release):
 #   acquire -> SELECT -> TXMODE |= 0x80 -> RXMODE |= 0x80 ->
@@ -83,6 +81,10 @@ OP_ACQUIRE = 7
 OP_RELEASE = 8
 
 # RC522 registers this client touches (the full map is in the tunnel docs).
+REG_COMIRQ = 0x04
+COMIRQ_RX = 0x20             # ComIrqReg RxIRq: a reception ended
+REG_ERROR = 0x06
+REG_FIFOLEVEL = 0x0A
 REG_BITFRAMING = 0x0D
 REG_TXMODE = 0x12
 REG_RXMODE = 0x13
@@ -97,6 +99,10 @@ RELEASE_OK = 0               # op 8 result
 
 # NTAG READ(0x30) of `page` returns 16 bytes = pages page..page+3.
 NTAG_READ = 0x30
+# ISO14443-3 HLTA: puts the selected card to sleep. A halted card ignores
+# the REQA that op 6 sends, so the other card on a shared antenna answers
+# the next SELECT. No reply is expected.
+HLTA = (0x50, 0x00)
 NTAG_CC_MAGIC = 0xE1         # capability container, page 3 byte 0
 # The user pages an OpenSpool NDEF record lives in. 4..39 covers a NTAG213
 # (0x12 * 8 = 144 user bytes) and the NDEF area of a NTAG216 alike; a
@@ -108,7 +114,20 @@ OPENSPOOL_LAST_PAGE = 39
 ANYCUBIC_MAGIC = b'\x7b\x00'
 
 DEFAULT_TIMEOUT = 3.0        # seconds per tunnel command
+# A TRANSCEIVE (op 3) holds the firmware until its own wait ends: ~6.9 s on
+# the tunnel build, data or not. The reply wait must cover it, or the next
+# op is queued into a unit that is still blocked.
+XCV_TIMEOUT = 10.0
 POLL_INTERVAL = 0.005        # reply poll granularity (greenlet-yield safe)
+
+
+class SessionAborted(Exception):
+    """A tunnel session stopped by the caller's abort check."""
+
+
+class NoReply(Exception):
+    """An op got no reply in time: the session ends (release only), no
+    further op is sent into a unit that may still be blocked."""
 
 
 def slot_channel(slot):
@@ -211,6 +230,17 @@ class Gen1TagTunnel:
         self._support = None
         self._no_tunnel_said = set()
         self._release_fail_said = False
+        # Why the last read_slot() returned None, for the caller's log line.
+        self.last_reason = ''
+        # What the reader chip saw on the last failed page read.
+        self.last_page_diag = ''
+        # Optional callable set by ace.py: returns a reason string when the
+        # session must stop now (the firmware starts an insert of its own
+        # and needs the reader back). Checked before every op except the
+        # release. `aborted` carries the reason of the last abort.
+        self.abort_check = None
+        self.aborted = ''
+        self.no_reply = False
 
     # -- plumbing ----------------------------------------------------------
 
@@ -244,9 +274,20 @@ class Gen1TagTunnel:
         return box.get('r')
 
     def _op(self, op, a1=0, a2=0, reader=0, timeout=None):
-        """One packed op, result byte or None."""
-        return parse_code(self._req(pack_index(op, a1, a2, reader),
-                                    timeout=timeout))
+        """One packed op, result byte or None. Raises SessionAborted when
+        the abort check fires (never for the release)."""
+        if op != OP_RELEASE and self.abort_check is not None:
+            why = self.abort_check()
+            if why:
+                self.aborted = str(why)
+                raise SessionAborted(self.aborted)
+        if timeout is None and op == OP_PCD_XCV:
+            timeout = XCV_TIMEOUT
+        r = self._req(pack_index(op, a1, a2, reader), timeout=timeout)
+        if r is None and op != OP_RELEASE:
+            self.no_reply = True
+            raise NoReply('op %d got no reply' % op)
+        return parse_code(r)
 
     # -- support -----------------------------------------------------------
 
@@ -294,7 +335,15 @@ class Gen1TagTunnel:
             return False
         if self._support is not None and self._support[0] == fw:
             return bool(self._support[1])
-        v = self._op(OP_READ_REG, REG_VERSION, reader=0, timeout=timeout)
+        try:
+            v = self._op(OP_READ_REG, REG_VERSION, reader=0,
+                         timeout=timeout)
+        except SessionAborted as e:
+            # Not a verdict on the firmware: probe again next time.
+            self.last_reason = 'aborted: %s' % e
+            return False
+        except NoReply:
+            v = None
         ok = v is not None
         self._support = (fw, ok)
         if not ok:
@@ -366,7 +415,25 @@ class Gen1TagTunnel:
         # partial reply or NO reply (the FIFO then still holds the previous
         # transceive - never hand that to the decoder).
         if bits != FULL_FRAME_BITS:
-            return None
+            # What the chip saw instead. On the reference unit op 5 can come
+            # back without a code although the reply arrived (HW 2026-10-03:
+            # ComIrqReg 0x64 = RxIRq, ErrorReg 0, FIFOLevel 16). A full,
+            # error-free 16-byte reception counts as the page then.
+            err = self._op(OP_READ_REG, REG_ERROR, reader=reader,
+                           timeout=timeout)
+            irq = self._op(OP_READ_REG, REG_COMIRQ, reader=reader,
+                           timeout=timeout)
+            lvl = self._op(OP_READ_REG, REG_FIFOLEVEL, reader=reader,
+                           timeout=timeout)
+            self.last_page_diag = ('rx_bits=%s ErrorReg=%s ComIrqReg=%s '
+                                   'FIFOLevel=%s' % tuple(
+                                       '-' if v is None else '0x%02X' % v
+                                       for v in (bits, err, irq, lvl)))
+            full_fifo = (bits is None and err == 0 and irq is not None
+                         and (irq & COMIRQ_RX) and lvl is not None
+                         and (lvl & 0x7F) == count)
+            if not full_fifo:
+                return None
         out = bytearray()
         for i in range(count):
             b = self._op(OP_FIFO_READ, i, reader=reader, timeout=timeout)
@@ -375,54 +442,122 @@ class Gen1TagTunnel:
             out.append(b)
         return bytes(out)
 
+    def halt(self, reader=0, timeout=None):
+        """Send HLTA to the currently selected card (TxCRC is on after a
+        read_page, which set TXMODE bit 7). The card answers nothing; the
+        op results are ignored. Best effort: if the halted card wakes up
+        again (a full reader bring-up re-powers the field), the caller sees
+        its UID again and treats the read as 'only the known card'."""
+        self._op(OP_WRITE_REG, REG_BITFRAMING, 0x00, reader=reader,
+                 timeout=timeout)
+        for i, b in enumerate(HLTA):
+            self._op(OP_FIFO_WRITE, i, b, reader=reader, timeout=timeout)
+        self._op(OP_PCD_XCV, len(HLTA), PCD_TRANSCEIVE, reader=reader,
+                 timeout=timeout)
+
     def read_openspool(self, reader):
         """Read the NTAG user pages and decode an OpenSpool NDEF record.
         Returns the identity dict or None. One 16-byte READ per 4 pages;
         stops at the first failed chunk (the record, when present, sits at
-        the start of the user area)."""
+        the start of the user area). `userdata_complete` tells whether
+        every chunk was read, i.e. whether a missing record is a fact."""
         data = bytearray()
         page = OPENSPOOL_FIRST_PAGE
+        self.userdata_complete = False
         while page <= OPENSPOOL_LAST_PAGE:
             chunk = self.read_page(page, reader=reader)
             if chunk is None:
                 break
             data += chunk
             page += 4
+        else:
+            self.userdata_complete = True
         return AceTagReader._openspool_decode(bytes(data)) if data else None
 
-    def read_slot(self, slot, page=0, userdata=True):
+    def read_slot(self, slot, page=0, userdata=True, skip_uids=()):
         """The full operator/auto read: acquire -> SELECT on the slot's
         reader channel -> READ -> release. Returns a dict or None:
 
             {'slot', 'reader', 'page', 'data' (bytes), 'uid' (bare upper
              hex or ''), 'format' ('openspool' | 'anycubic' | 'ntag' |
-             'unknown'), 'openspool' (dict or None), 'saved'}
+             'unknown'), 'openspool' (dict or None), 'saved',
+             'userdata_complete' (all user pages read)}
 
         `reader` is the RC522 channel (slot_channel(slot): 0,1,2,3 ->
         0,2,1,3), never the raw slot. `userdata` also reads the OpenSpool
         user pages when page 0 shows a plain NTAG capability container.
         None = no card / no reply / no tunnel; the release runs on every
-        path."""
+        path.
+
+        `skip_uids`: UIDs (upper hex) already known to belong to the
+        partner slot on the shared antenna. When the selected card is one
+        of them it is halted and the field is selected once more, so the
+        other card can answer. Only for page 0 (the UID comes from it)."""
         slot = int(slot) & 0x3
+        self.last_reason = ''
+        self.aborted = ''
+        self.no_reply = False
+        try:
+            return self._read_slot(slot, page, userdata, skip_uids)
+        except SessionAborted as e:
+            self.last_reason = 'aborted: %s' % e
+            return None
+        except NoReply as e:
+            self.last_reason = 'no reply (%s) - session ended' % e
+            return None
+
+    def _read_slot(self, slot, page, userdata, skip_uids):
         channel = slot_channel(slot)
         page = int(page) & 0xFF
         saved = self.acquire()
         if saved is None:
+            self.last_reason = 'reader not acquired (op 7 got no reply)'
             return None
         try:
             if not self.select(channel):
+                self.last_reason = ('no card answered SELECT on channel %d'
+                                    % channel)
                 return None
+            skip = {str(u).strip().upper() for u in (skip_uids or ())
+                    if u} if page == 0 else set()
             data = self.read_page(page, reader=channel)
             if data is None:
+                self.last_reason = ('card selected, but the page %d read '
+                                    'failed (%s)' % (page,
+                                                     self.last_page_diag))
                 return None
             uid = uid_from_page0(data) if page == 0 else ''
+            if uid and uid in skip:
+                logging.info('[multiACE] gen1 tag tunnel: ACE %d slot %d: '
+                             'partner card %s in the field - halting it',
+                             self.idx, slot, uid)
+                self.halt(channel)
+                if not self.select(channel):
+                    self.last_reason = ('only the partner slot\'s known '
+                                        'card %s answered' % uid)
+                    return None
+                data = self.read_page(page, reader=channel)
+                if data is None:
+                    self.last_reason = ('second card selected after '
+                                        'halting %s, but the page read '
+                                        'failed' % uid)
+                    return None
+                uid = uid_from_page0(data)
+                if uid in skip:
+                    self.last_reason = ('only the partner slot\'s known '
+                                        'card %s answered (halt did not '
+                                        'hold)' % uid)
+                    return None
             fmt = classify_page0(data)
             out = {'slot': slot, 'reader': channel, 'page': page,
                    'data': data, 'uid': uid, 'format': fmt,
-                   'openspool': None, 'saved': saved}
+                   'openspool': None, 'saved': saved,
+                   'userdata_complete': False}
             if (userdata and uid and page == 0
                     and len(data) >= 16 and data[12] == NTAG_CC_MAGIC):
                 op = self.read_openspool(channel)
+                out['userdata_complete'] = bool(
+                    getattr(self, 'userdata_complete', False))
                 if op:
                     out['openspool'] = op
                     out['format'] = 'openspool'

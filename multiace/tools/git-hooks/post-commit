@@ -33,6 +33,7 @@ TRACKED_FILES=(
     "multiace/klipper/extras/ace_bg_swap.py"
     "multiace/klipper/extras/ace_tipform.py"
     "multiace/klipper/extras/ace_rc522.py"
+    "multiace/klipper/extras/ace_gen1_tunnel.py"
     "multiace/klipper/extras/ace_protocol.py"
     "multiace/klipper/extras/ace_protocol_v1.py"
     "multiace/klipper/extras/ace_protocol_v2.py"

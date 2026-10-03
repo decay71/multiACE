@@ -16,7 +16,7 @@ from .ace_protocol_v2 import AceProtocolV2
 
 KNOWN_PROTOCOLS = (AceProtocolV1, AceProtocolV2)
 
-MULTIACE_VERSION = "1.11b"
+MULTIACE_VERSION = "1.20b-pre"
 
 # Engine API contract version (see docs/ENGINE_API.md). Distinct from
 # MULTIACE_VERSION (the product version): this only bumps on a breaking
@@ -24,7 +24,7 @@ MULTIACE_VERSION = "1.11b"
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "eed86c9b"
+MULTIACE_BUILD_TAG = "fc514ff7"
 MULTIACE_BUNDLE_SHA1 = "40a00eb"
 
 
@@ -1076,16 +1076,17 @@ class MultiAce:
         # Config tab): a user choice lives in the config line.
         self.tag_write_uid_sku = config.getboolean('tag_write_uid_sku', True)
         self._tag_write_uid_sku_cfg = self.tag_write_uid_sku
-        # Gen-1 (ACE Pro) tag tunnel (ace_gen1_tunnel.py): when ON, a slot
-        # the firmware could not identify gets ONE opportunistic page read
+        # Gen-1 (ACE Pro) tag tunnel (ace_gen1_tunnel.py): a slot the
+        # firmware could not identify gets ONE opportunistic page read
         # through the community firmware's RC522 tunnel, so a third-party
         # spool surfaces with its card UID (and, for an OpenSpool tag, its
-        # material/colour). OFF by default: on a unit without the tunnel
-        # the option only produces one log line, and ACE_TAG_READ is the
-        # explicit probe either way. Read unconditionally (config-halt
-        # trap); write-through to the gen1_tag_tunnel line.
-        self.gen1_tag_tunnel = config.getboolean('gen1_tag_tunnel', False)
-        self._gen1_tag_tunnel_cfg = self.gen1_tag_tunnel
+        # material/colour). Always on: tunnel traffic only ever goes to a
+        # unit whose firmware matches the tunnel builds AND answers a probe
+        # op, so a stock unit never sees it. The old on/off option is gone;
+        # an existing line is still read (and ignored) so the config does
+        # not halt.
+        config.get('gen1_tag_tunnel', None)
+        self.gen1_tag_tunnel = True
 
         # Auto-dry: humidity-controlled drying. Only an ACE 2 can drive it -
         # it is the only one reporting a humidity reading (cmd 6 field 4); an
@@ -1181,6 +1182,27 @@ class MultiAce:
         self._gen1_tunnel_reads = {}
         self._gen1_tunnel_tried = {}
         self._gen1_tunnel_busy = set()
+        # Slot whose read is running per unit (the vet hides only that one).
+        self._gen1_tunnel_busy_slot = {}
+        # Lanes our own session moved (idx -> set of slots): the ACE Pro
+        # reports our feed/unwind as 'shifting', which is not an insert.
+        self._gen1_own_lanes = {}
+        # Slots whose automatic read was stopped (idx -> set): the vet keeps
+        # their last verdict until the retry has run.
+        self._gen1_tunnel_aborted = {}
+        # Gate-flip counter per (idx, slot): a tunnel session or a search
+        # stops when a gate of its unit changed under it.
+        self._gen1_gate_gen = {}
+        self._gen1_vet_said = {}
+        # Antenna-pair dedupe of firmware tag reads (ACE Pro): per unit,
+        # last seen occupancy and the insert time of each occupied slot.
+        self._pair_occupied = {}
+        self._pair_insert_at = {}
+        self._pair_dedupe_said = {}
+        # Slots seen EMPTY in this connection: only a real insert (empty ->
+        # present) may rotate the spool to search; a spool already in the
+        # slot at connect is read in place.
+        self._gen1_seen_empty = {}
         # Per-connection tag-rescan marker: set in _open_ace (boot AND
         # reconnect share that path), consumed by the first status merge
         # (_merge_v2_filament_info -> _v2_rfid_boot_rescan). V2 only -
@@ -1317,6 +1339,8 @@ class MultiAce:
         # Guard so a V2 reader+writer thread (or several ACEs) can't kick off
         # overlapping reconnects for the same unit.
         self._reconnecting_per_ace = {}
+        # Background reconnect after the ladder gave up: idx -> timer.
+        self._idle_reconnect_timers = {}
         self._info_per_ace = {}
 
         self._slot_overrides = {}
@@ -1366,6 +1390,8 @@ class MultiAce:
         # Known hole, same as the binding: a spool swapped while the
         # printer was off keeps the old identity until the next read.
         self._restore_tag_reads()
+        # Same for the ACE Pro tunnel reads (own store, own key).
+        self._restore_gen1_tag_reads()
 
         self._v2_velocity_timers = {}
         self._v2_velocity_state = {}
@@ -1847,6 +1873,9 @@ class MultiAce:
             'start_time': time.monotonic(),
         }
         self._errno5_recent = []
+        # Last connect failure per unit (e.g. "[Errno 13] Permission
+        # denied"), cleared on a successful connect; shown in the web.
+        self._connect_error_per_ace = {}
 
         self._info = {
             'status': 'ready',
@@ -2389,8 +2418,18 @@ class MultiAce:
                                shadow_val=lang)
         self.log_always('[multiACE] language set to %s%s' % (lang, sfx))
 
+    def _raw(self, idx):
+        """Internal (0-based) index for internal log lines; same None/int
+        handling as _disp, only without the display offset."""
+        if idx is None:
+            return '-'
+        try:
+            return int(idx)
+        except (TypeError, ValueError):
+            return idx
+
     def _disp(self, idx):
-        """Apply display_index_base offset for log messages."""
+        """Apply display_index_base offset for user-facing messages."""
         if idx is None:
             return '-'
         try:
@@ -4457,7 +4496,7 @@ class MultiAce:
             self._airlog_chew_latched.discard(_src_head)
             logging.info('[multiACE] [resistance] resume: cleared strikes/'
                          'latches of head %d only (its pause), other heads '
-                         'keep theirs' % self._disp(_src_head))
+                         'keep theirs' % self._raw(_src_head))
         self._resistance_pause_source_head = None
         self._resistance_pause_pending = None
         # Post-(re)start no-op wipe window (RESUME_NOOP_WIPE_WINDOW const
@@ -5001,7 +5040,7 @@ class MultiAce:
                 self._v2_active_rev_assist = False
                 self._fa_trace('_v2_active_rev_assist cleared by pause stop')
             logging.info('[multiACE] pause: FA stop ACE %d slot %d %s(%s)'
-                         % (self._disp(ace), self._disp(slot),
+                         % (self._raw(ace), self._raw(slot),
                             '' if ok else 'NOT ACCEPTED (3x) ', why))
             self._fa_trace('pause stop FA on ACE %d slot %d accepted=%s'
                            % (ace, slot, ok))
@@ -5471,7 +5510,7 @@ class MultiAce:
                             ent[0], ent[1])
                         logging.info('[multiACE] ACE %d: get_info '
                                      'unanswered twice, using last known '
-                                     'firmware %s' % (self._disp(idx),
+                                     'firmware %s' % (self._raw(idx),
                                                       ent[1]))
                 except Exception:
                     pass
@@ -5524,6 +5563,8 @@ class MultiAce:
                         idx, ACE_OPEN_TIMEOUT)
                     logging.info('[multiACE] open ACE %d timed out '
                                  '(serial still opening off-thread)' % idx)
+                    self._connect_error_per_ace[idx] = (
+                        'open timed out after %.0fs' % ACE_OPEN_TIMEOUT)
                     return False
                 self.reactor.pause(self.reactor.monotonic() + 0.05)
             if _open_res['err'] is not None:
@@ -5533,6 +5574,7 @@ class MultiAce:
                 return False
             self._serials[idx] = ser
             self._connected_per_ace[idx] = True
+            self._connect_error_per_ace.pop(idx, None)
             self._serial_failed_per_ace[idx] = False
             self._last_rx_ts[idx] = time.monotonic()
             self._request_ids[idx] = 0
@@ -5653,15 +5695,22 @@ class MultiAce:
                 except Exception:
                     _fire_ready()
             return True
-        except serial.serialutil.SerialException:
+        except serial.serialutil.SerialException as e:
+            # Keep the reason: a permission problem ([Errno 13]) and a
+            # vanished device read the same without it.
+            err = str(e) or type(e).__name__
             self._usb_stats['connect_failures'] += 1
-            self._usb_log.warning('CONNECT failed idx=%d SerialException', idx)
-            logging.info('[multiACE] Conn error idx=%d' % idx)
+            self._usb_log.warning('CONNECT failed idx=%d SerialException: %s',
+                                  idx, err)
+            logging.info('[multiACE] Conn error idx=%d: %s' % (idx, err))
+            self._connect_error_per_ace[idx] = err
             return False
         except Exception as e:
+            err = str(e) or type(e).__name__
             self._usb_stats['connect_failures'] += 1
-            self._usb_log.warning('CONNECT failed idx=%d error=%s', idx, str(e))
-            logging.info("ACE Error idx=%d: %s" % (idx, str(e)))
+            self._usb_log.warning('CONNECT failed idx=%d error=%s', idx, err)
+            logging.info("ACE Error idx=%d: %s" % (idx, err))
+            self._connect_error_per_ace[idx] = err
             return False
 
     def _disconnect_from(self, idx):
@@ -6160,6 +6209,17 @@ class MultiAce:
     def _handle_per_ace_failure(self, idx, err):
         was_failed = self._serial_failed_per_ace.get(idx, False)
         self._serial_failed_per_ace[idx] = True
+        # The link is gone whichever path got here. The V2 threads pre-set
+        # the failed flag, so the disconnect below is skipped for them and
+        # the connected flag used to stay True: status and web kept showing
+        # the unit as present, and the background reconnect saw it as
+        # connected and stopped.
+        self._connected_per_ace[idx] = False
+        # A lost link: keep looking for the unit afterwards. A unit that
+        # answers but stays stuck is not retried - reopening it cannot help,
+        # it needs the power cycle its message asks for.
+        if err not in ('stuck_after_reconnects', 'wait_ace_ready_timeout'):
+            self._schedule_idle_reconnect(idx)
         if not was_failed:
             # warn, not error: the reconnect ladder runs next - a red alert
             # is reserved for its FINAL outcome (comms-loss pause / give-up).
@@ -6192,7 +6252,15 @@ class MultiAce:
                   if s and s.get('ace_index') == idx]
         if not _feeds:
             logging.info('[multiACE] ACE %d comms lost but feeds no loaded '
-                         'head - print not paused' % self._disp(idx))
+                         'head - print not paused' % self._raw(idx))
+            return
+        # Without a running print there is nothing to protect: a PAUSE is
+        # refused by stock ('Cannot pause while not printing') and the
+        # popup's "then RESUME" advice has no print to resume. An already
+        # paused print needs no second pause either.
+        if not self._is_actively_printing():
+            logging.info('[multiACE] ACE %d comms lost while not printing - '
+                         'no pause' % self._raw(idx))
             return
         if not self._serial_failed_pause_sent:
             self._serial_failed_pause_sent = True
@@ -6324,6 +6392,63 @@ class MultiAce:
                 self._handle_per_ace_failure(idx, err)
         finally:
             self._reconnecting_per_ace[idx] = False
+
+    IDLE_RECONNECT_INTERVAL = 5.0
+
+    def _schedule_idle_reconnect(self, idx):
+        """Keep looking for a unit the reconnect ladder gave up on. The
+        ladder spans ~3 s, which covers a USB blip but not a power cycle
+        (a unit takes longer to enumerate again). Every
+        IDLE_RECONNECT_INTERVAL the device path is checked; once it exists
+        the unit is reopened through the same path as the ladder. Stops on
+        success, when something else reconnected the unit, or when it is
+        held for a firmware update."""
+        timers = getattr(self, '_idle_reconnect_timers', None)
+        if timers is None or idx in timers:
+            return
+
+        def _tick(eventtime):
+            nxt = eventtime + self.IDLE_RECONNECT_INTERVAL
+            if (not self._serial_failed_per_ace.get(idx, False)
+                    or idx in getattr(self, '_fw_update_hold', ())):
+                timers.pop(idx, None)
+                return self.reactor.NEVER
+            if self._reconnecting_per_ace.get(idx, False):
+                return nxt
+            try:
+                path = str(self._ace_devices[idx])
+            except Exception:
+                timers.pop(idx, None)
+                return self.reactor.NEVER
+            if not os.path.exists(path):
+                return nxt
+            self._reconnecting_per_ace[idx] = True
+            try:
+                ok = self._open_ace(
+                    idx, on_ready=lambda i=idx: self._rearm_fa_after_reconnect(i))
+            except Exception as e:
+                logging.info('[multiACE] idle reconnect ACE %d raised: %s'
+                             % (self._raw(idx), e))
+                ok = False
+            finally:
+                self._reconnecting_per_ace[idx] = False
+            if not ok:
+                return nxt
+            self._serial_failed_per_ace[idx] = False
+            self._usb_stats['errno5_recovered'] += 1
+            timers.pop(idx, None)
+            self.log_always(self._t('msg.ace_idle_reconnected',
+                                    ace=self._disp(idx)))
+            return self.reactor.NEVER
+
+        try:
+            timers[idx] = self.reactor.register_timer(
+                _tick, self.reactor.monotonic() + self.IDLE_RECONNECT_INTERVAL)
+            logging.info('[multiACE] ACE %d unreachable - retrying every '
+                         '%.0f s in the background'
+                         % (self._raw(idx), self.IDLE_RECONNECT_INTERVAL))
+        except Exception as e:
+            logging.info('[multiACE] idle reconnect schedule failed: %s' % e)
 
     def _rearm_fa_after_reconnect(self, idx):
         """After a successful reconnect of ACE idx, resume feed-assist for the
@@ -7038,6 +7163,170 @@ class MultiAce:
                 return fmt
         return ''
 
+    def _gen1_vet_firmware_ids(self, idx, result):
+        """ACE Pro with the tag tunnel: the firmware's own tag read cannot
+        tell which bay of the shared antenna answered (or replays an old
+        record). While the partner slot is occupied, our own tunnel read
+        for the slot decides:
+        - our read carries OpenSpool data -> our identity replaces it;
+        - our read found a card and read ALL its user pages without an
+          OpenSpool record while the firmware reports OpenSpool ->
+          contradiction, the firmware one is hidden;
+        - anything else (no read yet, read running, UID only) -> the
+          firmware identity is kept until a read contradicts it."""
+        try:
+            cli = (getattr(self, '_gen1_tunnel_clients', None) or {}).get(idx)
+            sup = cli.support_state() if cli is not None else None
+            if not (sup and sup[1]):
+                return
+            slots = result.get('slots') or []
+            reads = (getattr(self, '_gen1_tunnel_reads', None) or {}).get(
+                idx) or {}
+            tried = (getattr(self, '_gen1_tunnel_tried', None) or {}).get(
+                idx) or {}
+            busy_slot = (getattr(self, '_gen1_tunnel_busy_slot', None)
+                         or {}).get(idx)
+            aborted = (getattr(self, '_gen1_tunnel_aborted', None)
+                       or {}).get(idx) or ()
+            said = self._gen1_vet_said.setdefault(idx, {})
+            # Last verdict outside a running read (the hide while busy must
+            # not decide what a stopped read falls back to).
+            self._gen1_vet_settled = getattr(self, '_gen1_vet_settled', {})
+            settled = self._gen1_vet_settled.setdefault(idx, {})
+            for i, slot in enumerate(slots):
+                if not isinstance(slot, dict) or slot.get('rfid') != 2:
+                    said.pop(i, None)
+                    continue
+                partner = slots[i ^ 1] if (i ^ 1) < len(slots) else None
+                if not (isinstance(partner, dict) and not
+                        self._is_empty_status(partner.get('status', ''))):
+                    said.pop(i, None)
+                    continue
+                ent = reads.get(i) or {}
+                fw_os = (slot.get('tag_format') == 'openspool')
+                if ent.get('uid') and ent.get('material'):
+                    verdict = 'ours'
+                elif (ent.get('uid') and fw_os
+                        and ent.get('userdata_complete')):
+                    verdict = 'hide'
+                else:
+                    verdict = 'keep'
+                if busy_slot != i:
+                    settled[i] = verdict
+                if verdict == 'ours':
+                    col = str(ent.get('color') or '').strip().lstrip('#')
+                    try:
+                        rgb = [int(col[k:k + 2], 16) for k in (0, 2, 4)]
+                    except (ValueError, IndexError):
+                        rgb = [0, 0, 0]
+                    slot['type'] = ent.get('material', '')
+                    slot['color'] = rgb
+                    slot['colors'] = [rgb + [255]]
+                    slot['brand'] = ent.get('brand', '')
+                    slot['sku'] = ''
+                    slot['tag_format'] = ent.get('format') or 'openspool'
+                elif verdict == 'hide':
+                    slot['rfid'] = 1
+                    slot['type'] = ''
+                    slot['color'] = [0, 0, 0]
+                    slot['colors'] = []
+                    slot['sku'] = ''
+                    slot['brand'] = ''
+                    slot['tag_format'] = ''
+                if said.get(i) != verdict:
+                    said[i] = verdict
+                    logging.info(
+                        '[multiACE] gen1 tag tunnel: ACE %d slot %d firmware '
+                        'identity (partner occupied): %s', self._raw(idx),
+                        self._raw(i), {'ours': 'replaced by our read',
+                                       'hide': 'hidden, our read found no '
+                                               'OpenSpool record',
+                                       'keep': 'kept'}[verdict])
+        except Exception as e:
+            logging.info('[multiACE] gen1 tag tunnel: firmware id vet failed '
+                         '(ignored): %s' % e)
+
+    def _pair_tag_key(self, slot):
+        """What a firmware tag read identifies a spool by: its code (SKU or
+        card UID), else for an OpenSpool tag material plus colour. None
+        when the slot carries no usable identity."""
+        if not isinstance(slot, dict) or slot.get('rfid') != 2:
+            return None
+        sku = self._sku_canon(slot.get('sku') or '')
+        if sku:
+            return ('code', sku)
+        typ = str(slot.get('type') or '').strip().lower()
+        col = tuple((slot.get('color') or [])[:3])
+        if typ:
+            return ('data', typ, col)
+        return None
+
+    def _pair_dedupe_firmware_ids(self, idx, result):
+        """ACE Pro: the two slots of an antenna pair (slot ^ 1) share one
+        field, so the firmware often reports the partner's card for a
+        freshly inserted spool. The slot inserted LATER may not carry the
+        same identity as its partner: it shows '?' (no identity, no bind)
+        while the partner is still being identified, and stays so when
+        both report the same tag. Insert order, not report order, decides:
+        the firmware may identify the newer slot first. A spool present at
+        connect counts as the older one. Identical spools in one pair are
+        resolved by hand or by ACE_TAG_READ."""
+        try:
+            if self._is_v2(idx):
+                return
+            slots = result.get('slots') or []
+            now = self.reactor.monotonic()
+            prev = self._pair_occupied.setdefault(idx, {})
+            ins = self._pair_insert_at.setdefault(idx, {})
+            for i, slot in enumerate(slots):
+                if not isinstance(slot, dict):
+                    continue
+                occ = not self._is_empty_status(slot.get('status', ''))
+                if occ and i in prev and not prev[i]:
+                    ins[i] = now
+                elif not occ:
+                    ins.pop(i, None)
+                prev[i] = occ
+            said = self._pair_dedupe_said.setdefault(idx, {})
+            keys = [self._pair_tag_key(sl) for sl in slots]
+            for i, slot in enumerate(slots):
+                j = i ^ 1
+                verdict = None
+                if (isinstance(slot, dict) and keys[i] is not None
+                        and j < len(slots) and isinstance(slots[j], dict)
+                        and ins.get(i, 0.0) > ins.get(j, 0.0)):
+                    partner = slots[j]
+                    p_busy = (partner.get('rfid') == 3
+                              or (partner.get('status')
+                                  in self.GEN1_INSERT_STATES
+                                  and partner.get('rfid') != 2))
+                    if keys[j] is not None and keys[j] == keys[i]:
+                        verdict = 'same'
+                    elif p_busy:
+                        verdict = 'wait'
+                if verdict:
+                    slot['rfid'] = 1
+                    slot['type'] = ''
+                    slot['color'] = [0, 0, 0]
+                    slot['colors'] = []
+                    slot['sku'] = ''
+                    slot['brand'] = ''
+                    slot['tag_format'] = ''
+                if said.get(i) != verdict:
+                    said[i] = verdict
+                    if verdict:
+                        logging.info(
+                            '[multiACE] ACE %d slot %d: firmware tag read '
+                            'hidden (%s)', self._raw(idx), self._raw(i),
+                            'same tag as the earlier inserted slot %d - '
+                            'the partner card' % self._raw(j)
+                            if verdict == 'same' else
+                            'slot %d is still being identified'
+                            % self._raw(j))
+        except Exception as e:
+            logging.info('[multiACE] pair tag dedupe failed (ignored): %s'
+                         % e)
+
     def _strip_native_tag_names(self, idx, result):
         """Status-frame counterpart of the check in _v2_store_filament_read:
         a slot whose firmware-read sku is one of the on-chip decoder's
@@ -7061,7 +7350,7 @@ class MultiAce:
                         '[multiACE] [tag-data] ACE %d slot %d: %s tag decoded '
                         'by the ACE firmware (sku field carries the format '
                         'name, not an id) - dropped, bind by card UID only',
-                        self._disp(idx), self._disp(n), fmt)
+                        self._raw(idx), self._raw(n), fmt)
                 slot['sku'] = ''
                 slot['tag_format'] = fmt
         except Exception as e:
@@ -7136,7 +7425,7 @@ class MultiAce:
                 '[multiACE] [tag-data] ACE %d slot %d: %s tag decoded by the '
                 'ACE firmware (sku field carries the format name, not an id) '
                 '- binding by card UID %s',
-                self._disp(idx), self._disp(slot), _native, uid or '?')
+                self._raw(idx), self._raw(slot), _native, uid or '?')
             info['fmt'] = _native
             info['sku'] = ''
         # Firmware UID sentinel (Bambu MIFARE on 46O+, any unreadable tag
@@ -7152,7 +7441,7 @@ class MultiAce:
                     '[multiACE] [tag-data] ACE %d slot %d: firmware UID '
                     'sentinel (version 0x%04X) - sku field is the card UID '
                     '%s, not a spool id',
-                    self._disp(idx), self._disp(slot),
+                    self._raw(idx), self._raw(slot),
                     int((res.get('tag') or {}).get('field2', 0)), _suid)
                 info['sku'] = ''
                 info['fmt'] = 'mifare'
@@ -7176,7 +7465,7 @@ class MultiAce:
                 logging.info(
                     '[multiACE] [tag-data] ACE %d slot %d '
                     'sku=%s type=%s: %s',
-                    self._disp(idx), self._disp(slot),
+                    self._raw(idx), self._raw(slot),
                     info['sku'], ftype, _tag)
         # A fresh tag read is the ONE moment the physical spool
         # identifies itself - bind it here (once per read, not
@@ -7215,10 +7504,10 @@ class MultiAce:
         reads stay - they were restored from save_variables at init and
         the first connect would wipe the whole per-unit dict right after.
         The empty-slot rule in the merge remains their only eviction.
-        Gen-1 tunnel reads are session truth like a device read (the tag
-        may have been swapped while the unit was gone): dropped here."""
-        self._gen1_tunnel_reads.pop(idx, None)
+        Gen-1 tunnel reads are host reads too: they stay, the empty slot
+        evicts them (status tick); a fresh read replaces them."""
         self._gen1_tunnel_tried.pop(idx, None)
+        self._gen1_seen_empty.pop(idx, None)
         slots = self._v2_filament_info_per_ace.get(idx)
         if not slots:
             return
@@ -7227,6 +7516,59 @@ class MultiAce:
             slots.pop(slot, None)
         if not slots:
             self._v2_filament_info_per_ace.pop(idx, None)
+
+    VARS_GEN1_TAG_READS = 'ace__gen1_tag_reads'
+    _GEN1_PERSIST_KEYS = ('uid', 'format', 'material', 'color', 'brand',
+                          'page0', 'why', 'bound', 'userdata_complete')
+
+    def _persist_gen1_tag_reads(self):
+        """Write the ACE Pro tunnel reads to save_variables, so a restart
+        keeps the card UID of a spool that still sits in its slot."""
+        try:
+            out = {}
+            for idx, slots in (getattr(self, '_gen1_tunnel_reads', None)
+                               or {}).items():
+                for slot, ent in (slots or {}).items():
+                    if ent and ent.get('uid'):
+                        out['%d_%d' % (int(idx), int(slot))] = {
+                            k: ent[k] for k in self._GEN1_PERSIST_KEYS
+                            if k in ent}
+            if self.save_variables is not None:
+                self.save_variable(self.VARS_GEN1_TAG_READS, out, write=True)
+        except Exception as e:
+            logging.info('[multiACE] gen1 tag tunnel: persist failed '
+                         '(ignored): %s' % e)
+
+    def _restore_gen1_tag_reads(self):
+        try:
+            if self.save_variables is None:
+                return
+            sv = self.save_variables.allVariables.get(
+                self.VARS_GEN1_TAG_READS, None)
+            if isinstance(sv, str):
+                sv = json.loads(sv)
+            if not isinstance(sv, dict):
+                return
+            now = self.reactor.monotonic()
+            n = 0
+            for key, ent in sv.items():
+                try:
+                    idx, slot = (int(x) for x in str(key).split('_', 1))
+                except ValueError:
+                    continue
+                if not isinstance(ent, dict) or not ent.get('uid'):
+                    continue
+                e = {k: ent[k] for k in self._GEN1_PERSIST_KEYS if k in ent}
+                e['ts'] = now
+                e['restored'] = True
+                self._gen1_tunnel_reads.setdefault(idx, {})[slot] = e
+                n += 1
+            if n:
+                logging.info('[multiACE] gen1 tag tunnel: %d read(s) '
+                             'restored from save_variables', n)
+        except Exception as e:
+            logging.info('[multiACE] gen1 tag tunnel: restore failed '
+                         '(ignored): %s' % e)
 
     def _persist_tag_reads(self):
         """Write every HOST read of the cache to save_variables (one dict,
@@ -7326,8 +7668,8 @@ class MultiAce:
         cache = self._v2_filament_info_per_ace.get(idx) or {}
         done = [s for s in sorted(targets) if s in cache]
         logging.info('[multiACE] [spool] rescan ACE %d: resolving bindings '
-                     'for slot(s) %s', self._disp(idx),
-                     ','.join(str(self._disp(s)) for s in done) or 'none')
+                     'for slot(s) %s', self._raw(idx),
+                     ','.join(str(self._raw(s)) for s in done) or 'none')
         self._resolve_tag_binds(
             idx, [(s, (cache.get(s) or {}).get('sku'), cache.get(s))
                   for s in done])
@@ -7351,7 +7693,7 @@ class MultiAce:
             except Exception as e:
                 logging.info('[multiACE] [spool] bind ACE %d slot %d failed '
                              '(ignored): %s'
-                             % (self._disp(idx), self._disp(slot), e))
+                             % (self._raw(idx), self._raw(slot), e))
 
     def _v2_rfid_boot_rescan(self, idx, slots):
         """Once per CONNECTION (boot and reconnect - armed in _open_ace,
@@ -7394,8 +7736,8 @@ class MultiAce:
                 return
             logging.info(
                 '[multiACE] [spool] tag rescan on connect: ACE %d slot(s) '
-                '%s (occupied, no device read)', self._disp(idx),
-                ','.join(str(self._disp(t)) for t in targets))
+                '%s (occupied, no device read)', self._raw(idx),
+                ','.join(str(self._raw(t)) for t in targets))
             # Collect first, decide afterwards (see _v2_store_filament_read).
             # The timer is the safety net: a dropped identify would otherwise
             # leave the set non-empty forever and no slot of this unit would
@@ -7408,7 +7750,7 @@ class MultiAce:
                     logging.info(
                         '[multiACE] [spool] rescan ACE %d: %d slot(s) never '
                         'answered - deciding with what arrived',
-                        self._disp(_idx),
+                        self._raw(_idx),
                         len(self._rescan_bind_pending.get(_idx) or ()))
                     self._rescan_flush_binds(_idx)
                 return self.reactor.NEVER
@@ -7420,8 +7762,8 @@ class MultiAce:
                     if not res.get('type'):
                         logging.info(
                             '[multiACE] [spool] rescan ACE %d slot %d: '
-                            'no tag data (%r)', self._disp(_idx),
-                            self._disp(_slot), (response or {}).get('msg'))
+                            'no tag data (%r)', self._raw(_idx),
+                            self._raw(_slot), (response or {}).get('msg'))
                         return
                     # Shared antenna: the reply may be the NEIGHBOUR's
                     # parked tag. Same sku as the neighbour's cached read
@@ -7433,8 +7775,8 @@ class MultiAce:
                         logging.info(
                             '[multiACE] [spool] rescan ACE %d slot %d: '
                             'identify answered with the neighbour\'s tag '
-                            '(sku %s) - ignored', self._disp(_idx),
-                            self._disp(_slot), res.get('sku'))
+                            '(sku %s) - ignored', self._raw(_idx),
+                            self._raw(_slot), res.get('sku'))
                         return
                     # Device-coupled (host=False): a bare identify is not
                     # a verified read of THIS slot, so it must not be
@@ -8045,6 +8387,8 @@ class MultiAce:
                 prev_slots = prev_info.get('slots', [])
                 self._merge_v2_filament_info(idx, result)
                 self._strip_native_tag_names(idx, result)
+                self._gen1_vet_firmware_ids(idx, result)
+                self._pair_dedupe_firmware_ids(idx, result)
                 self._v1_tag_bind_from_status(idx, result)
                 # Gen-1 third-party fallback: a slot the firmware could not
                 # identify (or whose SKU matches no table entry) gets ONE
@@ -8145,7 +8489,7 @@ class MultiAce:
                         target_heads = self._get_heads_for_ace_slot(idx, i)
                         if target_heads:
                             logging.info(self._t('msg.find_rfid_target_heads',
-                                ace=self._disp(idx), slot=self._disp(i),
+                                ace=self._raw(idx), slot=self._raw(i),
                                 heads=target_heads))
                             logging.info(self._t('msg.raw_slot_dump', slot=new_slot))
                             new_type = new_slot.get('type', 'PLA')
@@ -8234,7 +8578,7 @@ class MultiAce:
                                     push_brand   = new_slot.get('brand', 'Generic')
                                     push_subtype = new_slot.get('subtype', '')
                                 logging.info(self._t('msg.find_rfid_fallback',
-                                    slot=self._disp(i), head=fb_head))
+                                    slot=self._raw(i), head=fb_head))
                                 logging.info(self._t('msg.raw_slot_dump', slot=new_slot))
                                 self._ptc_push_guarded(
                                     fb_head, push_type, push_color, push_brand,
@@ -8246,6 +8590,10 @@ class MultiAce:
                     # Diagnostic (klippy.log only): every real gate flip, so an
                     # "insert did nothing" can be told apart from "insert not
                     # seen". Skips the UNKNOWN->x startup step (noise).
+                    if _gate_prev != gate_list[i]:
+                        _gk = (idx, i)
+                        self._gen1_gate_gen[_gk] = \
+                            self._gen1_gate_gen.get(_gk, 0) + 1
                     if _gate_prev != gate_list[i] and _gate_prev != GATE_UNKNOWN:
                         logging.info('[multiACE] [gate] ACE %d slot %d: %s -> '
                                      '%s (active=%s status=%r rfid=%s)'
@@ -8550,14 +8898,14 @@ class MultiAce:
                                 '[multiACE] head %d: cleared SpoolLink '
                                 'spool_id=%d stamp - multiace world '
                                 'counts itself (mode=%s)'
-                                % (self._disp(_rh), _rid,
+                                % (self._raw(_rh), _rid,
                                    getattr(self, 'spool_mode', 'local')))
                         except Exception as e:
                             self._ptc_stamp_clear_block[_rh] = _rid
                             logging.warning(
                                 '[multiACE] head %d: spool_id stamp clear '
                                 'rejected - not repeating for this stamp: '
-                                '%s' % (self._disp(_rh), e))
+                                '%s' % (self._raw(_rh), e))
                 except Exception:
                     pass
             try:
@@ -10861,7 +11209,7 @@ class MultiAce:
             logging.info(
                 '[multiACE] head %d is flagged official - forcing '
                 'our identity through (identity_priority=multiace)'
-                % self._disp(head))
+                % self._raw(head))
         elif _n == FORCE_OFFICIAL_MAX:
             self._force_official_count[head] = _n + 1
             logging.warning(
@@ -10869,7 +11217,7 @@ class MultiAce:
                 'after %d forced pushes - something is re-stamping '
                 'it. Leaving it alone; set identity_priority: '
                 'spoollink to stop trying.'
-                % (self._disp(head), FORCE_OFFICIAL_MAX))
+                % (self._raw(head), FORCE_OFFICIAL_MAX))
         return saved
 
     def _spoollink_active(self):
@@ -10923,7 +11271,7 @@ class MultiAce:
                         '[multiACE] [spoollink] head %d: feeder reader has '
                         'spool_id=%d, our binding says %d - reader wins, '
                         'not sending (%s)'
-                        % (self._disp(head), _cur, int(smid), why))
+                        % (self._raw(head), _cur, int(smid), why))
                     self._spoollink_sent.pop(head, None)
                     return False
             wh = self.printer.lookup_object('webhooks')
@@ -10936,12 +11284,12 @@ class MultiAce:
                 'n': int(ent.get('n', 0)) + 1}
             logging.info('[multiACE] [spoollink] head %d -> resolver '
                          'spool_id=%d (%s, attempt %d)'
-                         % (self._disp(head), smid, why,
+                         % (self._raw(head), smid, why,
                             self._spoollink_sent[head]['n']))
             return True
         except Exception as e:
             logging.warning('[multiACE] [spoollink] head %d resolver call '
-                            'failed (%s): %s' % (self._disp(head), why, e))
+                            'failed (%s): %s' % (self._raw(head), why, e))
             return False
 
     def _spoollink_clear(self, head):
@@ -10963,34 +11311,34 @@ class MultiAce:
             if fd is not None and hasattr(fd, 'request_clear_filament_info'):
                 fd.request_clear_filament_info(int(head))
                 logging.info('[multiACE] [spoollink] head %d cleared via '
-                             'filament_detect' % self._disp(head))
+                             'filament_detect' % self._raw(head))
                 return True
             logging.info('[multiACE] [spoollink] head %d: filament_detect '
                          '%s - trying the direct PTC clear'
-                         % (self._disp(head),
+                         % (self._raw(head),
                             'not found' if fd is None
                             else 'has no request_clear_filament_info'))
         except Exception as e:
             logging.info('[multiACE] [spoollink] head %d filament_detect '
                          'clear failed (%s) - trying the direct PTC clear'
-                         % (self._disp(head), e))
+                         % (self._raw(head), e))
         try:
             ptc = self.printer.lookup_object('print_task_config', None)
             cb = getattr(ptc, '_rfid_filament_info_update_cb', None)
             if ptc is None or cb is None:
                 logging.info('[multiACE] [spoollink] head %d clear: no PTC '
                              'callback either - falling back to the normal '
-                             'push' % self._disp(head))
+                             'push' % self._raw(head))
                 return False
             from extras import filament_protocol as _fp
             cb(int(head), dict(_fp.FILAMENT_INFO_STRUCT), is_clear=True)
             logging.info('[multiACE] [spoollink] head %d cleared via direct '
-                         'PTC callback' % self._disp(head))
+                         'PTC callback' % self._raw(head))
             return True
         except Exception as e:
             logging.info('[multiACE] [spoollink] head %d clear failed on '
                          'both rungs (falling back to normal push): %s'
-                         % (self._disp(head), e))
+                         % (self._raw(head), e))
             return False
 
     def _spoollink_verify(self, head):
@@ -11014,7 +11362,7 @@ class MultiAce:
                 logging.info(
                     '[multiACE] [spoollink] head %d: feeder reader set '
                     'spool_id=%d (ours was %s) - reader wins, resends '
-                    'stopped' % (self._disp(head), _cur, ent.get('sid')))
+                    'stopped' % (self._raw(head), _cur, ent.get('sid')))
                 return
             now = self.reactor.monotonic()
             if now - float(ent.get('t', 0.)) < SPOOLLINK_RESEND_S:
@@ -11027,7 +11375,7 @@ class MultiAce:
                 logging.warning(
                     '[multiACE] [spoollink] head %d never took spool_id=%s '
                     'after %d sends - is the SpoolLink service healthy?'
-                    % (self._disp(head), ent.get('sid'), n))
+                    % (self._raw(head), ent.get('sid'), n))
         except Exception:
             pass
 
@@ -11127,13 +11475,13 @@ class MultiAce:
                         logging.info(
                             '[multiACE] head %d keeps spool id %d - same '
                             'identity, the binding still fits'
-                            % (self._disp(_ph), _sid))
+                            % (self._raw(_ph), _sid))
                     elif _sid > 0:
                         logging.info(
                             '[multiACE] head %d drops spool id %d - a '
                             'different filament is in it now, the binding '
                             'would point at the wrong spool'
-                            % (self._disp(_ph), _sid))
+                            % (self._raw(_ph), _sid))
                 # --- SpoolLink mode: the resolver is the setter for a head
                 # whose slot has a bound Spoolman spool (decision B). Our
                 # own push is converted into ONE resolver call (deduped on
@@ -11188,7 +11536,7 @@ class MultiAce:
                     logging.info(
                         '[multiACE] head %d is flagged official - leaving it '
                         'to SpoolLink (identity_priority=spoollink)'
-                        % self._disp(_ph))
+                        % self._raw(_ph))
                 elif ('FORCE' not in params
                         and self._identity_mode() == 'multiace'):
                     # NON-ACE heads force too: a factory-tag read can stamp
@@ -11874,7 +12222,7 @@ class MultiAce:
         # successfully applied setting left no trace and "did it even arrive?"
         # was unanswerable from a log.
         logging.info('[multiACE] auto-dry ACE %d: %s'
-                     % (self._disp(idx), eff))
+                     % (self._raw(idx), eff))
         # One message per role: the parameter sets are disjoint, so a single
         # line would always print half of it as noise. NOTE master is an
         # INDEX - `if eff['master']` would read -1 (= none) as truthy. A Pro
@@ -11944,7 +12292,7 @@ class MultiAce:
         # feeder pushed X at time T" (and for expiry investigations).
         logging.info('[multiACE] external humidity ACE %d: %.1f%%rH%s, '
                      'TTL %.0fs%s'
-                     % (self._disp(idx), rh, temp_txt, ttl,
+                     % (self._raw(idx), rh, temp_txt, ttl,
                         '' if clamped is None else
                         ' (clamped from %s)' % clamped))
         self.log_always(self._t('msg.ace_humidity_set',
@@ -12229,22 +12577,15 @@ class MultiAce:
                         % ('ON' if enable else 'OFF', sfx))
 
     cmd_ACE_SET_TAG_TUNNEL_help = (
-        '[multiACE] Enable/disable the Gen-1 (ACE Pro) tag tunnel '
-        '(ENABLE=0|1): ON gives a slot the firmware could not identify ONE '
-        'opportunistic tag read through the community firmware RC522 tunnel '
-        '(CV1.3.87x) per insert, so third-party spools surface with their '
-        'card UID (and OpenSpool material/colour). ACE_TAG_READ works with '
-        'the flag off too. Live + write-through (writes the gen1_tag_tunnel '
-        'config line; PERSIST=0 = until restart).')
+        '[multiACE] Obsolete: the Gen-1 (ACE Pro) tag tunnel is always on '
+        'for units running the community tunnel firmware (CV1.3.87x); '
+        'flash the stock firmware to go without it.')
 
     def cmd_ACE_SET_TAG_TUNNEL(self, gcmd):
-        enable = bool(gcmd.get_int('ENABLE', 1, minval=0, maxval=1))
-        self.gen1_tag_tunnel = enable
-        sfx = self._wt_persist(gcmd, 'gen1_tag_tunnel', _wt_fmt_bool(enable),
-                               None, shadow_attr='_gen1_tag_tunnel_cfg',
-                               shadow_val=enable)
-        self.log_always('[multiACE] Gen-1 tag tunnel %s%s'
-                        % ('ON' if enable else 'OFF', sfx))
+        # Kept so existing macros do not fail with "Unknown command".
+        self.log_always('[multiACE] the Gen-1 tag tunnel has no switch any '
+                        'more: it is always on for an ACE Pro running the '
+                        'tunnel firmware (CV1.3.87x) and inactive otherwise')
 
     def cmd_ACE_SET_TAG_WRITE(self, gcmd):
         """Defaults for ACE_TAG_WRITE / the picker's write button. Each
@@ -12758,9 +13099,9 @@ class MultiAce:
                 _a, _sl = k.split('_')
                 logging.info('[multiACE] [spool] #%s moved from ACE %d / '
                              'Slot %d to ACE %d / Slot %d'
-                             % (sid, self._disp(int(_a)), self._disp(int(_sl)),
-                                self._disp(int(key.split('_')[0])),
-                                self._disp(int(key.split('_')[1]))))
+                             % (sid, self._raw(int(_a)), self._raw(int(_sl)),
+                                self._raw(int(key.split('_')[0])),
+                                self._raw(int(key.split('_')[1]))))
             except Exception:
                 pass
         return moved_from
@@ -12965,7 +13306,7 @@ class MultiAce:
             self._head_tag_seen[head] = cands[0]
             logging.info(
                 '[multiACE] [spool] feeder read on head %d: card_uid=%s '
-                'sku_int=%s' % (self._disp(head), uid_hex or '-',
+                'sku_int=%s' % (self._raw(head), uid_hex or '-',
                                 _sku_i or '-'))
             # Only the SPOOLLINK world defers to a SpoolLink resolution -
             # in multiace (local/spoolman) the heartbeat takes the stamp
@@ -12975,7 +13316,7 @@ class MultiAce:
                 logging.info(
                     '[multiACE] [spool] head %d: SpoolLink already resolved '
                     'this card (spool_id=%d) - SL world, no table bind'
-                    % (self._disp(head), self._ptc_spool_id_for(head)))
+                    % (self._raw(head), self._ptc_spool_id_for(head)))
                 return
             sid = spool = None
             code = cands[0]
@@ -13087,6 +13428,24 @@ class MultiAce:
                             _line += (' - slot stays bound to #%s %s via its '
                                       'sku %s' % (_kb, self._spool_label(_ks),
                                                   (_ks.get('sku') or '-')))
+                    # The spool bound here carries no code at all (added or
+                    # assigned before any read): the code read at its slot is
+                    # its own - learn it instead of reporting a no-match.
+                    key = self._spool_key(ace_idx, slot)
+                    _lsid = self._spool_binding.get(key)
+                    _lsp = (self._spools.get(_lsid) if _lsid is not None
+                            else None)
+                    if _lsp is not None and not self._sku_codes(
+                            _lsp.get('sku')):
+                        _lsp['sku'] = (sku or '').strip()
+                        self._save_spool_db(backup=True)
+                        logging.info('[multiACE] [spool] learned code %r for '
+                                     'spool #%s (bound to ACE %d slot %d, '
+                                     'had no code)', _lsp['sku'], _lsid,
+                                     self._raw(ace_idx), self._raw(slot))
+                        self.log_always('[multiACE] spool #%s: learned tag '
+                                        'code %s' % (_lsid, _lsp['sku']))
+                        return _lsp
                     logging.info(_line)
                     if (getattr(self, 'spoolman_url', '') or '').strip():
                         self.log_always(_line)
@@ -13124,8 +13483,8 @@ class MultiAce:
                             logging.info(
                                 '[multiACE] [spool] unbound #%s from ACE %d '
                                 'slot %d (tag %r matches nothing)',
-                                _bound_sid, self._disp(ace_idx),
-                                self._disp(slot), (sku or '').strip())
+                                _bound_sid, self._raw(ace_idx),
+                                self._raw(slot), (sku or '').strip())
                 return None
             key = self._spool_key(ace_idx, slot)
             if self._spool_binding.get(key) != sid:
@@ -13185,7 +13544,7 @@ class MultiAce:
                             'bound at ACE %d slot %d, but that slot reads '
                             'sku %r - releasing for re-bind',
                             self._spool_label(spool), sid,
-                            self._disp(_held[0]), self._disp(_held[1]),
+                            self._raw(_held[0]), self._raw(_held[1]),
                             _held_read)
                     else:
                         if self._spool_conflict_said.get(key) != sid:
@@ -13202,8 +13561,8 @@ class MultiAce:
                     spool=self._spool_label(spool), id=sid,
                     ace=self._disp(ace_idx), slot=self._disp(slot)))
                 logging.info('[multiACE] [spool] bound #%s to ACE %d slot %d '
-                             'by tag %r', sid, self._disp(ace_idx),
-                             self._disp(slot), (sku or '').strip())
+                             'by tag %r', sid, self._raw(ace_idx),
+                             self._raw(slot), (sku or '').strip())
                 if _stale_held is not None:
                     self._spool_retry_bind_at(*_stale_held)
             return spool
@@ -13294,75 +13653,470 @@ class MultiAce:
             logging.info('[multiACE] gen1 tag tunnel: client init failed '
                          '(%s)' % e)
             return None
+        # A tunnel session holds the reader the firmware needs for its own
+        # insert handling: stop it the moment an insert starts.
+        cli.abort_check = lambda i=idx: self._gen1_session_abort(i)
         self._gen1_tunnel_clients[idx] = cli
         return cli
 
-    def _gen1_tunnel_status_tick(self, idx, result):
-        """Pro' status hook: decide whether any slot needs ONE tunnel read.
+    # Slot states of an ACE Pro insert: the firmware pulls the filament in
+    # and identifies the tag with the same reader the tunnel holds.
+    GEN1_INSERT_STATES = ('preload', 'shifting')
 
-        Candidate = a slot that is occupied and whose tag the firmware did
-        NOT identify (rfid != 2 / empty sku) or whose SKU matches no table
-        entry. Per occupancy session (empty -> present) there is AT MOST
-        ONE attempt: the tag only answers while it faces the coil, the
-        firmware rotates the spool during its own insert procedure, and a
-        Gen-1 has no host-side motor control to search for it later.
-        ACE_TAG_READ is the explicit retry. Never runs on V2; never runs
-        with the feature off; never touches _info_per_ace.
+    def _gen1_unit_gen(self, idx):
+        return tuple(self._gen1_gate_gen.get((idx, s), 0) for s in range(4))
 
-        Binding is gated on ATTRIBUTION: the two slots of an antenna pair
-        (0/2 and 1/3) share one RF path, so a read can belong to either
-        bay. The automatic read binds the slot's spool ONLY when the
-        partner slot (slot ^ 1) reads EMPTY in the same status; an
-        occupied OR unknown/absent partner still stores and surfaces the
-        read but does not bind (a wrong first binding has no repair path
-        here - see the tunnel report, section 4)."""
+    def _gen1_insert_running(self, idx, slots=None, skip=()):
+        """The slot index of a running firmware insert on the unit, or
+        None. Slots in `skip` are not looked at."""
         try:
-            if not self.gen1_tag_tunnel or self._is_v2(idx):
-                return
-            if not self._connected_per_ace.get(idx):
-                return
-            if idx in self._gen1_tunnel_busy:
+            if slots is None:
+                slots = (self._info_per_ace.get(idx) or {}).get('slots') \
+                    or []
+            for n, sl in enumerate(slots):
+                if n in skip:
+                    continue
+                st = str((sl or {}).get('status', '') or '').lower()
+                if st in self.GEN1_INSERT_STATES:
+                    return n
+        except Exception:
+            return None
+        return None
+
+    def _gen1_session_begin(self, idx):
+        self._gen1_session_gen = getattr(self, '_gen1_session_gen', {})
+        self._gen1_session_gen[idx] = self._gen1_unit_gen(idx)
+        self._gen1_own_lanes = getattr(self, '_gen1_own_lanes', {})
+        self._gen1_own_lanes[idx] = set()
+
+    def _gen1_session_abort(self, idx):
+        """Abort reason for a running tunnel session, or ''. Lanes the
+        session moved itself are skipped: the ACE Pro reports our own move
+        as 'shifting'. A real insert on such a lane flips its gate, which
+        the gate check below still catches."""
+        own = (getattr(self, '_gen1_own_lanes', None) or {}).get(idx) or ()
+        n = self._gen1_insert_running(idx, skip=own)
+        if n is not None:
+            return 'insert running on slot %d' % n
+        snap = (getattr(self, '_gen1_session_gen', None) or {}).get(idx)
+        if snap is not None and snap != self._gen1_unit_gen(idx):
+            return 'a gate of the unit changed'
+        return ''
+
+    def _gen1_wait_no_insert(self, idx, timeout):
+        """Wait until no firmware insert runs on the unit."""
+        t0 = self.reactor.monotonic()
+        while self._gen1_insert_running(idx) is not None:
+            if self.reactor.monotonic() - t0 > timeout:
+                return False
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+        return True
+
+    def _gen1_tunnel_status_tick(self, idx, result):
+        """Pro' status hook: bookkeeping only, no tunnel session.
+
+        Every tunnel transceive blocks the CV1.3.871 firmware for about
+        7 s (its lamps blink, its gates flicker), and a full read holds
+        about ten of them. So nothing reads automatically, neither at
+        connect nor after an insert: a tag is read only by ACE_TAG_READ
+        (the web Read button). This hook only forgets the read of a slot
+        whose spool left, so the next spool there starts clean."""
+        try:
+            if self._is_v2(idx):
                 return
             tried = self._gen1_tunnel_tried.setdefault(idx, {})
             reads = self._gen1_tunnel_reads.get(idx) or {}
-            slots = result.get('slots') or []
-            for i, slot in enumerate(slots):
+            n_reads = len(reads)
+            seen_empty = self._gen1_seen_empty.setdefault(idx, set())
+            aborted = self._gen1_tunnel_aborted.setdefault(idx, set())
+            for i, slot in enumerate(result.get('slots') or []):
                 if not isinstance(slot, dict):
                     continue
                 if self._is_empty_status(slot.get('status', '')):
-                    # Occupancy ended: the next spool is a new read.
                     tried.pop(i, None)
                     reads.pop(i, None)
-                    continue
-                sku = slot.get('sku') if slot.get('rfid') == 2 else ''
-                if self._sku_canon(sku):
-                    _, sp = self._spool_by_sku(sku)
-                    if sp is not None:
-                        continue       # firmware read a tag we know
-                # No vendor tag, or one no entry carries: worth a probe.
-                if tried.get(i):
-                    continue
-                # Shared-antenna attribution: the partner bay (slot ^ 1)
-                # must read empty; occupied OR unknown/absent is NOT
-                # empty (conservative - do not bind a possibly-wrong read).
-                partner = slots[i ^ 1] if (i ^ 1) < len(slots) else None
-                partner_empty = (isinstance(partner, dict)
-                                 and self._is_empty_status(
-                                     partner.get('status', '')))
-                tried[i] = True
-                self._gen1_tunnel_schedule(idx, i, bind=partner_empty)
-                # ONE session per unit at a time: the next candidate (if
-                # any) gets its attempt on a following heartbeat.
-                break
+                    seen_empty.add(i)
+                    aborted.discard(i)
             if reads:
                 self._gen1_tunnel_reads[idx] = reads
             elif idx in self._gen1_tunnel_reads:
                 self._gen1_tunnel_reads.pop(idx, None)
+            if len(reads) != n_reads:
+                self._persist_gen1_tag_reads()     # a spool left
         except Exception as e:
             logging.info('[multiACE] gen1 tag tunnel: status tick failed '
                          '(ignored): %s' % e)
 
-    def _gen1_tunnel_schedule(self, idx, slot, bind=True):
+    # Gen-1 search: the ACE Pro has no tag search of its own, so a slot
+    # whose card is not in front of the antenna gets its spool rotated
+    # forward in small steps, SELECT after each, then pulled back by the
+    # same amount. Bounded well below the shortest path to a combiner.
+    GEN1_SEARCH_STEP_MM = 20
+    GEN1_SEARCH_MAX_MM = 650
+    GEN1_SEARCH_SPEED = 30
+    # After an insert the ACE Pro runs its own preload (status 'preload')
+    # for well over 20 s; the read waits for 'ready' before it starts.
+    GEN1_INSERT_READY_WAIT = 120.0
+    # A manual ACE_TAG_READ waits this long for a running read to finish.
+    GEN1_MANUAL_BUSY_WAIT = 180.0
+
+    def _gen1_lane_movable(self, idx, slot):
+        """May the search rotate this lane? Not during a print, not when
+        the slot feeds a head."""
+        try:
+            ps = self.printer.lookup_object('print_stats', None)
+            if ps is not None and (getattr(ps, 'state', '') or '').lower() \
+                    in ('printing', 'paused'):
+                return False
+            if self._get_heads_for_ace_slot(idx, slot):
+                return False
+        except Exception:
+            return False
+        return bool(self._connected_per_ace.get(idx))
+
+    def _gen1_print_active(self):
+        try:
+            ps = self.printer.lookup_object('print_stats', None)
+            return ps is not None and (getattr(ps, 'state', '') or '') \
+                .lower() in ('printing', 'paused')
+        except Exception:
+            return False
+
+    def _gen1_slot_status(self, idx, slot):
+        try:
+            slots = (self._info_per_ace.get(idx) or {}).get('slots') or []
+            return str((slots[slot] or {}).get('status', '') or '')
+        except Exception:
+            return ''
+
+    def _gen1_wait_ready(self, idx, slot, timeout):
+        """Wait until the slot reports 'ready' (the firmware's own insert
+        preload is over). Returns True when ready, False on timeout or
+        when the slot went empty. Logs how long it took."""
+        t0 = self.reactor.monotonic()
+        first = self._gen1_slot_status(idx, slot)
+        while True:
+            st = self._gen1_slot_status(idx, slot)
+            if st == 'ready':
+                if st != first:
+                    logging.info('[multiACE] gen1 tag tunnel: ACE %d slot %d '
+                                 'ready after %.1fs (was %s)', idx, slot,
+                                 self.reactor.monotonic() - t0, first or '?')
+                return True
+            if self._is_empty_status(st):
+                logging.info('[multiACE] gen1 tag tunnel: ACE %d slot %d '
+                             'emptied while waiting for ready', idx, slot)
+                return False
+            if self.reactor.monotonic() - t0 > timeout:
+                logging.info('[multiACE] gen1 tag tunnel: ACE %d slot %d not '
+                             'ready after %.0fs (%s)',
+                             idx, slot, timeout, st or '?')
+                return False
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+    # The pull-back after a search must not give up while the unit is busy
+    # with something else (a neighbour slot's preload answers FORBIDDEN).
+    GEN1_PULLBACK_PATIENCE = 60.0
+
+    def _gen1_move(self, idx, slot, mm, method, patience=None, gen=None):
+        """One V1 feed_filament / unwind_filament, waited for. Only
+        msg=success counts as a move. FORBIDDEN (busy) is retried a few
+        times, or for up to `patience` seconds when given; msg=empty (no
+        filament in the slot) ends at once. `gen` = the slot's gate counter
+        at search start: a gate flip (spool pulled or re-inserted) ends the
+        move unsent. Returns True when the move ran."""
+        speed = self.GEN1_SEARCH_SPEED
+        until = (self.reactor.monotonic() + float(patience)
+                 if patience else None)
+        attempt = 0
+        while True:
+            attempt += 1
+            if until is None:
+                if attempt > 4:
+                    break
+            elif attempt > 1 and self.reactor.monotonic() > until:
+                break
+            if gen is not None and \
+                    self._gen1_gate_gen.get((idx, slot), 0) != gen:
+                logging.info('[multiACE] gen1 search: ACE %d slot %d gate '
+                             'changed - %s %dmm not sent', idx, slot,
+                             method, int(mm))
+                return False
+            box = {}
+
+            def _cb(*args, **kw):
+                box['r'] = kw.get('response', args[-1] if args else None)
+
+            try:
+                self.send_request_to(idx, {
+                    'method': method,
+                    'params': {'index': slot, 'length': int(mm),
+                               'speed': speed}}, _cb)
+            except Exception as e:
+                logging.info('[multiACE] gen1 search: %s send failed on ACE '
+                             '%d: %s', method, idx, e)
+                return False
+            deadline = self.reactor.monotonic() + 3.0
+            while 'r' not in box and self.reactor.monotonic() < deadline:
+                self.reactor.pause(self.reactor.monotonic() + 0.02)
+            resp = box.get('r')
+            msg = (str(resp.get('msg', '') or '').strip().upper()
+                   if isinstance(resp, dict) else '')
+            ok = (isinstance(resp, dict) and resp.get('code', -1) == 0
+                  and msg in ('SUCCESS', 'OK', ''))
+            if isinstance(resp, dict) and msg == 'EMPTY':
+                logging.info('[multiACE] gen1 search: ACE %d slot %d %s '
+                             '%dmm refused - slot empty', idx, slot,
+                             method, int(mm))
+                return False
+            if ok:
+                try:
+                    self._gen1_own_lanes.setdefault(idx, set()).add(slot)
+                except AttributeError:
+                    pass
+                if attempt > 1:
+                    logging.info('[multiACE] gen1 search: ACE %d slot %d %s '
+                                 '%dmm accepted on attempt %d', idx, slot,
+                                 method, int(mm), attempt)
+                self.reactor.pause(self.reactor.monotonic()
+                                   + float(mm) / speed + 0.4)
+                return True
+            self.reactor.pause(self.reactor.monotonic() + 1.0)
+        logging.info('[multiACE] gen1 search: ACE %d slot %d %s %dmm '
+                     'rejected', idx, slot, method, int(mm))
+        return False
+
+    # A card at the edge of the field answers SELECT but its page read
+    # fails: re-read further in, then just before the hit (the ACE 2
+    # centres the same way).
+    GEN1_NUDGE_STEPS = (20, 20, -60)
+    # Partner rotation that decides whose card answers (like the ACE 2
+    # neighbour rotation).
+    GEN1_PARTNER_MAX_MM = 200
+
+    def _gen1_unit_idle(self, idx):
+        """Every slot of the unit is idle (ready or empty): the ACE Pro
+        refuses motor commands unit-wide while any slot still moves."""
+        try:
+            slots = (self._info_per_ace.get(idx) or {}).get('slots') or []
+            for sl in slots:
+                st = str((sl or {}).get('status', '') or '')
+                if st and st != 'ready' and not self._is_empty_status(st):
+                    return False
+        except Exception:
+            return True
+        return True
+
+    def _gen1_wait_unit_idle(self, idx, timeout):
+        t0 = self.reactor.monotonic()
+        while not self._gen1_unit_idle(idx):
+            if self.reactor.monotonic() - t0 > timeout:
+                logging.info('[multiACE] gen1 tag tunnel: ACE %d still busy '
+                             'after %.0fs', idx, timeout)
+                return False
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+        if self.reactor.monotonic() - t0 > 1.0:
+            logging.info('[multiACE] gen1 tag tunnel: ACE %d idle after '
+                         '%.1fs', idx, self.reactor.monotonic() - t0)
+        return True
+
+    def _gen1_lane_shift(self, idx, slot, mm, patience=None, gen=None):
+        """Move a lane by mm (forward > 0, back < 0)."""
+        if not mm:
+            return True
+        return self._gen1_move(idx, slot, abs(mm),
+                               'feed_filament' if mm > 0
+                               else 'unwind_filament', patience=patience,
+                               gen=gen)
+
+    def _gen1_search_read(self, cli, idx, slot, skip_uids=(), say=None):
+        """Rotate the spool forward until a card answers, read it, pull the
+        lane back by the distance moved. A card that answers but cannot be
+        read is re-read at a few positions around the hit. Returns the read
+        dict or None."""
+        if not self._gen1_lane_movable(idx, slot):
+            return None
+        if not (self._gen1_wait_ready(idx, slot, self.GEN1_INSERT_READY_WAIT)
+                and self._gen1_wait_unit_idle(
+                    idx, self.GEN1_INSERT_READY_WAIT)):
+            logging.info('[multiACE] gen1 search: ACE %d slot %d not '
+                         'ready (%s) - no search', idx, slot,
+                         self._gen1_slot_status(idx, slot) or '?')
+            return None
+        pos = {'mm': 0}
+        res = None
+        # The slot's gate counter now: a pulled or re-inserted spool ends
+        # the search, and a different spool is never pulled back.
+        gen = self._gen1_gate_gen.get((idx, slot), 0)
+        if say:
+            say('[multiACE] ACE %d slot %d: rotating the spool to find the '
+                'tag' % (self._disp(idx), self._disp(slot)))
+
+        def _unreadable():
+            return (getattr(cli, 'last_reason', '') or '').startswith(
+                'card selected')
+
+        def _stop():
+            return bool(getattr(cli, 'aborted', '')) or \
+                bool(getattr(cli, 'no_reply', False)) or \
+                self._gen1_gate_gen.get((idx, slot), 0) != gen
+
+        def _nudge():
+            for d in self.GEN1_NUDGE_STEPS:
+                if pos['mm'] + d < 0:
+                    continue
+                if _stop() or not self._gen1_lane_shift(idx, slot, d,
+                                                        gen=gen):
+                    return None
+                pos['mm'] += d
+                r = cli.read_slot(slot, skip_uids=skip_uids)
+                if r:
+                    logging.info('[multiACE] gen1 search ACE %d slot %d: '
+                                 're-read at %+dmm succeeded', idx, slot,
+                                 pos['mm'])
+                    return r
+            return None
+
+        try:
+            if _unreadable():
+                res = _nudge()
+            moved_fwd = 0
+            while res is None and moved_fwd < self.GEN1_SEARCH_MAX_MM \
+                    and not _unreadable() and not _stop():
+                step = min(self.GEN1_SEARCH_STEP_MM,
+                           self.GEN1_SEARCH_MAX_MM - moved_fwd)
+                if not self._gen1_lane_shift(idx, slot, step, gen=gen):
+                    break
+                pos['mm'] += step
+                moved_fwd += step
+                res = cli.read_slot(slot, skip_uids=skip_uids)
+                if res is None and _unreadable():
+                    res = _nudge()
+                    break
+        finally:
+            back = -pos['mm']
+            if back and self._gen1_gate_gen.get((idx, slot), 0) != gen:
+                logging.info('[multiACE] gen1 search: ACE %d slot %d gate '
+                             'changed during the search - no pull-back of '
+                             '%dmm', idx, slot, pos['mm'])
+            elif back and not self._gen1_lane_shift(
+                    idx, slot, back, patience=self.GEN1_PULLBACK_PATIENCE,
+                    gen=gen):
+                logging.warning('[multiACE] gen1 search: ACE %d slot %d '
+                                'could not pull back %dmm', idx, slot,
+                                pos['mm'])
+        logging.info('[multiACE] gen1 search ACE %d slot %d: %s after %dmm',
+                     idx, slot,
+                     ('card %s' % res.get('uid')) if res else
+                     (getattr(cli, 'last_reason', '') or 'no card'),
+                     pos['mm'])
+        return res
+
+    def _gen1_whose_card(self, cli, idx, slot, uid):
+        """A card answered for `slot` while the partner lane (slot ^ 1) is
+        occupied by an unknown card: rotate the PARTNER and watch. The card
+        leaves the field -> it is the partner's ('partner'); it still
+        answers after GEN1_PARTNER_MAX_MM -> ours ('ours'). None when the
+        partner may not move or the test could not run."""
+        partner = slot ^ 1
+        if not self._gen1_lane_movable(idx, partner):
+            return None
+        if not (self._gen1_wait_ready(idx, partner, 60.0)
+                and self._gen1_wait_unit_idle(idx, 60.0)):
+            return None
+        moved = 0
+        verdict = None
+        try:
+            while moved < self.GEN1_PARTNER_MAX_MM:
+                if not self._gen1_lane_shift(idx, partner,
+                                             self.GEN1_SEARCH_STEP_MM):
+                    break
+                moved += self.GEN1_SEARCH_STEP_MM
+                r = cli.read_slot(slot, userdata=False)
+                if r is None and (getattr(cli, 'last_reason', '') or '') \
+                        .startswith('no card'):
+                    verdict = 'partner'
+                    break
+                if r and r.get('uid') and r.get('uid') != uid:
+                    verdict = 'partner'
+                    break
+            else:
+                verdict = 'ours'
+        finally:
+            if moved and not self._gen1_lane_shift(
+                    idx, partner, -moved,
+                    patience=self.GEN1_PULLBACK_PATIENCE):
+                logging.warning('[multiACE] gen1 tag tunnel: ACE %d slot %d '
+                                'could not pull back %dmm', idx, partner,
+                                moved)
+        logging.info('[multiACE] gen1 tag tunnel: ACE %d slot %d card %s '
+                     '-> %s (partner slot %d moved %dmm)', idx, slot, uid,
+                     verdict or 'undecided', partner, moved)
+        return verdict
+
+    def _gen1_attribute(self, cli, idx, slot, res, search, why, skip_uids,
+                        say=None):
+        """Decide whose card `res` is when the partner bay holds an
+        unknown card. Returns (res_for_slot, bind): the read to keep for
+        `slot` and whether it may bind. A card proven to be the partner's
+        is stored for the partner, and our lane is searched with that card
+        skipped (when `search`)."""
+        uid = (res or {}).get('uid', '')
+        verdict = self._gen1_whose_card(cli, idx, slot, uid) if uid else None
+        if verdict == 'ours':
+            return res, True
+        if verdict != 'partner':
+            return res, False
+        partner = slot ^ 1
+        pres = dict(res)
+        pres['slot'] = partner
+        self._gen1_tunnel_store(idx, partner, pres, why='attributed',
+                                bind=True)
+        skip = set(skip_uids or ()) | {uid}
+        mine = cli.read_slot(slot, skip_uids=skip)
+        if not mine and search and self._gen1_should_search(cli):
+            mine = self._gen1_search_read(cli, idx, slot, skip_uids=skip,
+                                          say=say)
+        return mine, bool(mine)
+
+    @staticmethod
+    def _gen1_should_search(cli):
+        """Rotate to search when no card answered, only the partner slot's
+        known card did (ours is then out of the field), or a card answered
+        but could not be read (re-read around it)."""
+        why = getattr(cli, 'last_reason', '') or ''
+        return (why.startswith('no card')
+                or why.startswith('only the partner')
+                or why.startswith('card selected'))
+
+    def _gen1_partner_uids(self, idx, partner):
+        """Card UIDs known to belong to `partner` (the other slot on the
+        shared antenna), upper hex: its last tunnel read and the codes of
+        the spool bound there that look like a card UID (8 or 14 hex
+        digits). Empty set = nothing known."""
+        out = set()
+        try:
+            # Only an ATTRIBUTED read counts: a bound one, or one the
+            # operator asked for on that slot. A read stored unbound may
+            # belong to either bay.
+            ent = (self._gen1_tunnel_reads.get(idx) or {}).get(partner) or {}
+            if ent.get('uid') and (ent.get('bound')
+                                   or ent.get('why') == 'manual'):
+                out.add(str(ent['uid']).strip().upper())
+            sid = self._spool_binding.get(self._spool_key(idx, partner))
+            sp = self._spools.get(str(sid)) if sid is not None else None
+            for code in self._sku_codes((sp or {}).get('sku')):
+                c = code.replace(':', '').upper()
+                if len(c) in (8, 14) and all(
+                        ch in '0123456789ABCDEF' for ch in c):
+                    out.add(c)
+        except Exception as e:
+            logging.info('[multiACE] gen1 tag tunnel: partner UID lookup '
+                         'failed (ignored): %s', e)
+        return out
+
+    def _gen1_tunnel_schedule(self, idx, slot, bind=True, skip_uids=(),
+                              search=False, attribute=False):
         """Queue ONE tunnel read in its own greenlet (the reply poll uses
         reactor.pause, which must not run in the heartbeat callback).
         `bind` carries the shared-antenna attribution decision from the
@@ -13372,35 +14126,85 @@ class MultiAce:
         if cli is None:
             return
         self._gen1_tunnel_busy.add(idx)
+        self._gen1_tunnel_busy_slot[idx] = slot
 
         def _run(eventtime):
             try:
+                self._gen1_session_begin(idx)
+                cli.aborted = ''
                 if not cli.tunnel_available():
+                    if cli.aborted:
+                        self._gen1_read_aborted(idx, slot, cli, search)
                     return             # one log line, then never again
-                res = cli.read_slot(slot)
-                if res:
+                if search:
+                    # A fresh insert: let the firmware's preload finish
+                    # first, the spool is still moving during it.
+                    self._gen1_wait_ready(idx, slot,
+                                          self.GEN1_INSERT_READY_WAIT)
+                    if self._is_empty_status(
+                            self._gen1_slot_status(idx, slot)):
+                        return
+                do_bind, do_attr, skip = bind, attribute, skip_uids
+                # The partner bay may have been filled while we waited:
+                # decide the attribution again from what sits there now.
+                pst = self._gen1_slot_status(idx, slot ^ 1)
+                if search and pst and not self._is_empty_status(pst) \
+                        and not skip:
+                    skip = self._gen1_partner_uids(idx, slot ^ 1)
+                    do_bind = bool(skip)
+                    do_attr = not skip
+                # The gate snapshot the session's abort check compares
+                # against: taken after the waits above.
+                self._gen1_session_begin(idx)
+                res = cli.read_slot(slot, skip_uids=skip)
+                if not res and search and self._gen1_should_search(cli):
+                    res = self._gen1_search_read(cli, idx, slot,
+                                                 skip_uids=skip)
+                if res and do_attr and not do_bind:
+                    res, do_bind = self._gen1_attribute(
+                        cli, idx, slot, res, search, 'auto', skip)
+                if not res and cli.aborted:
+                    self._gen1_read_aborted(idx, slot, cli, search)
+                elif res:
                     self._gen1_tunnel_store(idx, slot, res, why='auto',
-                                            bind=bind)
+                                            bind=do_bind)
                 else:
                     logging.info(
                         '[multiACE] gen1 tag tunnel: ACE %d slot %d: no '
-                        'tag answered on the antenna (tag must face the '
-                        'coil) - one attempt per insert, ACE_TAG_READ '
-                        'retries on demand', self._disp(idx),
-                        self._disp(slot))
+                        'tag read (%s) - in-place only, ACE_TAG_READ '
+                        'searches on demand', self._raw(idx),
+                        self._raw(slot),
+                        getattr(cli, 'last_reason', '') or 'no reason')
             except Exception as e:
                 logging.info('[multiACE] gen1 tag tunnel: read failed on '
                              'ACE %d slot %d (ignored): %s'
-                             % (self._disp(idx), self._disp(slot), e))
+                             % (self._raw(idx), self._raw(slot), e))
             finally:
                 self._gen1_tunnel_busy.discard(idx)
+                self._gen1_tunnel_busy_slot.pop(idx, None)
 
         try:
             self.reactor.register_async_callback(_run)
         except Exception as e:
             self._gen1_tunnel_busy.discard(idx)
+            self._gen1_tunnel_busy_slot.pop(idx, None)
             logging.info('[multiACE] gen1 tag tunnel: schedule failed '
                          '(ignored): %s' % e)
+
+    def _gen1_read_aborted(self, idx, slot, cli, search):
+        """An automatic read stopped for a firmware insert: it does not use
+        up the slot's one attempt, the tick schedules it again once the
+        unit is quiet (a fresh insert keeps its search)."""
+        logging.info('[multiACE] gen1 tag tunnel: ACE %d slot %d: read '
+                     'stopped (%s) - retried when the unit is idle',
+                     self._raw(idx), self._raw(slot), cli.aborted)
+        try:
+            self._gen1_tunnel_tried.get(idx, {}).pop(slot, None)
+            self._gen1_tunnel_aborted.setdefault(idx, set()).add(slot)
+            if search:
+                self._gen1_seen_empty.setdefault(idx, set()).add(slot)
+        except Exception:
+            pass
 
     def _gen1_tunnel_store(self, idx, slot, res, why='auto', bind=True):
         """Record one tunnel read and offer its card UID to the SHARED
@@ -13427,14 +14231,19 @@ class MultiAce:
                 'ts': self.reactor.monotonic(),
                 'why': why,
                 'bound': False,
+                # All NTAG user pages read: a missing OpenSpool record is
+                # then a fact, not a read failure.
+                'userdata_complete': bool(res.get('userdata_complete')),
             }
             uid = ent['uid']
             ent['bound'] = bool(uid and bind)
             self._gen1_tunnel_reads.setdefault(idx, {})[slot] = ent
+            if ent['uid']:
+                self._persist_gen1_tag_reads()
             if uid:
                 logging.info(
                     '[multiACE] [spool] gen1 tunnel read ACE %d slot %d: '
-                    'card UID %s (%s)%s', self._disp(idx), self._disp(slot),
+                    'card UID %s (%s)%s', self._raw(idx), self._raw(slot),
                     uid, ent['format'],
                     ' - OpenSpool %s %s %s' % (
                         ent['material'] or '?', ent['color'] or '?',
@@ -13448,13 +14257,13 @@ class MultiAce:
                         'slot on the shared antenna is occupied or '
                         'unknown, so the read cannot be attributed to this '
                         'slot; ACE_TAG_READ is the operator probe',
-                        self._disp(idx), self._disp(slot), uid,
+                        self._raw(idx), self._raw(slot), uid,
                         ent['format'])
             else:
                 logging.info(
                     '[multiACE] gen1 tunnel read ACE %d slot %d: a card '
                     'answered but no readable page (format %s) - no UID',
-                    self._disp(idx), self._disp(slot), ent['format'])
+                    self._raw(idx), self._raw(slot), ent['format'])
         except Exception as e:
             logging.info('[multiACE] gen1 tunnel store failed (ignored): %s'
                          % e)
@@ -13463,13 +14272,14 @@ class MultiAce:
         """The additive get_status block for one unit."""
         out = {'enabled': bool(getattr(self, 'gen1_tag_tunnel', False)),
                'available': None, 'reads': {}}
-        cli = self._gen1_tunnel_clients.get(idx)
+        cli = getattr(self, '_gen1_tunnel_clients', {}).get(idx)
         if cli is not None:
             sup = cli.support_state()
             if sup is not None:
                 out['available'] = bool(sup[1])
         now = self.reactor.monotonic()
-        for slot, ent in (self._gen1_tunnel_reads.get(idx) or {}).items():
+        for slot, ent in (getattr(self, '_gen1_tunnel_reads', {}).get(idx)
+                          or {}).items():
             out['reads'][str(slot)] = {
                 'uid': ent.get('uid', ''),
                 'format': ent.get('format', ''),
@@ -14081,8 +14891,8 @@ class MultiAce:
                     '%s, used so far %.0fmm (%s)'
                     % (head, sid, self._spool_label(spool),
                        ('ACE %d / Slot %d'
-                        % (self._disp(src['ace_index']),
-                           self._disp(src['slot'])))
+                        % (self._raw(src['ace_index']),
+                           self._raw(src['slot'])))
                        if src else 'head binding',
                        prev_used, why))
             logging.debug('[multiACE] [spool] %s: %.1fmm on head %d (%s)'
@@ -14215,7 +15025,7 @@ class MultiAce:
         if had_ext:
             self._auto_dry_persist_ext()
         logging.info('[multiACE] auto-dry ownership released on ACE %d (%s)'
-                     % (self._disp(idx), why))
+                     % (self._raw(idx), why))
 
     def _auto_dry_persist(self):
         """Ownership must survive a restart - see the note at the field."""
@@ -14267,17 +15077,17 @@ class MultiAce:
             if response is not None and response.get('code', 0) != 0:
                 logging.info('[multiACE] exhaust %s refused on ACE %d: %s'
                              % ('open' if is_open else 'close',
-                                self._disp(idx), response.get('msg')))
+                                self._raw(idx), response.get('msg')))
         try:
             self.send_request_to(idx, {'method': 'set_valve',
                                        'params': {'v1': bool(is_open),
                                                   'v2': bool(is_open)}}, _cb)
             logging.info('[multiACE] exhaust %s on ACE %d (%s)'
                          % ('OPEN' if is_open else 'CLOSE',
-                            self._disp(idx), why))
+                            self._raw(idx), why))
         except Exception as e:
             logging.info('[multiACE] exhaust %s on ACE %d failed: %s'
-                         % ('open' if is_open else 'close', self._disp(idx), e))
+                         % ('open' if is_open else 'close', self._raw(idx), e))
 
     def _schedule_dry_exhaust_open(self, idx, why):
         """Open the drying exhaust a while AFTER the dryer really started.
@@ -14314,7 +15124,7 @@ class MultiAce:
 
         self.reactor.register_timer(_open, self.reactor.monotonic() + delay)
         logging.info('[multiACE] exhaust: opening ACE %d in %.0fs (%s)'
-                     % (self._disp(idx), delay, why))
+                     % (self._raw(idx), delay, why))
 
     def _close_dry_exhaust(self, idx, why):
         """Close on every stop, and drop a not-yet-sent open. The ACE 2 shuts
@@ -14358,7 +15168,7 @@ class MultiAce:
                             + AUTO_DRY_SOFT_STEP_SECONDS}
                 logging.info('[multiACE] auto-dry soft start ACE %d: %d C '
                              'now, +%d every %d min up to %d C'
-                             % (self._disp(idx), first, AUTO_DRY_SOFT_STEP,
+                             % (self._raw(idx), first, AUTO_DRY_SOFT_STEP,
                                 int(AUTO_DRY_SOFT_STEP_SECONDS // 60),
                                 target))
             else:
@@ -14377,7 +15187,7 @@ class MultiAce:
             # a fired start/stop left NO trace and a later log could not say
             # whether the loop had acted at all.
             logging.info('[multiACE] auto-dry START ACE %d temp=%s (%s)'
-                         % (self._disp(idx), first, why))
+                         % (self._raw(idx), first, why))
             self.log_always(self._t('msg.auto_dry_start',
                 ace=self._disp(idx), temp=first, why=why))
         except Exception as e:
@@ -14405,7 +15215,7 @@ class MultiAce:
             if self._auto_dry_follow_until.pop(idx, None) is not None:
                 self._auto_dry_persist_follow()
             logging.info('[multiACE] auto-dry STOP ACE %d (%s)'
-                         % (self._disp(idx), why))
+                         % (self._raw(idx), why))
             self.log_always(self._t('msg.auto_dry_stop',
                 ace=self._disp(idx), why=why))
         except Exception as e:
@@ -14483,7 +15293,7 @@ class MultiAce:
             st['current'] = nxt
             st['next'] = eventtime + AUTO_DRY_SOFT_STEP_SECONDS
             logging.info('[multiACE] auto-dry ramp ACE %d: %d C (target %d)'
-                         % (self._disp(idx), nxt, st['target']))
+                         % (self._raw(idx), nxt, st['target']))
             if nxt >= int(st['target']):
                 self._auto_dry_ramp.pop(idx, None)
 
@@ -14558,7 +15368,7 @@ class MultiAce:
                     self._auto_dry_seen[idx] = seen
                     logging.info('[multiACE] auto-dry ACE %d: %.0f%%rH (%s) '
                                  'device_drying=%s ours=%s (start>=%s stop<=%s)'
-                                 % (self._disp(idx), rh,
+                                 % (self._raw(idx), rh,
                                     'external' if ext is not None
                                     else 'internal',
                                     drying, ours,
@@ -14680,6 +15490,49 @@ class MultiAce:
         'in grams (net, without the core); with ACE+SLOT the new spool is '
         'bound to that slot right away.')
 
+    def _slot_read_uid(self, idx, slot):
+        """The card UID last read at this slot: the ACE 2 host read
+        (rc522 registry) or the ACE Pro tunnel read. '' when none."""
+        try:
+            uid = (getattr(self, '_rc_last_uid', None) or {}).get(
+                (idx, slot), '')
+            if not uid:
+                ent = ((getattr(self, '_gen1_tunnel_reads', None) or {})
+                       .get(idx) or {}).get(slot) or {}
+                uid = ent.get('uid', '')
+            return str(uid or '').replace(':', '').strip().upper()
+        except Exception:
+            return ''
+
+    def _tag_read_capable(self, idx):
+        """Can multiACE read tags on this unit itself: ACE2-Open, or an
+        ACE Pro whose firmware answers the Gen-1 tunnel."""
+        try:
+            if self._is_open_fw_idx(idx):
+                return True
+            cli = (getattr(self, '_gen1_tunnel_clients', None) or {}).get(idx)
+            sup = cli.support_state() if cli is not None else None
+            return bool(sup and sup[1])
+        except Exception:
+            return False
+
+    def _warn_no_tag_code(self, idx, slot, sid):
+        """Log line: the spool just placed at this slot has no code and no
+        tag was read there, so it cannot bind by itself. The web says so
+        once in a dialog when such a spool is created; no notice here."""
+        try:
+            sp = self._spools.get(str(sid)) or {}
+            if self._sku_codes(sp.get('sku')) or self._slot_read_uid(idx,
+                                                                     slot):
+                return
+            if not self._tag_read_capable(idx):
+                return
+            logging.info('[multiACE] [spool] spool #%s at ACE %d slot %d has '
+                         'no tag code yet', sid, self._raw(idx),
+                         self._raw(slot))
+        except Exception as e:
+            logging.info('[multiACE] [spool] no-code notice skipped: %s' % e)
+
     def cmd_ACE_SPOOL_ADD(self, gcmd):
         sid = str(self._spool_next_id)
         self._spool_next_id += 1
@@ -14719,7 +15572,22 @@ class MultiAce:
         if h is not None and self.head_uses_ace(h):
             raise self._ace_error(gcmd, self._t(
                 'msg.spool_head_not_feeder', head=self._disp(h)), code=200)
+        # The card UID read at that slot is the per-chip key: carry it next
+        # to the tag SKU, so the spool binds by either from then on (V1 and
+        # V2 alike). Not when another spool already lists it.
+        if a is not None and sl is not None:
+            _uid = self._slot_read_uid(a, sl)
+            if (_uid and self._sku_canon(_uid)
+                    not in self._sku_codes(spool['sku'])
+                    and self._spool_by_sku(_uid)[1] is None):
+                spool['sku'] = (('%s,%s' % (spool['sku'], _uid))
+                                if spool['sku'] else _uid)
         self._spools[sid] = spool
+        logging.info('[multiACE] [spool] added #%s (%s) sku=%r%s', sid,
+                     self._spool_label(spool), spool['sku'],
+                     (' bound to ACE %d slot %d' % (a, sl))
+                     if a is not None and sl is not None else
+                     ((' bound to head %d' % h) if h is not None else ''))
         if a is not None and sl is not None:
             self._spool_bind(self._spool_key(a, sl), sid)
         elif h is not None:
@@ -14732,6 +15600,8 @@ class MultiAce:
         if _sku_suffixed:
             self.log_warn(self._t('msg.spool_sku_suffixed',
                 id=sid, sku=spool['sku']))
+        if a is not None and sl is not None:
+            self._warn_no_tag_code(a, sl, sid)
 
     cmd_ACE_SPOOL_SET_help = (
         '[multiACE] Edit a spool: ACE_SPOOL_SET ID=n [WEIGHT=..] '
@@ -14915,8 +15785,9 @@ class MultiAce:
         'physically rotates the lane, restored afterwards). ACE Pro (Gen 1, '
         'community firmware with the RC522 tunnel): read the tag directly - '
         'ACE_TAG_READ ACE=n SLOT=n [PAGE=n] prints the raw page bytes and '
-        'the card UID; moves nothing, safe during a print. PAGE defaults to '
-        '0; the tag must face the coil.')
+        'the card UID; when no card answers and the lane may move (idle, '
+        'slot feeds no head) it rotates the spool to find the tag and pulls '
+        'it back. PAGE defaults to 0.')
 
     def cmd_ACE_TAG_READ(self, gcmd):
         ace_idx = gcmd.get_int('ACE', self._active_device_index,
@@ -15021,9 +15892,8 @@ class MultiAce:
     def _cmd_ace_tag_read_gen1(self, gcmd, ace_idx, slot):
         """ACE_TAG_READ on an ACE Pro (Gen 1): one tunnel read session.
 
-        The command itself is the explicit consent - it runs with the
-        gen1_tag_tunnel config flag off (the flag gates only the automatic
-        fallback). Synchronous is not an option in the gcode thread, so the
+        The explicit retry next to the automatic path's one attempt per
+        insert. Synchronous is not an option in the gcode thread, so the
         read runs in its own greenlet; the console gets the raw page bytes
         and the UID. The result also feeds the own-store/status surface and
         the SHARED tag bind (unbind=False) exactly like an automatic read."""
@@ -15031,15 +15901,16 @@ class MultiAce:
         if not self._connected_per_ace.get(ace_idx):
             raise self._ace_error(gcmd, 'ACE %d is not connected'
                                   % self._disp(ace_idx), code=208)
-        if ace_idx in self._gen1_tunnel_busy:
-            raise self._ace_error(gcmd, 'a Gen-1 tag read is already running '
-                                  'on ACE %d' % self._disp(ace_idx), code=200)
         cli = self._gen1_tunnel_client(ace_idx)
         if cli is None:
             raise self._ace_error(gcmd, 'the Gen-1 tag tunnel helper '
                                   '(ace_gen1_tunnel.py) is missing on this '
                                   'install - re-run the installer', code=200)
-        self._gen1_tunnel_busy.add(ace_idx)
+        # A running read (automatic or manual) is waited for in the
+        # greenlet below instead of refusing the command.
+        _waits = ace_idx in self._gen1_tunnel_busy
+        _claim = {'held': False}
+        self._gen1_manual_busy = True       # the web picker's read bar
         # Same outcome contract as the V2 read (ace.py's tag_op status):
         # the web picker bar can report this op when/if it is offered on a
         # Gen 1. seq ties the result to the call.
@@ -15051,6 +15922,30 @@ class MultiAce:
 
         def _run(eventtime):
             try:
+                deadline = (self.reactor.monotonic()
+                            + self.GEN1_MANUAL_BUSY_WAIT)
+                while ace_idx in self._gen1_tunnel_busy:
+                    if self.reactor.monotonic() > deadline:
+                        _out['ok'] = False
+                        _out['msg'] = 'another tag read did not finish'
+                        self.log_always(
+                            '[multiACE] ACE %d: another tag read is still '
+                            'running - retry later' % self._disp(ace_idx))
+                        return
+                    self.reactor.pause(self.reactor.monotonic() + 0.5)
+                self._gen1_tunnel_busy.add(ace_idx)
+                self._gen1_tunnel_busy_slot[ace_idx] = slot
+                _claim['held'] = True
+                # Not while the firmware inserts a spool on this unit.
+                if not self._gen1_wait_no_insert(
+                        ace_idx, self.GEN1_INSERT_READY_WAIT):
+                    _out['ok'] = False
+                    _out['msg'] = 'a spool insert is still running'
+                    self.log_always(
+                        '[multiACE] ACE %d: a spool insert is still running '
+                        '- retry the read afterwards' % self._disp(ace_idx))
+                    return
+                self._gen1_session_begin(ace_idx)
                 if not cli.tunnel_available():
                     fw = (self._ace_models.get(ace_idx) or ('', '?'))[1]
                     _out['ok'] = False
@@ -15063,10 +15958,35 @@ class MultiAce:
                         % (self._disp(ace_idx), fw,
                            'CV1.3.87x'))
                     return
-                res = cli.read_slot(slot, page=page)
+                skip = self._gen1_partner_uids(ace_idx, slot ^ 1)
+                res = cli.read_slot(slot, page=page, skip_uids=skip)
+                if not res and page == 0 and self._gen1_should_search(cli):
+                    res = self._gen1_search_read(cli, ace_idx, slot,
+                                                 skip_uids=skip,
+                                                 say=self.log_always)
+                # Partner occupied by an unknown card: rotate it to tell
+                # whose card this is (the operator read binds anyway when
+                # the test cannot decide).
+                if (res and page == 0 and not skip
+                        and not self._is_empty_status(
+                            self._gen1_slot_status(ace_idx, slot ^ 1))):
+                    res, _b = self._gen1_attribute(
+                        cli, ace_idx, slot, res, True, 'manual', skip,
+                        say=self.log_always)
+                if not res and getattr(cli, 'aborted', ''):
+                    _out['ok'] = False
+                    _out['msg'] = 'read stopped: %s' % cli.aborted
+                    self.log_always(
+                        '[multiACE] ACE %d slot %d: tag read stopped (%s) '
+                        '- retry the read afterwards'
+                        % (self._disp(ace_idx), self._disp(slot),
+                           cli.aborted))
+                    return
                 if not res:
                     _out['ok'] = False
-                    _out['msg'] = 'no tag answered (tag must face the coil)'
+                    _out['msg'] = ('no tag answered (%s)'
+                                   % (getattr(cli, 'last_reason', '')
+                                      or 'tag must face the coil'))
                     self.log_always(
                         '[multiACE] ACE %d slot %d page %d: no tag answered '
                         'on the antenna - the tag must face the coil, then '
@@ -15084,7 +16004,15 @@ class MultiAce:
                                         self._disp(slot), e))
                 logging.exception('[multiACE] gen1 tag tunnel: read_slot')
             finally:
-                self._gen1_tunnel_busy.discard(ace_idx)
+                self._gen1_manual_busy = False
+                if _claim['held']:
+                    self._gen1_tunnel_busy.discard(ace_idx)
+                    self._gen1_tunnel_busy_slot.pop(ace_idx, None)
+                # The console lines above never reach klippy.log.
+                logging.info('[multiACE] Gen-1 tag read ACE %d slot %d page '
+                             '%d: %s - %s', ace_idx, slot, page,
+                             'ok' if _out['ok'] else 'failed',
+                             _out['msg'] or 'no tag read')
                 self._tag_op_result = {
                     'ok': bool(_out['ok']), 'kind': 'read', 'seq': _seq,
                     'msg': (_out['msg'] or 'no tag read')[:200]}
@@ -15092,11 +16020,13 @@ class MultiAce:
         try:
             self.reactor.register_async_callback(_run)
         except Exception as e:
-            self._gen1_tunnel_busy.discard(ace_idx)
+            self._gen1_manual_busy = False
             raise self._ace_error(gcmd, 'could not schedule the Gen-1 tag '
                                   'read (%s)' % e, code=200)
-        gcmd.respond_info('[multiACE] Gen-1 tag read started (ACE %d slot '
-                          '%d page %d)' % (self._disp(ace_idx),
+        gcmd.respond_info('[multiACE] Gen-1 tag read %s (ACE %d slot '
+                          '%d page %d)' % ('queued behind a running read'
+                                           if _waits else 'started',
+                                           self._disp(ace_idx),
                                            self._disp(slot), page))
 
     def _gen1_tunnel_report(self, ace_idx, slot, res):
@@ -15386,8 +16316,7 @@ class MultiAce:
         _learn = gcmd.get_int('LEARN_UID', 1, minval=0, maxval=1)
         if h is None and _learn:
             try:
-                _uid = (getattr(self, '_rc_last_uid', None)
-                        or {}).get((a, sl), '')
+                _uid = self._slot_read_uid(a, sl)
                 _sp = self._spools[sid]
                 if _uid and (self._sku_canon(_uid)
                              not in self._sku_codes(_sp.get('sku'))):
@@ -15402,6 +16331,8 @@ class MultiAce:
                 logging.info('[multiACE] [spool] UID learn skipped: %s'
                              % _e)
         self._save_spool_db(backup=True)
+        if h is None:
+            self._warn_no_tag_code(a, sl, sid)
         # Feeder/manual heads never pass the toolchange PA hook (no
         # head_source), so a head binding applies the stored value here.
         if h is not None:
@@ -15878,7 +16809,7 @@ class MultiAce:
                 'INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD ACTION=2')
             self.toolhead.wait_moves()
             logging.info('[multiACE] [%s] nozzle wipe done (head %s)'
-                         % (tag, self._disp(head) if head is not None else '?'))
+                         % (tag, self._raw(head) if head is not None else '?'))
             _wipe_ok = True
         except Exception as e:
             logging.info('[multiACE] [%s] wipe failed (continuing): '
@@ -15957,7 +16888,7 @@ class MultiAce:
 
         if not switching_ace and autoload:
             logging.info(self._t('msg.ace_already_active_loading',
-                ace=self._disp(target)))
+                ace=self._raw(target)))
         else:
             if target >= len(self._ace_devices) or not self._connected_per_ace.get(target, False):
                 self.log_always(self._t('msg.ace_not_connected',
@@ -16055,7 +16986,7 @@ class MultiAce:
                 self.log_always(self._t('msg.switch_unload_complete'))
 
             logging.info(self._t('msg.switch_activating',
-                ace=self._disp(target)))
+                ace=self._raw(target)))
             self._set_active_idx(target)
             self._push_rfid_info()
 
@@ -16146,8 +17077,8 @@ class MultiAce:
                     logging.info('[multiACE] [rc522] ACE %d slot %d: '
                                  'dropped the stored read %s - it is the '
                                  'neighbour\'s card (slot %d)'
-                                 % (self._disp(idx), self._disp(slot),
-                                    uid, self._disp(nslot)))
+                                 % (self._raw(idx), self._raw(slot),
+                                    uid, self._raw(nslot)))
             except Exception:
                 logging.exception('[multiACE] [rc522] stale read evict')
         return msg
@@ -16871,7 +17802,7 @@ class MultiAce:
             return False
 
         logging.info(self._t('msg.activating_ace_for_head',
-            ace=self._disp(target_ace), head=self._disp(head_index)))
+            ace=self._raw(target_ace), head=self._raw(head_index)))
 
         self._set_active_idx(target_ace)
 
@@ -17175,7 +18106,7 @@ class MultiAce:
                     logging.info(
                         '[multiACE] [resistance] lane ACE %d/Slot %d: %d '
                         'strike(s) cleared after %d consecutive healthy reads'
-                        % (self._disp(lane[0]), self._disp(lane[1]),
+                        % (self._raw(lane[0]), self._raw(lane[1]),
                            self._resistance_strikes.get(lane, 0), ok_l))
                     self._resistance_strikes.pop(lane, None)
                 if (ok_h >= RESISTANCE_STRIKE_CLEAR_READS
@@ -17183,7 +18114,7 @@ class MultiAce:
                     logging.info(
                         '[multiACE] [resistance] head %d: %d head strike(s) '
                         'cleared after %d consecutive healthy reads'
-                        % (self._disp(head),
+                        % (self._raw(head),
                            self._resistance_head_strikes.get(head, 0), ok_h))
                     self._resistance_head_strikes.pop(head, None)
                 if (self._resistance_strikes.get(lane)
@@ -17193,7 +18124,7 @@ class MultiAce:
                         'normal (delta=%.0f baseline=%.0f) - lane strikes=%d '
                         'head strikes=%d kept (%d/%d healthy reads toward '
                         'clear)'
-                        % (self._disp(lane[0]), self._disp(lane[1]), delta,
+                        % (self._raw(lane[0]), self._raw(lane[1]), delta,
                            baseline if baseline else 0.,
                            self._resistance_strikes.get(lane, 0),
                            self._resistance_head_strikes.get(head, 0),
@@ -17225,7 +18156,7 @@ class MultiAce:
                 '%d/Slot %d delta=%.0f baseline=%s ratio=%s thr=%d strike=%d '
                 'head_strikes=%d'
                 % (site, ' (noisy pt)' if noisy else '', head,
-                   self._disp(lane[0]), self._disp(lane[1]),
+                   self._raw(lane[0]), self._raw(lane[1]),
                    delta, ('%.0f' % baseline) if baseline else '-',
                    ('%.2f' % ratio) if ratio else '-', int(abs_thr), strikes,
                    h_strikes))
@@ -17650,7 +18581,7 @@ class MultiAce:
                             'INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD ACTION=2')
                         self.toolhead.wait_moves()
                         logging.info('[multiACE] [pick-check] nozzle wipe '
-                                     'done (head %d)' % self._disp(head))
+                                     'done (head %d)' % self._raw(head))
                     except Exception as we:
                         logging.info('[multiACE] [pick-check] nozzle wipe '
                                      'failed (continuing): %s' % we)
@@ -18248,7 +19179,7 @@ class MultiAce:
                         }))
                 self._save_head_source()
                 logging.info(self._t('msg.load_head_inferred_only_ace',
-                    head=self._disp(head), slot=self._disp(slot)))
+                    head=self._raw(head), slot=self._raw(slot)))
             else:
                 self.log_error(self._t('msg.load_head_no_source_recorded',
                     head=self._disp(head), count=len(self._ace_devices)))
@@ -18550,7 +19481,7 @@ class MultiAce:
         sensor = self.printer.lookup_object(
             'filament_motion_sensor e%d_filament' % head, None)
         if sensor and not sensor.get_status(0)['filament_detected']:
-            logging.info(self._t('msg.unload_sensor_no_filament', head=self._disp(head)))
+            logging.info(self._t('msg.unload_sensor_no_filament', head=self._raw(head)))
 
         source = self._head_source.get(head)
         if source is None:
@@ -18578,7 +19509,7 @@ class MultiAce:
                         % self._disp(ace_index),
                         code=208, head=head)
         else:
-            logging.info(self._t('msg.unload_head_no_mapping', head=self._disp(head)))
+            logging.info(self._t('msg.unload_head_no_mapping', head=self._raw(head)))
 
         active_idx = self._active_device_index
 
@@ -19559,7 +20490,7 @@ class MultiAce:
 
             if ace_index != self._active_device_index:
                 logging.info(self._t('msg.swap_switching_ace',
-                    ace=self._disp(ace_index)))
+                    ace=self._raw(ace_index)))
                 if not self._switch_ace_for_head_target(ace_index):
                     raise self._ace_error(gcmd,
                         'Failed to connect to ACE %d' % self._disp(ace_index),
@@ -19912,6 +20843,8 @@ class MultiAce:
 
         for i, device in enumerate(self._ace_devices):
             marker = ' << ACTIVE' if i == self._active_device_index else ''
+            if not self._connected_per_ace.get(i, False):
+                marker += ' -- OFFLINE (not connected)'
             protocol_cls = self._ace_path_protocol.get(device)
             proto_name = protocol_cls.NAME if protocol_cls else '?'
             model, firmware = self._ace_models.get(i, ('?', '?'))
@@ -20552,7 +21485,7 @@ class MultiAce:
             source = self._head_source.get(head)
             if source and source['ace_index'] != self._active_device_index:
                 logging.info(self._t('msg.switching_ace_for_retract',
-                    ace=self._disp(source['ace_index']), head=self._disp(head)))
+                    ace=self._raw(source['ace_index']), head=self._raw(head)))
                 switched = False
                 for attempt in range(5):
                     if self._switch_ace_for_head_target(source['ace_index']):
@@ -20904,6 +21837,8 @@ class MultiAce:
         self.log_always(self._t('msg.found_n_aces', count=len(self._ace_devices)))
         for i, device in enumerate(self._ace_devices):
             active = ' << ACTIVE' if i == self._active_device_index else ''
+            if not self._connected_per_ace.get(i, False):
+                active += ' -- OFFLINE (not connected)'
             self.log_always(self._t('msg.ace_list_simple',
                 ace=self._disp(i), device=device, active=active))
 
@@ -21546,6 +22481,8 @@ class MultiAce:
             aces.append({
                 'idx':          i,
                 'connected':    self._connected_per_ace.get(i, False),
+                'connect_error': (getattr(self, '_connect_error_per_ace', {})
+                                  .get(i, '')),
                 'protocol':     getattr(protocol, 'NAME', '') if protocol else '',
                 # Model + firmware from the connect handshake (get_info) -
                 # captured in _ace_models since ever, now surfaced so the
@@ -21632,7 +22569,8 @@ class MultiAce:
             # Running tag op (read/write/insert) - the web shows a plain
             # "writing..." bar while busy and reports only the outcome.
             # str keys.
-            'tag_op': {'busy': bool(getattr(self, '_tag_read_busy', False)),
+            'tag_op': {'busy': bool(getattr(self, '_tag_read_busy', False)
+                               or getattr(self, '_gen1_manual_busy', False)),
                        'kind': str(getattr(self, '_tag_op_kind', '') or ''),
                        'seq': int(getattr(self, '_tag_op_seq', 0) or 0),
                        'result': dict(getattr(self, '_tag_op_result', None)
@@ -21687,9 +22625,6 @@ class MultiAce:
                 ('tag_write_uid_sku',
                  getattr(self, 'tag_write_uid_sku', None),
                  getattr(self, '_tag_write_uid_sku_cfg', None)),
-                ('gen1_tag_tunnel',
-                 getattr(self, 'gen1_tag_tunnel', None),
-                 getattr(self, '_gen1_tag_tunnel_cfg', None)),
             ) if _cfgv is not None and _cur != _cfgv],
             # Spool table: str keys (orjson: int keys shut
             # the printer down), weights are estimates.

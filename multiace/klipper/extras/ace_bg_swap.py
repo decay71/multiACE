@@ -334,6 +334,15 @@ class AceBgSwap:
     def _ext_name(self, head):
         return 'extruder' if head == 0 else 'extruder%d' % head
 
+    def _raw(self, idx):
+        # Internal (0-based) index for internal log lines.
+        if idx is None:
+            return '-'
+        try:
+            return int(idx)
+        except (TypeError, ValueError):
+            return idx
+
     def _dh(self, idx):
         # Display index (1-based per display_index_base) for USER-FACING
         # message text only - the raw internal index confused even the
@@ -512,7 +521,7 @@ class AceBgSwap:
                 f.set_speed_from_command(min(spd, 255) / 255.)
                 logging.info('[multiACE] [bg] dwell fan ON S%d head %d '
                              '(was S%d)'
-                             % (spd, self._dh(head),
+                             % (spd, self._raw(head),
                                 int(round(prev * 255.))))
             else:
                 if head not in self._dwell_fan_prev:
@@ -523,7 +532,7 @@ class AceBgSwap:
                     f.set_speed_from_command(prev)
                 logging.info('[multiACE] [bg] dwell fan OFF head %d '
                              '(restored S%d)'
-                             % (self._dh(head), int(round(prev * 255.))))
+                             % (self._raw(head), int(round(prev * 255.))))
         except Exception as e:
             logging.info('[multiACE] [bg] dwell fan toggle failed '
                          '(ignored): %s' % e)

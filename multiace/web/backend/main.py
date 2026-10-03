@@ -7,7 +7,7 @@ frontend and any future mobile app. Auth is delegated to nginx
 trusts every request that reaches it.
 
 Environment variables:
-MOONRAKER_URL          default http://127.0.0.1:7125
+  MOONRAKER_URL          default http://127.0.0.1:7125
   MULTIACE_CONFIG_DIR    printer_data/config directory
   MULTIACE_PRINTER_DATA  printer data root
   MULTIACE_CFG_PATH      legacy explicit config-file override
@@ -20,6 +20,7 @@ MOONRAKER_URL          default http://127.0.0.1:7125
 from __future__ import annotations
 
 import ast
+import hashlib
 import asyncio
 import json
 import logging
@@ -292,6 +293,16 @@ def _int_or(v, default):
         return int(v)
     except (TypeError, ValueError):
         return default
+
+
+def _tag_read_possible(a: dict) -> bool:
+    fw = str(a.get("firmware", "") or "").strip().upper()
+    if fw.endswith("O"):
+        return True
+    avail = (a.get("tag_tunnel") or {}).get("available")
+    if avail is not None:
+        return bool(avail)
+    return fw.startswith("CV")
 
 
 def _community_fw_kind(fw):
@@ -586,6 +597,9 @@ def _parse_state(status: dict) -> dict:
         aces_out.append({
             "idx":          i,
             "connected":    a.get("connected"),
+            # Last connect failure (Klipper, since 1.20b), e.g.
+            # "[Errno 13] Permission denied"; '' when none or older ace.py.
+            "connect_error": a.get("connect_error") or "",
             "protocol":     a.get("protocol", ""),
             "model":        a.get("model", ""),
             "firmware":     a.get("firmware", ""),
@@ -593,6 +607,11 @@ def _parse_state(status: dict) -> dict:
             # letter O (V1.1.3O) - same rule as ace._is_open_fw_idx. The
             # RC522 tag read/write live only there.
             "open_fw":      str(a.get("firmware", "") or "").strip().upper().endswith("O"),
+            # Tag READ possible on this unit: ACE2-Open, or an ACE Pro on
+            # community firmware (CV...). The tunnel probe runs on the first
+            # read, so an unprobed CV unit shows the button; a failed probe
+            # (available False) hides it again.
+            "tag_read":     _tag_read_possible(a),
             # Display-only badge: 'ace2_open' | 'gen1_cfw' | ''. Klipper sends
             # it since 1.20b; derived here from the firmware string for an
             # older ace.py (same rules).
@@ -3027,8 +3046,12 @@ async def acefw_upload(file: UploadFile = File(...)) -> dict:
         guess = ace2_ota.guess_version(file.filename or "")
     except Exception:
         pass
+    # md5 of the upload: a Gen-1 image is identified by its bytes, not by
+    # its name (the tunnel build ships as ACE_V1.3.863_tunnel_ops.bin), so
+    # the card preselects the Gen-1 entry by md5.
     return {"ok": True, "name": _acefw["file"], "size": len(data),
-            "version_guess": guess}
+            "version_guess": guess,
+            "md5": hashlib.md5(data).hexdigest()}
 
 
 async def _acefw_run(ace: int, port: str, version: str,
@@ -5219,7 +5242,7 @@ async def ws(websocket: WebSocket) -> None:
 # a 304 with no body - unnoticeable on a LAN. Deliberately only the shell:
 # the vendored Vue bundle and the icons change with a release, and it was
 # the stale shell that hid them.
-_SHELL_PATHS = {"/", "/index.html", "/app.js", "/style.css"}
+_SHELL_PATHS = {"/", "/index.html", "/app.js", "/style.css", "/style-new.css"}
 
 @app.middleware("http")
 async def _shell_revalidate(request: Request, call_next):

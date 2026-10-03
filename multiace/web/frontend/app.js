@@ -1293,6 +1293,64 @@ createApp({
     // confirmations (window.confirm works fine inside an iframe) and i18n.
     const _q = new URLSearchParams(location.search);
     const panelMode = _q.get("panel") === "1";
+    // Visual design, per browser: "classic" or "new". Pure presentation -
+    // style-new.css only applies under html[data-theme="new"], and the few
+    // extra elements it needs (spool gauges) render only in that design.
+    const uiTheme = ref((() => {
+      // New design by default; only an explicit "classic" keeps the old one.
+      try { return localStorage.getItem("multiace.uiTheme") === "classic" ? "classic" : "new"; }
+      catch (e) { return "new"; }
+    })());
+    function setUiTheme(v) {
+      uiTheme.value = v === "new" ? "new" : "classic";
+      try { localStorage.setItem("multiace.uiTheme", uiTheme.value); } catch (e) {}
+    }
+    watch(uiTheme, v => {
+      if (v === "new") document.documentElement.dataset.theme = "new";
+      else delete document.documentElement.dataset.theme;
+    }, {immediate: true});
+    // Spool gauge fill in percent: the bound spool's remaining weight over a
+    // 1000 g reference, never below 4 so a nearly empty spool still shows a
+    // sliver. null = no weight known (the gauge then shows full, no label).
+    function spoolPct(sp) {
+      if (!sp || sp.weight_g === undefined || sp.weight_g === null) return null;
+      return Math.max(4, Math.min(100, Math.round(Number(sp.weight_g) / 10)));
+    }
+    // New design: per-head settings (ACE, feeder/manual, BG) fold away
+    // behind a gear button on the toolhead card. View state only.
+    const thSettingsOpen = reactive({});
+    function slotGaugePct(aceIdx, slot) {
+      if (!slot || slot.state === "empty") return 0;
+      const p = spoolPct(spoolForSlot(aceIdx, slot.idx));
+      return p === null ? 100 : p;
+    }
+    function slotGaugeLabel(aceIdx, slot) {
+      if (!slot || slot.state === "empty") return "";
+      const p = spoolPct(spoolForSlot(aceIdx, slot.idx));
+      return p === null ? "" : p + " %";
+    }
+    // Toolhead gauge: full when the head holds filament, empty otherwise.
+    function headGaugePct(th) {
+      return (th.head_source_known && !th.load_failed) || th.filament_at_extruder ? 100 : 0;
+    }
+    function headGaugeText(th) {
+      if (toolheadOps.value[th.idx]) return "";
+      if (th.load_failed) return t("ui.dashboard.load_failed");
+      if (th.material) return [th.material, subText(th.subtype)].filter(Boolean).join(" ");
+      if (!th.head_source_known && !th.filament_at_extruder && !th.feeder && !th.manual)
+        return t("ui.common.empty");
+      return "";
+    }
+    // Very dark filament colours would vanish in the dark gauge.
+    function gaugeColor(c) {
+      if (!c) return "#4a4f52";
+      const m = /^#?([0-9a-f]{6})/i.exec(String(c));
+      if (!m) return c;
+      const n = parseInt(m[1], 16);
+      const lin = x => { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+      const L = 0.2126 * lin(n >> 16) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+      return L < 0.03 ? "#4a4f52" : "#" + m[1];
+    }
     // The full UI is this same page without ?panel=1. Derived from the
     // current URL rather than hardcoded, so it stays right whether we are
     // served under /multiace/ or off the root in a dev setup. Opened in a
@@ -2176,7 +2234,8 @@ createApp({
     // upload, two buttons and a poll. The flash button goes through the
     // BIG RED own-risk dialog. ---
     const acefw = reactive({ace: "", version: "", password: "",
-                            fileName: "", fileSize: 0, busy: false,
+                            fileName: "", fileSize: 0, fileMd5: "",
+                            busy: false,
                             status: null, uiError: "", force: false,
                             patchToOpen: false, patchTarget: ""});
     // The patch target the backend PRESELECTS, and the whole ladder it can
@@ -2251,6 +2310,7 @@ createApp({
       if (!acefwVersionOptions.value.some(
             v => (v.id || v.version) === acefw.version))
         acefw.version = "";
+      acefwPreselect();
     });
     function acefwPickFile() { acefwInput.value && acefwInput.value.click(); }
     async function acefwUpload(files) {
@@ -2264,18 +2324,30 @@ createApp({
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
         acefw.fileName = body.name;
         acefw.fileSize = body.size;
+        acefw.fileMd5 = body.md5 || "";
+        acefw.versionGuess = body.version_guess || "";
         acefw.uiError = "";
-        // Pre-select the version from the file name - but only when it is
-        // a TESTED one (the field is a select over the allowlist; an
-        // unknown guess would silently create an invalid selection) and
-        // only when it is unambiguous: several Gen-1 images share the
-        // 1.3.863 report string, and picking the wrong one would gate out
-        // the user's own file.
-        const matches = acefwVersionOptions.value.filter(
-          v => v.version === body.version_guess);
-        if (!acefw.version.trim() && matches.length === 1)
-          acefw.version = matches[0].id || matches[0].version;
+        acefwPreselect();
       } catch (e) { acefw.uiError = `Upload: ${e.message || e}`; }
+    }
+    // Gen 1: the image is identified by its md5 (names lie - the tunnel
+    // build is called ACE_V1.3.863_*), so an md5 match always sets the
+    // entry and no match clears it. Gen 2: guess from the file name, only
+    // when it is a tested, unambiguous version and nothing is picked yet.
+    const acefwGen1Match = computed(() => !acefw.fileMd5 ? null :
+      acefwGen1Versions.value.find(v => v.md5 === acefw.fileMd5) || null);
+    const acefwGen1Unknown = computed(() =>
+      acefwIsV1.value && !!acefw.fileMd5 && !acefwGen1Match.value);
+    function acefwPreselect() {
+      if (acefwIsV1.value) {
+        if (!acefw.fileMd5) return;
+        acefw.version = acefwGen1Match.value ? acefwGen1Match.value.id : "";
+        return;
+      }
+      const matches = acefwVersionOptions.value.filter(
+        v => v.version === acefw.versionGuess);
+      if (!acefw.version.trim() && matches.length === 1)
+        acefw.version = matches[0].id || matches[0].version;
     }
     let _acefwTimer = null;
     async function _acefwPoll() {
@@ -2343,7 +2415,7 @@ createApp({
     }
     function acefwTest() { _acefwStart(true); }
     // What the confirm dialog names: the entry's label, not the raw key
-    // (a Gen-1 key is an image id like '1.3.863-opencubic').
+    // (a Gen-1 key is an image id like '1.3.871-tunnel').
     function acefwSelectedLabel() {
       const v = acefwVersionOptions.value.find(
         o => (o.id || o.version) === acefw.version);
@@ -3055,6 +3127,37 @@ createApp({
       for (const a of state.aces || []) for (const sl of (a.slots || [])) add(sl.color);
       return out.slice(0, 16);
     });
+    // New design: the same known colours as chips with a name - the spool's
+    // title, or the slot's material for a slot without a table spool.
+    const knownColorChips = computed(() => {
+      const names = {};
+      for (const sp of Object.values(state.spools || {})) {
+        const h = _hex6(sp.color);
+        if (h && !names[h]) names[h] = spoolTitle(sp);
+      }
+      for (const a of state.aces || []) for (const sl of (a.slots || [])) {
+        const h = _hex6(sl.color);
+        if (h && !names[h]) names[h] = [sl.material, sl.subtype].filter(Boolean).join(" ");
+      }
+      return knownColors.value.map(h => ({hex: h, name: names[h] || h}));
+    });
+    // Hex field of the new colour block: only a complete #rrggbb is taken
+    // over, half-typed input stays in the field.
+    function pickerHexInput(v) {
+      let s = String(v || "").trim();
+      if (!s.startsWith("#")) s = "#" + s;
+      if (/^#[0-9a-fA-F]{6}$/.test(s)) { picker.color = s.toLowerCase(); pickerTouch(); }
+    }
+    const pickerGaugePct = computed(() => {
+      const w = picker.weight;
+      if (w === "" || w === null || w === undefined) return 100;
+      return spoolPct({weight_g: Number(w)}) || 4;
+    });
+    const pickerSubline = computed(() => [
+      picker.material, picker.vendor, picker.subtype,
+      (picker.weight !== "" && picker.weight !== null && picker.weight !== undefined)
+        ? picker.weight + " g" : "",
+    ].filter(Boolean).join(" \u00b7 "));
     function spoolMatchesSlot(sp, material, colorHex) {
       const hex = (c) => String(c || "").replace("#", "").toLowerCase();
       const eq = (a, b) => String(a || "").toLowerCase() === String(b || "").toLowerCase();
@@ -3078,6 +3181,9 @@ createApp({
         const score = spoolMatchesSlot(sp, mat, col);
         const bg = sp.color ? "#" + String(sp.color).replace("#", "") : "";
         return {id: sp.id, score, bg, fg: bg ? textOn(bg) : "",
+                // New design dropdown: the same entry split into parts.
+                name: spoolTitle(sp), at,
+                meta: [sp.material, w].filter(Boolean).join(" \u00b7 "),
                 // The tick means FULLY matching (material AND colour): the
                 // colour is visible in the row itself, the material is not,
                 // so it marks the one thing the fill cannot show.
@@ -3166,9 +3272,21 @@ createApp({
       // cancel means no entry is created at all.
       // A UID-only read (MIFARE, no identity) has no rfid_data but a uid -
       // that is the per-chip key the new spool must carry to bind next time.
-      const sku = await askFreeSku(
-        sl && sl.rfid_data && sl.rfid_data.sku ? sl.rfid_data.sku
-          : (sl && sl.uid ? sl.uid : ""));
+      const tagCode = (sl && sl.rfid_data && sl.rfid_data.sku
+                       ? sl.rfid_data.sku : (sl && sl.uid ? sl.uid : ""));
+      // A slot spool without any tag code can never bind by itself: say so
+      // once, before it is created.
+      if (!isHead && !tagCode) {
+        const go = await new Promise(resolve => confirm({
+          title: t("ui.spools.no_code_title"),
+          message: t("ui.spools.no_code_msg"),
+          okLabel: t("ui.spools.add"),
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        }));
+        if (!go) return;
+      }
+      const sku = await askFreeSku(tagCode);
       if (sku === null) return;
       if (sku) args.SKU = sku;
       // Empty stays empty: no invented default, a wrong start weight
@@ -3563,6 +3681,11 @@ createApp({
     function aceOpenFw(aceIdx) {
       const a = (state.aces || []).find(x => x.idx === aceIdx);
       return !!(a && a.open_fw);
+    }
+    // Tag READ on that unit: ACE2-Open or an ACE Pro with the Gen-1 tunnel.
+    function aceTagRead(aceIdx) {
+      const a = (state.aces || []).find(x => x.idx === aceIdx);
+      return !!(a && (a.open_fw || a.tag_read));
     }
     function aceHeadForAce(aceIdx) {
       const heads = state.ace_heads || [];
@@ -4066,6 +4189,18 @@ createApp({
       if (!picker.show) return "";
       if (picker.head === null || picker.head === undefined) return "";
       return String((state.head_tag_seen || {})[String(picker.head)] || "");
+    });
+    // New design: Feeder / Manual tag in the head picker's title.
+    // New design: custom spool dropdown in the picker (colour chip per row).
+    const spoolDdOpen = ref(false);
+    function spoolDdPick(id) { spoolDdOpen.value = false; picker.spool = id; }
+    const spoolDdCurrent = computed(() =>
+      spoolPickerOptions.value.find(o => o.id === picker.spool) || null);
+    const pickerHeadKind = computed(() => {
+      if (!picker.show || picker.head === null || picker.head === undefined) return "";
+      const th = (state.toolheads || []).find(x => x.idx === picker.head);
+      if (!th) return "";
+      return th.feeder ? "feeder" : (th.manual ? "manual" : "");
     });
     const headRfidBusy = ref(false);
     const headRfidNote = ref("");
@@ -6478,6 +6613,7 @@ createApp({
             stage:   String(msg.stage || ""), running: true};
         });
         preflight.report = Object.assign({local: true}, j.report || {});
+        pfPlanSel.value = null;
         preflight.slicerOverrides = {};
         preflight.slicerSwaps = null;
         preflight.headOverrides = {};
@@ -6514,6 +6650,7 @@ createApp({
           throw new Error(msg);
         }
         preflight.report = await r.json();
+        pfPlanSel.value = null;
         preflight.slicerOverrides = {};
         preflight.slicerSwaps = null;
         preflight.headOverrides = {};
@@ -6614,6 +6751,60 @@ createApp({
         if (i === endIdx) out.push(...block);
       }
       return out.join("\n");
+    }
+    // New design: the plans become comparison cards; one is selected, only
+    // its table shows and a single footer button prints it. Default is the
+    // first plan (as loaded), the same one the classic view lists first.
+    const pfPlanSel = ref(null);
+    function pfPlanList() {
+      const r = preflight.report;
+      if (!r || !r.plans || forcaMixed()) return [];
+      const order = r.head_mode ? ["loadout", "optimize", "layer", "color"]
+                                : ["slicer", "optimize", "layer"];
+      return order.filter(p => r.plans[p]);
+    }
+    function pfPlanFeasible(p) {
+      const r = preflight.report;
+      if (!r || !r.plans || !r.plans[p]) return false;
+      if (r.head_mode) return headPlanFeasible(p);
+      return !!r.plans[p].feasible && !(r.missing_materials || []).length;
+    }
+    function pfPlanSwaps(p) {
+      const r = preflight.report;
+      if (r.head_mode) return headPlanSwaps(p);
+      return p === "slicer" ? slicerSwapsDisplay() : (r.plans[p].swaps || 0);
+    }
+    function pfPlanFlush(p) {
+      return preflight.report && preflight.report.head_mode ? headPlanFlushG(p) : null;
+    }
+    function pfSelected() {
+      const list = pfPlanList();
+      return list.includes(pfPlanSel.value) ? pfPlanSel.value : (list[0] || null);
+    }
+    // Tagged when a feasible plan saves swaps against the first one.
+    function pfRecommended() {
+      const list = pfPlanList().filter(pfPlanFeasible);
+      if (list.length < 2) return null;
+      let best = list[0];
+      for (const p of list) if (pfPlanSwaps(p) < pfPlanSwaps(best)) best = p;
+      return best === list[0] ? null : best;
+    }
+    function pfPlanTitle(p) {
+      return t(preflight.report && preflight.report.head_mode
+               ? "ui.preflight.head_plan_" + p : "ui.preflight.plan_" + p);
+    }
+    function pfGoLabel() {
+      const p = pfSelected();
+      if (!p) return "";
+      if (preflight.sending === p) return t("ui.preflight.sending");
+      return t(preflight.report.head_mode ? "ui.preflight.head_go_" + p
+                                         : "ui.preflight.go_" + p);
+    }
+    function pfPrintSelected() {
+      const p = pfSelected();
+      if (!p || !pfPlanFeasible(p)) return;
+      if (preflight.report.head_mode) startPreflightPrint("head", p);
+      else startPreflightPrint(p);
     }
     async function startPreflightPrint(mode, headPlan) {
       if (preflight.busy || preflight.sending) return;
@@ -6991,11 +7182,11 @@ createApp({
       calibrationVerifyConfigured, calibrationAction, calibrationApply,
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
-      panelMini, fullUiHref,
+      panelMini, fullUiHref, uiTheme, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,
       slotTitle, switchAce, loadSlot, slotIsEmpty, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, aceCfwTitle, visibleAces, openHeadPicker, isToolheadOccupied, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
-      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, FILAMENT_SWATCHES, knownColors, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, headRfidBusy, headRfidNote, readHeadRfid,
+      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,
@@ -7006,7 +7197,7 @@ createApp({
       spoolSlotOptions, spoolSlotKey, spoolMoveLocked, spoolAssignTo, spoolPickerOptions,
       smRowTaken, smRowWhere, spoolWeightDialog, spoolSort, spoolNewTitle,
       tagWrite,      tagWriteFormat, tagWriteUidSku, setTagWrite, slotOccupied,
-      tagWriteOutcome, dismissTagWriteOutcome, tagRead, aceOpenFw,
+      tagWriteOutcome, dismissTagWriteOutcome, tagRead, aceOpenFw, aceTagRead,
       paDlg, paClip, spoolPaDialog, paRowDel, paAddRow, paCopy, paPaste,
       paCalibrate, paCanCalibrate, paCalibrating, paLoading, paSpoolHead, paSpoolLoadPlan,
       paSave, paDirty, paKeyValid, paValueValid, paKeyOptions, pickerPaDialog,
@@ -7016,6 +7207,7 @@ createApp({
       acefwStatusBad,
       acefwPatchTarget, acefwPatchTargets, acefwTargetLabel, acefwCanPatch,
       acefwVersions, acefwGen1Versions, acefwIsV1, acefwVersionOptions,
+      acefwGen1Unknown,
       spoolCreateFromPicker,
       spoolExport, spoolImport, triggerSpoolImport,
       isPrinting,
@@ -7037,6 +7229,7 @@ createApp({
       headTargets, headTargetOptions, headEffectiveTargetId, headTargetLabel,
       headTargetColor, headTargetLabelById, onHeadTargetChange, headSwapsDisplay,
       hmDropOpen, hmDdToggle, hmDdClose, hmDdPick,
+      pfPlanSel, pfPlanList, pfPlanFeasible, pfPlanSwaps, pfPlanFlush, pfSelected, pfRecommended, pfPlanTitle, pfGoLabel, pfPrintSelected,
       headFeasible, headPlanFeasible, headPlanSwaps, headPlanBg, headPlanFlushG, headPlanBgLabel, headSlicerHex,
       headSlicerMat, headProposalLabel,
       headMaxCopies, headCopiesEffective, headCopyPlan, headCopyList, copySlotLabel, setPreflightCopies,

@@ -1,21 +1,28 @@
 # mUlt1ACE 
 
-> [!IMPORTANT]
-> **multiACE is in the running for the Snapmaker U1 Innovation Fund.** The fund backs
-> open-source projects for the U1. Community voting is open until Sep 30. Pick your
-> favorite projects.
->
-> [![Vote here](https://img.shields.io/badge/Vote%20here-0d9488?style=for-the-badge)](https://www.snapmaker.com/innovation-fund#vote)
-
 Started as a SnapACE fork, it has grown to over 5 times the original size, with around 90% of the code now its own and many unique features:
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/K3K610R4F9)
 
 [![Guides & Downloads](visitbutton.png)](https://postapocalyptic-diy.com/multiace/)
 
-## What's new in multiACE 1.11b
+## What's new in multiACE 1.20b-pre (prerelease)
 
-Fixes a regression in 1.10b: The Snapmaker and Polymaker vendors in the filament picker show again on firmware 1.6.0 and newer. 
+This is a prerelease: new features to try out before the next release. Please report anything odd.
+
+**A big thank you to our new collaborators.** Three developers joined the project and brought their own features with them:
+
+- **Simon-CR** - the ACE2-Open community firmware for the ACE 2 Pro, which lets multiACE read and write spool tags. multiACE now also runs on other Klipper printers, not only the Snapmaker U1 (his Voron is the first one), and a watchdog notices when an ACE silently stops answering and reconnects it.
+- **Tareku99** - multiACE as a ready-made package for the paxx Extended Firmware, so the firmware installs and updates it for you. A big thank you to [paxx12](https://github.com/paxx12) for the plan to ship multiACE with the rolling releases of the Extended Firmware.
+- **Godless50** - the ACE Pro gets its community firmware: flash it straight from the web UI, and read the tags of your spools on an ACE Pro too. Auto-dry can also follow an external humidity sensor.
+
+**New look for the web UI.** The web UI opens in a new design - the classic one is still there, one click in the Config tab.
+
+**Read spool tags on the ACE Pro.** With the community firmware, press *Read* in the filament picker and the spool's tag is identified and matched to your spool list. (Needs the community firmware on the ACE Pro.)
+
+**More robust connection.** If an ACE drops off, multiACE keeps trying to reconnect it in the background; a disconnected unit is shown as offline instead of a confusing state, and you get no pause when nothing is printing.
+
+**Also:** clearer messages when a spool has no tag code, small web UI and log fixes.
 
 
 ## What's new in multiACE 1.10b
@@ -664,6 +671,19 @@ All content is reviewed by humans before inclusion.
 
 - **Popstar (forum.snapmaker.com)**
   - **the default PLA swap temperature is set to 220 °C**
+
+- **[Simon-CR](https://github.com/Simon-CR)**
+  - **Other Klipper printers** - multiACE runs on printers other than the Snapmaker U1.
+  - **Connection watchdog** - notices a silent ACE and reconnects it.
+  - **ACE2-Open community firmware** for the ACE 2 Pro - reading and writing spool tags.
+
+- **[Tareku99](https://github.com/Tareku99)**
+  - **paxx Extended Firmware package** - multiACE as a package the firmware installs and updates.
+
+- **[Godless50](https://github.com/Godless50)**
+  - **ACE Pro firmware flashing** from the web UI.
+  - **Tag reading on the ACE Pro** through his community firmware.
+  - **External humidity for auto-dry.**
  
     
  
