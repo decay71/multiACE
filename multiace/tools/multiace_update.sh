@@ -40,37 +40,35 @@ else
 fi
 ACE_PY="/home/lava/klipper/klippy/extras/ace.py"
 INSTALL_BASE="/home/lava/multiace"
-restart_klipper() {
-    # 1. Moonraker API - preferred on Snapmaker / PAXX. Runs as lava,
-    #    exposes /printer/firmware_restart on 127.0.0.1:7125, works
-    #    whether the updater itself is root or lava.
-    for url in \
-        http://127.0.0.1:7125/printer/firmware_restart \
-        http://127.0.0.1:7125/printer/restart; do
-        if command -v curl >/dev/null 2>&1; then
-            if curl -sf -X POST "$url" >/dev/null 2>&1; then
-                return 0
+restart_klipper_service() {
+    # New Python code only loads with a fresh Klipper PROCESS: RESTART and
+    # FIRMWARE_RESTART keep the already imported extras in memory (HW
+    # 2026-10-10: banner stayed on the old build after firmware_restart).
+    # The init script needs root; Moonraker's provider is "none" on the U1,
+    # so /machine/services/restart is not available. Never during a print.
+    url="http://127.0.0.1:7125/printer/objects/query?print_stats"
+    if command -v curl >/dev/null 2>&1; then
+        st="$(curl -sf "$url" 2>/dev/null)"
+    else
+        st="$(wget -q -O - "$url" 2>/dev/null)"
+    fi
+    case "$st" in
+        *'"state": "printing"'*|*'"state": "paused"'*|*'"state":"printing"'*|*'"state":"paused"'*)
+            echo "WARN: a print is running - Klipper not restarted" >&2
+            return 1 ;;
+    esac
+    if [ "$(id -u)" -eq 0 ]; then
+        for init in /etc/init.d/S60klipper /etc/init.d/S55klipper \
+                    /etc/init.d/S58klipper /etc/init.d/klipper \
+                    /etc/init.d/S99klipper; do
+            if [ -x "$init" ]; then
+                "$init" restart >/dev/null 2>&1 && return 0
             fi
-        elif command -v wget >/dev/null 2>&1; then
-            if wget -q --post-data="" -O /dev/null "$url" 2>/dev/null; then
-                return 0
-            fi
-        fi
-    done
-    # 2. Init scripts. Snapmaker U1 / PAXX uses S60klipper; the others
-    #    are listed for forks. Needs root.
-    for init in /etc/init.d/S60klipper /etc/init.d/S55klipper \
-                /etc/init.d/S58klipper /etc/init.d/klipper \
-                /etc/init.d/S99klipper; do
-        if [ -x "$init" ]; then
-            "$init" restart >/dev/null 2>&1 && return 0
-        fi
-    done
-    # 3. systemd, not on this hardware but harmless.
+        done
+    fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl restart klipper >/dev/null 2>&1 && return 0
     fi
-    echo "WARN: could not restart Klipper automatically - do it manually" >&2
     return 1
 }
 current_version() {
@@ -316,8 +314,13 @@ cmd_apply() {
     fi
     echo "STATUS: applying install_multiace.sh $INSTALL_WEB_FLAG"
     bash "$SRC/install_multiace.sh" $INSTALL_WEB_FLAG
-    echo "STATUS: please_reboot_printer"
-    echo "INFO: Update installed. Please restart the printer for the new code to take effect."
+    if restart_klipper_service; then
+        echo "STATUS: klipper_restarted"
+        echo "INFO: Update installed. Klipper restarted with the new code."
+    else
+        echo "STATUS: please_reboot_printer"
+        echo "INFO: Update installed. Please restart the printer for the new code to take effect."
+    fi
     echo "STATUS: done from=$CUR to=$LATEST"
 }
 case "${1:-check}" in

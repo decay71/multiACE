@@ -5250,7 +5250,8 @@ createApp({
             if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
             _parseUpdateResult(j);
             if (j.ok) {
-              setMacroLog(t("ui.config.update_done"));
+              const reboot = (j.status_lines || []).some(l => String(l).startsWith("please_reboot"));
+              setMacroLog(t(reboot ? "ui.config.update_done_reboot" : "ui.config.update_done"));
             }
           } catch (e) {
             updateState.statusText = `${t("ui.config.update_failed")}: ${e.message || e}`;

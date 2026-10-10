@@ -1801,6 +1801,9 @@ async def _run_update_script(args: list[str], timeout: float) -> dict:
                     "Re-run install_multiace.sh from the repo to ship it."))
     env = os.environ.copy()
     env.update(_read_update_cfg())
+    # Tells install_multiace.sh that its caller IS the web backend: it must
+    # not SIGTERM this process (the backend re-execs itself afterwards).
+    env["MULTIACE_WEB_PID"] = str(os.getpid())
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", update_script, *args,
@@ -1934,7 +1937,40 @@ async def update_apply(force: bool = False) -> dict:
     args = ["apply"]
     if force:
         args.append("--force")
-    return await _run_update_script(args, timeout=600.0)
+    result = await _run_update_script(args, timeout=600.0)
+    if result.get("ok") and any(
+            l.startswith("done") for l in result.get("status_lines", [])):
+        # The installer replaced our own files; the init script cannot be
+        # driven from a lava-owned instance and SIGTERM without a restart
+        # left the web dead (HW 2026-10-10). Re-exec this very process
+        # with its own command line: same PID (S98's pidfile stays valid),
+        # works as root and as lava. Delayed so the response gets out.
+        result["web_restart"] = True
+        asyncio.get_running_loop().call_later(1.5, _self_reexec)
+    return result
+
+def _self_reexec() -> None:
+    """Replace this process with a fresh copy of itself (new code)."""
+    argv: list[str] = []
+    try:
+        with open("/proc/self/cmdline", "rb") as f:
+            argv = [a.decode("utf-8", "replace")
+                    for a in f.read().split(b"\0") if a]
+    except Exception:
+        argv = []
+    if not argv or not os.path.isabs(argv[0]):
+        argv = [sys.executable, "-m", "uvicorn"] + sys.argv[1:]
+    _trace.info("multiace web: re-exec after update: %s", " ".join(argv))
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        os.execv(argv[0], argv)
+    except Exception as e:
+        _trace.error("multiace web: re-exec failed (%s) - restart "
+                     "S98multiace-web or reboot", e)
 
 _DEBUG_FLAG_PATH = Path("/oem/.debug")
 
@@ -4873,6 +4909,15 @@ async def _spoolman_tag_sweep_loop() -> None:
 
 @app.on_event("startup")
 async def _start_log_listener() -> None:
+    # Who runs this process decides what an update can restart (S98 starts
+    # it as root; a lava-owned instance cannot restart the init scripts).
+    try:
+        import pwd
+        _user = pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        _user = "?"
+    _trace.info("multiace web starting: pid=%d uid=%d user=%s cwd=%s",
+                os.getpid(), os.getuid(), _user, os.getcwd())
     asyncio.create_task(_moonraker_log_listener())
     asyncio.create_task(_spoolman_periodic_push())
     asyncio.create_task(_spoolman_startup_push())

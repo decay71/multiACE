@@ -585,7 +585,12 @@ PYEOF
     else
         log "  Skipped sudoers drop-in update (non-root context)"
     fi
-    if [ "$IS_ROOT" = "1" ] && [ -x "$INITD_SCRIPT" ]; then
+    if [ "$IS_ROOT" = "1" ] && [ -n "$MULTIACE_WEB_PID" ]; then
+        # Web update from a root-owned backend: it re-execs itself (same
+        # PID, S98's pidfile stays valid) once the updater returns. A
+        # stop/start here would kill the caller mid-request.
+        log "  Web update: the backend restarts itself after the install"
+    elif [ "$IS_ROOT" = "1" ] && [ -x "$INITD_SCRIPT" ]; then
         "$INITD_SCRIPT" stop  >>"$LOGFILE" 2>&1 || true
         "$INITD_SCRIPT" start >>"$LOGFILE" 2>&1 || log "  WARN: start failed - see $LOGFILE"
         sleep 1
@@ -600,7 +605,12 @@ PYEOF
             log "  WARN: multiACE Web NOT healthy - check $LOGFILE and $WEB_DEST/backend/"
         fi
     else
-        if pgrep -u lava -f 'uvicorn.*main:app' >/dev/null 2>&1; then
+        if [ -n "$MULTIACE_WEB_PID" ]; then
+            # Called by the web backend's update endpoint: that process
+            # re-execs itself once the updater returns. Killing it here
+            # left the web dead with nobody to restart it (HW 2026-10-10).
+            log "  Web update: the backend restarts itself after the install"
+        elif pgrep -u lava -f 'uvicorn.*main:app' >/dev/null 2>&1; then
             pkill -TERM -u lava -f 'uvicorn.*main:app' 2>/dev/null || true
             log "  Sent SIGTERM to running uvicorn (restart needed for new code)"
         fi
@@ -612,7 +622,7 @@ PYEOF
             log "  WARN: :7126 still served by an instance we cannot replace"
             log "        (root-owned?) - new web code is NOT live until reboot"
         fi
-        log "  Skipped service restart (non-root context) - reboot or use Web Restart"
+        [ -n "$MULTIACE_WEB_PID" ] || log "  Skipped service restart (non-root context) - reboot, or restart S98multiace-web as root"
     fi
 fi
 DATA_DIR="${HOME_DIR}/printer_data"
