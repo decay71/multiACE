@@ -16,7 +16,7 @@ from .ace_protocol_v2 import AceProtocolV2
 
 KNOWN_PROTOCOLS = (AceProtocolV1, AceProtocolV2)
 
-MULTIACE_VERSION = "1.26b"
+MULTIACE_VERSION = "1.27b"
 
 # Engine API contract version (see docs/ENGINE_API.md). Distinct from
 # MULTIACE_VERSION (the product version): this only bumps on a breaking
@@ -24,7 +24,7 @@ MULTIACE_VERSION = "1.26b"
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "8e027719"
+MULTIACE_BUILD_TAG = "2725a008"
 MULTIACE_BUNDLE_SHA1 = "0f18123"
 # The former shipped value of [ace] update_url_base (static mirror);
 # read as unset so updates come from GitHub.

@@ -280,22 +280,32 @@ if [ -d "$INSTALL_DIR/tools" ]; then
     cp "$INSTALL_DIR/tools/"*.py "${HOME_DIR}/printer_data/config/tools/" 2>/dev/null || true
     log "  Tools installed"
 fi
+# The updater is usually the process RUNNING this installer (web update).
+# bash reads a script while executing it, so overwriting that file in
+# place (cp = same inode) makes the running copy continue in the new text
+# at the old offset. A rename (new inode) leaves the running copy on its
+# old file. Also protects updaters older than this fix.
+install_updater_copy() {
+    _dst="$1"
+    _tmp="$_dst.new.$$"
+    cp "$INSTALL_DIR/tools/multiace_update.sh" "$_tmp" 2>/dev/null || return 1
+    chmod 755 "$_tmp" 2>/dev/null || true
+    chown lava:lava "$_tmp" 2>/dev/null || true
+    mv -f "$_tmp" "$_dst" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    return 0
+}
 if [ -f "$INSTALL_DIR/tools/multiace_update.sh" ]; then
     mkdir -p "$MULTIACE_DIR/.."
-    cp "$INSTALL_DIR/tools/multiace_update.sh" "$HOME_DIR/multiace_update.sh"
-    chmod 755 "$HOME_DIR/multiace_update.sh"
-    chown lava:lava "$HOME_DIR/multiace_update.sh" 2>/dev/null || true
-    log "  Updater installed at $HOME_DIR/multiace_update.sh"
+    install_updater_copy "$HOME_DIR/multiace_update.sh" \
+        && log "  Updater installed at $HOME_DIR/multiace_update.sh" \
+        || log "  WARN: could not install $HOME_DIR/multiace_update.sh"
     # PAXX-baked firmware ships a copy at /home/lava/multiace/tools/
     # from the squashfs. Refresh it too so the Web backend's fallback
     # path doesn't lag behind the canonical one.
     if [ -d "$HOME_DIR/multiace/tools" ]; then
-        cp "$INSTALL_DIR/tools/multiace_update.sh" \
-            "$HOME_DIR/multiace/tools/multiace_update.sh" 2>/dev/null && {
-            chmod 755 "$HOME_DIR/multiace/tools/multiace_update.sh" 2>/dev/null || true
-            chown lava:lava "$HOME_DIR/multiace/tools/multiace_update.sh" 2>/dev/null || true
-            log "  Updater also refreshed at $HOME_DIR/multiace/tools/multiace_update.sh"
-        } || log "  WARN: could not refresh $HOME_DIR/multiace/tools/multiace_update.sh"
+        install_updater_copy "$HOME_DIR/multiace/tools/multiace_update.sh" \
+            && log "  Updater also refreshed at $HOME_DIR/multiace/tools/multiace_update.sh" \
+            || log "  WARN: could not refresh $HOME_DIR/multiace/tools/multiace_update.sh"
     fi
 fi
 if [ -f "$INSTALL_DIR/tools/merge_ace_cfg.py" ]; then

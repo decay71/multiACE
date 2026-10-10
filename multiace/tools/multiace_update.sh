@@ -323,19 +323,29 @@ cmd_apply() {
     fi
     echo "STATUS: done from=$CUR to=$LATEST"
 }
-case "${1:-check}" in
-    check)
-        shift; cmd_check "$@" ;;
-    assets)
-        shift; cmd_assets "$@" ;;
-    apply)
-        shift; cmd_apply "$@" ;;
-    -h|--help|help)
-        sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^#//; s/^ //'
-        ;;
-    *)
-        echo "ERROR: unknown command: $1" >&2
-        echo "Run with --help for usage." >&2
-        exit 2
-        ;;
-esac
+# The apply path replaces THIS file (install_multiace.sh ships a new copy)
+# while it is still running. bash reads a script as it executes it, so
+# anything left to read after that point comes from the NEW file at the
+# old byte offset (HW 2026-10-10: "shift count out of range", "syntax
+# error near ';;'" after a successful 1.25b -> 1.26b update). Everything is
+# therefore parsed into one function before it runs, and the last line is
+# a single brace group, so nothing is read from disk after the dispatch.
+main() {
+    case "${1:-check}" in
+        check)
+            shift; cmd_check "$@" ;;
+        assets)
+            shift; cmd_assets "$@" ;;
+        apply)
+            shift; cmd_apply "$@" ;;
+        -h|--help|help)
+            sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^#//; s/^ //'
+            ;;
+        *)
+            echo "ERROR: unknown command: $1" >&2
+            echo "Run with --help for usage." >&2
+            return 2
+            ;;
+    esac
+}
+{ main "$@"; exit $?; }
