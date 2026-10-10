@@ -6,7 +6,7 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 [![Guides & Downloads](visitbutton.png)](https://postapocalyptic-diy.com/multiace/)
 
-## What's new in multiACE 1.20b-pre (prerelease)
+## What's new in multiACE 1.25b 
 
 This is a prerelease: new features to try out before the next release. Please report anything odd.
 
@@ -16,11 +16,15 @@ This is a prerelease: new features to try out before the next release. Please re
 - **Tareku99** - multiACE as a ready-made package for the paxx Extended Firmware, so the firmware installs and updates it for you. A big thank you to [paxx12](https://github.com/paxx12) for the plan to ship this multiACE integration with the rolling releases of the Extended Firmware.
 - **Godless50** - the ACE Pro gets its community firmware: flash it straight from the web UI, and read the tags of your non Anycubic spools on an ACE Pro too. Auto-dry can also follow an external humidity sensor.
 
-**New look for the web UI.** The web UI opens in a new design - the classic one is still there, one click in the Config tab.
+**New look, dark and light.** Redesigned web UI with Dark, Light and the previous Classic style, switchable in the Config tab. Toolhead cards show the  feeding spool's fill level; spools shrink as they empty.
 
 **Read spool tags on the ACE Pro.** With the community firmware, press *Read* in the filament picker and the spool's tag is identified and matched to your spool list. (Needs the community firmware on the ACE Pro.)
 
+**Online updates from GitHub.** The Update button now fetches releases directly from GitHub.
+
 **More robust connection.** If an ACE drops off, multiACE keeps trying to reconnect it in the background; a disconnected unit is shown as offline instead of a confusing state, and you get no pause when nothing is printing.
+
+**TRSYNC back to stock.** multiACE no longer patches Klipper's homing timeout. If you see 0003-0528 "Timer too close" during homing or bed mesh, set `trsync_timeout: 0.250` in the `[ace]` section of ace.cfg and restart Klipper; the value only ever raises the window, never lowers it.
 
 **Also:** clearer messages when a spool has no tag code, small web UI and log fixes.
 
