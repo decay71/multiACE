@@ -9,19 +9,57 @@
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="style-new.css">
+  <!-- Loading splash: visible from the first paint until app.js has the
+       first printer state (hideSplash), so a reload - e.g. of a tab the
+       browser discarded while it sat in the background - shows the logo
+       instead of an empty page. Colours come from the active design. -->
+  <style>
+    [v-cloak] { display: none; }
+    #ma-splash {
+      position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px;
+      background: var(--bg); color: var(--fg); transition: opacity .2s ease;
+      font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    #ma-splash.ma-splash-out { opacity: 0; pointer-events: none; }
+    #ma-splash .ma-logo { font-size: min(28px, 9vw); font-weight: 600; }
+    #ma-splash .ma-logo span { color: var(--accent); }
+    #ma-splash .ma-spin {
+      width: 22px; height: 22px; border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: ma-spin .8s linear infinite;
+    }
+    @keyframes ma-spin { to { transform: rotate(360deg); } }
+  </style>
   <!-- Set the chosen design before the first paint, so the page never
        flashes the other one. -->
   <script>
-    // The new design is the default; only an explicit "classic" keeps the
-    // old one.
+    // The new design (dark) is the default; "light" is the same design in
+    // light shades, only an explicit "classic" keeps the old one.
     var _th = "new";
-    try { if (localStorage.getItem("multiace.uiTheme") === "classic") _th = "classic"; }
+    try { _th = localStorage.getItem("multiace.uiTheme") || "new"; }
     catch (e) {}
-    if (_th === "new") document.documentElement.dataset.theme = "new";
+    if (_th !== "classic") document.documentElement.dataset.theme = "new";
+    if (_th === "light") document.documentElement.dataset.shade = "light";
   </script>
 </head>
 <body>
-<div id="app">
+<div id="ma-splash" aria-hidden="true"><div class="ma-logo">m<span>U</span>lt<span>1</span>ACE</div><div class="ma-spin"></div></div>
+<script>
+  // Backstop independent of app.js: if the app never got far enough to
+  // drop the splash (Vue missing, setup threw), say so instead of spinning.
+  setTimeout(function () {
+    var el = document.getElementById("ma-splash"), app = document.getElementById("app");
+    if (!el) return;
+    if (app && !app.hasAttribute("v-cloak") && app.children.length) { el.remove(); return; }
+    var sp = el.querySelector(".ma-spin");
+    if (sp) sp.remove();
+    var msg = document.createElement("div");
+    msg.style.cssText = "font-size:14px;max-width:32em;text-align:center;padding:0 16px";
+    msg.textContent = "The multiACE web UI did not start. Reload the page; if this stays, the browser console names the error.";
+    el.appendChild(msg);
+  }, 10000);
+</script>
+<div id="app" v-cloak>
   <!-- PANEL MODE (?panel=1): a compact view meant to be embedded, e.g. as a
        Fluidd "HTTP Page" camera - Fluidd has no plugin API, so an iframe is
        the way in. Deliberately a MODE of this app, not a second interface:
@@ -144,8 +182,8 @@
             <button class="panel-btn"
                     :class="{reload: needsReload(panelAce.idx, slot.idx)}"
                     @click="loadSlot(panelAce.idx, slot.idx)"
-                    :disabled="isPrinting || slotIsEmpty(panelAce.idx, slot.idx) || (state.mode === 'head' ? (slotLoadedInHead(panelAce.idx, slot.idx) && !needsReload(panelAce.idx, slot.idx)) : (!needsReload(panelAce.idx, slot.idx) && isToolheadOccupied(panelAce.idx, slot.idx)))"
-                    :title="isPrinting ? t('ui.dashboard.blocked_printing') : (slotIsEmpty(panelAce.idx, slot.idx) ? t('ui.dashboard.slot_empty_hint', {ace: dispIdx(panelAce.idx), slot: dispIdx(slot.idx)}) : '')">{{
+                    :disabled="isPrinting || slotIsEmpty(panelAce.idx, slot.idx) || slotHeadHasNoAce(slot.idx) || (state.mode === 'head' ? (slotLoadedInHead(panelAce.idx, slot.idx) && !needsReload(panelAce.idx, slot.idx)) : (!needsReload(panelAce.idx, slot.idx) && isToolheadOccupied(panelAce.idx, slot.idx)))"
+                    :title="isPrinting ? t('ui.dashboard.blocked_printing') : (slotIsEmpty(panelAce.idx, slot.idx) ? t('ui.dashboard.slot_empty_hint', {ace: dispIdx(panelAce.idx), slot: dispIdx(slot.idx)}) : (slotHeadHasNoAce(slot.idx) ? t('ui.dashboard.slot_head_no_ace', {head: dispIdx(slot.idx)}) : ''))">{{
                 needsReload(panelAce.idx, slot.idx) ? t('ui.dashboard.reload') : t('ui.dashboard.load') }}</button>
             <!-- Unload is per HEAD, not per slot. Shown on the slot anyway
                  (that is how the user thinks about it) and mapped to the head
@@ -235,7 +273,7 @@
                   </div>
                   <div class="panel-card-label">{{ spoolForHead(th.idx) ? spoolTitle(spoolForHead(th.idx)) : '' }}</div>
                   <div class="panel-card-actions">
-                    <button class="panel-btn" v-if="th.feeder"
+                    <button class="panel-btn" v-if="th.feeder || th.manual"
                             @click="loadFeederHead(th.idx)"
                             :disabled="isPrinting || th.filament_at_extruder"
                             :title="isPrinting ? t('ui.dashboard.blocked_printing') : ''">{{
@@ -296,6 +334,12 @@
     <select class="lang-select" :value="language" @change="setLanguage($event.target.value)">
       <option v-for="l in languages" :key="l.code" :value="l.code">{{ l.name }}</option>
     </select>
+    <button v-if="screenAvailable" class="screen-btn"
+            :class="{active: screenPopout}"
+            @click="toggleScreenPopout"
+            :title="t('ui.dashboard.show_display_hint')">
+      {{ screenPopout ? t('ui.dashboard.hide_display') : t('ui.dashboard.show_display') }}
+    </button>
     <span class="conn" :class="connClass">{{ connText }}</span>
   </header>
   <div v-if="rebootNeeded && !panelMode" class="reboot-banner">{{ t('ui.common.please_restart') }}</div>
@@ -316,12 +360,6 @@
         </span>
         <span class="pill">{{ t('ui.dashboard.active_pill') }}: <strong>ACE {{ dispIdx(state.active_device) }}</strong></span>
         <span class="pill">{{ t('ui.dashboard.mode_pill') }}: <strong>{{ state.mode || '-' }}</strong></span>
-        <button v-if="screenAvailable" class="pill pill-btn"
-                :class="{active: screenPopout}"
-                @click="toggleScreenPopout"
-                :title="t('ui.dashboard.show_display_hint')">
-          {{ screenPopout ? t('ui.dashboard.hide_display') : t('ui.dashboard.show_display') }}
-        </button>
       </div>
       <div ref="wiringContainerEl" class="ace-th-wrap">
         <svg v-if="wiringPaths.length"
@@ -332,9 +370,10 @@
                 :key="i"
                 :d="p.d"
                 :stroke="p.color"
-                stroke-width="4"
+                :stroke-width="p.width || 4"
                 fill="none"
-                stroke-linecap="round"></path>
+                :stroke-linecap="p.width === 2 ? 'square' : 'round'"
+                stroke-linejoin="miter"></path>
         </svg>
         <h3>{{ t('ui.dashboard.aces') }}</h3>
         <p v-if="visibleAces.length === 0 && !loadError" class="muted">
@@ -435,8 +474,8 @@
                 <button class="slot-load-btn"
                         :class="{reload: needsReload(ace.idx, slot.idx)}"
                         @click.stop="loadSlot(ace.idx, slot.idx)"
-                        :disabled="isPrinting || slotIsEmpty(ace.idx, slot.idx) || (state.mode === 'head' ? (slotLoadedInHead(ace.idx, slot.idx) && !needsReload(ace.idx, slot.idx)) : (!needsReload(ace.idx, slot.idx) && isToolheadOccupied(ace.idx, slot.idx)))"
-                        :title="isPrinting ? t('ui.dashboard.blocked_printing') : (slotIsEmpty(ace.idx, slot.idx) ? t('ui.dashboard.slot_empty_hint', {ace: dispIdx(ace.idx), slot: dispIdx(slot.idx)}) : (needsReload(ace.idx, slot.idx) ? t('ui.dashboard.reload_hint') : t('ui.dashboard.load')))">
+                        :disabled="isPrinting || slotIsEmpty(ace.idx, slot.idx) || slotHeadHasNoAce(slot.idx) || (state.mode === 'head' ? (slotLoadedInHead(ace.idx, slot.idx) && !needsReload(ace.idx, slot.idx)) : (!needsReload(ace.idx, slot.idx) && isToolheadOccupied(ace.idx, slot.idx)))"
+                        :title="isPrinting ? t('ui.dashboard.blocked_printing') : (slotIsEmpty(ace.idx, slot.idx) ? t('ui.dashboard.slot_empty_hint', {ace: dispIdx(ace.idx), slot: dispIdx(slot.idx)}) : slotHeadHasNoAce(slot.idx) ? t('ui.dashboard.slot_head_no_ace', {head: dispIdx(slot.idx)}) : (needsReload(ace.idx, slot.idx) ? t('ui.dashboard.reload_hint') : t('ui.dashboard.load')))">
                   {{ needsReload(ace.idx, slot.idx) ? t('ui.dashboard.reload') : t('ui.dashboard.load') }}
                 </button>
               </div>
@@ -581,7 +620,7 @@
                     v-if="t_.color && !t_.feeder && !t_.manual && t_.head_source_known && !toolheadOps[t_.idx]"
                     :style="{background: t_.color}"></span>
             </h2>
-            <span v-if="uiTheme === 'new'" class="nt-th-mat">{{ headGaugeText(t_) }}</span>
+            <span v-if="uiTheme === 'new'" class="nt-th-mat">{{ headGaugeText(t_) || '\u00a0' }}</span>
             <span v-if="uiTheme === 'new' && !t_.feeder && !t_.manual" class="nt-spool nt-spool-th"><i></i><span class="nt-core"><span class="nt-fill"
                   :style="{'--p': headGaugePct(t_), '--c': gaugeColor(t_.color)}"></span></span><i></i></span>
             <!-- The tile is a SIBLING of the title, not inside it: in the h2
@@ -591,7 +630,7 @@
                  the text column reads exactly like an ACE toolhead card. -->
             <button class="feeder-tile" v-if="t_.feeder || t_.manual"
                     :class="{'no-color': !t_.color, 'tile-empty': headTileEmpty(t_)}"
-                    :style="t_.color ? (headTileEmpty(t_) ? {borderColor: t_.color} : {background: t_.color}) : {}"
+                    :style="t_.color ? (headTileEmpty(t_) ? {borderColor: t_.color, '--tc': t_.color} : {background: uiTheme === 'new' ? gaugeColor(t_.color) : t_.color}) : {}"
                     @click="openHeadPicker(t_)"
                     :title="t('ui.dashboard.head_set_filament')">
               <em>{{ headTileEmpty(t_) ? t('ui.common.empty') : (t_.material || '?') }}</em>
@@ -637,7 +676,7 @@
               <span>{{ t('ui.dashboard.nt_source') }}</span>{{ t('ui.dashboard.nt_feeder_note') }}
             </div>
             <div class="toolhead-actions" v-if="t_.module_exist">
-              <button v-if="t_.feeder && !t_.filament_at_extruder" @click="loadFeederHead(t_.idx)"
+              <button v-if="(t_.feeder || t_.manual) && !t_.filament_at_extruder" @click="loadFeederHead(t_.idx)"
                       :disabled="isPrinting" :title="isPrinting ? t('ui.dashboard.blocked_printing') : ''">{{ t('ui.dashboard.load') }}</button>
               <button class="warn" @click="unloadHead(t_.idx)"
                       :disabled="(!t_.head_source_known && !t_.filament_at_extruder) || isPrinting"
@@ -1575,8 +1614,8 @@
       <div class="nt-cfg-theme">
       <h3>{{ t('ui.config.ui_theme') }}</h3>
       <div class="mode-row">
-        <button v-for="th in ['classic','new']" :key="th"
-                :class="{active: uiTheme === th}"
+        <button v-for="th in ['new','light','classic']" :key="th"
+                :class="{active: uiThemeChoice === th}"
                 @click="setUiTheme(th)">{{ t('ui.config.ui_theme_' + th) }}</button>
       </div>
       <p class="muted small">{{ t('ui.config.ui_theme_hint') }}</p>
@@ -2511,7 +2550,7 @@ reboot</pre>
         <button class="nt-cancel" @click="closePicker">{{ t('ui.common.cancel') }}</button>
         <button @click="savePicker(false)" class="primary nt-main">{{ t('ui.dialog.picker_save') }}</button>
         <button v-if="picker.head === null || picker.head === undefined" class="nt-second"
-                @click="savePicker(true)" :disabled="isToolheadOccupied(picker.ace, picker.slot)">{{ t('ui.dialog.picker_load_after') }}</button>
+                @click="savePicker(true)" :disabled="isToolheadOccupied(picker.ace, picker.slot) || ((picker.head === null || picker.head === undefined) && slotHeadHasNoAce(picker.slot))">{{ t('ui.dialog.picker_load_after') }}</button>
         <!-- Write the picked identity onto the physical tag as OpenSpool.
              Slot target only (a head has no ACE tag); needs ACE2-Open firmware and
              a spool at the gate. -->
@@ -2740,7 +2779,7 @@ reboot</pre>
                 <tr v-for="c in g.colors" :key="'gc-'+c.t">
                   <td>
                     <span class="preflight-dot"
-                          :style="{background: c.hex || '#444'}"></span>
+                          :style="{background: chipBg(c.hex)}"></span>
                     <span class="muted small">{{ c.name || c.hex }}
                       &middot; {{ c.material || '?' }}</span>
                   </td>
@@ -2762,7 +2801,7 @@ reboot</pre>
                               @keydown.esc="hmDdClose()"
                               @blur="hmDdClose()">
                         <span class="hm-dd-chip"
-                              :style="{background: headTargetColor(headEffectiveTargetId(c.t))}"></span>
+                              :style="{background: chipBg(headTargetColor(headEffectiveTargetId(c.t)))}"></span>
                         <span class="hm-dd-label">{{ headTargetLabelById(headEffectiveTargetId(c.t))
                               || ('- ' + t('ui.preflight.not_feasible') + ' -') }}</span>
                         <span class="hm-dd-caret">▾</span>
@@ -2770,7 +2809,7 @@ reboot</pre>
                       <div class="hm-dd-list" v-if="hmDropOpen === c.t">
                         <div class="hm-dd-item"
                              @mousedown.prevent="hmDdPick(c.t, '')">
-                          <span class="hm-dd-chip" style="background:#444"></span>
+                          <span class="hm-dd-chip" style="background:var(--nt-nocolor, #444)"></span>
                           <span>- {{ t('ui.preflight.not_feasible') }} -</span>
                         </div>
                         <div class="hm-dd-item"
@@ -2779,13 +2818,13 @@ reboot</pre>
                              :class="{sel: tg.id === headEffectiveTargetId(c.t)}"
                              @mousedown.prevent="hmDdPick(c.t, tg.id)">
                           <span class="hm-dd-chip"
-                                :style="{background: tg.color || '#444'}"></span>
+                                :style="{background: chipBg(tg.color)}"></span>
                           <span>{{ headTargetLabel(tg) }}</span>
                         </div>
                         <div class="hm-dd-item off"
                              v-for="u in unsetSlotsForT(c.t)"
                              :key="'fhu-'+c.t+'-'+u.ace+'-'+u.slot">
-                          <span class="hm-dd-chip" style="background:#444"></span>
+                          <span class="hm-dd-chip" style="background:var(--nt-nocolor, #444)"></span>
                           <span>ACE {{ dispIdx(u.ace) }} Slot {{ dispIdx(u.slot) }}
                             &middot; {{ t('ui.preflight.slot_not_set') }}</span>
                         </div>
@@ -2794,7 +2833,7 @@ reboot</pre>
                     <select v-else-if="!preflight.report.head_mode
                                        && slicerSlotOptions(c.t).length"
                             class="preflight-slot-select"
-                            :style="{background: (slicerEffectiveSlot(c.t) && slicerEffectiveSlot(c.t).color) || '#444',
+                            :style="{background: chipBg((slicerEffectiveSlot(c.t) && slicerEffectiveSlot(c.t).color)),
                                      color: textOn(slicerEffectiveSlot(c.t) && slicerEffectiveSlot(c.t).color)}"
                             :value="slotKey(slicerEffectiveSlot(c.t))"
                             @change="onSlicerSlotChange(c.t, $event.target.value)">
@@ -2866,7 +2905,7 @@ reboot</pre>
                :key="'ls-' + s.ace + '-' + s.slot"
                class="preflight-card">
             <div class="preflight-swatch"
-                 :style="{background: s.color || '#444'}"></div>
+                 :style="{background: chipBg(s.color)}"></div>
             <div class="preflight-meta">
               <div><strong>ACE {{ dispIdx(s.ace) }} · Slot {{ dispIdx(s.slot) }}</strong></div>
               <div class="muted small">{{ s.material || '?' }}</div>
@@ -2882,7 +2921,7 @@ reboot</pre>
                :key="'sc-' + c.t"
                class="preflight-card">
             <div class="preflight-swatch"
-                 :style="{background: c.hex || '#444'}"></div>
+                 :style="{background: chipBg(c.hex)}"></div>
             <div class="preflight-meta">
               <div><strong>T{{ dispIdx(c.t) }}</strong></div>
               <div class="muted small">{{ c.material || '?' }}</div>
@@ -2947,14 +2986,14 @@ reboot</pre>
                   <td v-if="m.slot">
                     <template v-if="mode === 'slicer'">
                       <select class="preflight-slot-select"
-                              :style="{background: (slicerEffectiveSlot(m.t) && slicerEffectiveSlot(m.t).color) || '#444',
+                              :style="{background: chipBg((slicerEffectiveSlot(m.t) && slicerEffectiveSlot(m.t).color)),
                                        color: textOn(slicerEffectiveSlot(m.t) && slicerEffectiveSlot(m.t).color)}"
                               :value="slotKey(slicerEffectiveSlot(m.t))"
                               @change="onSlicerSlotChange(m.t, $event.target.value)">
                         <option v-for="opt in slicerSlotOptions(m.t)"
                                 :key="'opt-'+m.t+'-'+slotKey(opt)"
                                 :value="slotKey(opt)"
-                                :style="{background: opt.color || '#444', color: textOn(opt.color)}">
+                                :style="{background: chipBg(opt.color), color: textOn(opt.color)}">
                           ACE {{ dispIdx(opt.ace) }} Slot {{ dispIdx(opt.slot) }} · {{ opt.material || '?' }}
                         </option>
                         <option v-for="u in unsetSlotsForT(m.t)" disabled
@@ -2965,7 +3004,7 @@ reboot</pre>
                     </template>
                     <template v-else>
                       <span class="preflight-dot"
-                            :style="{background: m.slot.color || '#444'}"></span>
+                            :style="{background: chipBg(m.slot.color)}"></span>
                       ACE {{ dispIdx(m.slot.ace) }} Slot {{ dispIdx(m.slot.slot) }}
                       <span class="muted small">· {{ m.slot.material || '?' }}</span>
                     </template>
@@ -2975,7 +3014,7 @@ reboot</pre>
                   <td>←</td>
                   <td>
                     <span class="preflight-dot"
-                          :style="{background: preflight.report.slicer_colors.find(c => c.t === m.t)?.hex || '#444'}"></span>
+                          :style="{background: chipBg(preflight.report.slicer_colors.find(c => c.t === m.t)?.hex)}"></span>
                     <span class="muted small">{{ preflight.report.slicer_colors.find(c => c.t === m.t)?.material || '?' }}</span>
                   </td>
                   <td class="small">{{ tierLabel(m.tier) }}</td>
@@ -3019,7 +3058,7 @@ reboot</pre>
             <div v-for="tg in preflight.report.targets" :key="'ht-'+tg.id"
                  class="preflight-card">
               <div class="preflight-swatch"
-                   :style="{background: tg.color || '#444'}"></div>
+                   :style="{background: chipBg(tg.color)}"></div>
               <div class="preflight-meta">
                 <div><strong>{{ headTargetLabel(tg) }}</strong></div>
                 <div class="small">{{ tg.name }}</div>
@@ -3033,7 +3072,7 @@ reboot</pre>
             <div v-for="c in slicerColorsInPrintOrder()" :key="'hsc-'+c.t"
                  class="preflight-card">
               <div class="preflight-swatch"
-                   :style="{background: c.hex || '#444'}"></div>
+                   :style="{background: chipBg(c.hex)}"></div>
               <div class="preflight-meta">
                 <div><strong>T{{ dispIdx(c.t) }}</strong></div>
                 <div class="muted small">{{ c.material || '?' }}</div>
@@ -3123,7 +3162,7 @@ reboot</pre>
                                 @keydown.esc="hmDdClose()"
                                 @blur="hmDdClose()">
                           <span class="hm-dd-chip"
-                                :style="{background: headTargetColor(headEffectiveTargetId(c.t))}"></span>
+                                :style="{background: chipBg(headTargetColor(headEffectiveTargetId(c.t)))}"></span>
                           <span class="hm-dd-label">{{ headTargetLabelById(headEffectiveTargetId(c.t))
                                 || ('- ' + t('ui.preflight.not_feasible') + ' -') }}</span>
                           <span class="hm-dd-caret">▾</span>
@@ -3131,7 +3170,7 @@ reboot</pre>
                         <div class="hm-dd-list" v-if="hmDropOpen === c.t">
                           <div class="hm-dd-item"
                                @mousedown.prevent="hmDdPick(c.t, '')">
-                            <span class="hm-dd-chip" style="background:#444"></span>
+                            <span class="hm-dd-chip" style="background:var(--nt-nocolor, #444)"></span>
                             <span>- {{ t('ui.preflight.not_feasible') }} -</span>
                           </div>
                           <div class="hm-dd-item"
@@ -3140,13 +3179,13 @@ reboot</pre>
                                :class="{sel: tg.id === headEffectiveTargetId(c.t)}"
                                @mousedown.prevent="hmDdPick(c.t, tg.id)">
                             <span class="hm-dd-chip"
-                                  :style="{background: tg.color || '#444'}"></span>
+                                  :style="{background: chipBg(tg.color)}"></span>
                             <span>{{ headTargetLabel(tg) }}</span>
                           </div>
                           <div class="hm-dd-item off"
                                v-for="u in unsetSlotsForT(c.t)"
                                :key="'hmu-'+c.t+'-'+u.ace+'-'+u.slot">
-                            <span class="hm-dd-chip" style="background:#444"></span>
+                            <span class="hm-dd-chip" style="background:var(--nt-nocolor, #444)"></span>
                             <span>ACE {{ dispIdx(u.ace) }} Slot {{ dispIdx(u.slot) }}
                               &middot; {{ t('ui.preflight.slot_not_set') }}</span>
                           </div>
@@ -3155,7 +3194,7 @@ reboot</pre>
                     </td>
                     <td>←</td>
                     <td>
-                      <span class="preflight-dot" :style="{background: c.hex || '#444'}"></span>
+                      <span class="preflight-dot" :style="{background: chipBg(c.hex)}"></span>
                       T{{ dispIdx(c.t) }}
                       <span class="muted small">· {{ c.material || '?' }}</span>
                     </td>
@@ -3167,26 +3206,26 @@ reboot</pre>
                        count they were computed for. -->
                   <tr v-for="c in headCopyList()" :key="'hmc-'+c.t+'-'+c.id" class="copy-row">
                     <td>
-                      <span class="preflight-dot" :style="{background: headTargetColor(c.id)}"></span>
+                      <span class="preflight-dot" :style="{background: chipBg(headTargetColor(c.id))}"></span>
                       {{ headTargetLabelById(c.id) }}
                       <span class="muted small">· {{ t('ui.preflight.copies_row_active') }}</span>
                     </td>
                     <td>←</td>
                     <td>
-                      <span class="preflight-dot" :style="{background: headSlicerHex(c.t) || '#444'}"></span>
+                      <span class="preflight-dot" :style="{background: chipBg(headSlicerHex(c.t))}"></span>
                       T{{ dispIdx(c.t) }}
                       <span class="muted small">· {{ headSlicerMat(c.t) }}</span>
                     </td>
                   </tr>
                   <tr v-for="sg in headCopyPlan().suggestions" :key="'hms-'+sg.t+'-'+sg.ace+'-'+sg.slot" class="copy-row suggest">
                     <td>
-                      <span class="preflight-dot" :style="{background: headSlicerHex(sg.t) || '#444'}"></span>
+                      <span class="preflight-dot" :style="{background: chipBg(headSlicerHex(sg.t))}"></span>
                       {{ copySlotLabel(sg.ace, sg.slot) }} · {{ headSlicerMat(sg.t) }}
                       <span class="muted small">· {{ t('ui.preflight.copies_row_load') }}</span>
                     </td>
                     <td>←</td>
                     <td>
-                      <span class="preflight-dot" :style="{background: headSlicerHex(sg.t) || '#444'}"></span>
+                      <span class="preflight-dot" :style="{background: chipBg(headSlicerHex(sg.t))}"></span>
                       T{{ dispIdx(sg.t) }}
                       <span class="muted small">· {{ headSlicerMat(sg.t) }}</span>
                     </td>
@@ -3209,7 +3248,7 @@ reboot</pre>
                       :class="{warn: m.kind === 'none'}">
                     <td v-if="m.kind !== 'none'">
                       <span class="preflight-dot"
-                            :style="{background: headSlicerHex(m.t) || '#444'}"></span>
+                            :style="{background: chipBg(headSlicerHex(m.t))}"></span>
                       {{ headProposalLabel(m) }}
                       <span v-if="m.tier === 'copy'" class="muted small">· {{ t('ui.preflight.copies_row_load') }}</span>
                     </td>
@@ -3217,7 +3256,7 @@ reboot</pre>
                     <td>←</td>
                     <td>
                       <span class="preflight-dot"
-                            :style="{background: headSlicerHex(m.t) || '#444'}"></span>
+                            :style="{background: chipBg(headSlicerHex(m.t))}"></span>
                       T{{ dispIdx(m.t) }}
                       <span class="muted small">· {{ headSlicerMat(m.t) }}</span>
                     </td>

@@ -69,10 +69,10 @@ values on the wire.
 
 | Command | Parameters | Effect |
 |---------|-----------|--------|
-| `ACE_LOAD_HEAD` | `HEAD=n [ACE=n] [SLOT=n]` | Load a toolhead from an ACE slot. Ignored for manual heads. |
-| `ACE_UNLOAD_HEAD` | `HEAD=n [RETRACT_LENGTH=mm] [KEEP_HEAT=temp]` | Unload a head back to its ACE. `KEEP_HEAT>0` holds the hotend at `temp` (no cold cool-down). Ignored for manual heads. |
-| `ACE_UNLOAD_ALL_HEADS` | - | Unload every loaded head (manual heads skipped). |
-| `ACE_SWAP_HEAD` | `HEAD=n ACE=n [SLOT=n] [ANTI_OOZE=mm] [INITIAL=1]` | Mid-print swap: unload current, load new. A no-op when the head already holds that ACE/slot. `ANTI_OOZE` = the end-of-swap retract, sized to the un-retract the following gcode will push back (default `swap_anti_ooze_retract`). `INITIAL=1` marks a swap inside the auto-load block at print start (parks at the discard position instead of restoring a print position). The flush length comes from `ACE_SET_PURGE`, not from a swap parameter. Ignored for manual heads. |
+| `ACE_LOAD_HEAD` | `HEAD=n [ACE=n] [SLOT=n]` | Load a toolhead from an ACE slot. A head without ACE (feeder, manual) loads via its side feeder; `ACE`/`SLOT` are ignored there. |
+| `ACE_UNLOAD_HEAD` | `HEAD=n [RETRACT_LENGTH=mm] [KEEP_HEAT=temp]` | Unload a head back to its ACE. `KEEP_HEAT>0` holds the hotend at `temp` (no cold cool-down). A head without ACE gets the tip-pull only; the strand is taken out at the side port. |
+| `ACE_UNLOAD_ALL_HEADS` | - | Unload every loaded head, heads without ACE included (tip-pull only). |
+| `ACE_SWAP_HEAD` | `HEAD=n ACE=n [SLOT=n] [ANTI_OOZE=mm] [INITIAL=1]` | Mid-print swap: unload current, load new. A no-op when the head already holds that ACE/slot. `ANTI_OOZE` = the end-of-swap retract, sized to the un-retract the following gcode will push back (default `swap_anti_ooze_retract`). `INITIAL=1` marks a swap inside the auto-load block at print start (parks at the discard position instead of restoring a print position). The flush length comes from `ACE_SET_PURGE`, not from a swap parameter. Skipped (log only) on a head without ACE (feeder, manual). |
 | `ACE_SWITCH` | `TARGET=n [AUTOLOAD=1]` | Make ACE `TARGET` the active device. |
 | `ACE_RETRACT` | `INDEX=n LENGTH=mm [SPEED=mm/s]` | Low-level retract of a slot. |
 | `ACE_FEED` | (feeds active slot) | Low-level feed. |
@@ -88,7 +88,7 @@ values on the wire.
 
 | Command | Parameters | Effect |
 |---------|-----------|--------|
-| `ACE_SET_HEAD_MANUAL` | `HEAD=n ENABLE=0\|1` | Toggle manual bypass for a head (no ACE feed/retract/feed-assist/RFID; load by hand). Multi mode. Persisted. |
+| `ACE_SET_HEAD_MANUAL` | `HEAD=n ENABLE=0\|1` | Toggle manual bypass for a head (no ACE feed/retract/feed-assist/RFID; loads via its side feeder or the display manual load). Multi mode. Persisted. |
 | `ACE_SET_HEAD_ACE` | `HEAD=n ACE=n` | Head mode: wire a head to the ACE that feeds it (1:1 - one ACE per head, never shared). Persisted. |
 | `ACE_SET_HEAD_FEEDER` | `HEAD=n ENABLE=0\|1` | Head mode: the head loads/unloads via the printer's own side feeder and the ACE never touches it. Persisted. |
 

@@ -254,6 +254,10 @@ def lookup_live_slots(host, port=80, path='/multiace/api/state', timeout=5.0):
     out = []
     for ace in data.get('aces', []) or []:
         ace_idx = ace.get('idx')
+        # At most 4 units (T = ace*4 + slot, T0-T15); a 5th unit's slots
+        # would become T16+ and print in the wrong colour.
+        if not isinstance(ace_idx, int) or ace_idx > 3:
+            continue
         for slot in ace.get('slots', []) or []:
             if slot.get('state') == 'empty':
                 continue

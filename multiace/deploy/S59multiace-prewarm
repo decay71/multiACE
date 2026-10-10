@@ -8,8 +8,7 @@
 # can cost the few ms that trip the window. Reading the whole tree once at
 # boot (~6 MB, 1-2 s cold) moves those faults out of the print path.
 #
-# Runs at S59: AFTER S56 (trsync patch) so the PATCHED mcu.py is what gets
-# warmed, and directly before S60klipper.
+# Runs at S59, directly before S60klipper.
 #
 # Opt-out: touch /home/lava/printer_data/config/extended/multiace/prewarm.disabled
 KLIPPER_DIR=/home/lava/klipper

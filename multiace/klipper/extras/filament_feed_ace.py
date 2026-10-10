@@ -504,6 +504,11 @@ class FilamentFeed:
         self.channel_active = None
         self.channel_state = [FEED_STA_NONE] * FEED_CHANNEL_NUMS
         self.channel_action_state = [FEED_STA_NONE] * FEED_CHANNEL_NUMS
+        # Set by ace.py around a prepare+doing unload it drives itself: the
+        # touchscreen fires its own AUTO_FEEDING_BATCH DOING on seeing
+        # unload_heat_finish, so the status reports unload_heating instead
+        # while the flag is up. The internal state is untouched.
+        self.hide_heat_finish = [False] * FEED_CHANNEL_NUMS
         self.channel_error_state = [FEED_STA_NONE] * FEED_CHANNEL_NUMS
         self.channel_error = [FEED_OK] * FEED_CHANNEL_NUMS
         self.module_exist = [False] * FEED_CHANNEL_NUMS
@@ -1095,9 +1100,16 @@ class FilamentFeed:
             logging.error("[feed] parameter error!")
             return
 
-        if action in [FEED_ACT_PRELOAD, FEED_ACT_LOAD] and \
-                (self.config['auto_mode'][ch] == False or self.module_exist[ch] == False):
-            return
+        if action in [FEED_ACT_PRELOAD, FEED_ACT_LOAD]:
+            if self.module_exist[ch] == False:
+                return
+            # The per-port auto_mode switch is ignored for an ACE load in
+            # multi mode, the same bypass cmd_FEED_AUTO applies before it
+            # calls here; without it the load returned with nothing fed.
+            if self.config['auto_mode'][ch] == False and not (
+                    action == FEED_ACT_LOAD and self.ace is not None
+                    and getattr(self.ace, '_ace_mode', '') == 'multi'):
+                return
 
         wheel_cnt_a_1 = 0
         wheel_cnt_b_1 = 0
@@ -3657,6 +3669,11 @@ class FilamentFeed:
         in_ace_2 = (self.ace.gate_status[self.ace._ace_slot_for_head(self.filament_ch[FEED_CHANNEL_2])] == 1
                     if self._port[FEED_CHANNEL_2].ace is not None else None)
 
+        def _shown(ch, st):
+            if st == FEED_STA_UNLOAD_HEAT_FINISH and self.hide_heat_finish[ch]:
+                return FEED_STA_UNLOAD_HEATING
+            return st
+
         channel_1_dist = {
             'module_exist': self.module_exist[FEED_CHANNEL_1],
             'filament_detected': filament_detected[FEED_CHANNEL_1],
@@ -3664,10 +3681,10 @@ class FilamentFeed:
             'filament_in_toolhead': self._port[FEED_CHANNEL_1].get_filament_detected_local(),
             'filament_at_extruder': _runout(FEED_CHANNEL_1),
             'disable_auto': not self.config['auto_mode'][FEED_CHANNEL_1],
-            'channel_state':self.channel_state[FEED_CHANNEL_1],
+            'channel_state': _shown(FEED_CHANNEL_1, self.channel_state[FEED_CHANNEL_1]),
             'channel_error':self.channel_error[FEED_CHANNEL_1],
             'channel_error_state': self.channel_error_state[FEED_CHANNEL_1],
-            'channel_action_state': self.channel_action_state[FEED_CHANNEL_1]
+            'channel_action_state': _shown(FEED_CHANNEL_1, self.channel_action_state[FEED_CHANNEL_1])
         }
         channel_2_dist = {
             'module_exist': self.module_exist[FEED_CHANNEL_2],
@@ -3676,10 +3693,10 @@ class FilamentFeed:
             'filament_in_toolhead': self._port[FEED_CHANNEL_2].get_filament_detected_local(),
             'filament_at_extruder': _runout(FEED_CHANNEL_2),
             'disable_auto': not self.config['auto_mode'][FEED_CHANNEL_2],
-            'channel_state':self.channel_state[FEED_CHANNEL_2],
+            'channel_state': _shown(FEED_CHANNEL_2, self.channel_state[FEED_CHANNEL_2]),
             'channel_error':self.channel_error[FEED_CHANNEL_2],
             'channel_error_state': self.channel_error_state[FEED_CHANNEL_2],
-            'channel_action_state': self.channel_action_state[FEED_CHANNEL_2]
+            'channel_action_state': _shown(FEED_CHANNEL_2, self.channel_action_state[FEED_CHANNEL_2])
         }
 
         return {
@@ -3888,7 +3905,6 @@ class FilamentFeed:
                         if self.runout_sensor[channel] is not None else 'no-sensor')
 
             if self.channel_state[channel] != FEED_STA_LOAD_FINISH or self.channel_error[channel] != FEED_OK:
-                self.gcode.respond_raw(f'{self.channel_state[channel] != FEED_STA_LOAD_FINISH} {self.channel_error[channel] != FEED_OK}')
                 tech_msg = 'extruder[%d]: state: %s, error: %s!' % (
                         self.filament_ch[channel],
                         self.channel_error_state[channel],

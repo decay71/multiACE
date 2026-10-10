@@ -389,8 +389,8 @@ class AceBgSwap:
         # ace.py callback convention: invoked as
         # c(self=<ace instance>, response=r) - KEYWORD args, so the first
         # parameter MUST be named `self` (it is the ace object, not ours).
-        # And it runs in a reactor-timer context: raising here shuts the
-        # printer down ("Unhandled exception during run").
+        # A raise here is caught and logged by the response wrapper, but the
+        # reply is then lost and the wait below times out.
         def _cb(self, response):
             try:
                 done[0] = response if response is not None else {}

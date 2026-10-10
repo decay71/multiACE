@@ -49,6 +49,25 @@ SLOT_STATES = {
     135: 'motor_error',
 }
 FILAMENT_STATES = {0: 'empty', 1: 'unknown', 2: 'identified', 3: 'identifying'}
+# Filament-state numbers outside FILAMENT_STATES that were already logged.
+_UNMAPPED_FILAMENT_STATES = set()
+
+
+def _filament_state_name(value):
+    """Name of a V2 filament (presence) state. An absent field is 0 =
+    'empty' (protobuf default). A number this table does not know (a newer
+    firmware) maps to 'unknown' = present, not identified: reading it as
+    'empty' would release the spool binding and start the insert handling
+    on a slot that may well hold filament, while 'unknown' at worst lets a
+    load try and fail with its own message."""
+    name = FILAMENT_STATES.get(value)
+    if name is not None:
+        return name
+    if value not in _UNMAPPED_FILAMENT_STATES:
+        _UNMAPPED_FILAMENT_STATES.add(value)
+        logging.info('[multiACE] V2: unknown filament state %r, treated as '
+                     'present (unknown)', value)
+    return 'unknown'
 DRY_STATES = {0: 'stop', 1: 'starting', 2: 'keeping',
               3: 'stopping', 4: 'ptc_error', 5: 'ntc_error'}
 # ACE2-Open V1.1.61O puts flag bits into the SAME byte as the dryer state
@@ -572,7 +591,7 @@ class AceProtocolV2(AceProtocol):
                 continue
             sub = pb_decode(slot_payload)
             slot_state = SLOT_STATES.get(_fval(sub, 1, 0), 'unknown')
-            filament_state = FILAMENT_STATES.get(_fval(sub, 2, 0), 'empty')
+            filament_state = _filament_state_name(_fval(sub, 2, 0))
 
             slots.append({
                 'index': len(slots),

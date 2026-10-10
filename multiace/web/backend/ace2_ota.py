@@ -77,7 +77,7 @@ KNOWN_FIRMWARE = {
         "tested": "2026-08-09 dry-run vs a live V1.1.31 unit",
     },
     # ACE2-Open (Simon-CR), patched onto the tested stock V1.1.31 base by
-    # apply_open_patch. The only Open build offered: 61O does not come up,
+    # apply_open_patch. 60O is the Open build to run: 61O does not come up,
     # 62O/63O left the presence word hanging after an aborted insert, older
     # builds lack the ghost-tag read gate and the dual-grab NOPs. The gate key reports
     # V1.1.60O while the unit is told 1.1.31 ("announce"), the base the
@@ -650,7 +650,10 @@ def flash(port: str, fw, progress,
         _p(100.0, "committing (IAP_FINISH) - ACE reboots")
         transport.send_recv(CMD_IAP_FINISH, b'', timeout=T_FINISH)
 
-        _p(None, "waiting for the ACE to report %s" % fw.version)
+        # A test build may report another version than its key names
+        # ("reports"), so the entry says what the unit will answer.
+        expect_ver = _entry.get("reports", fw.version)
+        _p(None, "waiting for the ACE to report %s" % expect_ver)
         deadline = time.time() + 30.0
         new_ver = None
         while time.time() < deadline:
@@ -658,7 +661,7 @@ def flash(port: str, fw, progress,
             result = get_ace_version(transport)
             if result:
                 new_ver = result[0]
-                if _norm_ver(new_ver) == _norm_ver(fw.version):
+                if _norm_ver(new_ver) == _norm_ver(expect_ver):
                     # The version alone is not proof of life - see
                     # ace_app_alive. Never downgrade "verified" over it:
                     # the image IS on the device either way, and the way

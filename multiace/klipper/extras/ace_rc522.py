@@ -147,6 +147,10 @@ class AceTagReader:
         self.ace = ace
         self._debug = bool(debug)
         self._dump = bool(dump)
+        # UID of a MIFARE card the firmware identify has just talked to:
+        # it now sits HALTed and ignores our REQA, so presence checks ask
+        # the identify for this UID instead (_card_answers).
+        self._halted_uid = ''
 
     # -- plumbing ---------------------------------------------------------
 
@@ -171,9 +175,9 @@ class AceTagReader:
         reply box. The dispatcher invokes callbacks with KEYWORD
         arguments - callback(self=<ace>, response=<ret>) - so the
         parameters must literally be named 'self' and 'response'; a
-        differently-named positional signature raises TypeError inside the
-        reactor = full Klipper shutdown. **kw form tolerates both call
-        styles."""
+        differently-named positional signature raises TypeError, which the
+        response wrapper only logs, so the reply never arrives and the poll
+        times out. **kw form tolerates both call styles."""
         box = {}
 
         def _cb(*args, **kw):
@@ -367,6 +371,28 @@ class AceTagReader:
         respond('rc522: no clean page within %+d..%+d units of the hit - '
                 'reading anyway' % (min(PROBE_OFFSETS), max(PROBE_OFFSETS)))
         return pos
+
+    def _card_answers(self, idx, slot):
+        """Is a card in this slot's field? op 6 SELECT for any tag - except
+        a MIFARE the firmware identify has HALTed (it ignores our REQA and
+        would read as gone): that one is asked through the identify, by
+        its UID. Then True = that card answered, False = nothing answered,
+        None = another card answered (on the shared antenna the identify
+        can pick the neighbour's, so this says nothing about ours)."""
+        if not self._halted_uid:
+            return self._rc_select(idx, slot)
+        res = self._identify(idx, slot)
+        # A lost reply is not an empty field: re-ask like op 6 does.
+        for _ in range(RC_IDEMPOTENT_RETRIES):
+            if res is not None:
+                break
+            res = self._identify(idx, slot)
+        if not self._answered(res):
+            return False
+        if (self._is_uid_read(res)
+                and self._sentinel_uid(res) == self._halted_uid):
+            return True
+        return None
 
     def _rc_select(self, idx, slot):
         """op 6: power the reader + REQA/anticollision/SELECT. Returns True
@@ -1094,6 +1120,15 @@ class AceTagReader:
                     # field, nothing can be attributed until it settles.
                     self._wait_neighbour_settled(idx, slot, respond)
                     uid_c, _d3 = self._rc_stable_uid(idx, slot)
+                    # Our tunnel reads no MIFARE UID; the firmware sentinel
+                    # gave it. A known neighbour UID that differs then
+                    # settles it without rotating anything.
+                    uid_c = uid_c or mifare_uid
+                    # Ask the identify only while the card being judged IS
+                    # that MIFARE: once it is HALTed, op 6 can reach another
+                    # card, which is then judged by op 6 as before.
+                    self._halted_uid = (mifare_uid if mifare_uid
+                                        and uid_c == mifare_uid else '')
                     n_uid = self._known_neighbour_uid(idx, slot)
                     verdict = None
                     probed = False
@@ -1152,6 +1187,7 @@ class AceTagReader:
                         sweep_mm += max(_c, 0) + (START_PROBE_MM
                                                   if probed else 0)
                         break                # sweep on
+                self._halted_uid = ''
                 respond('rc522: tag found during transport (~%d units in)'
                         % depth)
                 depth += self._read_card(idx, slot, respond,
@@ -1170,6 +1206,7 @@ class AceTagReader:
                 swept = 0
                 respond('rc522: nothing in the fast pass - sweeping again '
                         'at %d units/s' % speed)
+        self._halted_uid = ''
         if not found:
             if blocking_uid:
                 respond('rc522: only the neighbour card (UID %s) answered '
@@ -1552,6 +1589,7 @@ class AceTagReader:
                                  '(MIFARE) - partial key', idx, slot, uid)
                 respond('rc522: card UID %s (MIFARE, no readable pages)'
                         % (uid or '?'))
+                self._forget_identity(idx, slot, uid)
                 self._note_fmt(idx, slot, 'mifare')
                 self._note_uid(idx, slot, uid)
                 self._bind_uid(idx, slot, uid, respond)
@@ -1617,6 +1655,28 @@ class AceTagReader:
         if reg is None:
             reg = self.ace._rc_last_fmt = {}
         reg[(idx, slot)] = fmt
+
+    def _forget_identity(self, idx, slot, uid):
+        """A read found card `uid` without an identity: drop the identity
+        an earlier read cached for this slot when it belongs to ANOTHER
+        card, or the previous spool keeps showing. The insert sweep drops
+        it before it starts, a manual read did not. The same card (a page
+        decode that failed this time) and a cached read without a UID keep
+        their identity; so does a truncated cascade UID, which cannot be
+        compared."""
+        try:
+            if not uid or self._is_truncated_uid(uid):
+                return
+            cache = (getattr(self.ace, '_v2_filament_info_per_ace', None)
+                     or {}).get(idx)
+            old = (cache or {}).get(slot)
+            old_uid = str((old or {}).get('uid') or '').replace(
+                ':', '').strip().upper()
+            if old_uid and old_uid != str(uid).strip().upper():
+                cache.pop(slot, None)
+                self.ace._persist_tag_reads()
+        except Exception:
+            pass
 
     def _note_uid(self, idx, slot, uid):
         """Remember the UID last read at (idx, slot) on the ace object
@@ -1699,14 +1759,15 @@ class AceTagReader:
         if not self._move(idx, slot, START_PROBE_MM, SEARCH_MODE, respond):
             return None
         self._pause(START_PROBE_MM / float(PARK_SPEED) + 0.6)
-        if self._rc_select(idx, slot):
+        if self._card_answers(idx, slot):
             if not uid:
                 # Unreadable card: any card still answering after OUR
                 # move is stationary = the neighbour's (an unreadable
                 # card assumed to be the neighbour's writes off our own
                 # tag).
                 return 'neighbour'
-            uid_b, _b2 = self._rc_stable_uid(idx, slot)
+            uid_b = (self._halted_uid
+                     or self._rc_stable_uid(idx, slot)[0])
             if uid_b == uid:
                 return 'neighbour'
         if self._move(idx, slot, START_PROBE_MM, RESTORE_MODE, respond):
@@ -1779,9 +1840,10 @@ class AceTagReader:
                 break
             moved += CLEAR_STEP_MM
             self._pause(CLEAR_STEP_MM / float(PARK_SPEED) + 0.4)
-            if self._rc_select(idx, slot):
+            ans = self._card_answers(idx, slot)
+            if ans:
                 silent = 0
-            else:
+            elif ans is False:
                 silent += 1
                 if silent >= CLEAR_SILENT_STEPS:
                     break
@@ -1809,9 +1871,9 @@ class AceTagReader:
         units) leaves the question open. Returns True for 'ours'."""
         if getattr(self, '_clear_last_moved', 0) < CLEAR_MAX_MM:
             return False
-        if not self._rc_select(idx, slot):
+        if self._card_answers(idx, slot) is not True:
             return False
-        uid_now, _d = self._rc_stable_uid(idx, slot)
+        uid_now = self._halted_uid or self._rc_stable_uid(idx, slot)[0]
         if not uid_now or (uid and uid_now != uid):
             return False
         respond('rc522: card %s still answers after the neighbour moved %d '
@@ -1926,6 +1988,7 @@ class AceTagReader:
                     'setup may need tuning on this firmware.')
             self._read_unread = True
             return
+        self._forget_identity(idx, slot, uid)
         bound = ace._spool_bind_by_tag(idx, slot, uid)
         if bound is not None:
             respond('rc522: bound to spool %s' % ace._spool_label(bound))

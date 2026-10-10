@@ -163,32 +163,23 @@ log "  Klipper extras installed"
 cp "$INSTALL_DIR/klipper/kinematics/extruder_ace.py" "$KINEMATICS_DIR/extruder_ace.py"
 chmod 644 "$KINEMATICS_DIR/extruder_ace.py"
 log "  Klipper kinematics installed"
-# Multi-MCU homing trsync window. Stock 1.4.1 sets TRSYNC_TIMEOUT=0.050; the
-# eddy-current bed probe intermittently exceeds it on a toolhead MCU and trips
-# "Communication timeout during homing" (0003-0528, index:3). We raise it to
-# 0.350 (stock 1.5's own default) to mask it. The standalone web-head daemon
-# (S98multiace-web) reduces but does not eliminate the 0003 (web-preflight
-# bedmesh still trips it), so the mitigation is re-armed here. The root cause -
-# klippy code-page eviction on overlay/SSH installs during the multi-MCU
-# homing-probe window - is tracked separately.
-#
-# ONLY-RAISE: stock 1.5 already ships 0.350 (and a future stock may go higher);
-# never pull the window back DOWN. Patch only when the live value is LOWER than
-# our floor (e.g. 1.4.1's 0.050).
-# TESTING: set TRSYNC_VALUE to "0.050" to observe the real 0003 signal.
-TRSYNC_VALUE="0.350"
+# Multi-MCU homing trsync window. Earlier installs raised TRSYNC_TIMEOUT
+# in mcu.py and kept the stock file as mcu.py.pre_multiace. The window is
+# now set at runtime by ace.py ([ace] trsync_timeout, default off), so the
+# file goes back to its stock value here and is not patched any more.
 MCU_PY="${HOME_DIR}/klipper/klippy/mcu.py"
-if [ -f "$MCU_PY" ] && grep -qE '^TRSYNC_TIMEOUT = ' "$MCU_PY"; then
+if [ -f "$MCU_PY" ] && [ -f "${MCU_PY}.pre_multiace" ]; then
     TRSYNC_CUR="$(grep -oE '^TRSYNC_TIMEOUT = [0-9.]+' "$MCU_PY" | awk '{print $3}')"
-    if [ -n "$TRSYNC_CUR" ] && awk "BEGIN{exit !($TRSYNC_CUR < $TRSYNC_VALUE)}"; then
-        [ -f "${MCU_PY}.pre_multiace" ] || cp "$MCU_PY" "${MCU_PY}.pre_multiace" 2>/dev/null || true
-        sed -i -E "s/^TRSYNC_TIMEOUT = .*/TRSYNC_TIMEOUT = ${TRSYNC_VALUE}/" "$MCU_PY"
-        log "  TRSYNC_TIMEOUT raised ${TRSYNC_CUR} -> ${TRSYNC_VALUE} in mcu.py (backup: ${MCU_PY}.pre_multiace)"
-    else
-        log "  TRSYNC_TIMEOUT already >= ${TRSYNC_VALUE} (${TRSYNC_CUR}) - leaving stock untouched"
+    TRSYNC_STOCK="$(grep -oE '^TRSYNC_TIMEOUT = [0-9.]+' "${MCU_PY}.pre_multiace" | awk '{print $3}')"
+    if [ -n "$TRSYNC_CUR" ] && [ -n "$TRSYNC_STOCK" ] && [ "$TRSYNC_CUR" != "$TRSYNC_STOCK" ]; then
+        if sed -i -E "s/^TRSYNC_TIMEOUT = .*/TRSYNC_TIMEOUT = ${TRSYNC_STOCK}/" "$MCU_PY" 2>/dev/null; then
+            log "  TRSYNC_TIMEOUT restored ${TRSYNC_CUR} -> ${TRSYNC_STOCK} (stock) in mcu.py"
+        else
+            log "  WARNING: could not restore TRSYNC_TIMEOUT in mcu.py (not writable)"
+        fi
     fi
 fi
-# Same 0003/"Timer too close" family as the trsync raise above: pre-warm the
+# 0003/"Timer too close" family: pre-warm the
 # klipper page cache at every boot so the homing/probe window never takes a
 # cold page fault (see the script header for details). Needs root for
 # /etc/init.d; a lava-context web update skips it with a note (the previously

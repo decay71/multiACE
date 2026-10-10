@@ -200,6 +200,7 @@ createApp({
       quad_first: false,
       spools: {},
       spool_binding: {},
+      head_tag_seen: {},
       auto_dry_masters: [],
       tipform: {available: false, mode: null, tables: []},
       calibration: {state: "idle", session_id: 0},
@@ -270,8 +271,65 @@ createApp({
       for (const id of ids) _notifIds.delete(id);
       try { await fetch(`${API}/notifications`, {method: "DELETE"}); } catch (_) {}
     }
+    // Loading splash (index.html #ma-splash): goes with the first state
+    // answer, good or failed, so an error still shows. The cap keeps the
+    // page reachable if the backend never answers. showSplash brings it
+    // back when the tab returns after a long time in the background.
+    function showSplash() {
+      const old = document.getElementById("ma-splash");
+      if (old && !old.classList.contains("ma-splash-out")) return;
+      if (old) old.remove();
+      const el = document.createElement("div");
+      el.id = "ma-splash";
+      el.setAttribute("aria-hidden", "true");
+      el.innerHTML = '<div class="ma-logo">m<span>U</span>lt<span>1</span>ACE</div>'
+        + '<div class="ma-spin"></div>';
+      document.body.appendChild(el);
+    }
+    function hideSplash() {
+      const el = document.getElementById("ma-splash");
+      if (!el || el.classList.contains("ma-splash-out")) return;
+      el.classList.add("ma-splash-out");
+      setTimeout(() => el.remove(), 250);
+    }
+    setTimeout(hideSplash, 8000);
+    // Live states arrive once a second. They are applied at most once per
+    // frame and not at all while the tab is hidden: a throttled background
+    // tab otherwise renders every queued state in a row on return and stays
+    // black for seconds. The fallback timer keeps a visible page that gets
+    // no frames (e.g. the panel iframe scrolled out of view) updating.
+    let _pendingState = null, _stateRaf = 0, _stateTimer = 0;
+    function _flushState() {
+      cancelAnimationFrame(_stateRaf); clearTimeout(_stateTimer);
+      _stateRaf = 0; _stateTimer = 0;
+      const s = _pendingState;
+      _pendingState = null;
+      if (s) applyState(s);
+    }
+    function queueState(s) {
+      _pendingState = s;
+      if (document.hidden || _stateRaf) return;
+      _stateRaf = requestAnimationFrame(_flushState);
+      _stateTimer = setTimeout(_flushState, 1000);
+    }
+    // Back after more than RETURN_SPLASH_MS hidden: show the splash, let it
+    // paint, then render the held state and fade the splash out.
+    const RETURN_SPLASH_MS = 30000;
+    let _hiddenSince = document.hidden ? Date.now() : 0;
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) { _hiddenSince = Date.now(); return; }
+      const away = _hiddenSince ? Date.now() - _hiddenSince : 0;
+      _hiddenSince = 0;
+      if (away < RETURN_SPLASH_MS || !_pendingState) { if (_pendingState) queueState(_pendingState); return; }
+      showSplash();
+      requestAnimationFrame(() => setTimeout(() => {
+        _flushState();
+        requestAnimationFrame(hideSplash);
+      }, 0));
+    });
     function applyState(s) {
       if (!s) return;
+      hideSplash();
       // Klippy is down (firmware_restart / reboot in progress, Moonraker up).
       // Show a "please restart printer" hint instead of the raw 503, and keep
       // the last good dashboard visible. Recovers on the next state once
@@ -324,6 +382,9 @@ createApp({
       state.nozzle_keys = Array.isArray(s.nozzle_keys) ? s.nozzle_keys : [];
       state.spools = s.spools || {};
       state.spool_binding = s.spool_binding || {};
+      // Feeder-reader card per non-ACE head; the head picker's Read button
+      // judges its result by this field.
+      state.head_tag_seen = s.head_tag_seen || {};
       state.auto_dry_masters = Array.isArray(s.auto_dry_masters)
         ? s.auto_dry_masters : [];
       // What Klipper RUNS (the cfg side comes from /api/tipform). Missing
@@ -375,6 +436,8 @@ createApp({
         applyState(j);
       } catch (e) {
         loadError.value = String(e);
+      } finally {
+        hideSplash();
       }
     }
     const macroLog = ref("");
@@ -1251,6 +1314,7 @@ createApp({
       const cb = c.getBoundingClientRect();
       wiringViewBox.value = `0 0 ${cb.width} ${cb.height}`;
       const lines = [];
+      const square = uiTheme.value === "new";
       for (const w of state.wiring) {
         const sEl = slotEls[`${w.ace}_${w.slot}`];
         const tEl = thEls[w.toolhead];
@@ -1261,10 +1325,32 @@ createApp({
         const y1 = sb.bottom - cb.top;
         const x2 = tb.left + tb.width / 2 - cb.left;
         const y2 = tb.top - cb.top;
-        const midY = (y1 + y2) / 2;
-        lines.push({
-          d: `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`,
-          color: w.color || "#888",
+        if (!square) {
+          const midY = (y1 + y2) / 2;
+          lines.push({
+            d: `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`,
+            color: w.color || "#888", width: 4,
+          });
+          continue;
+        }
+        // New design: right-angled, the horizontal run in the gap between
+        // the ACE cards and the toolhead block (the cards hide the rest).
+        const aceEl = sEl.closest(".ace-grid");
+        const headEl = c.querySelector(".th-section-head") || tEl;
+        const bandTop = (aceEl ? aceEl.getBoundingClientRect().bottom : y1) - cb.top;
+        const bandBot = headEl.getBoundingClientRect().top - cb.top;
+        lines.push({x1, y1, x2, y2, bandTop, bandBot,
+                    color: w.color || "#888", width: 2});
+      }
+      if (square) {
+        // Stagger the horizontal runs inside the band so lines that cross
+        // the same stretch stay apart.
+        const sq = lines.filter((l) => l.d === undefined)
+          .sort((a, b) => a.x2 - b.x2);
+        sq.forEach((l, i) => {
+          const h = Math.max(0, l.bandBot - l.bandTop);
+          const y = l.bandTop + h * (i + 1) / (sq.length + 1);
+          l.d = `M${l.x1},${l.y1} V${y} H${l.x2} V${l.y2}`;
         });
       }
       wiringPaths.value = lines;
@@ -1293,21 +1379,31 @@ createApp({
     // confirmations (window.confirm works fine inside an iframe) and i18n.
     const _q = new URLSearchParams(location.search);
     const panelMode = _q.get("panel") === "1";
-    // Visual design, per browser: "classic" or "new". Pure presentation -
-    // style-new.css only applies under html[data-theme="new"], and the few
-    // extra elements it needs (spool gauges) render only in that design.
-    const uiTheme = ref((() => {
-      // New design by default; only an explicit "classic" keeps the old one.
-      try { return localStorage.getItem("multiace.uiTheme") === "classic" ? "classic" : "new"; }
-      catch (e) { return "new"; }
+    // Visual design, per browser: "new" (dark), "light" (the same design in
+    // light shades) or "classic". Pure presentation - style-new.css only
+    // applies under html[data-theme="new"], the light shade additionally
+    // under data-shade="light", and the few extra elements the new design
+    // needs (spool gauges) render in both of its shades. uiTheme is the
+    // LAYOUT ("new" for dark and light alike), uiThemeChoice the button.
+    const uiThemeChoice = ref((() => {
+      try {
+        const v = localStorage.getItem("multiace.uiTheme");
+        return v === "classic" || v === "light" ? v : "new";
+      } catch (e) { return "new"; }
     })());
+    const uiTheme = computed(() => uiThemeChoice.value === "classic" ? "classic" : "new");
+    const uiLight = computed(() => uiThemeChoice.value === "light");
     function setUiTheme(v) {
-      uiTheme.value = v === "new" ? "new" : "classic";
-      try { localStorage.setItem("multiace.uiTheme", uiTheme.value); } catch (e) {}
+      uiThemeChoice.value = v === "classic" || v === "light" ? v : "new";
+      try { localStorage.setItem("multiace.uiTheme", uiThemeChoice.value); } catch (e) {}
     }
-    watch(uiTheme, v => {
-      if (v === "new") document.documentElement.dataset.theme = "new";
-      else delete document.documentElement.dataset.theme;
+    watch(() => uiThemeChoice.value, scheduleWiringRecompute);
+    watch(uiThemeChoice, v => {
+      const el = document.documentElement;
+      if (v === "classic") delete el.dataset.theme;
+      else el.dataset.theme = "new";
+      if (v === "light") el.dataset.shade = "light";
+      else delete el.dataset.shade;
     }, {immediate: true});
     // Spool gauge fill in percent: the bound spool's remaining weight over a
     // 1000 g reference, never below 4 so a nearly empty spool still shows a
@@ -1329,9 +1425,15 @@ createApp({
       const p = spoolPct(spoolForSlot(aceIdx, slot.idx));
       return p === null ? "" : p + " %";
     }
-    // Toolhead gauge: full when the head holds filament, empty otherwise.
+    // Toolhead gauge: empty without filament; loaded = the fill level of
+    // the spool feeding it (source slot's bound spool, or the head-bound
+    // spool for feeder/manual), full when no spool is bound.
     function headGaugePct(th) {
-      return (th.head_source_known && !th.load_failed) || th.filament_at_extruder ? 100 : 0;
+      if (!((th.head_source_known && !th.load_failed) || th.filament_at_extruder)) return 0;
+      const sp = (th.ace != null && th.slot != null)
+        ? spoolForSlot(th.ace, th.slot) : spoolForHead(th.idx);
+      const p = spoolPct(sp);
+      return p === null ? 100 : p;
     }
     function headGaugeText(th) {
       if (toolheadOps.value[th.idx]) return "";
@@ -1341,15 +1443,23 @@ createApp({
         return t("ui.common.empty");
       return "";
     }
-    // Very dark filament colours would vanish in the dark gauge.
-    function gaugeColor(c) {
-      if (!c) return "#4a4f52";
-      const m = /^#?([0-9a-f]{6})/i.exec(String(c));
-      if (!m) return c;
+    // Relative luminance of a #rrggbb colour, null when it is not one.
+    function colorLum(c) {
+      const m = /^#?([0-9a-f]{6})/i.exec(String(c || ""));
+      if (!m) return null;
       const n = parseInt(m[1], 16);
       const lin = x => { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
-      const L = 0.2126 * lin(n >> 16) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
-      return L < 0.03 ? "#4a4f52" : "#" + m[1];
+      return 0.2126 * lin(n >> 16) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+    }
+    // Very dark filament colours would vanish in the dark gauge. The light
+    // shade keeps every colour (white shows against the grey core) and only
+    // needs its own grey for "no colour".
+    function gaugeColor(c) {
+      if (!c) return uiLight.value ? "#b3bcbf" : "#4a4f52";
+      const m = /^#?([0-9a-f]{6})/i.exec(String(c));
+      if (!m) return c;
+      if (uiLight.value) return "#" + m[1];
+      return colorLum(c) < 0.03 ? "#4a4f52" : "#" + m[1];
     }
     // The full UI is this same page without ?panel=1. Derived from the
     // current URL rather than hardcoded, so it stays right whether we are
@@ -1570,6 +1680,14 @@ createApp({
       const sl = a && (a.slots || []).find(s => s.idx === slotIdx);
       return !!sl && sl.state === 'empty';
     }
+    // multi: slot N feeds head N. A head without ACE (manual/feeder) takes
+    // nothing from a slot - a slot load there would load the head from its
+    // side feeder instead, so the slot button is off for it.
+    function slotHeadHasNoAce(slotIdx) {
+      if (state.mode === 'head') return false;
+      const th = state.toolheads.find(tt => tt.idx === slotIdx);
+      return !!(th && (th.manual || th.feeder));
+    }
     function isToolheadOccupied(aceIdx, slotIdx) {
       const th = state.toolheads.find(tt => tt.idx === slotIdx);
       if (!th) return false;
@@ -1627,44 +1745,77 @@ createApp({
       const th = (state.toolheads || []).find(x => Number(x.idx) === Number(idx));
       return th ? String(th.channel_state || "") : "";
     }
-    function _waitChannelState(idx, wanted, aborts, timeoutMs) {
+    // Resolves with the state that ended the wait; stopFn (optional) ends
+    // it early, e.g. when the command behind the state has already returned.
+    function _waitChannelState(idx, wanted, aborts, timeoutMs, stopFn) {
       return new Promise((resolve) => {
         const t0 = Date.now();
         const tick = () => {
           const cs = _channelStateOf(idx);
           if (wanted.includes(cs)) return resolve(cs);
-          if (aborts.includes(cs) || Date.now() - t0 > timeoutMs) return resolve(cs || "timeout");
+          if (aborts.includes(cs) || Date.now() - t0 > timeoutMs
+              || (stopFn && stopFn())) return resolve(cs || "timeout");
           setTimeout(tick, 500);
         };
         tick();
       });
     }
-    async function unloadHeadStaged(idx) {
-      if (!_confirmCmd("ui.confirm.unload_head", {head: dispIdx(idx)})) return;
-      const ok = await run("ACE_UNLOAD_HEAD", {HEAD: idx, STAGE: "prepare"});
-      if (!ok) return;
-      const cs = await _waitChannelState(idx, ["unload_heat_finish"],
-        ["unload_fail", "load_finish", "preload_finish", "wait_insert", "unload_finish"],
-        300000);
-      if (cs !== "unload_heat_finish") {
+    // Returns "done", "cancel" or "fail" so Unload All can stop on a cancel.
+    // Feeder/manual heads unload like the touchscreen does: Klipper runs
+    // prepare and doing back to back (no STAGE), and the pull-out dialog
+    // shows WHILE the head unloads and closes by itself. A head parked in
+    // unload_heat_finish for longer than a status poll makes the
+    // touchscreen fire its own AUTO_FEEDING_BATCH DOING, which the stock
+    // macro refuses with a popup, so there is no Next step in between.
+    async function unloadHeadStaged(idx, skipConfirm) {
+      if (!skipConfirm
+          && !_confirmCmd("ui.confirm.unload_head", {head: dispIdx(idx)})) return "cancel";
+      let finished = false;
+      const p = run("ACE_UNLOAD_HEAD", {HEAD: idx}).then(ok => { finished = true; return ok; });
+      // Watch for the doing stage; a macro that ends first never got there.
+      const cs = await _waitChannelState(idx, ["unload_doing"], ["unload_fail"],
+                                         300000, () => finished);
+      if (cs === "unload_doing") {
+        const title = t("ui.dashboard.manual_intervention_title");
+        confirm({
+          title,
+          message: tHtml("ui.dashboard.manual_intervention_body", {head: dispIdx(idx)}),
+          okLabel: t("ui.common.ok"),
+          dismissOnly: true,
+        });
+        await _waitChannelState(idx, [],
+          ["unload_finish", "unload_fail", "load_finish", "preload_finish", "wait_insert"],
+          300000, () => finished);
+        if (confirmDialog.show && confirmDialog.title === title) confirmDialog.show = false;
+      }
+      const done = await p;
+      if (!done) {
         _addNotif({id: "staged-" + Date.now(), ts: Date.now() / 1000, level: "error",
                    msg: t("ui.dashboard.manual_intervention_failed",
-                          {head: dispIdx(idx), state: cs})});
-        return;
+                          {head: dispIdx(idx), state: _channelStateOf(idx) || "?"})});
+        return "fail";
       }
-      const next = await new Promise(resolve => confirm({
-        title: t("ui.dashboard.manual_intervention_title"),
-        message: tHtml("ui.dashboard.manual_intervention_body", {head: dispIdx(idx)}),
-        okLabel: t("ui.dashboard.manual_intervention_next"),
-        onOk: () => resolve(true),
-        onCancel: () => resolve(false),
-      }));
-      run("ACE_UNLOAD_HEAD", {HEAD: idx, STAGE: next ? "doing" : "cancel"});
+      return "done";
     }
-    function unloadAll() {
+    function _headHoldsFilament(th) {
+      return !!(th && th.module_exist && (th.head_source_known || th.filament_at_extruder));
+    }
+    // Feeder and manual heads first, one by one with the same pull-out
+    // dialog as their own Unload button; a cancel or failure stops the
+    // whole run. The engine's Unload All then takes the ACE heads (the
+    // emptied feeder/manual heads read clear and are skipped there).
+    async function unloadAll() {
       if (_blockIfPrinting()) return;
       if (!_confirmCmd("ui.confirm.unload_all")) return;
-      run("ACE_UNLOAD_ALL_HEADS");
+      const staged = (state.toolheads || [])
+        .filter(th => (th.manual || th.feeder) && _headHoldsFilament(th))
+        .map(th => th.idx);
+      for (const h of staged) {
+        if (await unloadHeadStaged(h, true) !== "done") return;
+      }
+      const rest = (state.toolheads || [])
+        .some(th => !th.manual && !th.feeder && _headHoldsFilament(th));
+      if (!staged.length || rest) run("ACE_UNLOAD_ALL_HEADS");
     }
     function cancelUnloadAll() {
       run("ACE_UNLOAD_ALL_CANCEL");
@@ -2246,8 +2397,12 @@ createApp({
     const acefwPatchTargets = ref([]);
     // Label per entry: version plus its size, because the size is what
     // distinguishes the builds that come up from the ones that do not.
+    // A build whose "tested" note carries no date has never been flashed
+    // and says so.
     function acefwTargetLabel(e) {
-      return e.size ? `${e.version} (${e.size} B)` : e.version;
+      const base = e.size ? `${e.version} (${e.size} B)` : e.version;
+      return /^\d{4}-\d{2}-\d{2}/.test(e.tested || "")
+        ? base : `${base} - ${t("ui.config.acefw_patch_untested")}`;
     }
     // The checkbox is shown only when stock 1.1.31 is the selected target
     // and the backend has the patch. Its base version is fixed at 1.1.31.
@@ -3658,6 +3813,11 @@ createApp({
         return;
       }
       // multi: slot N feeds head N.
+      if (slotHeadHasNoAce(slotIdx)) {
+        setMacroLog(t("ui.dashboard.slot_head_no_ace",
+                      {head: dispIdx(slotIdx)}));
+        return;
+      }
       if (!_confirmCmd("ui.confirm.load_slot", {head: dispIdx(slotIdx),
               ace: dispIdx(aceIdx), slot: dispIdx(slotIdx)})) return;
       const th = state.toolheads.find(tt => tt.idx === slotIdx);
@@ -3668,7 +3828,8 @@ createApp({
       }
       enqueue("ACE_LOAD_HEAD", {HEAD: slotIdx, ACE: aceIdx});
     }
-    // head mode: load a feeder head via its native stock side feeder (no ACE).
+    // Load a head without ACE (feeder, or manual in multi) via its native
+    // stock side feeder.
     function loadFeederHead(h) {
       if (_blockIfPrinting()) return;
       if (!_confirmCmd("ui.confirm.load_head", {head: dispIdx(h)})) return;
@@ -4135,10 +4296,16 @@ createApp({
       if (!a) return null;
       return (a.slots || []).find(s => s.idx === picker.slot) || null;
     }
+    // Tag data only: an identity Klipper filled from the bound spool (the
+    // card itself carries none, ident_src 'spool') is table data - no
+    // "read from tag" button for it, and material/colour edits still go
+    // back to the spool.
+    function _slotTagData(s) {
+      return (s && s.rfid === 2 && s.ident_src !== "spool") ? s.rfid_data : null;
+    }
     const pickerHasRfid = computed(() => {
       if (!picker.show) return false;
-      const s = _pickerSlot();
-      return !!(s && s.rfid === 2 && s.rfid_data);
+      return !!_slotTagData(_pickerSlot());
     });
     // The SKU written on the tag, shown next to the RFID button. Comes from
     // rfid_data, which the backend only fills on a LIVE read (rfid == 2), so
@@ -4324,8 +4491,7 @@ createApp({
       const id = picker.spool;
       const sp = id ? (state.spools || {})[id] : null;
       if (!sp) return;
-      const slot = _pickerSlot();
-      const rfid = (slot && slot.rfid === 2) ? slot.rfid_data : null;
+      const rfid = _slotTagData(_pickerSlot());
       const args = {}, names = [];
       const silent = {};
       const add = (key, label, val) => { args[key] = val; names.push(t(label)); };
@@ -5348,7 +5514,7 @@ createApp({
       ws.onmessage = (ev) => {
         try {
           const m = JSON.parse(ev.data);
-          if (m.type === "state") applyState(m);
+          if (m.type === "state") queueState(m);
           else if (m.type === "gcode_error") onGcodeError(m);
           else if (m.type === "error") conn.value = {state: "warn", text: m.error || t("ui.header.ws_error")};
         } catch (_) {}
@@ -5884,6 +6050,13 @@ createApp({
       const mat = tg.material || "?";
       if (tg.kind === "pin") return pinLabel(tg.head) + " · " + mat;
       return "ACE " + dispIdx(tg.ace) + " Slot " + dispIdx(tg.slot) + " · " + mat;
+    }
+    // Background for a colour chip or select: the "no colour" placeholder
+    // goes through a CSS variable (fallback #444), so the light shade can
+    // draw it as an empty outline instead of a black square. Filament
+    // colours are 6-digit hex, the placeholder is exactly "#444".
+    function chipBg(c) {
+      return c && c !== "#444" ? c : "var(--nt-nocolor, #444)";
     }
     function headTargetColor(id) {
       const tg = _headTargetById(id);
@@ -7182,8 +7355,8 @@ createApp({
       calibrationVerifyConfigured, calibrationAction, calibrationApply,
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
-      panelMini, fullUiHref, uiTheme, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,
-      slotTitle, switchAce, loadSlot, slotIsEmpty, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, aceCfwTitle, visibleAces, openHeadPicker, isToolheadOccupied, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
+      panelMini, fullUiHref, uiTheme, uiThemeChoice, uiLight, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,
+      slotTitle, switchAce, loadSlot, slotIsEmpty, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, aceCfwTitle, visibleAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
       spoolBadgeCls, spoolBadgeLabel, headTileEmpty, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
@@ -7227,7 +7400,7 @@ createApp({
       slotKey, textOn, slicerSlotOptions, slicerEffectiveSlot, onSlicerSlotChange,
       slicerSwapsDisplay,
       headTargets, headTargetOptions, headEffectiveTargetId, headTargetLabel,
-      headTargetColor, headTargetLabelById, onHeadTargetChange, headSwapsDisplay,
+      headTargetColor, chipBg, headTargetLabelById, onHeadTargetChange, headSwapsDisplay,
       hmDropOpen, hmDdToggle, hmDdClose, hmDdPick,
       pfPlanSel, pfPlanList, pfPlanFeasible, pfPlanSwaps, pfPlanFlush, pfSelected, pfRecommended, pfPlanTitle, pfGoLabel, pfPrintSelected,
       headFeasible, headPlanFeasible, headPlanSwaps, headPlanBg, headPlanFlushG, headPlanBgLabel, headSlicerHex,

@@ -78,13 +78,11 @@
       "unload": "Unload",
       "manual": "Manual",
       "feeder": "Feeder",
-      "manual_hint": "Manual feed: no ACE feed, retract, assist or RFID for this head. Load by hand.",
+      "manual_hint": "Manual feed: no ACE feed, retract, assist or RFID for this head. It loads via its side feeder (Load button), or by hand with the display's manual load.",
       "manual_unload_first": "Unload this head first to change manual mode.",
       "manual_intervention_title": "Manual intervention required",
-      "manual_intervention_body": "Head {head} is heated. Press Next, then pull the filament out at the side port while the head unloads.",
-      "manual_intervention_next": "Next",
-      "manual_intervention_wait": "Head {head}: heating and picking for the unload ...",
-      "manual_intervention_failed": "Head {head}: the unload did not reach the heated state ({state})",
+      "manual_intervention_body": "Head {head} is unloading. Pull the filament out at the side port now.",
+      "manual_intervention_failed": "Head {head}: the unload failed ({state})",
       "load_failed": "load FAILED",
       "load_failed_hint": "The last load did not complete - nothing is at the toolhead. The slot's Load button retries directly (no unload cycle needed).",
       "swap_in_progress": "An ACE swap is in progress - please wait until it completes.",
@@ -126,7 +124,8 @@
       "dry_bit_no": "off",
       "dry_bits_none": "Rotisserie / auto-roll: no dryer block in the status frame",
       "head_set_filament": "Set this head's filament colour/material",
-      "reader_counts_hint": "SpoolLink resolved this spool (Spoolman #{id}) - SpoolLink/Moonraker counts this head"
+      "reader_counts_hint": "SpoolLink resolved this spool (Spoolman #{id}) - SpoolLink/Moonraker counts this head",
+      "slot_head_no_ace": "Head {head} has no ACE (feeder/manual) - load it with its own Load button"
     },
     "config": {
       "ace2_after": "after ACE 1",
@@ -153,6 +152,7 @@
       "acefw_patch_label": "Patch to {target}",
       "acefw_patch_label_any": "Patch to ACE2-Open",
       "acefw_patch_hint": "Turn the uploaded stock 1.1.31 into ACE2-Open (community firmware by Simon-CR) before flashing. Adds tag reading beyond Anycubic's own, the UID of any tag, and a fix for the firmware bug that lets one bay report its neighbour's tag.",
+      "acefw_patch_untested": "test build, not flashed yet",
       "acefw_patch_warn": "You are flashing a COMMUNITY-MODIFIED firmware ({target}, Simon-CR's UID patch), not an official Anycubic build. It is not vendor-supported and has had limited testing. Proceed only if you understand the risk.",
       "acefw_patch_warn2": "⚠️ ACE2-Open is a community modification, not official firmware - use at your own risk.",
       "acefw_intro": "multiACE ships no firmware and links to none. You need the Anycubic update package for the selected target version and its password - alternatively, perform the update through an Anycubic printer. Flash at your own risk.",
@@ -173,7 +173,8 @@
       "baud": "Baud",
       "ui_theme": "Design",
       "ui_theme_classic": "Classic",
-      "ui_theme_new": "New",
+      "ui_theme_new": "Dark",
+      "ui_theme_light": "Light",
       "ui_theme_hint": "Applies to this browser only, including the panel view (Fluidd camera tile).",
       "confirm_commands": "Confirm commands",
       "confirm_commands_hint": "A confirmation dialog before any action that moves filament (load, unload, load all, unload all). Web UI only - gcode, display and print are never gated. Applies immediately (no Save needed) and is stored on the printer, so it holds on every device.",
@@ -997,6 +998,7 @@
     "spool_sku_taken": "[multiACE] Tag code {sku} already belongs to spool #{id}. A code may belong to only ONE spool - pick another one (an existing assignment is never overwritten).",
     "head_feeder_loaded": "[multiACE] Head {head} still has filament loaded - unload it first to switch between feeder and ACE",
     "head_ace_loaded": "[multiACE] Head {head} still has filament loaded - unload it first to change which ACE feeds it",
-    "spool_head_not_feeder": "[multiACE] Head {head} is ACE-driven - its spool follows the slot it loads from. Bind the spool to the ACE slot instead; a head binding is for feeder/manual heads."
+    "spool_head_not_feeder": "[multiACE] Head {head} is ACE-driven - its spool follows the slot it loads from. Bind the spool to the ACE slot instead; a head binding is for feeder/manual heads.",
+    "load_head_starting_feeder": "[multiACE] Loading head {head} via its side feeder..."
   }
 }

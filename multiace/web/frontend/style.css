@@ -110,6 +110,12 @@ nav button.active { background: var(--accent); color: var(--accent-fg); border-c
 }
 .lang-select:hover { border-color: var(--accent); }
 .conn { font-size: .8rem; color: var(--muted); margin-left: .8rem; }
+.screen-btn {
+  margin-left: .8rem; background: transparent; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: .3rem .6rem; font-size: .85rem; cursor: pointer; white-space: nowrap;
+}
+.screen-btn:hover, .screen-btn.active { border-color: var(--accent); color: var(--accent); }
 .conn.ok { color: var(--ok); }
 .conn.warn { color: var(--warn); }
 .conn.err { color: var(--error); }
@@ -635,7 +641,11 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .per-ace-card h4 { margin: 0 0 .55rem 0; color: var(--accent); font-size: .9rem;
                    text-transform: uppercase; letter-spacing: .04em; }
 .per-ace-row { margin-bottom: .35rem; font-size: .85rem; color: var(--muted); }
-.per-ace-row label { display: inline-flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.per-ace-card { display: grid; grid-template-columns: minmax(0, max-content) 4.5rem 2.4rem;
+                column-gap: .4rem; align-content: start; }
+.per-ace-card > * { grid-column: 1 / -1; }
+.per-ace-row, .per-ace-row label { display: grid; grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 4.5rem 2.4rem; grid-template-columns: subgrid; align-items: center; }
 .per-ace-row input[type=number] {
   width: 4.5rem; padding: .25rem .45rem;
   background: #111; color: var(--fg);

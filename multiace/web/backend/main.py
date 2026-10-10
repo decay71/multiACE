@@ -541,6 +541,7 @@ def _parse_state(status: dict) -> dict:
                     "color_rgb": None,
                     "uid":       "",
                     "tag_format": "",
+                    "ident_src": "",
                     "rfid_data": rfid_data,
                     "source":    "empty",
                 })
@@ -566,6 +567,9 @@ def _parse_state(status: dict) -> dict:
                         # OpenSpool/Anycubic tag showed none.
                         "uid":       (sd.get("uid") or ""),
                         "tag_format": (sd.get("tag_format") or ""),
+                        # 'spool': the card carries no identity, Klipper
+                        # filled it from the bound spool (table data).
+                        "ident_src": (sd.get("ident_src") or ""),
                         "rfid_data": rfid_data,
                         "source":    source,
                     })
@@ -591,6 +595,7 @@ def _parse_state(status: dict) -> dict:
                         "uid":       (sd.get("uid") or ""),
                         # anycubic / openspool / mifare / unknown
                         "tag_format": (sd.get("tag_format") or ""),
+                        "ident_src": (sd.get("ident_src") or ""),
                         "rfid_data": rfid_data,
                         "source":    source,
                     })
@@ -1149,6 +1154,11 @@ async def _live_slots_async() -> list[dict]:
     out = []
     parsed = _parse_state(status)
     for ace in parsed.get("aces", []) or []:
+        # The preflight addresses at most 4 units (T = ace*4 + slot, T0-T15).
+        # A 5th unit's slots would become T16+, which the rewrite passes
+        # through raw and the stock T16 lands on extruder 0: wrong colour.
+        if not isinstance(ace.get("idx"), int) or ace.get("idx") > 3:
+            continue
         for slot in ace.get("slots", []) or []:
             if slot.get("state") == "empty":
                 continue
@@ -1723,6 +1733,10 @@ def _read_display_index_base() -> int:
         return 0
     return 0 if v < 0 else (1 if v > 1 else v)
 
+# Former shipped [ace] update_url_base (static mirror), read as unset.
+_LEGACY_UPDATE_URL_BASE = "https://postapocalyptic-diy.com/software/updates"
+
+
 def _read_update_cfg() -> dict[str, str]:
     """Pull update_repo, update_prerelease and update_url_base from
     ace.cfg so the Web backend uses the same source as the gcode
@@ -1741,6 +1755,10 @@ def _read_update_cfg() -> dict[str, str]:
             prerelease = "1"
         if "update_url_base" in main and main["update_url_base"]:
             url_base = main["update_url_base"].strip()
+        # The old shipped static mirror counts as unset: updates come from
+        # GitHub without anyone editing ace.cfg (same rule as ace.py).
+        if url_base.rstrip("/").lower() == _LEGACY_UPDATE_URL_BASE:
+            url_base = ""
     except Exception:
         pass
     return {
@@ -2270,6 +2288,33 @@ def _known_subtypes_for(material: str) -> list:
             subs.update(str(s).strip() for s in vendor_subs if str(s).strip())
     return sorted(subs, key=len, reverse=True)
 
+def _spoolman_material_split(material: str) -> tuple:
+    """Spoolman's material is free text; 'PLA+' or 'PLA-HF' is a FAMILY of
+    a base type, not a type the firmware DB, the picker list or the
+    material-strict preflight matcher know. A known base glued to one of
+    '+-_' is split: ('PLA', 'Plus') / ('PLA', 'HF'). A material that IS a
+    DB type ('PLA-CF') or has no known base stays as it is, with the DB's
+    spelling when it matches. Mirrors ace.py's _split_material_family.
+    A spool adopted as 'PLA+' used to land on its slot verbatim, the picker
+    showed an empty material field and the preflight found no slot for a
+    'PLA' slicer colour."""
+    m = (material or "").strip()
+    db = _load_filament_db()
+    known = {str(k).strip().upper(): str(k).strip() for k in (db or {})}
+    if not m or not known:
+        return (m, "")
+    u = m.upper()
+    if u in known:
+        return (known[u], "")
+    for k in sorted(known, key=len, reverse=True):
+        if len(u) > len(k) and u.startswith(k) and u[len(k)] in "+-_":
+            rest = m[len(k):].strip("+-_ ")
+            if m[len(k)] == "+" and not rest:
+                rest = "Plus"
+            return (known[k], rest)
+    return (m, "")
+
+
 def _spoolman_subtype_guess(name: str, material: str) -> str:
     """Spoolman has no sub-type field, so it has to be read out of the
     filament NAME. A wrong guess is corrected in one click; an empty
@@ -2514,9 +2559,10 @@ def _spoolman_to_local(sp: dict, existing: dict | None,
     if not color:
         multi = fil.get("multi_color_hexes") or ""
         color = str(multi).split(",")[0] if multi else ""
+    _mat, _fam = _spoolman_material_split((fil.get("material") or "").strip())
     out = {
         "spoolman_id": str(sp.get("id", "")),
-        "material": (fil.get("material") or "").strip(),
+        "material": _mat,
         "vendor": (ven.get("name") or "").strip(),
         "color": color.lstrip("#").upper()[:6],
         "label": (fil.get("name") or "").strip(),
@@ -2553,7 +2599,8 @@ def _spoolman_to_local(sp: dict, existing: dict | None,
     else:
         out["sku"] = _ex_sku or _gen
     out["subtype"] = ((ex.get("subtype") or "").strip()
-                      or _spoolman_subtype_guess(out["label"], out["material"]))
+                      or _spoolman_subtype_guess(out["label"], out["material"])
+                      or _fam)
     # PA seed: only a row with NO local matrix takes Spoolman's (adopt /
     # first refresh - the between-printers calibration handover). A local
     # matrix - even a deliberately emptied {} - wins and is pushed the
@@ -3306,7 +3353,7 @@ async def acefw_versions() -> dict:
             # ACE2-Open arrives here by adding its spec, not by editing the
             # UI. patch_target is the PRESELECTION; patch_targets is the
             # whole ladder, newest first, each with the size that
-            # distinguishes them.
+            # distinguishes them. The preselection is listed first.
             "patch_target": (getattr(ace2_ota, "PATCH_TARGET", "1.1.3O")
                              if hasattr(ace2_ota, "apply_open_patch")
                              else ""),
@@ -3315,8 +3362,10 @@ async def acefw_versions() -> dict:
                  "size": (ace2_ota.KNOWN_FIRMWARE.get(v) or {}).get("size"),
                  "tested": (ace2_ota.KNOWN_FIRMWARE.get(v) or {}).get(
                      "tested", "")}
-                for v in sorted(getattr(ace2_ota, "PATCH_SPECS", {}),
-                                reverse=True)
+                for v in sorted(sorted(getattr(ace2_ota, "PATCH_SPECS", {}),
+                                       reverse=True),
+                                key=lambda v: v != getattr(
+                                    ace2_ota, "PATCH_TARGET", ""))
                 if ace2_ota.KNOWN_FIRMWARE.get(v)]
                 if hasattr(ace2_ota, "apply_open_patch") else [])}
     except Exception as e:
@@ -4184,6 +4233,11 @@ async def apply_snapshot(name: str, mode: str | None = None) -> dict:
         if ace_idx is None:
             continue
         ct = cur_th.get(idx, {})
+        # A head that has no ACE now (flagged manual/feeder after the
+        # snapshot was taken) cannot take an ACE slot: ACE_LOAD_HEAD would
+        # load it from its side feeder instead.
+        if ct.get("manual") or ct.get("feeder"):
+            continue
         if (ct.get("head_source_known")
             and ct.get("ace") == ace_idx
             and ct.get("slot") == dt.get("slot")):

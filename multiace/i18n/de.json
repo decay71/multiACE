@@ -78,13 +78,11 @@
       "unload": "Entladen",
       "manual": "Manuell",
       "feeder": "Feeder",
-      "manual_hint": "Manueller Vorschub: kein ACE-Vorschub, kein Retract, keine Assist/RFID für diesen Kopf. Von Hand laden.",
+      "manual_hint": "Manueller Vorschub: kein ACE-Vorschub, kein Retract, keine Assist/RFID für diesen Kopf. Er lädt über seinen Seitenfeeder (Laden-Knopf) oder von Hand über den Manual-Load am Display.",
       "manual_unload_first": "Diesen Kopf erst entladen, um den Manuell-Modus zu ändern.",
       "manual_intervention_title": "Manueller Eingriff nötig",
-      "manual_intervention_body": "Kopf {head} ist geheizt. Auf Weiter drücken und dann das Filament am Seitenport herausziehen, während der Kopf entlädt.",
-      "manual_intervention_next": "Weiter",
-      "manual_intervention_wait": "Kopf {head}: heizt und nimmt den Kopf für das Entladen auf ...",
-      "manual_intervention_failed": "Kopf {head}: das Entladen hat den geheizten Zustand nicht erreicht ({state})",
+      "manual_intervention_body": "Kopf {head} entlädt. Jetzt das Filament am Seitenport herausziehen.",
+      "manual_intervention_failed": "Kopf {head}: das Entladen ist fehlgeschlagen ({state})",
       "load_failed": "Load FEHLGESCHLAGEN",
       "load_failed_hint": "Der letzte Load ist nicht durchgelaufen - am Toolhead ist nichts. Der Load-Button des Slots wiederholt direkt (kein Unload-Zyklus nötig).",
       "swap_in_progress": "ACE-Wechsel läuft - bitte warten bis abgeschlossen.",
@@ -126,7 +124,8 @@
       "dry_bit_no": "aus",
       "dry_bits_none": "Rotisserie / Auto-Roll: kein Trocknerblock im Statusframe",
       "head_set_filament": "Filamentfarbe/-material dieses Kopfs setzen",
-      "reader_counts_hint": "SpoolLink hat die Spule aufgeloest (Spoolman #{id}) - SpoolLink/Moonraker zaehlt diesen Kopf"
+      "reader_counts_hint": "SpoolLink hat die Spule aufgeloest (Spoolman #{id}) - SpoolLink/Moonraker zaehlt diesen Kopf",
+      "slot_head_no_ace": "Kopf {head} hat keine ACE (Feeder/manuell) - über seinen eigenen Laden-Knopf laden"
     },
     "config": {
       "ace2_after": "nach ACE 1",
@@ -153,6 +152,7 @@
       "acefw_patch_label": "Auf {target} patchen",
       "acefw_patch_label_any": "Auf ACE2-Open patchen",
       "acefw_patch_hint": "Das hochgeladene Stock-1.1.31 vor dem Flashen zu ACE2-Open umbauen (Community-Firmware von Simon-CR). Bringt das Lesen von Nicht-Anycubic-Tags, die UID jedes Tags und behebt den Firmware-Fehler, durch den ein Slot den Tag des Nachbarn meldet.",
+      "acefw_patch_untested": "Testbuild, noch nie geflasht",
       "acefw_patch_warn": "Du flashst eine COMMUNITY-MODIFIZIERTE Firmware ({target}, Simon-CRs UID-Patch), keinen offiziellen Anycubic-Build. Sie ist nicht herstellerunterstützt und wenig getestet. Nur fortfahren, wenn dir das Risiko klar ist.",
       "acefw_patch_warn2": "⚠️ ACE2-Open ist eine Community-Modifikation, keine offizielle Firmware - Nutzung auf eigene Gefahr.",
       "acefw_intro": "multiACE liefert keine Firmware mit und verlinkt keine. Benötigt wird das Anycubic-Update-Paket zur gewählten Zielversion sowie das zugehörige Passwort - alternativ das Update über einen Anycubic-Drucker durchführen. Flashen auf eigene Gefahr.",
@@ -173,7 +173,8 @@
       "baud": "Baud",
       "ui_theme": "Design",
       "ui_theme_classic": "Classic",
-      "ui_theme_new": "Neu",
+      "ui_theme_new": "Dark",
+      "ui_theme_light": "Light",
       "ui_theme_hint": "Gilt nur für diesen Browser, auch für die Panel-Ansicht (Fluidd-Kamerakachel).",
       "confirm_commands": "Befehle bestätigen",
       "confirm_commands_hint": "Rückfrage vor jeder Aktion, die Filament bewegt (Laden, Entladen, Alle laden, Alle entladen). Nur Web-UI - gcode, Display und Druck sind nie betroffen. Gilt sofort (kein Speichern nötig) und wird auf dem Drucker gespeichert, also auf jedem Gerät.",
@@ -997,6 +998,7 @@
     "spool_sku_taken": "[multiACE] Der Tag-Code {sku} gehört schon zu Spule #{id}. Ein Code darf nur zu EINER Spule gehören - wähl einen anderen (eine bestehende Zuordnung wird nie überschrieben).",
     "head_feeder_loaded": "[multiACE] Kopf {head} hat noch Filament geladen - erst entladen, dann zwischen Feeder und ACE umschalten",
     "head_ace_loaded": "[multiACE] Kopf {head} hat noch Filament geladen - erst entladen, dann den zugeordneten ACE ändern",
-    "spool_head_not_feeder": "[multiACE] Kopf {head} ist ACE-geführt - seine Spule folgt dem Slot, aus dem er lädt. Binde die Spule an den ACE-Slot; eine Kopf-Bindung ist für Feeder-/Manual-Köpfe."
+    "spool_head_not_feeder": "[multiACE] Kopf {head} ist ACE-geführt - seine Spule folgt dem Slot, aus dem er lädt. Binde die Spule an den ACE-Slot; eine Kopf-Bindung ist für Feeder-/Manual-Köpfe.",
+    "load_head_starting_feeder": "[multiACE] Lade Kopf {head} über seinen Seitenfeeder..."
   }
 }
