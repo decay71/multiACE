@@ -803,7 +803,8 @@
               </b>
               <small v-if='calibrationHubMm != null'>{{ Math.round(calibrationHubMm) }} mm</small>
             </div>
-            <span><strong>{{ t('ui.calibration.splitter') }}</strong>{{ t('ui.calibration.splitter_sub') }}</span>
+            <span :class='{unknown: calibrationHubMm == null}'><strong>{{ t('ui.calibration.splitter') }}</strong>{{ calibrationHubMm == null
+              ? t('ui.calibration.splitter_unknown') : t('ui.calibration.splitter_sub') }}</span>
             <div class='calibration-route-tube'>
               <b v-if='calibrationTipSegment === `toolhead`' class='calibration-tip-marker'
                  :style='{"--tip": `${calibrationTipSegmentPercent}%`}'>{{ calibrationTipEstimated ? '○' : '●' }}</b>

@@ -749,6 +749,7 @@
       "slot_shared": "bereit · nutzt ACE-Werte",
       "splitter": "Verteiler",
       "splitter_sub": "hier laufen die Schläuche zusammen",
+      "splitter_unknown": "Lage noch nicht gemessen",
       "src_encoder": "Spur-Encoder",
       "src_measured": "Gemessen",
       "src_saved": "Gespeichert",

@@ -1941,6 +1941,7 @@ body:has(.panel) .overlay .dialog {
     grid-template-columns: var(--route-cols, auto 1fr auto 1fr auto);
   }
 }
+.calibration-route span.unknown { border-style: dashed; opacity: .6; }
 .calibration-route-tube small {
   position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
   color: var(--muted); font-size: .62rem; white-space: nowrap;

@@ -954,7 +954,13 @@ createApp({
     const calibrationTipSegment = computed(() => {
       const position = calibrationTipDrawnMm.value;
       const hub = calibrationHubMm.value;
-      if (position == null || hub == null) return 'ace';
+      if (position == null) return 'ace';
+      // Hub not measured yet: the two tubes are just the two halves of
+      // the route, so the marker still ends at the toolhead.
+      if (hub == null) {
+        const total = calibrationRouteLengthMm.value;
+        return total > 0 && position / total > 0.5 ? 'toolhead' : 'ace';
+      }
       return position <= hub ? 'ace' : 'toolhead';
     });
     const calibrationTipSegmentPercent = computed(() => {
@@ -964,7 +970,8 @@ createApp({
       const total = calibrationRouteLengthMm.value;
       let percent = 0;
       if (hub == null) {
-        percent = total > 0 ? 100 * position / total : 0;
+        const fraction = total > 0 ? position / total : 0;
+        percent = fraction <= 0.5 ? 200 * fraction : 200 * (fraction - 0.5);
       } else if (position <= hub) {
         percent = hub > 0 ? 100 * position / hub : 0;
       } else {

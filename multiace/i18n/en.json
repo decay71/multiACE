@@ -749,6 +749,7 @@
       "slot_shared": "ready · uses ACE values",
       "splitter": "Hub",
       "splitter_sub": "where the tubes join",
+      "splitter_unknown": "position not measured yet",
       "src_encoder": "lane encoder",
       "src_measured": "Measured",
       "src_saved": "Saved",
