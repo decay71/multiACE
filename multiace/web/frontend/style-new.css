@@ -1598,8 +1598,20 @@ html[data-theme="new"] .calibration-review input {
 }
 html[data-theme="new"] .calibration-review input:focus { outline: none; border-color: var(--accent); }
 @media (max-width: 760px) {
+  html[data-theme="new"] .calibration-workflow-body { padding: 14px 12px; }
+  html[data-theme="new"] .calibration-steps { gap: 8px; }
+  html[data-theme="new"] .calibration-steps div { font-size: 11px; }
+}
+@media (max-width: 560px) {
+  html[data-theme="new"] .calibration-guided .calibration-route { padding: 14px 12px; }
+  html[data-theme="new"] .calibration-route-tube { width: 2px; height: 34px; }
+  html[data-theme="new"] .calibration-route-tube small { top: 50%; }
   html[data-theme="new"] .calibration-metrics div { border-right: 0; border-bottom: 1px solid var(--border); }
   html[data-theme="new"] .calibration-metrics div:last-child { border-bottom: 0; }
+  html[data-theme="new"] .calibration-hold { min-width: 0; }
+  html[data-theme="new"] .calibration-review th,
+  html[data-theme="new"] .calibration-review td { padding: 8px 6px; }
+  html[data-theme="new"] .calibration-page .row button.primary { flex: 1 1 100%; }
 }
 
 /* ---- Light shade: surfaces the new design inherits from style.css ----

@@ -2010,7 +2010,22 @@ body:has(.panel) .overlay .dialog {
 }
 .calibration-success strong { display: block; }
 @media (max-width: 760px) {
-  .calibration-steps, .calibration-metrics.two { grid-template-columns: 1fr; }
+  .calibration-steps div { font-size: .68rem; overflow-wrap: anywhere; }
   .calibration-glossary { text-align: left; }
   .calibration-glossary dl { grid-template-columns: 1fr; }
+}
+/* Phone width: the route runs top to bottom, so the tube lengths sit beside
+   the tubes, and the results table drops what does not fit. */
+@media (max-width: 560px) {
+  .calibration-route-tube { height: 34px; }
+  .calibration-route-tube small {
+    top: 50%; left: 14px; transform: translateY(-50%);
+  }
+  .calibration-metrics.two { grid-template-columns: 1fr; }
+  .calibration-hold { min-width: 0; width: 100%; }
+  .calibration-review th:nth-child(2), .calibration-review td:nth-child(2),
+  .calibration-review td small { display: none; }
+  .calibration-review th, .calibration-review td { padding: .4rem .3rem; }
+  .calibration-review input { width: 3.6rem; }
+  .calibration-recovery .row { width: 100%; }
 }
