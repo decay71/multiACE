@@ -1170,7 +1170,7 @@
               <div><small>{{ t('ui.calibration.anchor_head') }}</small><strong>{{ state.calibration.load_length_mm }} mm</strong></div>
               <div><small>{{ t('ui.calibration.anchor_splitter') }}</small><strong>{{ state.calibration.load_length_mm - state.calibration.swap_retract_length_mm }} mm</strong></div>
             </div>
-            <p v-if='state.calibration.toolhead_sensor === true && state.calibration.verify_feed_delta_mm != null' class='muted'>Toolhead sensor triggered {{ state.calibration.verify_feed_delta_mm >= 0 ? '+' : '' }}{{ state.calibration.verify_feed_delta_mm }} mm from the calibrated load endpoint (timing estimate).</p>
+            <p v-if='state.calibration.toolhead_sensor === true && state.calibration.verify_feed_delta_mm != null' class='muted'>Toolhead sensor triggered {{ state.calibration.verify_feed_delta_mm >= 0 ? '+' : '' }}{{ state.calibration.verify_feed_delta_mm }} mm from the calibrated load endpoint ({{ state.calibration.position_source === 'encoder' ? 'lane encoder' : 'time estimate' }}).</p>
             <div v-if='[`verify_toolhead_adjust`, `verify_toolhead_adjusting`].includes(state.calibration.state)'
                  class='calibration-fine-position'>
               <div class='calibration-fine-head'>

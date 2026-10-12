@@ -762,7 +762,7 @@
       "v_at_head": "Am Kopfsensor angehalten. Endpunkt prüfen, dann von Hand weiter.",
       "v_at_splitter": "Am Verteiler-Punkt angehalten. Bestätige, dass die Spitze den Knoten verlassen hat, dann von Hand weiter.",
       "v_details": "Erweiterte Details zur Prüfung",
-      "v_feed": "Vorschub von der Einzugsposition zum Kopf. Hat der Sensor an der gespeicherten Strecke noch nicht angesprochen, läuft der Vorschub selbsttätig in kurzen Schritten weiter und die Strecke wird neu gemessen.",
+      "v_feed": "Vorschub von der Einzugsposition zum Kopf. Hat der Sensor an der gespeicherten Strecke noch nicht angesprochen, läuft der Vorschub selbsttätig bis zu 200 mm weiter und die Strecke wird neu gemessen.",
       "v_go_ace": "Verteiler bestätigt · zurück zur ACE",
       "v_go_splitter": "Weiter zum Verteiler",
       "v_pause": "Prüfung anhalten",

@@ -762,7 +762,7 @@
       "v_at_head": "Stopped at the toolhead sensor. Inspect the endpoint, then continue manually.",
       "v_at_splitter": "Stopped at the splitter checkpoint. Confirm the tip is clear of the junction, then continue manually.",
       "v_details": "Advanced verification details",
-      "v_feed": "Feeding from the ACE preload reference to the toolhead. If the sensor has not tripped at the saved distance, the feed continues automatically in short steps and the distance is re-measured.",
+      "v_feed": "Feeding from the ACE preload reference to the toolhead. If the sensor has not tripped at the saved distance, the feed continues automatically for up to 200 mm and the distance is re-measured.",
       "v_go_ace": "Splitter confirmed · return to ACE",
       "v_go_splitter": "Continue to splitter",
       "v_pause": "Pause verification",
