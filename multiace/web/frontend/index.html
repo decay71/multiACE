@@ -1254,7 +1254,7 @@
                     <summary>{{ t('ui.calibration.v_details') }}</summary>
                     <p>Toolhead {{ calibrationRouteAnchors.load }} mm · splitter
                       {{ calibrationRouteAnchors.load - calibrationRouteAnchors.swap }} mm
-                      · correction limit ±{{ state.calibration.verify_fine_limit_mm || 50 }} mm.
+                      · automatic search up to +{{ state.calibration.verify_search_mm || 200 }} mm past the toolhead endpoint.
                       Encoder telemetry is diagnostic only.</p>
                   </details>
                 </template>
@@ -1295,12 +1295,14 @@
           <template v-if='[`complete`, `verified`].includes(state.calibration.state)'>
             <p class='calibration-warning'>{{ t('ui.calibration.r_retract_note') }}</p>
             <p v-if='state.calibration.state === `verified`' class='calibration-success'>{{ t('ui.calibration.r_verified_note') }}</p>
-            <p v-if='state.calibration.state === `verified` && state.calibration.verify_feed_delta_mm != null' class='muted'>Verified toolhead endpoint correction: {{ state.calibration.verify_feed_delta_mm >= 0 ? '+' : '' }}{{ state.calibration.verify_feed_delta_mm }} mm. This diagnostic has not been applied to the calibration values.</p>
+            <p v-if='state.calibration.state === `verified` && state.calibration.verify_remeasured_mm' class='calibration-warning'>{{ t('ui.calibration.r_remeasured', {mm: (state.calibration.verify_remeasured_mm > 0 ? '+' : '') + state.calibration.verify_remeasured_mm}) }}</p>
+            <p v-else-if='state.calibration.state === `verified` && state.calibration.verify_feed_delta_mm != null' class='muted'>{{ t('ui.calibration.r_confirmed', {mm: (state.calibration.verify_feed_delta_mm >= 0 ? '+' : '') + state.calibration.verify_feed_delta_mm}) }}</p>
             <p v-if='state.calibration.protocol === `v2`' class='muted'>Encoder return delta: {{ state.calibration.decoder_return_delta ?? '-' }} counts (diagnostic only).</p>
             <div class='calibration-allowances'>
-              <label>{{ t('ui.calibration.allow_load') }} <input type='number' min='0' max='200' v-model.number='calibrationUi.loadAllowance'> mm</label>
-              <label>{{ t('ui.calibration.allow_splitter') }} <input type='number' min='0' max='200' v-model.number='calibrationUi.swapAllowance'> mm</label>
+              <label>{{ t('ui.calibration.allow_load') }} <input type='number' min='0' max='500' step='10' v-model.number='calibrationUi.loadAllowance'> mm</label>
+              <label v-if='state.calibration.values_source !== `saved`'>{{ t('ui.calibration.allow_splitter') }} <input type='number' min='0' max='500' step='10' v-model.number='calibrationUi.swapAllowance'> mm</label>
             </div>
+            <p class='muted'>{{ t('ui.calibration.allow_hint') }}</p>
             <table class='calibration-review'>
               <thead><tr><th>{{ t('ui.calibration.col_config') }}</th><th>{{ t('ui.calibration.col_prev') }}</th><th>{{ t('ui.calibration.col_measured') }}</th><th>{{ t('ui.calibration.col_proposed') }}</th></tr></thead>
               <tbody>

@@ -229,6 +229,16 @@ WAIT_ACE_FEEDING_MAX = 4
 # ratio can false-fire while a standstill cannot be invented.
 CAL_DECODER_MIN_LEN = 30.0
 CAL_DECODER_MIN_MOVE = 2.0
+# Verification feed: ACE transport is not repeatable to the millimetre, so the
+# verify run does not stop dead at the calibrated distance. It runs one long
+# move to just short of it, then short chunks (so the timing estimate at the
+# sensor only spans one chunk) and keeps going up to SEARCH past the endpoint
+# until the toolhead sensor trips. A sensor position further than DEADBAND
+# from the calibrated one replaces the calibrated distance.
+CAL_VERIFY_SEARCH_MM = 200
+CAL_VERIFY_FINE_ZONE_MM = 150
+CAL_VERIFY_CHUNK_MM = 50
+CAL_VERIFY_DEADBAND_MM = 10
 
 # Seconds to keep V1 feed-assist dispatches out of the homing/probe
 # window. A V1 start_feed_assist is a synchronous ser.write on the
@@ -9660,7 +9670,10 @@ class MultiAce:
             'verify_feed_actual_mm': None,
             'verify_feed_delta_mm': None,
             'verify_fine_offset_mm': 0,
-            'verify_fine_limit_mm': 50,
+            'verify_fine_limit_mm': CAL_VERIFY_SEARCH_MM + 50,
+            'verify_search_mm': CAL_VERIFY_SEARCH_MM,
+            'verify_remeasured_mm': None,
+            'values_source': 'measured',
             'verify_decoder_span': None,
             'verify_move_seq': 0,
             'toolhead_sensor': None,
@@ -10023,6 +10036,8 @@ class MultiAce:
             upper = load + fine_limit
         else:
             lower, upper = 0, load
+            if move.get('kind') == 'verify_feed':
+                upper = load + int(c.get('verify_search_mm') or 0)
         position = max(float(lower), min(float(upper), position))
         c['verify_position_mm'] = int(round(position))
         c['tip_position_mm'] = c['verify_position_mm']
@@ -10031,32 +10046,58 @@ class MultiAce:
             self._calibration_move = None
         return c['verify_position_mm']
 
-    def _calibration_verify_hold_toolhead(self, eventtime):
+    def _calibration_verify_at_toolhead(self, actual):
+        # The sensor is the physical reference. Within the deadband the
+        # calibrated distance stands; outside it the verify run IS the new
+        # measurement, so the rest of the round trip (splitter stop, return
+        # to preload) and the proposed config values use the real distance.
         c = self._calibration
-        actual = self._calibration_verify_position(eventtime, commit=True)
         target = int(c.get('load_length_mm') or 0)
+        delta = actual - target
+        self._calibration_send_stop()
+        self._calibration_timer = None
+        position = target
+        if abs(delta) > CAL_VERIFY_DEADBAND_MM:
+            swap = int(c.get('swap_retract_length_mm') or 0)
+            if actual <= swap:
+                self._calibration_fail(
+                    'toolhead sensor triggered after %d mm, before the '
+                    'splitter distance of %d mm - recalibrate this route'
+                    % (actual, swap))
+                return
+            c['load_length_mm'] = actual
+            c['retract_length_mm'] = actual
+            c['verify_remeasured_mm'] = (
+                int(c.get('verify_remeasured_mm') or 0) + delta)
+            position = actual
         c['verify_feed_actual_mm'] = actual
-        c['verify_feed_delta_mm'] = actual - target
-        c['verify_fine_offset_mm'] = actual - target
-        c['verify_position_mm'] = target
-        c['tip_position_mm'] = target
+        c['verify_feed_delta_mm'] = delta
+        c['verify_fine_offset_mm'] = 0
+        c['verify_position_mm'] = position
+        c['tip_position_mm'] = position
         c['verify_phase'] = 'toolhead'
         c['state'] = 'verify_toolhead'
         c['toolhead_sensor'] = True
-        self._calibration_send_stop()
-        self._calibration_timer = None
         self.log_always(
-            '[multiACE] Verification paused at toolhead sensor '
-            '(actual~%dmm, calibrated=%dmm)' % (actual, target))
+            '[multiACE] Verification reached the toolhead sensor at ~%dmm '
+            '(calibrated %dmm, %s)'
+            % (actual, target,
+               'distance re-measured' if position != target
+               else 'confirmed'))
+
+    def _calibration_verify_hold_toolhead(self, eventtime):
+        self._calibration_verify_at_toolhead(
+            self._calibration_verify_position(eventtime, commit=True))
 
     def _calibration_verify_enter_adjust(self):
         c = self._calibration
         target = int(c.get('load_length_mm') or 0)
-        c['verify_position_mm'] = target
-        c['tip_position_mm'] = target
-        c['verify_feed_actual_mm'] = target
-        c['verify_feed_delta_mm'] = 0
-        c['verify_fine_offset_mm'] = 0
+        position = int(c.get('verify_position_mm') or target)
+        c['verify_position_mm'] = position
+        c['tip_position_mm'] = position
+        c['verify_feed_actual_mm'] = position
+        c['verify_feed_delta_mm'] = position - target
+        c['verify_fine_offset_mm'] = position - target
         c['verify_phase'] = 'toolhead_adjust'
         c['state'] = 'verify_toolhead_adjust'
         c['toolhead_sensor'] = False
@@ -10064,45 +10105,35 @@ class MultiAce:
         self._calibration_move = None
         self._calibration_timer = None
         self.log_always(
-            '[multiACE] Verification reached the calibrated toolhead '
-            'endpoint with the sensor clear; bounded fine positioning '
-            'is available')
+            '[multiACE] Verification searched %dmm past the calibrated '
+            'toolhead endpoint with the sensor still clear; manual fine '
+            'positioning is available' % (position - target))
 
     def _calibration_verify_hold_after_adjust(self, eventtime):
-        c = self._calibration
-        actual = self._calibration_verify_position(eventtime, commit=True)
-        target = int(c.get('load_length_mm') or 0)
-        offset = actual - target
-        c['verify_feed_actual_mm'] = actual
-        c['verify_feed_delta_mm'] = offset
-        c['verify_fine_offset_mm'] = offset
-        c['verify_position_mm'] = actual
-        c['tip_position_mm'] = actual
-        c['verify_phase'] = 'toolhead'
-        c['state'] = 'verify_toolhead'
-        c['toolhead_sensor'] = True
-        self._calibration_send_stop()
-        self._calibration_timer = None
-        self.log_always(
-            '[multiACE] Verification fine positioning reached the '
-            'toolhead sensor at %+dmm' % offset)
+        self._calibration_verify_at_toolhead(
+            self._calibration_verify_position(eventtime, commit=True))
 
     def _calibration_verify_dispatch(self, eventtime, state):
         c = self._calibration
         position = int(c.get('verify_position_mm') or 0)
         load = int(c.get('load_length_mm') or 0)
         if state == 'verifying_feed':
-            remaining = load - position
+            remaining = (load + int(c.get('verify_search_mm') or 0)
+                         - position)
             if remaining <= 0:
                 if self._calibration_sensor(c['head']):
                     self._calibration_verify_hold_toolhead(eventtime)
                 else:
                     self._calibration_verify_enter_adjust()
                 return False
-            # Verification is a continuous traversal, unlike measurement:
-            # command the complete remaining route and keep polling the
-            # sensor so the move can still be stopped immediately.
-            length = remaining
+            # One continuous move to just short of the calibrated endpoint,
+            # then short chunks through and past it (see CAL_VERIFY_*). The
+            # sensor is polled throughout and stops the move immediately.
+            coarse = load - CAL_VERIFY_FINE_ZONE_MM - position
+            if coarse >= CAL_VERIFY_CHUNK_MM:
+                length = coarse
+            else:
+                length = min(CAL_VERIFY_CHUNK_MM, remaining)
             kind, method, direction = 'verify_feed', 'feed_filament', 1
             speed = c['speed_mm_s']
         elif state == 'verifying_splitter':
@@ -10208,8 +10239,8 @@ class MultiAce:
                     limit = int(c.get('verify_fine_limit_mm') or 50)
                     if abs(offset) >= limit:
                         self._calibration_fail(
-                            'toolhead sensor was not reached within the '
-                            'verification fine-position limit')
+                            'toolhead sensor was not reached within %d mm '
+                            'of the calibrated endpoint' % limit)
                         self._calibration_timer = None
                         return self.reactor.NEVER
                     c['state'] = 'verify_toolhead_adjust'
@@ -10733,6 +10764,7 @@ class MultiAce:
                     'verify_phase': 'ready',
                     'verify_position_mm': 0,
                     'tip_position_mm': 0,
+                    'values_source': 'saved',
                 })
                 configured_start = True
             if c.get('state') not in ('complete', 'verified'):
@@ -10768,7 +10800,9 @@ class MultiAce:
                 'verify_feed_actual_mm': None,
                 'verify_feed_delta_mm': None,
                 'verify_fine_offset_mm': 0,
-                'verify_fine_limit_mm': 50,
+                'verify_fine_limit_mm': CAL_VERIFY_SEARCH_MM + 50,
+                'verify_search_mm': CAL_VERIFY_SEARCH_MM,
+                'verify_remeasured_mm': None,
                 'verify_decoder_span': None,
                 'verify_move_seq': 0,
                 'toolhead_sensor': False,
@@ -10806,7 +10840,7 @@ class MultiAce:
             if abs(target_offset) > limit:
                 raise gcmd.error(
                     '[multiACE] verification jog would exceed the '
-                    '+/-50 mm fine-position limit')
+                    '+/-%d mm fine-position limit' % limit)
             self.wait_ace_ready_on(c['ace'])
             c['verify_move_seq'] = int(c.get('verify_move_seq') or 0) + 1
             move_id = c['verify_move_seq']

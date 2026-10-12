@@ -620,7 +620,11 @@ createApp({
 
     const calibrationUi = reactive({
       ace: 0, slot: 0, head: 0, scope: 'ace',
-      loadAllowance: 20, swapAllowance: 20,
+      // ACE transport varies run to run, so the saved values carry a
+      // generous margin: the load is stopped by the toolhead sensor
+      // anyway, and a swap retract that runs long only costs seconds
+      // while one that stops short leaves filament in the splitter.
+      loadAllowance: 150, swapAllowance: 100,
       baselinePrepared: false, routeConfirmed: false,
       panel: 'setup', panelTouched: false, recalibrate: false,
       busy: '', cancelRequested: false, error: '', saved: false,
@@ -713,12 +717,23 @@ createApp({
     });
     const calibrationProposed = computed(() => {
       const c = state.calibration || {};
+      const allowance = (v) => Math.max(0, Number(v) || 0);
+      const retract = c.retract_length_mm == null ? null : Number(c.retract_length_mm);
+      let swap = null;
+      if (c.swap_retract_length_mm != null) {
+        const base = Number(c.swap_retract_length_mm);
+        // A session primed from saved values already carries its clearance;
+        // adding it again would grow the value on every verify + apply.
+        swap = c.values_source === 'saved'
+          ? base : base + allowance(calibrationUi.swapAllowance);
+        // The swap retract must stay short of the full retract.
+        if (retract != null) swap = Math.max(base, Math.min(swap, retract - 10));
+      }
       return {
         load: c.load_length_mm == null ? null
-          : Number(c.load_length_mm) + Math.max(0, Number(calibrationUi.loadAllowance) || 0),
-        swap: c.swap_retract_length_mm == null ? null
-          : Number(c.swap_retract_length_mm) + Math.max(0, Number(calibrationUi.swapAllowance) || 0),
-        retract: c.retract_length_mm == null ? null : Number(c.retract_length_mm),
+          : Number(c.load_length_mm) + allowance(calibrationUi.loadAllowance),
+        swap,
+        retract,
       };
     });
     const calibrationConfiguredRoute = computed(() => {
@@ -1140,6 +1155,9 @@ createApp({
     }
     async function calibrationVerifyConfigured() {
       if (!calibrationCanVerifyConfigured.value) return false;
+      // A verify run can re-measure the toolhead distance, so its result
+      // has to be applicable again.
+      calibrationUi.saved = false;
       calibrationSetPanel('verify', false);
       return calibrationRequest('action', {
         action: 'verify_start',
