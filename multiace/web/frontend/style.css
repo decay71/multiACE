@@ -2009,6 +2009,7 @@ body:has(.panel) .overlay .dialog {
   border: 1px solid var(--border); border-radius: 4px; padding: .25rem;
 }
 .calibration-success strong { display: block; }
+.calibration-panel p.muted { margin: .6rem 0; font-size: .78rem; line-height: 1.45; }
 @media (max-width: 760px) {
   .calibration-steps div { font-size: .68rem; overflow-wrap: anywhere; }
   .calibration-glossary { text-align: left; }
