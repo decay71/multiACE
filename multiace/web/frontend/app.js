@@ -5,9 +5,9 @@ const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://")
 const SCREEN = "/screen";
 createApp({
   setup() {
-    // Bowden-path calibration tab (physicsG port): hidden for now, also on
-    // dev (Dirk 2026-09-25). The code stays; flip to true to show it.
-    const CALIBRATION_TAB = false;
+    // Bowden-path calibration tab (physicsG port): hidden upstream (Dirk
+    // 2026-09-25), shown on this branch.
+    const CALIBRATION_TAB = true;
     const _validTabs = new Set(["dashboard", "spools", "config"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
     const _storedTab = localStorage.getItem("multiace.tab");
