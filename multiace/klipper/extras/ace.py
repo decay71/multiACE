@@ -239,6 +239,16 @@ CAL_VERIFY_SEARCH_MM = 200
 CAL_VERIFY_FINE_ZONE_MM = 150
 CAL_VERIFY_CHUNK_MM = 50
 CAL_VERIFY_DEADBAND_MM = 10
+# V2 lane encoder as the feed-direction position source. The counter restarts
+# with every motion command and reads in ~mm, so |decoder| is the real travel
+# of the current move. A reading requested right behind the motion command
+# can still carry the PREVIOUS move's final value, hence the hold-off, and
+# nothing can have travelled further than the commanded speed allows (slack).
+CAL_DECODER_HOLDOFF_S = 0.3
+CAL_DECODER_SLACK_MM = 30.0
+# After the toolhead sensor stops a feed: let the lane come to rest, then
+# take one last encoder reading before the distance is booked.
+CAL_SETTLE_S = 0.4
 
 # Seconds to keep V1 feed-assist dispatches out of the homing/probe
 # window. A V1 start_feed_assist is a synchronous ser.write on the
@@ -9655,6 +9665,9 @@ class MultiAce:
             'protocol': '',
             'commanded_feed_mm': 0,
             'commanded_retract_mm': 0,
+            'feed_travel_mm': 0.0,
+            'decoder_ok': False,
+            'position_source': 'timing',
             'load_length_mm': None,
             'swap_retract_length_mm': None,
             'retract_length_mm': None,
@@ -9919,15 +9932,17 @@ class MultiAce:
         if response and response.get('code', 0) != 0:
             move['error'] = response.get('msg') or 'ACE rejected movement'
 
-    def _calibration_sample_decoder(self, idx, slot, session_id, move_id):
+    def _calibration_sample_decoder(self, idx, slot, session_id, move_id,
+                                    on_done=None):
+        requested = self.reactor.monotonic()
         def _cb(self, response, _sid=session_id, _mid=move_id,
-                _slot=slot):
-            c = self._calibration
-            move = self._calibration_move
-            if (c.get('session_id') != _sid or move is None
-                    or move.get('id') != _mid):
-                return
+                _slot=slot, _requested=requested, _on_done=on_done):
             try:
+                c = self._calibration
+                move = self._calibration_move
+                if (c.get('session_id') != _sid or move is None
+                        or move.get('id') != _mid):
+                    return
                 rows = ((response or {}).get('result') or {}).get(
                     'feed_info') or []
                 for row in rows:
@@ -9942,25 +9957,87 @@ class MultiAce:
                     value = int(raw)
                     if value >= (1 << 63):
                         value -= (1 << 64)
-                    cur_min = move.get('decoder_min')
-                    cur_max = move.get('decoder_max')
-                    move['decoder_min'] = value if cur_min is None else min(
-                        cur_min, value)
-                    move['decoder_max'] = value if cur_max is None else max(
-                        cur_max, value)
+                    started = float(move['started'])
+                    if _requested - started < CAL_DECODER_HOLDOFF_S:
+                        break
+                    travel = float(abs(value))
+                    ceiling = ((self.reactor.monotonic() - started)
+                               * float(move['speed'])
+                               + CAL_DECODER_SLACK_MM)
+                    if travel > ceiling:
+                        break
+                    previous = move.get('dec')
+                    move['dec'] = travel if previous is None else max(
+                        previous, travel)
+                    c['decoder_ok'] = True
                     break
             except Exception:
                 pass
+            finally:
+                if _on_done is not None:
+                    _on_done()
         try:
             self.send_request_to(idx, {'method': 'get_feed_info'}, _cb)
         except Exception:
-            pass
+            if on_done is not None:
+                on_done()
+
+    def _calibration_move_travel(self, move, eventtime):
+        # Distance the current move has covered: the lane encoder when it
+        # has reported (V2), else commanded speed x elapsed time. The clock
+        # starts when the command is queued, so the time estimate runs ahead
+        # of the filament and is capped at the commanded length.
+        dec = move.get('dec')
+        if dec is not None:
+            self._calibration['position_source'] = 'encoder'
+            return float(dec)
+        self._calibration['position_source'] = 'timing'
+        elapsed = max(0.0, eventtime - float(move['started']))
+        return min(float(move['length']), elapsed * float(move['speed']))
+
+    def _calibration_settle(self, finalize):
+        # Called when the toolhead sensor ends a feed. On V2 the booked
+        # distance comes from one encoder reading taken after the lane has
+        # stopped; without a working encoder there is nothing to wait for.
+        c = self._calibration
+        move = self._calibration_move
+        self._calibration_send_stop()
+        self._calibration_timer = None
+        if (c.get('protocol') != 'v2' or move is None
+                or not c.get('decoder_ok')):
+            finalize()
+            return
+        sid, state, mid = c['session_id'], c['state'], move['id']
+        idx, slot = c['ace'], c['slot']
+        token = {'done': False}
+        def _finish(*_args):
+            if token['done']:
+                return
+            token['done'] = True
+            cc = self._calibration
+            current = self._calibration_move
+            if (cc.get('session_id') != sid or cc.get('state') != state
+                    or current is None or current.get('id') != mid):
+                return
+            finalize()
+        def _sample(eventtime):
+            self._calibration_sample_decoder(
+                idx, slot, sid, mid, on_done=_finish)
+        now = self.reactor.monotonic()
+        self.reactor.register_callback(_sample, now + CAL_SETTLE_S)
+        self.reactor.register_callback(_finish, now + CAL_SETTLE_S + 1.5)
 
     def _calibration_accumulate_decoder(self, move):
-        dmin, dmax = move.get('decoder_min'), move.get('decoder_max')
-        if dmin is None or dmax is None:
-            return
-        span = max(0, int(dmax) - int(dmin))
+        # Returns False when the standstill guard failed the session, so the
+        # caller must not carry on and overwrite the failed state.
+        dec = move.get('dec')
+        if dec is None:
+            return True
+        span = max(0, int(round(dec)))
+        commanded = float(move.get('length', 0.0))
+        kind = str(move.get('kind') or '')
+        logging.info('[multiACE] calibration move %s: commanded %.0f mm, '
+                     'encoder %d' % (kind or '?', commanded, span))
 
         # Command 76 standstill guard: a long commanded move whose lane
         # encoder never moved is a stall, not a slow start. Same verdict the
@@ -9968,21 +10045,19 @@ class MultiAce:
         # turns every decoder-based verdict off. A protocol without the
         # reading never gets here: the None check above returns first, which
         # is what keeps V1 and any firmware that omits the field out of it.
-        commanded = float(move.get('length', 0.0))
         if (self.unload_decoder_gate
                 and commanded >= CAL_DECODER_MIN_LEN
                 and span < CAL_DECODER_MIN_MOVE):
             self._calibration_fail(
                 'Standstill guard (cmd 76): commanded %.0f mm, the lane '
                 'encoder moved %d' % (commanded, span))
-            return
+            return False
 
-        kind = str(move.get('kind') or '')
         if kind.startswith('verify_'):
             current = self._calibration.get('verify_decoder_span')
             self._calibration['verify_decoder_span'] = span \
                 if current is None else int(current) + span
-            return
+            return True
         current = self._calibration.get('decoder_span')
         self._calibration['decoder_span'] = span if current is None \
             else int(current) + span
@@ -9991,6 +10066,7 @@ class MultiAce:
         current = self._calibration.get(key)
         self._calibration[key] = span if current is None \
             else int(current) + span
+        return True
 
     def _calibration_finish_return(self):
         c = self._calibration
@@ -10024,9 +10100,13 @@ class MultiAce:
         move = self._calibration_move
         if move is None or not str(move.get('kind', '')).startswith('verify_'):
             return int(c.get('verify_position_mm') or 0)
-        elapsed = max(0.0, eventtime - float(move['started']))
-        travelled = min(float(move['length']),
-                        elapsed * float(move['speed']))
+        if move.get('kind') == 'verify_feed':
+            travelled = self._calibration_move_travel(move, eventtime)
+        else:
+            c['position_source'] = 'timing'
+            elapsed = max(0.0, eventtime - float(move['started']))
+            travelled = min(float(move['length']),
+                            elapsed * float(move['speed']))
         position = (float(move.get('position_start', 0))
                     + float(move.get('direction', 1)) * travelled)
         load = int(c.get('load_length_mm') or 0)
@@ -10052,10 +10132,12 @@ class MultiAce:
         # measurement, so the rest of the round trip (splitter stop, return
         # to preload) and the proposed config values use the real distance.
         c = self._calibration
-        target = int(c.get('load_length_mm') or 0)
-        delta = actual - target
         self._calibration_send_stop()
         self._calibration_timer = None
+        if c.get('state') == 'failed':
+            return
+        target = int(c.get('load_length_mm') or 0)
+        delta = actual - target
         position = target
         if abs(delta) > CAL_VERIFY_DEADBAND_MM:
             swap = int(c.get('swap_retract_length_mm') or 0)
@@ -10086,8 +10168,9 @@ class MultiAce:
                else 'confirmed'))
 
     def _calibration_verify_hold_toolhead(self, eventtime):
-        self._calibration_verify_at_toolhead(
-            self._calibration_verify_position(eventtime, commit=True))
+        self._calibration_settle(
+            lambda: self._calibration_verify_at_toolhead(
+                self._calibration_verify_position(eventtime, commit=True)))
 
     def _calibration_verify_enter_adjust(self):
         c = self._calibration
@@ -10129,8 +10212,12 @@ class MultiAce:
             # One continuous move to just short of the calibrated endpoint,
             # then short chunks through and past it (see CAL_VERIFY_*). The
             # sensor is polled throughout and stops the move immediately.
+            # With a working lane encoder the position is measured, so the
+            # steps are not needed: one move, stopped by the sensor.
             coarse = load - CAL_VERIFY_FINE_ZONE_MM - position
-            if coarse >= CAL_VERIFY_CHUNK_MM:
+            if c.get('protocol') == 'v2' and c.get('decoder_ok'):
+                length = remaining
+            elif coarse >= CAL_VERIFY_CHUNK_MM:
                 length = coarse
             else:
                 length = min(CAL_VERIFY_CHUNK_MM, remaining)
@@ -10178,7 +10265,7 @@ class MultiAce:
             'id': move_id, 'kind': kind, 'length': int(length),
             'speed': speed, 'started': eventtime,
             'position_start': position, 'direction': direction,
-            'decoder_min': None, 'decoder_max': None,
+            'dec': None,
             'next_decoder_sample': eventtime, 'error': None,
         }
         self._calibration_move = move
@@ -10224,11 +10311,18 @@ class MultiAce:
             ready = (self._info_per_ace.get(idx, {}) or {}).get(
                 'status') == 'ready'
             if ready and elapsed >= max(0.15, expected * 0.80):
-                c['verify_position_mm'] = int(
+                covered = move['length']
+                if (move.get('kind') == 'verify_feed'
+                        and move.get('dec') is not None):
+                    covered = move['dec']
+                c['verify_position_mm'] = int(round(
                     move.get('position_start', 0)
-                    + move.get('direction', 1) * move['length'])
+                    + move.get('direction', 1) * covered))
                 c['tip_position_mm'] = c['verify_position_mm']
-                self._calibration_accumulate_decoder(move)
+                if not self._calibration_accumulate_decoder(move):
+                    self._calibration_move = None
+                    self._calibration_timer = None
+                    return self.reactor.NEVER
                 self._calibration_move = None
                 if state == 'verify_toolhead_adjusting':
                     offset = (int(c['verify_position_mm'])
@@ -10259,17 +10353,21 @@ class MultiAce:
             return self.reactor.NEVER
         return eventtime + 0.05
 
+    def _calibration_feed_reached(self, eventtime):
+        self._calibration_settle(
+            lambda: self._calibration_finish_feed(eventtime))
+
     def _calibration_finish_feed(self, eventtime):
         c = self._calibration
         move = self._calibration_move
         partial = 0.0
         if move is not None:
-            elapsed = max(0.0, eventtime - move['started'])
-            partial = min(float(move['length']),
-                          elapsed * float(move['speed']))
-            self._calibration_accumulate_decoder(move)
-        c['commanded_feed_mm'] = int(round(
-            float(c.get('commanded_feed_mm', 0)) + partial))
+            partial = self._calibration_move_travel(move, eventtime)
+            if not self._calibration_accumulate_decoder(move):
+                self._calibration_move = None
+                return
+        c['feed_travel_mm'] = float(c.get('feed_travel_mm') or 0.0) + partial
+        c['commanded_feed_mm'] = int(round(c['feed_travel_mm']))
         c['load_length_mm'] = c['commanded_feed_mm']
         c['tip_position_mm'] = c['load_length_mm']
         c['toolhead_sensor'] = True
@@ -10279,8 +10377,9 @@ class MultiAce:
         self._calibration_send_stop()
         self.log_always(
             '[multiACE] Calibration load sensor reached at ~%dmm '
-            '(ACE %d slot %d -> head %d)'
-            % (c['load_length_mm'], c['ace'], c['slot'], c['head']))
+            '(ACE %d slot %d -> head %d, %s)'
+            % (c['load_length_mm'], c['ace'], c['slot'], c['head'],
+               c.get('position_source') or 'timing'))
 
     def _calibration_timer_tick(self, eventtime):
         c = self._calibration
@@ -10309,18 +10408,16 @@ class MultiAce:
         move = self._calibration_move
 
         if state == 'feeding' and detected is True:
-            self._calibration_finish_feed(eventtime)
-            self._calibration_timer = None
+            self._calibration_feed_reached(eventtime)
             return self.reactor.NEVER
 
         if move is not None:
             if state == 'feeding':
-                elapsed = max(0.0, eventtime - float(move['started']))
-                partial = min(float(move['length']),
-                              elapsed * float(move['speed']))
                 c['tip_position_mm'] = max(0, int(round(
-                    int(c.get('commanded_feed_mm') or 0) + partial)))
+                    float(c.get('feed_travel_mm') or 0.0)
+                    + self._calibration_move_travel(move, eventtime))))
             elif state in ('retracting', 'returning'):
+                c['position_source'] = 'timing'
                 elapsed = max(0.0, eventtime - float(move['started']))
                 partial = min(float(move['length']),
                               elapsed * float(move['speed']))
@@ -10347,11 +10444,20 @@ class MultiAce:
             if ready and elapsed >= max(0.15, expected * 0.80):
                 # A forward jog is a correction, not a measurement - keep it
                 # out of the retract decoder span.
-                if state != 'feed_jogging':
-                    self._calibration_accumulate_decoder(move)
+                if (state != 'feed_jogging'
+                        and not self._calibration_accumulate_decoder(move)):
+                    self._calibration_move = None
+                    self._calibration_timer = None
+                    return self.reactor.NEVER
                 if state == 'feeding':
                     c['commanded_feed_mm'] = int(
                         c.get('commanded_feed_mm', 0)) + int(move['length'])
+                    # A chunk the ACE cut short counts as what the encoder
+                    # saw, not as what was asked for.
+                    c['feed_travel_mm'] = (
+                        float(c.get('feed_travel_mm') or 0.0)
+                        + (move['dec'] if move.get('dec') is not None
+                           else float(move['length'])))
                     self._calibration_move = None
                     if c['commanded_feed_mm'] >= c['max_feed_mm']:
                         self._calibration_fail(
@@ -10429,7 +10535,7 @@ class MultiAce:
         move = {
             'id': move_id, 'kind': kind, 'length': length,
             'speed': speed, 'started': eventtime,
-            'decoder_min': None, 'decoder_max': None,
+            'dec': None,
             'next_decoder_sample': eventtime, 'error': None,
         }
         self._calibration_move = move
@@ -10568,7 +10674,7 @@ class MultiAce:
             'id': move_id, 'kind': 'retract', 'length': length,
             'speed': min(30, self.get_retract_speed(c['ace'])),
             'started': now,
-            'decoder_min': None, 'decoder_max': None,
+            'dec': None,
             'next_decoder_sample': now, 'error': None,
         }
         self._calibration_move = move
@@ -10613,7 +10719,7 @@ class MultiAce:
             'id': move_id, 'kind': 'feed_jog', 'length': length,
             'speed': min(30, self.get_feed_speed(c['ace'])),
             'started': now,
-            'decoder_min': None, 'decoder_max': None,
+            'dec': None,
             'next_decoder_sample': now, 'error': None,
         }
         self._calibration_move = move
@@ -10854,7 +10960,7 @@ class MultiAce:
                          else 'verify_adjust_retract'),
                 'length': abs(delta), 'speed': speed, 'started': now,
                 'position_start': position, 'direction': direction,
-                'decoder_min': None, 'decoder_max': None,
+                'dec': None,
                 'next_decoder_sample': now, 'error': None,
             }
             self._calibration_move = move
@@ -10896,6 +11002,9 @@ class MultiAce:
             now = self.reactor.monotonic()
             c['verify_position_mm'] = self._calibration_verify_position(
                 now, commit=True)
+            if c.get('state') == 'failed':
+                self._calibration_stop_timer()
+                return
             c['verify_paused_from'] = c['state']
             c['state'] = 'verify_paused'
             c['verify_phase'] = 'paused'
@@ -10929,7 +11038,7 @@ class MultiAce:
         '[multiACE] Clear a completed/failed/cancelled calibration session')
     def cmd_ACE_CALIBRATION_RESET(self, gcmd):
         if self._calibration.get('state') in (
-                'feeding', 'retracting', 'returning',
+                'feeding', 'retracting', 'returning', 'feed_jogging',
                 'verifying_feed', 'verifying_splitter',
                 'verifying_return', 'verify_toolhead_adjusting'):
             raise gcmd.error('[multiACE] cancel active movement before reset')

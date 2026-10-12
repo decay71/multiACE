@@ -803,13 +803,14 @@
             <div class='calibration-route-tube'>
               <b v-if='calibrationTipSegment === `ace`' class='calibration-tip-marker'
                  :style='{"--tip": `${calibrationTipSegmentPercent}%`}'>
-                {{ calibrationTipPositionMm == null ? '?' : '●' }}
+                {{ calibrationTipPositionMm == null ? '?'
+                  : calibrationTipEstimated ? '○' : '●' }}
               </b>
             </div>
             <span><strong>{{ t('ui.calibration.splitter') }}</strong>{{ t('ui.calibration.splitter_sub') }}</span>
             <div class='calibration-route-tube'>
               <b v-if='calibrationTipSegment === `toolhead`' class='calibration-tip-marker'
-                 :style='{"--tip": `${calibrationTipSegmentPercent}%`}'>●</b>
+                 :style='{"--tip": `${calibrationTipSegmentPercent}%`}'>{{ calibrationTipEstimated ? '○' : '●' }}</b>
             </div>
             <span><strong>Toolhead T{{ dispIdx(calibrationUi.head) }}</strong>
               {{ calibrationSelectedHeadClear ? 'sensor clear'

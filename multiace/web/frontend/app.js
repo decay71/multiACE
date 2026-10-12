@@ -864,15 +864,34 @@ createApp({
           && calibrationSelectedToolhead.value?.filament_at_extruder === false) return 0;
       return null;
     });
-    const calibrationTipSegment = computed(() => {
+    // Where the marker is DRAWN. A position taken from the lane encoder is
+    // drawn as is. A time estimate runs ahead of the filament (the ACE
+    // starts late), so while moving the marker is held back by a margin and
+    // does not show the splitter as passed before the filament is there.
+    const CALIBRATION_ESTIMATE_MARGIN_MM = 75;
+    const calibrationTipEstimated = computed(() =>
+      calibrationMoving.value
+        && state.calibration?.position_source !== 'encoder');
+    const calibrationTipDrawnMm = computed(() => {
       const position = calibrationTipPositionMm.value;
+      if (position == null || !calibrationTipEstimated.value) return position;
+      const feeding = ['feeding', 'feed_jogging', 'verifying_feed']
+        .includes(state.calibration?.state);
+      const load = calibrationRouteAnchors.value.load;
+      return feeding
+        ? Math.max(0, position - CALIBRATION_ESTIMATE_MARGIN_MM)
+        : Math.min(Number.isFinite(load) ? load : position,
+                   position + CALIBRATION_ESTIMATE_MARGIN_MM);
+    });
+    const calibrationTipSegment = computed(() => {
+      const position = calibrationTipDrawnMm.value;
       if (position == null) return 'ace';
       const {load, swap} = calibrationRouteAnchors.value;
       const splitter = load - swap;
       return position <= splitter ? 'ace' : 'toolhead';
     });
     const calibrationTipSegmentPercent = computed(() => {
-      const position = calibrationTipPositionMm.value;
+      const position = calibrationTipDrawnMm.value;
       if (position == null) return 50;
       const {load, swap} = calibrationRouteAnchors.value;
       const splitter = load - swap;
@@ -901,7 +920,9 @@ createApp({
       if (c.state === 'verified') return t('ui.calibration.tip_verified');
       if (c.state === 'complete') return t('ui.calibration.tip_parked');
       if (calibrationMoving.value) {
-        return t('ui.calibration.tip_moving', {mm: Math.round(position)});
+        return t(calibrationTipEstimated.value
+          ? 'ui.calibration.tip_moving' : 'ui.calibration.tip_moving_enc',
+          {mm: Math.round(position)});
       }
       const source = calibrationRouteAnchors.value.source === 'configured'
         ? t('ui.calibration.tip_src_config') : t('ui.calibration.tip_src_measured');
@@ -7364,6 +7385,7 @@ createApp({
       calibrationSelectedHeadSensorKnown, calibrationSelectedHeadClear,
       calibrationCanPrepare,
       calibrationCanStart, calibrationCanVerifyConfigured, calibrationProposed,
+      calibrationTipEstimated,
       calibrationSetPanel, calibrationContinueRoute,
       calibrationBeginRecalibration, calibrationKeepSaved,
       calibrationSetScope, calibrationRouteChanged, calibrationPrepare,
