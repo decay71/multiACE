@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 """Preserve user values from an existing ace.cfg when refreshing to a new
 ace.cfg.default shipped by a firmware update.
 
@@ -26,17 +26,17 @@ from __future__ import annotations
 import re
 import sys
 
-
-
-
+# [ace] / [ace N] scalars are merged in place; [ace_bg_swap] (background
+# swapping opt-in, shipped COMMENTED in the default) is user-activated - the
+# append path re-emits it after the refresh, so uncommenting survives updates.
 SECTION_RE = re.compile(r'^\[\s*(ace(?:\s+\d+)?|ace_bg_swap|ace_tipform)\s*\]\s*$')
-
-
-
-
+# Sections whose keys are FREE-FORM (user-named material tables): every
+# user key survives a refresh, even ones the new default never heard of
+# (the normal merge only carries keys present - live or commented - in
+# the new default; a tip-form table would be silently dropped).
 PRESERVE_ALL_KEYS_SECTIONS = ('ace_tipform',)
-
-
+# '-' in the key body: DB material names are hyphenated (petg-cf, pla-cf)
+# and [ace_tipform] keys are spelled exactly like the lowercased material.
 KEY_RE = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_\-]*)\s*:\s*(.*)$')
 COMMENTED_KEY_RE = re.compile(r'^#\s*([a-zA-Z_][a-zA-Z0-9_\-]*)\s*:\s*(.*)$')
 
@@ -73,6 +73,7 @@ def parse_user_values(path: str) -> dict[str, dict[str, str]]:
                 key, val = m.group(1), m.group(2).strip()
                 out[current][key] = val
     return out
+
 
 def _flush_preserved(current, user_values, written, out_lines, notes):
     """Emit user keys of a PRESERVE_ALL_KEYS_SECTIONS section that the new

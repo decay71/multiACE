@@ -1,5 +1,12 @@
 #!/bin/bash
 set -e
+if [ "${MULTIACE_MANAGED:-0}" = "1" ] || \
+   [ "${MULTIACE_MANAGED:-}" = "true" ] || \
+   [ -e "${MULTIACE_MANAGED_MARKER:-${MULTIACE_CONFIG_DIR:-/home/lava/printer_data/config}/extended/multiace/.multiace-managed}" ]; then
+    echo "multiACE mode switching is managed by the platform; refusing to copy Klipper files" >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="/home/lava"
 EXTRAS_DIR="${HOME_DIR}/klipper/klippy/extras"

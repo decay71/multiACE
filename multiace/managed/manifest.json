@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "package": "multiace",
+  "version_file": "VERSION",
+  "release": {
+    "asset_prefix": "multiace-managed-",
+    "archive_suffix": ".tar.gz",
+    "checksum_suffix": ".sha256"
+  },
+  "managed_config": {
+    "path": "config/extended/ace.cfg",
+    "remove_sections": [
+      "save_variables",
+      "gcode_macro ACEH__Update_Check",
+      "gcode_macro ACEH__Update_Apply"
+    ]
+  },
+  "payload": [
+    "klipper/extras/ace.py",
+    "klipper/extras/ace_protocol.py",
+    "klipper/extras/ace_protocol_v1.py",
+    "klipper/extras/ace_protocol_v2.py",
+    "klipper/extras/ace_bg_swap.py",
+    "klipper/extras/ace_tipform.py",
+    "klipper/extras/ace_rc522.py",
+    "klipper/extras/ace_gen1_tunnel.py",
+    "klipper/extras/filament_feed_ace.py",
+    "klipper/extras/filament_switch_sensor_ace.py",
+    "klipper/kinematics/extruder_ace.py",
+    "config/extended/ace.cfg",
+    "config/extended/multiace/ace_vars.cfg",
+    "tools/post_process_virtual_toolheads.py",
+    "i18n/",
+    "web/backend/",
+    "web/frontend/"
+  ],
+  "excluded_from_package": [
+    "install_multiace.sh",
+    "uninstall_multiace.sh",
+    "tools/multiace_update.sh",
+    "tools/merge_ace_cfg.py",
+    "deploy/",
+    "config/extended/multiace/ace_mode_switch.sh",
+    "web/deploy/"
+  ]
+}

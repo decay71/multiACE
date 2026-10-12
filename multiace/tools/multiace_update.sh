@@ -1,5 +1,27 @@
 #!/bin/sh
+# Usage: multiace_update.sh [check | assets | apply [--force] [--keep-web] [--install-web] | --help]
+#   check          compare the installed version with the latest release
+#   assets         print the exact standalone archive and checksum selected
+#   apply          download and install the latest release
+#     --force        reinstall even when already on latest / older release
+#     --keep-web     leave the web UI untouched
+#     --install-web  also (re)install the web UI
+# Environment:
+#   MULTIACE_UPDATE_REPO        GitHub repo for the release lookup (owner/name)
+#   MULTIACE_UPDATE_URL_BASE    static base URL with latest.txt / beta.txt instead of GitHub
+#   MULTIACE_UPDATE_PRERELEASE  1 = consider prereleases / beta.txt
+
 set -e
+
+if [ "${MULTIACE_MANAGED:-0}" = "1" ] || \
+   [ "${MULTIACE_MANAGED:-}" = "true" ] || \
+   [ "${MULTIACE_DISABLE_UPDATES:-0}" = "1" ] || \
+   [ "${MULTIACE_DISABLE_UPDATES:-}" = "true" ] || \
+   [ -e "${MULTIACE_MANAGED_MARKER:-${MULTIACE_CONFIG_DIR:-/home/lava/printer_data/config}/extended/multiace/.multiace-managed}" ]; then
+    echo "multiACE updates are managed by the platform; use its multiACE integration" >&2
+    exit 2
+fi
+
 REPO="${MULTIACE_UPDATE_REPO:-decay71/multiACE}"
 STATIC_BASE="${MULTIACE_UPDATE_URL_BASE:-}"
 USE_STATIC=0
@@ -18,37 +40,35 @@ else
 fi
 ACE_PY="/home/lava/klipper/klippy/extras/ace.py"
 INSTALL_BASE="/home/lava/multiace"
-restart_klipper() {
-    # 1. Moonraker API - preferred on Snapmaker / PAXX. Runs as lava,
-    #    exposes /printer/firmware_restart on 127.0.0.1:7125, works
-    #    whether the updater itself is root or lava.
-    for url in \
-        http://127.0.0.1:7125/printer/firmware_restart \
-        http://127.0.0.1:7125/printer/restart; do
-        if command -v curl >/dev/null 2>&1; then
-            if curl -sf -X POST "$url" >/dev/null 2>&1; then
-                return 0
+restart_klipper_service() {
+    # New Python code only loads with a fresh Klipper PROCESS: RESTART and
+    # FIRMWARE_RESTART keep the already imported extras in memory (HW
+    # 2026-10-10: banner stayed on the old build after firmware_restart).
+    # The init script needs root; Moonraker's provider is "none" on the U1,
+    # so /machine/services/restart is not available. Never during a print.
+    url="http://127.0.0.1:7125/printer/objects/query?print_stats"
+    if command -v curl >/dev/null 2>&1; then
+        st="$(curl -sf "$url" 2>/dev/null)"
+    else
+        st="$(wget -q -O - "$url" 2>/dev/null)"
+    fi
+    case "$st" in
+        *'"state": "printing"'*|*'"state": "paused"'*|*'"state":"printing"'*|*'"state":"paused"'*)
+            echo "WARN: a print is running - Klipper not restarted" >&2
+            return 1 ;;
+    esac
+    if [ "$(id -u)" -eq 0 ]; then
+        for init in /etc/init.d/S60klipper /etc/init.d/S55klipper \
+                    /etc/init.d/S58klipper /etc/init.d/klipper \
+                    /etc/init.d/S99klipper; do
+            if [ -x "$init" ]; then
+                "$init" restart >/dev/null 2>&1 && return 0
             fi
-        elif command -v wget >/dev/null 2>&1; then
-            if wget -q --method=POST -O /dev/null "$url" 2>/dev/null; then
-                return 0
-            fi
-        fi
-    done
-    # 2. Init scripts. Snapmaker U1 / PAXX uses S60klipper; the others
-    #    are listed for forks. Needs root.
-    for init in /etc/init.d/S60klipper /etc/init.d/S55klipper \
-                /etc/init.d/S58klipper /etc/init.d/klipper \
-                /etc/init.d/S99klipper; do
-        if [ -x "$init" ]; then
-            "$init" restart >/dev/null 2>&1 && return 0
-        fi
-    done
-    # 3. systemd, not on this hardware but harmless.
+        done
+    fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl restart klipper >/dev/null 2>&1 && return 0
     fi
-    echo "WARN: could not restart Klipper automatically - do it manually" >&2
     return 1
 }
 current_version() {
@@ -123,8 +143,18 @@ resolve_latest() {
         echo "ERROR: could not parse latest tag from $API" >&2
         return 1
     fi
-    TARBALL_URL="$(echo "$JSON" | json_asset_urls | grep -E 'multiace-.*\.tar\.gz$' | head -1)"
-    SHA_URL="$(echo "$JSON" | json_asset_urls | grep -E 'multiace-.*\.tar\.gz\.sha256$' | head -1)"
+    TARBALL_NAME="multiace-${LATEST}.tar.gz"
+    SHA_NAME="${TARBALL_NAME}.sha256"
+    TARBALL_URL="$(printf '%s\n' "$JSON" | json_asset_url "$TARBALL_NAME" || true)"
+    SHA_URL="$(printf '%s\n' "$JSON" | json_asset_url "$SHA_NAME" || true)"
+    if [ -z "$TARBALL_URL" ]; then
+        echo "ERROR: release $LATEST is missing the exact standalone asset $TARBALL_NAME" >&2
+        return 1
+    fi
+    if [ -z "$SHA_URL" ]; then
+        echo "ERROR: release $LATEST is missing the matching checksum $SHA_NAME" >&2
+        return 1
+    fi
     return 0
 }
 json_field() {
@@ -132,6 +162,15 @@ json_field() {
 }
 json_asset_urls() {
     sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+json_asset_url() {
+    expected="$1"
+    json_asset_urls | while IFS= read -r url; do
+        if [ "${url##*/}" = "$expected" ]; then
+            printf '%s\n' "$url"
+            break
+        fi
+    done
 }
 normalize_version() {
     echo "${1:-}" | sed -n 's/^v\?\([0-9][0-9.]*[a-z]\?\).*/\1/p'
@@ -162,6 +201,12 @@ cmd_check() {
         echo "STATUS: up_to_date current=$CUR newer_than latest=$LATEST"
     fi
     return 0
+}
+cmd_assets() {
+    resolve_latest || return 1
+    printf 'STATUS: release=%s\n' "$LATEST"
+    printf 'TARBALL_URL=%s\n' "$TARBALL_URL"
+    printf 'SHA_URL=%s\n' "$SHA_URL"
 }
 cmd_apply() {
     FORCE=0
@@ -200,8 +245,11 @@ cmd_apply() {
             SUDO_BIN="sudo"
         fi
         if [ -n "$SUDO_BIN" ]; then
+            REEXEC_FLAGS=""
+            if [ "$FORCE" -eq 1 ]; then REEXEC_FLAGS="$REEXEC_FLAGS --force"; fi
+            if [ "$KEEP_WEB" -eq 1 ]; then REEXEC_FLAGS="$REEXEC_FLAGS --keep-web"; fi
             echo "STATUS: re-execing as root via $SUDO_BIN (klipper extras dir not writable)"
-            exec "$SUDO_BIN" -n "$0" apply ${FORCE:+--force} ${KEEP_WEB:+--keep-web} $INSTALL_WEB_FLAG
+            exec "$SUDO_BIN" -n "$0" apply $REEXEC_FLAGS $INSTALL_WEB_FLAG
         else
             echo "ERROR: klipper extras dir ($EXTRAS_DIR) not writable as $(id -un) and sudo not found - re-run install_multiace.sh as root to fix ownership" >&2
             return 1
@@ -222,7 +270,11 @@ cmd_apply() {
         fi
     fi
     if [ -z "$TARBALL_URL" ]; then
-        echo "ERROR: release $LATEST has no multiace-*.tar.gz asset" >&2
+        echo "ERROR: release $LATEST has no exact standalone archive asset" >&2
+        return 1
+    fi
+    if [ -z "$SHA_URL" ]; then
+        echo "ERROR: release $LATEST has no matching SHA-256 checksum asset" >&2
         return 1
     fi
     echo "STATUS: downloading tarball=$TARBALL_URL"
@@ -233,21 +285,18 @@ cmd_apply() {
         echo "ERROR: tarball download failed from $TARBALL_URL" >&2
         return 1
     }
-    if [ -n "$SHA_URL" ]; then
-        echo "STATUS: verifying sha256"
-        fetch_url "$SHA_URL" > "$TARBALL.sha256" || {
-            echo "WARN: sha256 download failed - skipping verification" >&2
-        }
-        EXPECTED="$(awk '{print $1}' "$TARBALL.sha256" | head -1)"
-        ACTUAL="$(sha256sum "$TARBALL" | awk '{print $1}')"
-        if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "ERROR: sha256 mismatch - expected $EXPECTED got $ACTUAL" >&2
-            return 1
-        fi
-        echo "STATUS: sha256_ok"
-    else
-        echo "STATUS: sha256_skipped (no .sha256 asset on release - trust GitHub TLS)"
+    echo "STATUS: verifying sha256"
+    if ! fetch_url "$SHA_URL" > "$TARBALL.sha256"; then
+        echo "ERROR: checksum download failed from $SHA_URL" >&2
+        return 1
     fi
+    EXPECTED="$(awk '{print $1}' "$TARBALL.sha256" | head -1)"
+    ACTUAL="$(sha256sum "$TARBALL" | awk '{print $1}')"
+    if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+        echo "ERROR: sha256 mismatch - expected $EXPECTED got $ACTUAL" >&2
+        return 1
+    fi
+    echo "STATUS: sha256_ok"
     echo "STATUS: extracting"
     mkdir "$TMP/extracted"
     tar xzf "$TARBALL" -C "$TMP/extracted"
@@ -265,21 +314,38 @@ cmd_apply() {
     fi
     echo "STATUS: applying install_multiace.sh $INSTALL_WEB_FLAG"
     bash "$SRC/install_multiace.sh" $INSTALL_WEB_FLAG
-    echo "STATUS: please_reboot_printer"
-    echo "INFO: Update installed. Please restart the printer for the new code to take effect."
+    if restart_klipper_service; then
+        echo "STATUS: klipper_restarted"
+        echo "INFO: Update installed. Klipper restarted with the new code."
+    else
+        echo "STATUS: please_reboot_printer"
+        echo "INFO: Update installed. Please restart the printer for the new code to take effect."
+    fi
     echo "STATUS: done from=$CUR to=$LATEST"
 }
-case "${1:-check}" in
-    check)
-        shift; cmd_check "$@" ;;
-    apply)
-        shift; cmd_apply "$@" ;;
-    -h|--help|help)
-        sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# *//'
-        ;;
-    *)
-        echo "ERROR: unknown command: $1" >&2
-        echo "Run with --help for usage." >&2
-        exit 2
-        ;;
-esac
+# The apply path replaces THIS file (install_multiace.sh ships a new copy)
+# while it is still running. bash reads a script as it executes it, so
+# anything left to read after that point comes from the NEW file at the
+# old byte offset (HW 2026-10-10: "shift count out of range", "syntax
+# error near ';;'" after a successful 1.25b -> 1.26b update). Everything is
+# therefore parsed into one function before it runs, and the last line is
+# a single brace group, so nothing is read from disk after the dispatch.
+main() {
+    case "${1:-check}" in
+        check)
+            shift; cmd_check "$@" ;;
+        assets)
+            shift; cmd_assets "$@" ;;
+        apply)
+            shift; cmd_apply "$@" ;;
+        -h|--help|help)
+            sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^#//; s/^ //'
+            ;;
+        *)
+            echo "ERROR: unknown command: $1" >&2
+            echo "Run with --help for usage." >&2
+            return 2
+            ;;
+    esac
+}
+{ main "$@"; exit $?; }

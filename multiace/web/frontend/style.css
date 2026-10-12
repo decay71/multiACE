@@ -110,6 +110,12 @@ nav button.active { background: var(--accent); color: var(--accent-fg); border-c
 }
 .lang-select:hover { border-color: var(--accent); }
 .conn { font-size: .8rem; color: var(--muted); margin-left: .8rem; }
+.screen-btn {
+  margin-left: .8rem; background: transparent; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: .3rem .6rem; font-size: .85rem; cursor: pointer; white-space: nowrap;
+}
+.screen-btn:hover, .screen-btn.active { border-color: var(--accent); color: var(--accent); }
 .conn.ok { color: var(--ok); }
 .conn.warn { color: var(--warn); }
 .conn.err { color: var(--error); }
@@ -131,12 +137,11 @@ h3 { margin: 1.2rem 0 .5rem 0; color: var(--muted); font-size: .85rem; font-weig
   padding: .7rem 1rem; font-size: .95rem; font-weight: 700; text-align: center;
   /* Sticky: the config form is long, and a notice that only exists at the
      top of the DOCUMENT is invisible exactly when it is earned - at the
-     save button far below (Dirk 2026-08-15). */
+     save button far below. */
   position: sticky; top: 0; z-index: 50;
 }
 /* The same warning AT the save button - FILLED, not a tinted outline: the
-   tinted version still read as decoration next to the grey log block
-   (Dirk 2026-08-15 "bitte auffaelliger"). The short pulse catches the eye
+   tinted version still read as decoration next to the grey log block. The short pulse catches the eye
    once when it appears and then stops - it must not flicker forever while
    the user works on. */
 .config-restart-hint {
@@ -188,6 +193,7 @@ h3 { margin: 1.2rem 0 .5rem 0; color: var(--muted); font-size: .85rem; font-weig
 .pill.state-paused   strong { color: var(--warn); }
 .pill.state-error    strong { color: var(--error); }
 .ace-card h2 .ace-proto { color: var(--muted); font-size: .75rem; font-weight: 500; margin-left: .2rem; }
+.ace-card h2 .ace-cfw { color: var(--muted); font-size: .65rem; font-weight: 600; margin-left: .3rem; padding: 0 .3rem; border: 1px solid var(--muted); border-radius: .3rem; letter-spacing: .03em; vertical-align: middle; cursor: help; }
 .ace-card h2 .ace-state-text { color: var(--muted); font-size: .75rem; }
 .pill.action-group { padding: .25rem .35rem; }
 .pill button {
@@ -235,15 +241,14 @@ h3 { margin: 1.2rem 0 .5rem 0; color: var(--muted); font-size: .85rem; font-weig
 /* Track cap 420px, not 1fr: with FEWER than four visible cards (head mode
    shows only the wired ACEs) an uncapped auto-fit track balloons to half
    or a third of the row, and the slot tiles inside turn into wide
-   rectangles - multi and head mode looked like different designs (Dirk
-   2026-08-16: "bitte auf die bessere Variante angleichen" = the compact
-   multi look). At four cards the cap changes nothing below ~1750px
+   rectangles - multi and head mode would look like different designs.
+   At four cards the cap changes nothing below ~1750px
    viewport; both modes now render identical cards at every count. */
 .ace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 420px)); gap: 1rem; }
 /* Solo ACE (head/single view): span the full grid row and use a fixed width
    (not max-width) so the card is the same size whether left- or right-aligned
    - justify-self:end would otherwise shrink it to content width on the right.
-   Deliberately WIDER than the capped tracks (S32, Dirk-decided 500px). */
+   Deliberately WIDER than the capped tracks (500px). */
 .ace-grid > .ace-card:only-child { grid-column: 1 / -1; width: min(500px, 100%); }
 /* head mode, all ACE heads on the right: right-align the card so it starts from
    the right and lines up with the right toolheads. Keep the normal card size
@@ -257,6 +262,9 @@ h3 { margin: 1.2rem 0 .5rem 0; color: var(--muted); font-size: .85rem; font-weig
 header h1 .hl { color: var(--accent); }
 .ace-card.clickable { cursor: pointer; }
 .ace-card.clickable:hover { border-color: var(--accent); }
+/* Not connected: the slots show the last known state, not the live one. */
+.ace-card.offline > :not(h2) { opacity: .4; pointer-events: none; }
+.ace-offline-text { color: var(--error); font-weight: 600; font-size: .8rem; text-transform: uppercase; }
 .ace-card h2 { margin: 0 0 .6rem 0; font-size: 1.05rem; font-weight: 600;
                display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .6rem; }
 .ace-card h2 .ace-name { display: inline-flex; align-items: center; gap: .4rem;
@@ -264,7 +272,7 @@ header h1 .hl { color: var(--accent); }
 .ace-card h2 small { color: var(--accent); font-weight: 600; font-size: .7rem; text-transform: uppercase; }
 /* The middle block (temp / rH / state) must never wrap - the header is a
    three-column grid and the left column grew with the firmware version,
-   which pushed "%rH" onto a second line (Dirk 2026-08-09). nowrap here
+   which pushed "%rH" onto a second line. nowrap here
    plus min-width:0 on the name lets the LEFT side yield instead. */
 .ace-card h2 .ace-status { color: var(--muted); font-weight: 400; font-size: .8rem;
                             text-align: center; justify-self: center;
@@ -334,6 +342,7 @@ header h1 .hl { color: var(--accent); }
   text-transform: none; letter-spacing: 0; font-weight: 500;
 }
 .th-section-head .unload-all-btn:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+.th-section-actions { display: flex; align-items: center; }
 .th-section-head .cancel-unload-btn {
   background: var(--danger); color: #fff; border: 1px solid var(--danger);
   padding: .35rem .7rem; border-radius: 4px; cursor: pointer; font-size: .85rem;
@@ -358,8 +367,7 @@ header h1 .hl { color: var(--accent); }
 .slot-load-btn.reload:hover:not(:disabled) { background: #d4880f; border-color: #d4880f; }
 @keyframes reload-pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
 button.slot {
-  /* FIXED height, deliberately NOT aspect-ratio (was 1/1.5 until
-     2026-08-09). The ratio derived the height from the width, so the tile
+  /* FIXED height, deliberately NOT aspect-ratio. The ratio derived the height from the width, so the tile
      changed size with the viewport - and worse, a ratio is only a
      suggestion: as soon as the content did not fit, the tile stretched
      past it. The spool WEIGHT line is what tipped it (measured in
@@ -411,6 +419,13 @@ button.slot em.muted { color: rgba(255,255,255,.82); font-size: .7rem; opacity: 
    smaller, lighter muted subtype) and dimmed via the inherited state-empty
    colour so it reads like the slot number on empty tiles. */
 button.slot em.empty-label { font-weight: 500; opacity: .9; }
+button.slot em.slot-fmt { font-size: .55rem; opacity: .75; margin-top: .15rem; text-transform: uppercase;
+  letter-spacing: .05em; }
+.picker-fmt { font-size: .7rem; margin: 0 0 .1rem; letter-spacing: .04em; font-family: monospace; }
+button.slot em.slot-uid { font-family: monospace; font-size: .6rem; letter-spacing: .02em;
+  word-break: break-all; opacity: .9; }
+.panel-card-mat.slot-uid { font-family: monospace; font-weight: 500; font-size: .7rem;
+  word-break: break-all; }
 /* Provenance badge (RFID/Set/Job): anchor at the tile bottom instead of
    crowding the filament lines; margin-left is for inline use elsewhere. */
 button.slot em.src-badge { margin-top: auto; margin-left: 0; }
@@ -453,8 +468,7 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .toolhead-card.manual .meta .muted { color: #6aa6c8; }
 .toolhead-card.feeder { border-color: #2f6f5f; }
 .toolhead-card.feeder .meta .muted { color: #5fae9a; }
-/* No empty-dim for feeder cards (was opacity .5; Dirk 2026-08-09
-   "Feederkoepfe brauchen eigentlich nicht gedimmt zu werden"): the
+/* No empty-dim for feeder cards: the
    identity tile is the card's main content now, and parent opacity is
    multiplicative - a child cannot undim itself, so the tile's filament
    colour washed out exactly where it matters. The .feeder-empty class
@@ -477,13 +491,11 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .th-manual input { cursor: pointer; }
 .th-manual.disabled { opacity: .4; cursor: not-allowed; }
 .th-manual.disabled input { cursor: not-allowed; }
-/* Feeder head identity TILE (replaces the old 18px title dot, Dirk mockup
-   2026-08-09): a slot-style square - material inside, spool weight, SPOOL
+/* Feeder head identity TILE: a slot-style square - material inside, spool weight, SPOOL
    badge, filament colour as the surface. Same visual language as
    button.slot so it reads as "click me to change", which the dot never
    did. */
-/* The tile is SMALL on purpose - it fits inside the title+meta zone
-   (Dirk 2026-08-09: "lieber das Picker-Feld etwas kleiner"). The card
+/* The tile is SMALL on purpose - it fits inside the title+meta zone. The card
    stays the SAME flex column as every other toolhead card, so the
    margin-top:auto bottom-pinning above keeps working and feeder cards
    line up flush with ACE cards - the grid experiment broke exactly
@@ -629,7 +641,11 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .per-ace-card h4 { margin: 0 0 .55rem 0; color: var(--accent); font-size: .9rem;
                    text-transform: uppercase; letter-spacing: .04em; }
 .per-ace-row { margin-bottom: .35rem; font-size: .85rem; color: var(--muted); }
-.per-ace-row label { display: inline-flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.per-ace-card { display: grid; grid-template-columns: minmax(0, max-content) 4.5rem 2.4rem;
+                column-gap: .4rem; align-content: start; }
+.per-ace-card > * { grid-column: 1 / -1; }
+.per-ace-row, .per-ace-row label { display: grid; grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 4.5rem 2.4rem; grid-template-columns: subgrid; align-items: center; }
 .per-ace-row input[type=number] {
   width: 4.5rem; padding: .25rem .45rem;
   background: #111; color: var(--fg);
@@ -720,6 +736,31 @@ canvas { background: #000; width: 100%; max-width: 1024px; height: auto;
   font-size: .8rem; max-height: 38vh; overflow-y: auto;
 }
 .notif-strip.shifted { bottom: 64px; }
+/* Running tag op bar (read/write/insert): fixed above the strip, one word
+   + an indeterminate slider. Busy comes from /api/state (1 s poll). */
+.tag-op-bar {
+  position: fixed; left: 1rem; right: 1rem; bottom: 8px; z-index: 56;
+  background: var(--card); border: 1px solid var(--ok); border-radius: 4px;
+  padding: .3rem .55rem; font-size: .8rem; color: var(--ok);
+  box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  display: flex; align-items: center; gap: .6rem;
+}
+.tag-op-track { flex: 1; height: 4px; background: rgba(102,255,102,.15);
+  border-radius: 2px; overflow: hidden; }
+.tag-op-fill { width: 30%; height: 100%; background: var(--ok);
+  border-radius: 2px; animation: tag-op-slide 1.2s ease-in-out infinite; }
+/* Same bar inside the picker: flows with the dialog instead of fixed. */
+.tag-op-bar.inline {
+  position: static; left: auto; right: auto; bottom: auto;
+  margin: .4rem 0; box-shadow: none;
+}
+.tag-op-bar .tag-op-msg { flex: 1; word-break: break-word; }
+.tag-op-bar.fail { border-color: var(--error); color: var(--error); }
+.tag-op-bar.fail .notif-dismiss { color: var(--error); }
+.tag-op-bar.ok .notif-dismiss { color: var(--ok); }
+@keyframes tag-op-slide {
+  0% { transform: translateX(-100%); } 100% { transform: translateX(340%); }
+}
 .notif-head {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: .25rem; color: var(--error);
@@ -749,6 +790,12 @@ canvas { background: #000; width: 100%; max-width: 1024px; height: auto;
   background: var(--warn-bg); color: var(--warn);
 }
 .notif-item.notif-warn .notif-dismiss { color: var(--warn); }
+/* info-level (ace.log_notice): progress/success of a user-started op
+   (tag write). Green; never counts as an error for the strip frame. */
+.notif-item.notif-info {
+  background: rgba(102, 255, 102, .12); color: var(--ok);
+}
+.notif-item.notif-info .notif-dismiss { color: var(--ok); }
 /* Strip frame follows the worst level present: only warns -> amber frame. */
 .notif-strip.warn-only { border-color: var(--warn); }
 .notif-strip.warn-only .notif-head { color: var(--warn); }
@@ -886,6 +933,9 @@ body { padding-bottom: 64px; }
                        flex-wrap: wrap; }
 .preflight-plan-head h4 { margin: 0; }
 .preflight-infeasible { color: var(--warn, #c4651e); font-weight: 500; }
+.preflight-copies .copies-input { width: 3.2rem; margin-left: .3rem; }
+.preflight-mapping tr.copy-row td { opacity: .85; }
+.preflight-mapping tr.copy-row.suggest td:first-child { font-style: italic; }
 .preflight-mapping { width: 100%; border-collapse: collapse; margin: .4rem 0;
                      font-size: .82rem; }
 .preflight-mapping th { text-align: left; padding: .2rem .4rem;
@@ -939,6 +989,10 @@ body { padding-bottom: 64px; }
    gets the error colour rather than the warn one. */
 .dialog-input input.invalid { border-color: var(--error); }
 .dialog-input-err { font-size: .8rem; color: var(--error); }
+/* PA dialog rows: key + value + action inline (dialog-input is a column
+   by default). */
+.dialog-input.pa-row { flex-direction: row; align-items: center; gap: .5rem; }
+.dialog-input.pa-row label { font-family: monospace; }
 @media (max-width: 600px) {
   header { flex-wrap: wrap; }
   nav { order: 3; width: 100%; }
@@ -947,8 +1001,8 @@ body { padding-bottom: 64px; }
   .config-row { grid-template-columns: 1fr; }
 }
 
-/* Identity provenance badge (spec §4 / D3): where the shown filament
-   identity comes from — RFID tag, user override, or derived from the
+/* Identity provenance badge: where the shown filament
+   identity comes from - RFID tag, user override, or derived from the
    print job. */
 .src-badge {
   display: inline-block;
@@ -961,15 +1015,16 @@ body { padding-bottom: 64px; }
   vertical-align: middle;
   text-transform: uppercase;
   letter-spacing: .02em;
-  /* Badge has its own fixed background — never inherit the slot tile's
+  /* Badge has its own fixed background - never inherit the slot tile's
      dark text outline. */
   text-shadow: none;
 }
 .src-rfid     { background: var(--accent); color: var(--accent-fg); }
 .src-override { background: #1f3a6b; color: #cfe0ff; }
+.src-uid      { background: #4a4a4a; color: #e0e0e0; }  /* chip known, nothing else */
 .src-derived  { background: var(--border); color: var(--muted); }
 .src-spool    { background: #1f5a3a; color: #ccf0dd; }
-/* Spoolman-backed spool: SM in the Spoolman orange, black text (Dirk) -
+/* Spoolman-backed spool: SM in the Spoolman orange, black text -
    tells the two spool worlds apart at a glance wherever the badge shows. */
 .src-spoolman { background: #f7941d; color: #151515; }
 /* Mode chip next to the spools-tab heading (Spoolman / + SpoolLink). */
@@ -1020,7 +1075,7 @@ h2 .src-badge { vertical-align: middle; margin-left: .5rem; }
   color: var(--accent-fg); border-color: var(--accent); }
 .sm-adopt-bar button:disabled { opacity: .4; cursor: not-allowed; }
 /* Camera tile: the picker's Spoolman results must stay small enough for
-   a few rows to stack inside a ~190px iframe (Dirk 2026-08-09). */
+   a few rows to stack inside a ~190px iframe. */
 body.panel-embedded .sm-search input { padding: .25rem .4rem; font-size: .8rem; }
 body.panel-embedded .sm-results { max-height: 120px; }
 body.panel-embedded .sm-row { padding: .2rem .4rem; font-size: .72rem; gap: .35rem; }
@@ -1044,8 +1099,7 @@ body.panel-embedded .sm-right { font-size: .68rem; }
 .sm-row:disabled:hover { background: transparent; }
 .sm-dot { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto;
   background: #444; border: 1px solid #555; }
-/* One flat line per result (Dirk 2026-08-09: "kurz und hoch, 3 zeilig,
-   die koennten auch laenger werden") - name and vendor/material sit
+/* One flat line per result - name and vendor/material sit
    BESIDE each other instead of stacked, the right side keeps weight and
    SM-id on the same baseline. The name yields via ellipsis when tight,
    the meta may vanish entirely before the row is allowed to grow tall. */
@@ -1515,16 +1569,21 @@ body.panel-embedded .sm-right { font-size: .68rem; }
 .acefw-err { color: var(--error); }
 .acefw-force-row { display: inline-flex; align-items: center;
   gap: .45rem; }
-/* The version option carries the googleable .swu name in brackets, which
-   does not fit the shared 200px cap of .config-row controls - lift it for
-   THIS select only (and for the password, which is a long base64 string).
-   Same for the file button, whose label is the uploaded file name. */
-.acefw-card .config-row select.acefw-version,
-.acefw-card .config-row input.acefw-pw { max-width: 26rem; }
-.acefw-file-btn { max-width: 26rem; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-/* The BIG RED own-risk box inside the confirm dialog (Dirk 2026-08-09:
-   "grosser roter own risk disclaimer"). */
+/* The ACE and version options carry long labels (the version shows the
+   file name in brackets), too long for the shared 200px cap of .config-row
+   controls: lifted for this card, the password and the file button
+   (labelled with the uploaded file name) included. */
+.acefw-card .config-row select,
+.acefw-card .config-row input.acefw-pw { max-width: 40rem;
+  height: auto; min-height: 2.1rem; line-height: 1.3; }
+.acefw-file-btn { max-width: 40rem; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  padding: .4rem .6rem; min-height: 2.1rem; font-size: .9rem;
+  background: #111; color: var(--fg); border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer; text-align: left; }
+.acefw-file-btn:hover { border-color: var(--accent); }
+.acefw-card p { overflow-wrap: anywhere; }
+/* The BIG RED own-risk box inside the confirm dialog. */
 .acefw-danger { color: #ff5252; border: 2px solid #ff5252;
   border-radius: 6px; padding: .8rem .9rem; font-weight: 700;
   font-size: 1.05rem; line-height: 1.5; }
@@ -1654,7 +1713,7 @@ body.panel-embedded:has(.panel) { background: transparent; }
 }
 .panel-card-slot { font-weight: 700; }
 /* Identity-source marker in the card's top row - deliberately SMALL and
-   quiet (Dirk: "möglichst klein, nicht so auffällig"): the source colours
+   quiet: the source colours
    stay recognisable from the dashboard badges, but shrunk and dimmed so
    the glanceable facts (number, head, spool colour) keep the stage. Pushed
    left next to the number; the head label keeps the right edge. */
@@ -1856,7 +1915,7 @@ body:has(.panel) .overlay .dialog {
 .forca-group { margin: .6rem 0; }
 /* Each nozzle group renders its OWN table, so without a fixed layout every
    table sizes its columns to its own content and the headings jitter from
-   group to group (Dirk: "flatterig"). Fixed widths line them all up. */
+   group to group. Fixed widths line them all up. */
 .forca-group .preflight-mapping { table-layout: fixed; }
 .forca-group .preflight-mapping th:nth-child(1),
 .forca-group .preflight-mapping td:nth-child(1) { width: 34%; }
@@ -1871,7 +1930,8 @@ body:has(.panel) .overlay .dialog {
   border-bottom: 1px solid var(--border); padding-bottom: .2rem; }
 
 /* Save result right at the button - the config form is long enough that
-   the top reboot banner was off-screen after a save (Dirk 2026-08-09). */
+   the top reboot banner was off-screen after a save. */
 .config-log-inline { margin: .4rem 0 .8rem; padding: .5rem .6rem;
   background: var(--card); border: 1px solid var(--border);
   border-radius: 4px; white-space: pre-wrap; font-size: .8rem; }
+

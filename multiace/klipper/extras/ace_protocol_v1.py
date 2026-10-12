@@ -95,6 +95,15 @@ class AceProtocolV1(AceProtocol):
             if len(buffer) < total_len:
                 break
             payload = bytes(buffer[HEADER_LEN:HEADER_LEN + payload_len])
+            trailer = bytes(buffer[HEADER_LEN + payload_len:total_len])
+            crc_rx = struct.unpack('<H', trailer[:2])[0]
+            if crc_rx != calc_crc(payload) or trailer[2] != FRAME_END:
+                # Corrupt frame: skip this start marker and resync on the
+                # next one instead of parsing garbage.
+                logging.info('[multiACE] V1 frame dropped: crc rx=%04x calc=%04x end=%02x'
+                             % (crc_rx, calc_crc(payload), trailer[2]))
+                del buffer[:2]
+                continue
             del buffer[:total_len]
             try:
                 ret = json.loads(payload.decode('utf-8'))
@@ -115,6 +124,12 @@ class AceProtocolV1(AceProtocol):
                 'target_temp': 0,
                 'duration': 0,
                 'remain_time': 0,
+                # An ACE Pro has no rotisserie and no flag bits; the keys
+                # exist so a consumer never has to ask which protocol it
+                # is looking at.
+                'raw_status': 0,
+                'rotisserie': False,
+                'auto_roll_allowed': False,
             },
             'temp': 0,
             'enable_rfid': 1,

@@ -1,4 +1,4 @@
-/* multiACE in-browser preflight — Pyodide worker.
+/* multiACE in-browser preflight - Pyodide worker.
  *
  * Runs the UNMODIFIED Python post-processor + preflight_core in the browser
  * (CPython-WASM via Pyodide), in a Web Worker so the UI thread stays free
@@ -8,7 +8,7 @@
  * (material-strict matching, swap-aware/Belady layout, head-mode pinning,
  * ACE_SWAP_HEAD injection, the structural auto-load anchor) is a SECOND source
  * of truth that silently drifts from the Python the printer backend runs. By
- * loading the same .py here we keep ONE implementation — backend and browser
+ * loading the same .py here we keep ONE implementation - backend and browser
  * compute byte-identical results, no differ, no drift.
  *
  * Message contract (matches the frontend wiring):
@@ -17,7 +17,7 @@
  *   <- {type:"analyze", jobId, file, liveSlots, headCtx}
  *   -> {type:"analyze-done", jobId, report}             (+ {type:"progress"})
  *   <- {type:"rewrite", jobId, file, liveSlots, headCtx, mode, remapOverride,
- *                        headAssignment, headPlan}
+ *                        headAssignment, headPlan, headCopies}
  *   -> {type:"rewrite-done", jobId, text}               (+ {type:"progress"})
  *   <- {type:"clear", jobId}        ->  {type:"cleared", jobId}
  *
@@ -55,7 +55,7 @@ async function ensureInit(msg) {
       pyodide = await self.loadPyodide({indexURL});
       // Drop the two modules onto the FS and import them. preflight_core takes
       // the post-processor module as a parameter, so we only import both and
-      // hand pp into the core functions — no cross-import between the files.
+      // hand pp into the core functions - no cross-import between the files.
       pyodide.FS.mkdirTree("/multiace");
       pyodide.FS.writeFile(
         "/multiace/post_process_virtual_toolheads.py", msg.postprocessSrc);
@@ -125,6 +125,7 @@ async function doRewrite(jobId, msg) {
   py.globals.set("_remap", JSON.stringify(msg.remapOverride || null));
   py.globals.set("_hassign", JSON.stringify(msg.headAssignment || null));
   py.globals.set("_hplan", msg.headPlan || "loadout");
+  py.globals.set("_hcopies", JSON.stringify(msg.headCopies || null));
 
   // Bridge the streaming-stage progress out to the main thread. set_stage maps
   // a coarse (stage, percent); the fine per-file callbacks stay no-ops for now
@@ -139,6 +140,7 @@ _live_slots = json.loads(_live)
 _head_ctx   = json.loads(_hctx)
 _remap_ov   = json.loads(_remap)
 _hassign_ov = json.loads(_hassign)
+_hcopies_ov = json.loads(_hcopies)
 _colors, _types, _naces, _used, _plan, _meta = _core.parse_meta(
     _pp, open("/preflight/src.gcode", "r", encoding="utf-8", errors="replace"))
 _final = _core.rewrite_pipeline(
@@ -148,7 +150,7 @@ _final = _core.rewrite_pipeline(
     slicer_colors=_colors, slicer_types=_types, num_aces=_naces,
     live_slots=_live_slots, head_ctx=_head_ctx, mode=_mode,
     remap_override=_remap_ov, head_assignment=_hassign_ov, head_plan=_hplan,
-    meta=_meta,
+    meta=_meta, head_copies=_hcopies_ov,
     set_stage=lambda s, p: _on_stage(s, p))
 open(_final, "r", encoding="utf-8", errors="replace").read()
 `);

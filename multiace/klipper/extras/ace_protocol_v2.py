@@ -49,8 +49,38 @@ SLOT_STATES = {
     135: 'motor_error',
 }
 FILAMENT_STATES = {0: 'empty', 1: 'unknown', 2: 'identified', 3: 'identifying'}
+# Filament-state numbers outside FILAMENT_STATES that were already logged.
+_UNMAPPED_FILAMENT_STATES = set()
+
+
+def _filament_state_name(value):
+    """Name of a V2 filament (presence) state. An absent field is 0 =
+    'empty' (protobuf default). A number this table does not know (a newer
+    firmware) maps to 'unknown' = present, not identified: reading it as
+    'empty' would release the spool binding and start the insert handling
+    on a slot that may well hold filament, while 'unknown' at worst lets a
+    load try and fail with its own message."""
+    name = FILAMENT_STATES.get(value)
+    if name is not None:
+        return name
+    if value not in _UNMAPPED_FILAMENT_STATES:
+        _UNMAPPED_FILAMENT_STATES.add(value)
+        logging.info('[multiACE] V2: unknown filament state %r, treated as '
+                     'present (unknown)', value)
+    return 'unknown'
 DRY_STATES = {0: 'stop', 1: 'starting', 2: 'keeping',
               3: 'stopping', 4: 'ptc_error', 5: 'ntc_error'}
+# ACE2-Open V1.1.61O puts flag bits into the SAME byte as the dryer state
+# (Simon-CR): the stock states stay in the low nibble, bit 7
+# says the on-chip rotisserie is oscillating a spool right now, bit 6 that
+# auto-roll is enabled and the printer is not printing. That is only
+# backward compatible for a host that MASKS: mapping the whole byte turns
+# a running dryer ('keeping' = 2) into 66 or 194 and falls back to 'stop',
+# i.e. we would read a drying unit as idle. Stock firmware never sets the
+# high bits, so the mask is a no-op there.
+DRY_STATUS_STATE_MASK = 0x0F
+DRY_ROTISSERIE_ACTIVE_BIT = 0x80
+DRY_AUTO_ROLL_ALLOWED_BIT = 0x40
 
 def crc16_kermit(data):
     crc = 0xFFFF
@@ -158,11 +188,11 @@ FEED_MODE_ROLLBACK_ASSIST = 3
 class AceProtocolV2(AceProtocol):
     NAME = 'v2'
     DEFAULT_BAUD = 230400
-
-
-
-
-
+    # Opt-in extra (vid, pid) lowercase-hex pairs, set from ace.py at init
+    # from the [ace] v2_extra_usb_ids option. Lets a generic USB-RS485
+    # adapter (e.g. a CH340 1a86:7523) be used in place of the genuine
+    # Anycubic CH343 cable (1a86:55d3). Empty by default - the strict
+    # 55d3 match stays the default so unrelated CH340 devices are ignored.
     EXTRA_USB_IDS = ()
     SERIAL_KWARGS = {
         'timeout': 0.1,
@@ -180,7 +210,7 @@ class AceProtocolV2(AceProtocol):
             vendor, product = cls._read_usb_ids(real_dev)
             if vendor is None:
                 continue
-            if (vendor == V2_VENDOR_ID and product in V2_PRODUCT_IDS)\
+            if (vendor == V2_VENDOR_ID and product in V2_PRODUCT_IDS) \
                     or (vendor, product) in cls.EXTRA_USB_IDS:
                 ace_devices.append(full_path)
         return ace_devices
@@ -276,6 +306,9 @@ class AceProtocolV2(AceProtocol):
                 'target_temp': 0,
                 'duration': 0,
                 'remain_time': 0,
+                'raw_status': 0,
+                'rotisserie': False,
+                'auto_roll_allowed': False,
             },
             'temp': 0,
             'enable_rfid': 1,
@@ -333,7 +366,16 @@ class AceProtocolV2(AceProtocol):
         if method == 'drying':
             temp = int(params.get('temp', 50))
             duration = int(params.get('duration', 0))
-            payload = pb_uint32(1, temp) + pb_uint32(2, duration) + pb_bool(3, True)
+            # Field 3 is auto_roll. It used to be hardcoded True here, which
+            # meant every multiACE dry cycle ran a motion Anycubic ships
+            # DISABLED: the stock routine ticks a 5 mm reverse feed every
+            # ~4 min across all active slots and checks nothing - not
+            # whether a lane is threaded, parked or empty (Simon-CR, from
+            # the stock binary). Default is the factory
+            # state now; [ace] dry_auto_roll turns it back on.
+            auto_roll = bool(params.get('auto_roll', False))
+            payload = (pb_uint32(1, temp) + pb_uint32(2, duration)
+                       + pb_bool(3, auto_roll))
             return Cmd.DRYING, payload
         if method == 'drying_stop':
             return Cmd.DRYING, pb_uint32(1, 0) + pb_uint32(2, 0)
@@ -390,7 +432,7 @@ class AceProtocolV2(AceProtocol):
         if method == 'drying_raw':
             temp = int(params.get('temp', 50))
             duration = int(params.get('duration', 120))
-            auto_roll = bool(params.get('auto_roll', True))
+            auto_roll = bool(params.get('auto_roll', False))
             return Cmd.DRYING, (pb_uint32(1, temp) + pb_uint32(2, duration)
                                 + pb_bool(3, auto_roll))
         if method == 'assign_device_id':
@@ -466,19 +508,25 @@ class AceProtocolV2(AceProtocol):
                 'brand': '',
                 'color': color,
                 'rfid': 2 if ftype else 0,
+                # Field 12 is the real result code (the response is a
+                # FilamentInfoResponse, NOT the GenericResponse the OEM
+                # driver declares - Simon-CR RE). 0 = a tag answered,
+                # 3 = nothing in the field: the rc522 park routine's
+                # probe verdict. Absent field -> 0 keeps old semantics.
+                'code': _fval(fields, 12, 0),
             }
-
-
-
-
-
-
-
-
-
-
-
-
+            # Fields 2 and 6-9 carry the tag's own spool data, which we
+            # dropped until now. Probed on a real Anycubic PLA tag:
+            # 8 = 175 and 9 = 330, which can only be the
+            # DIAMETER (1.75 mm x100) and the LENGTH in metres - 1 kg of
+            # 1.75 mm PLA is 335 m. Both are named fields of stock's own
+            # FILAMENT_INFO_STRUCT, which also lists DRYING_TEMP/TIME,
+            # HOTEND_MIN/MAX_TEMP, BED_TEMP and the layer temps - so 6
+            # ({190,230,50,200}) and 7 ({55,65}) are very probably the
+            # temperature and drying blocks. That mapping is NOT proven,
+            # so those two stay under neutral keys with the device order
+            # preserved: collect over real spools first, name them once
+            # confirmed. Nothing consumes them yet.
             _tag = {}
             if 8 in fields:
                 _tag['diameter_mm'] = round(_fval(fields, 8, 0) / 100.0, 2)
@@ -493,9 +541,9 @@ class AceProtocolV2(AceProtocol):
                 _tag['field2'] = _fval(fields, 2, 0)
             if _tag:
                 ret['result']['tag'] = _tag
-
-
-            _extra = _unparsed_fields(fields, (1, 2, 3, 4, 5, 6, 7, 8, 9))
+            # Whatever is still unknown keeps surfacing for ACE_RAW_PROBE.
+            # Key omitted when empty, so a normal response is unchanged.
+            _extra = _unparsed_fields(fields, (1, 2, 3, 4, 5, 6, 7, 8, 9, 12))
             if _extra:
                 ret['result']['_unparsed'] = _extra
         elif cmd == Cmd.GET_FEED_INFO:
@@ -518,12 +566,12 @@ class AceProtocolV2(AceProtocol):
                 str(k): _fval(fields, k, 0) for k in fields
             }}
         elif cmd == Cmd.RFID_TEST:
-
-
-
-
-
-
+            # No known layout. The command is in the enum and A_RFID_TEST
+            # already sends it, but the response was only ever read for an
+            # error code by the generic branch below - nobody has seen what
+            # it actually returns, which makes it the prime candidate for a
+            # card UID. Same error handling as the generic branch, plus a
+            # full dump.
             code = _fval(fields, 1, 0)
             if isinstance(code, int) and code != 0:
                 ret['code'] = code
@@ -543,7 +591,7 @@ class AceProtocolV2(AceProtocol):
                 continue
             sub = pb_decode(slot_payload)
             slot_state = SLOT_STATES.get(_fval(sub, 1, 0), 'unknown')
-            filament_state = FILAMENT_STATES.get(_fval(sub, 2, 0), 'empty')
+            filament_state = _filament_state_name(_fval(sub, 2, 0))
 
             slots.append({
                 'index': len(slots),
@@ -568,11 +616,15 @@ class AceProtocolV2(AceProtocol):
             if wtype != 2:
                 continue
             dsub = pb_decode(dry_payload)
+            _raw = _fval(dsub, 1, 0)
             dry_status = {
-                'status': DRY_STATES.get(_fval(dsub, 1, 0), 'stop'),
+                'status': DRY_STATES.get(_raw & DRY_STATUS_STATE_MASK, 'stop'),
                 'target_temp': _fval(dsub, 2, 0),
                 'duration': _fval(dsub, 3, 0),
                 'remain_time': _fval(dsub, 4, 0),
+                'raw_status': _raw,
+                'rotisserie': bool(_raw & DRY_ROTISSERIE_ACTIVE_BIT),
+                'auto_roll_allowed': bool(_raw & DRY_AUTO_ROLL_ALLOWED_BIT),
             }
             break
 

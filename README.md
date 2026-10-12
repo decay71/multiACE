@@ -6,36 +6,74 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 [![Guides & Downloads](visitbutton.png)](https://postapocalyptic-diy.com/multiace/)
 
-(manuals will be updated soon)
+## What's new in multiACE 1.27b 
+
+This is a prerelease: new features to try out before the next release. Please report anything odd.
+
+**A big thank you to our new collaborators.** Three developers joined the project and brought their own features with them:
+
+- **Simon-CR** - the ACE2-Open community firmware for the ACE 2 Pro, which lets multiACE read and write spool tags. multiACE now also runs on other Klipper printers, not only the Snapmaker U1 (his Voron is the first one), and a watchdog notices when an ACE silently stops answering and reconnects it.
+- **Tareku99** - multiACE as a ready-made package for the paxx Extended Firmware, so the firmware installs and updates it for you. A big thank you to [paxx12](https://github.com/paxx12) for the plan to ship this multiACE integration with the rolling releases of the Extended Firmware.
+- **Godless50** - the ACE Pro gets its community firmware: flash it straight from the web UI, and read the tags of your non Anycubic spools on an ACE Pro too. Auto-dry can also follow an external humidity sensor.
+
+**New look, dark and light.** Redesigned web UI with Dark, Light and the previous Classic style, switchable in the Config tab. Toolhead cards show the  feeding spool's fill level; spools shrink as they empty.
+
+**Read spool tags on the ACE Pro.** With the community firmware, press *Read* in the filament picker and the spool's tag is identified and matched to your spool list. (Needs the community firmware on the ACE Pro.)
+
+**Online updates from GitHub.** The Update button now fetches releases directly from GitHub.
+
+**More robust connection.** If an ACE drops off, multiACE keeps trying to reconnect it in the background; a disconnected unit is shown as offline instead of a confusing state, and you get no pause when nothing is printing.
+
+**TRSYNC back to stock.** multiACE no longer patches Klipper's homing timeout. If you see 0003-0528 "Timer too close" during homing or bed mesh, set `trsync_timeout: 0.250` in the `[ace]` section of ace.cfg and restart Klipper; the value only ever raises the window, never lowers it.
+
+**Also:** clearer messages when a spool has no tag code, small web UI and log fixes.
 
 
-## What's new in multiACE 0.99.8b "Resupply Run" (Update, mod and firmware.bin available)
-- Quad Replenish - ACE Refill - When a spool runs out mid-print, multiACE loads a matching spool from another ace or slot and continues.
-- Spool management - A list of your spools with material, colour, vendor and remaining weight, linked to the slots. Consumption is booked while printing, so the remaining weight stays current on its own. Spools can be assigned by hand or automatically from an RFID tag. Synced with an external stock system. (Spoolman or SpoolLink (paxx) the inventory degrades to a cache.
-ACE units do not read or expose the spools uid so it uses the sku field. (Spoolman: sku = id or cards_uid)
-- Humidity-controlled drying - An ACE 2 regulates its dryer by its own humidity reading instead of a fixed timer, and takes any connected ACE Pro along, which cannot measure humidity itself.
-- Per-pair purge - The flush volume for a colour change is now taken from the slicer's own flush matrix instead of one fixed length for every pair. Similar colours purge less, hard transitions purge more.
-- Air Print Detection - Watches the flow sensor during loading and while printing and catches cases where filament is present but nothing actually comes out of the nozzle.
-- Updated Compact panel view - Renders a reduced view that can be embedded in Fluidd as a cam, so the ACE status stays visible next to the print.
-- Firmware flash: ACE 2 firmware updates from the web UI. Duration now 10sec instead of 30minutes.
+## What's new in multiACE 1.10b
 
-(The flash engine is based on hakimio's OTA updater and is used with his permission. Thanks to hakimio for doing the reverse engineering that made this possible in the first place, and for letting multiACE build on it.
+**Multifilament optimisation.** One colour may sit on several heads: put a second spool
+of the same colour on a free slot and the preflight spreads that colour over both heads,
+so fewer swaps are needed (a 6 colour print with 28 swaps came down to 7). Works in head
+mode and in multi mode, with a max-copies setting and a strict colour switch; the plans
+re-plan live in the browser. Manual heads take part in the multi preflight as pinned heads.
+(Idea: Dragg30 /snapmaker forum)
 
-  
-**Nozzle wiper updated to version 2 — new, larger purge bin.**
+**Calibrate button in the PA dialog**
 
-**https://makerworld.com/en/models/3084827** Wiper
+**Manual heads.** in multi mode now appear in preflight
+
+**RFID tags:** **read** the UID of any tag, read and **write** for open tags (ACE2-Open units). Not every tag's content can be read, but the card UID can be read from every tag (Bambu, Snapmaker, Anycubic, OpenSpool, blank), so any spool can be identified. OpenSpool and blank NTAG tags are read automatically when the spool is inserted; the picker gets Read tag and Write to tag buttons (OpenSpool or Anycubic format, optionally with the card UID as SKU so every ACE (V1, V2 Stock) recognises the spool).
+**Tag reading hardened.** 
+
+**Spool inserted mid-print** The unit's pull-in is stopped right after the bite so it cannot push a second strand into the combiner while the neighbour lane prints; the tag is read at the end of the print if possible.
+
+**ACE2-Open firmware - flash from the web UI.** Flash an ACE 2 Pro straight from the
+Config tab: stock 1.1.31, or patch automatically to **ACE2-Open** build. A big thank you to
+**[Simon-CR](https://github.com/Simon-CR/ace2-pro-firmware-research)** - his ACE 2 Pro
+firmware research and the ACE2-Open UID passthrough are what make everything below
+possible. (Flashing is at your own risk - never during a print, never unplug.)
+
+**ACE2-Open flash target 1.1.60O.** The web flash offers 1.1.60O (the newest build that
+is verified to run); 
+
+**Spools bound by card UID.** A spool can be identified by its chip's serial, not only by
+the tag's SKU - several codes per spool, learned on hand assignment, shared with Spoolman
+and SpoolLink.
+
+**Pressure advance per spool.** The stock flow calibration is stored on the spool and
+applied automatically whenever that spool is loaded; synced with Spoolman using the same
+field as the [pechex/SpoolLink mod](https://github.com/paxx12-snapmaker-u1/SnapmakerU1-Extended-Firmware/pull/649).
+The preflight can run the calibration per head at print start (#115).
+
+**API documentation** for slicers, hosts and scripts now ships with multiACE - see
+[API documentation](#api-documentation-for-slicers-hosts-and-scripts).
+
+**Also:** stock firmware 2.0.0 and 1.6.0 support, a load fix against crushed tips on reloads,
+auto-dry soft start, preflight and web UI fixes, installer fixes.
+
+**Nozzle wiper version 2 - new, larger purge bin** (unchanged from 0.99.8b):
+**https://makerworld.com/en/models/3084827** Wiper ·
 **https://makerworld.com/en/models/3040955** Bin & Bin XL
-
-- Custom Temp and Tip Forming (see https://postapocalyptic-diy.com/temp-and-tip-tuning/)
-  Easily exchangeable through strings, Step Editor included in config, Please post you results in the sticky issue
-- **Parked position background swaps** (per Head mode only, it is not possible in multi mode with Ace Hardware)
-  (Even though this mode is now part of the release, it is still considered **experimental**. Even with the new hardware, contamination    from the park position can end up in the print. Purge may build up on the wipers.)
-  I'll try to work that out. Everyone is invited to share their ideas in the meantime.
-- Parallel preload
-- Prepared for the 1.5.2 Firmware
-- Many internal improvements
-
 
 
 ## multiACE 
@@ -52,6 +90,32 @@ ACE units do not read or expose the spools uid so it uses the sku field. (Spoolm
 
 multiACE supports **multiple ACE Pro / ACE Pro 2 units** on a single Snapmaker U1 printer. Switch between ACE units to use different filament sets - for example, PLA on ACE 0 and PETG on ACE 1 - without physically swapping spools.
 
+
+## Features
+
+- **In-Print Color Swaps** - Layer-boundary and mid-layer color swaps during an active print
+- **Parked position background swaps** (per Head mode only, it is not possible in multi mode with Ace Hardware)
+  (Even though this mode is now part of the release, it is still considered **experimental**. Even with the new hardware,   contamination    from the park position can end up in the print. Purge may build up on the wipers.)
+  I'll try to work that out. Everyone is invited to share their ideas in the meantime.
+- **Custom Temp and Tip Forming** (see https://postapocalyptic-diy.com/temp-and-tip-tuning/)
+  Easily exchangeable through strings, Step Editor included in config, Please post you results in the sticky issue
+ - **Quad Replenish - ACE Refill** - When a spool runs out mid-print, multiACE loads a matching spool from another ace or slot and   continues.
+- **Spool management** - A list of your spools with material, colour, vendor and remaining weight, linked to the slots. Consumption is booked while printing, so the remaining weight stays current on its own. Spools can be assigned by hand or automatically from an RFID tag. Synced with an external stock system. (Spoolman or SpoolLink (paxx) the inventory degrades to a cache.
+ACE units do not read or expose the spools uid so it uses the sku field. (Spoolman: sku = id or cards_uid)
+- **Humidity-controlled drying** - An ACE 2 regulates its dryer by its own humidity reading instead of a fixed timer, and takes any connected ACE Pro along, which cannot measure humidity itself.
+- **Per-pair purge** - The flush volume for a colour change is now taken from the slicer's own flush matrix instead of one fixed length for every pair. Similar colours purge less, hard transitions purge more.
+- **Air Print Detection** - Watches the flow sensor during loading and while printing and catches cases where filament is present but nothing actually comes out of the nozzle.
+- **Compact panel view** - Renders a reduced view that can be embedded in Fluidd as a cam, so the ACE status stays visible next to the print.
+- **Firmware flash**: ACE 2 firmware updates from the web UI. Duration now 10sec instead of 30minutes.
+
+(The flash engine is based on hakimio's OTA updater and is used with his permission. Thanks to hakimio for doing the reverse engineering that made this possible in the first place, and for letting multiACE build on it.)
+
+- **Hardened Load / Unload** - Retract-recovery between extrude retries, pause-state snapshot before failure, safer resume path (pre-heat before travel, Z-hop before XY)
+- **Online Updates ** 
+- **Auto-Load** - Load all filaments autmatically, Parallel preload in bg mode
+- **RFID Handling** - Automatic RFID detection and display across ACE switches
+- **PAXX Firmware Compatible / Installer** - Works with PAXX firmware which provides display mirroring, allowing full load/unload control from your computer / Integrated PAXX Firmware 
+- **Clean Install/Uninstall** - One-command scripts with automatic backup and restore
 
 
 ## ACE Pro 2 Support 
@@ -81,7 +145,7 @@ See it in action: https://youtu.be/9uLE1uydWmo
 ## 🌐 Web-Preflight
 - **Just upload unprocessed GCode via Multiace-Web**, print in actual loaded order or organize spools according to optimized layout to save swaps. Autoloads needed spools, no need to preload.
 
-### In-Print Color Swaps (layer / mid-layer)
+##  In-Print Color Swaps (layer / mid-layer)
 
 Color swaps during an active print can be triggered two ways:
 
@@ -90,24 +154,20 @@ Color swaps during an active print can be triggered two ways:
 
 Both paths use the same hardened load/unload logic as normal toolchanges. See [How to Do Toolswaps](#how-to-do-toolswaps) below for the exact command format and post-processing setup.
 
+## 📺 On-Printer Touchscreen (community, beta)
 
 
-## Features
+multiACE's own surfaces are browser-based. If you'd rather drive it from the
+printer itself, [physicsG's HelixScreen fork](https://github.com/physicsG/helixscreen)
+adds multiACE support to [HelixScreen](https://github.com/prestonbrown/helixscreen),
+replacing the stock U1 touchscreen UI.
 
-- **In-Print Color Swaps** - Layer-boundary and mid-layer color swaps during an active print, triggered from slicer gcode or via post-processing script
-- **Full Cross-ACE Feed_Assist** - All connected ACEs stay fully available during a print, feed_assist on every head, at stock toolchange speed (rewritten USB engine)
-- **Hardened Load / Unload** - Retract-recovery between extrude retries, pause-state snapshot before failure, safer resume path (pre-heat before travel, Z-hop before XY)
-- **FA / Load Toggle per ACE** - Disable feed_assist per-ACE and separately for print-time / load-time (`fa_print_disable` / `fa_load_disable`)
-- **Online Updates ** 
-- **ACE Switching** - Switch between ACE units via Fluidd macros or console
-- **Auto-Load** - Load all filled slots from selected ACE with one command
-- **Unload All** - Unload all toolheads, automatically switching to correct ACE for retract
-- **RFID Handling** - Automatic RFID detection and display across ACE switches
-- **Manual Filament Support** - Works with both RFID and non-RFID spools
-- **Per-ACE Dryer Settings** - Configurable temperature and duration per ACE
-- **Normal Mode** - Switch back to stock Snapmaker operation at any time (only original files active, no ACE code running). Useful for filaments the ACE Pro cannot handle, such as TPU/TPE
-- **PAXX Firmware Compatible / Installer** - Works with PAXX firmware which provides display mirroring, allowing full load/unload control from your computer / Integrated PAXX Firmware 
-- **Clean Install/Uninstall** - One-command scripts with automatic backup and restore
+
+## FOrca Slicer support (community)
+
+Support for FOrca Slicer (https://github.com/jiyang1018/FOrcaSlicer) Gcode, Upload via WebUI or directly sent from new 
+Foraca Slicer [Version ](https://github.com/jiyang1018/FOrcaSlicer/releases/tag/v2.3.2-fos.8.6.0)
+
 
 ## Requirements
 
@@ -245,7 +305,7 @@ Spools without RFID tags work fine - you can set the filament type and color man
 Before installing multiACE, ensure the following:
 
 1. **Firmware** - Install Snapmaker firmware 1.2+ or PAXX firmware 12-14+ on your Snapmaker U1
-2. **Enable Root Access** - On the Snapmaker display, go to Settings > About > tap firmware version 10 times to unlock Advanced Mode, then enable Root Access 
+2. **Enable Root Access** - On the Snapmaker display, go to Settings to unlock Advanced Mode, then enable Root Access 
 3. **Enable SSH** - Connect via SSH or serial console and run:
    ```
    touch /oem/.debug
@@ -584,6 +644,20 @@ multiACE is a **community project** — built by hobbyists, for hobbyists. A qui
 
 If any of that doesn't sit right, no worries — your printer keeps working with stock Snapmaker firmware as it is. If you're on board: have fun, and feedback / issues are always welcome.
 
+## API documentation (for slicers, hosts and scripts)
+
+multiACE can be driven from outside — a slicer plugin, a print host or a plain
+script. The contract lives in `docs/`:
+
+- [`ENGINE_API.md`](multiace/docs/ENGINE_API.md) — the gcode command vocabulary, the
+  `ace` status object, push events and versioning (Moonraker REST/WebSocket; nothing
+  imports the engine, so your program keeps its own licence).
+- [`LOADOUT_API.md`](multiace/docs/LOADOUT_API.md) — the web backend's HTTP API: read what
+  is actually loaded (spools, head wiring, nozzle sizes) before assigning filaments, and
+  hand a sliced file back.
+- [`SEND_TO_MULTIACE.md`](multiace/docs/SEND_TO_MULTIACE.md) — the upload endpoint in
+  detail (inbox semantics, status codes).
+
 ## License
 
 This project is based on [SnapACE](https://github.com/BlackFrogKok/SnapACE) and [Klipper](https://github.com/Klipper3d/klipper), both licensed under GPL-3.0. multiACE is therefore also GPL-3.0.
@@ -601,12 +675,27 @@ All content is reviewed by humans before inclusion.
 
 - **Popstar (forum.snapmaker.com)**
   - **the default PLA swap temperature is set to 220 °C**
+
+- **[Simon-CR](https://github.com/Simon-CR)**
+  - **Other Klipper printers** - multiACE runs on printers other than the Snapmaker U1.
+  - **Connection watchdog** - notices a silent ACE and reconnects it.
+  - **ACE2-Open community firmware** for the ACE 2 Pro - reading and writing spool tags.
+
+- **[Tareku99](https://github.com/Tareku99)**
+  - **paxx Extended Firmware package** - multiACE as a package the firmware installs and updates.
+
+- **[Godless50](https://github.com/Godless50)**
+  - **ACE Pro firmware flashing** from the web UI.
+  - **Tag reading on the ACE Pro** through his community firmware.
+  - **External humidity for auto-dry.**
  
     
  
 ## Credits
 
 - **[ Hakimio](https://github.com/hakimio)** for ACE Pro 2 reverse engineering and support, firmware flash
+- **[Simon-CR](https://github.com/Simon-CR/ace2-pro-firmware-research)** - ACE 2 Pro firmware research and the ACE2-Open UID passthrough that makes reading and writing foreign RFID tags possible
+- **[pechex](https://github.com/paxx12-snapmaker-u1/SnapmakerU1-Extended-Firmware/pull/649)** - the per-spool pressure-advance schema (`pressure_advance_matrix`) multiACE shares for Spoolman interop
 - **[SnapACE](https://github.com/BlackFrogKok/SnapACE)** by BlackFrogKok - Foundation for ACE Pro Klipper integration
 - **[DuckACE](https://github.com/utkabobr/DuckACE)** - ACE Pro reverse engineering and protocol documentation
 - **[ACE Research](https://github.com/printers-for-people/ACEResearch)** by Printers for People - ACE Pro protocol research

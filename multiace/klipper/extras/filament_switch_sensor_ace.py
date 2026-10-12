@@ -29,11 +29,10 @@ class RunoutHelper:
         self.min_event_systime = self.reactor.NEVER
         self.filament_present = False
         self.sensor_enabled = True
-
-
-
-
-
+        # No present-note counter here on purpose: the sensor pin is a
+        # PRESENCE GATE (edges only on tip-arrival/tail-departure), so
+        # counting note(True) calls measures nothing while filament is
+        # present - a perfect load and a clogged head both read 0.
 
         self.extruder_index = self._get_extruder_index(config.get('extruder'))
         self.exception_manager = self.printer.lookup_object('exception_manager', None)
@@ -68,17 +67,17 @@ class RunoutHelper:
         return 0
 
     def _runout_disp(self):
-
-
-
-
+        # Localized multiACE runout message (full text), 1-based via the ACE
+        # _disp() with ACE/Slot from head_source when known. Falls back to the
+        # sensor name if the ACE module is unavailable. No M117 (invisible on
+        # the Snapmaker touchscreen).
         ace = self.printer.lookup_object('ace', None)
         head = self.extruder_index
         if ace is not None and hasattr(ace, '_t'):
             hd = ace._disp(head)
             src = (getattr(ace, '_head_source', None) or {}).get(head) or {}
             a, s = src.get('ace_index'), src.get('slot')
-            loc = ' (ACE %d / Slot %d)' % (ace._disp(a), ace._disp(s))\
+            loc = ' (ACE %d / Slot %d)' % (ace._disp(a), ace._disp(s)) \
                 if a is not None and s is not None else ''
             return ace._t('msg.pause_runout', head=hd, loc=loc)
         return ('[multiACE] %s runout - reload filament '
@@ -110,16 +109,16 @@ class RunoutHelper:
             self.printer.get_reactor().pause(eventtime + self.pause_delay)
         self._exec_gcode(pause_prefix, self.runout_gcode)
         if self.runout_pause:
-
-
-
-
-
-
-
-
-
-
+            # Quad Replenish - the SLOT tier next to stock's HEAD-twin
+            # replenish. Order is configurable ([ace] quad_first /
+            # ACE_SET_QUAD_REPLENISH FIRST=): quad-first (default) drains
+            # the printing head's OWN lane first, which reaches every spool
+            # of the rack instead of stranding the slots of heads that
+            # emptied earlier; stock-first switches to a loaded twin head
+            # instantly and we only step in when it declines. Returns
+            # True when a reload+resume was scheduled (it raises its own
+            # message on failure, so the user is never left popup-less).
+            # Fail-open: any error or an old ace.py keeps the stock path.
             def _try_quad():
                 try:
                     ace = self.printer.lookup_object('ace', None)
@@ -143,16 +142,16 @@ class RunoutHelper:
             if quad_first:
                 handled = _try_quad()
             if not handled:
-
-
-
-
-
-
-
-
-
-
+                # The presence override (feed get_status) is scoped to THIS
+                # call: stock's replenish self-check must read the toolhead
+                # truth for the ran-out head (else it self-selects T->T off
+                # the gate lie), but every OTHER reader of the field -
+                # the display exist flag above all - wants the gate. State-
+                # scoping (printing/paused + head_source) kept the ran-out
+                # or failed-load head at '/' for the WHOLE pause and refused
+                # the display load until filament touched the toolhead
+                # sensor. run_script is synchronous,
+                # so the window is exactly the command's execution.
                 _ace = self.printer.lookup_object('ace', None)
                 try:
                     if _ace is not None:
@@ -163,10 +162,10 @@ class RunoutHelper:
                 finally:
                     if _ace is not None:
                         _ace._replenish_check_active = False
-
-
-
-
+                        # The command itself may recompute filament_exist
+                        # while the override is active and cache '/' for the
+                        # tile (a stale exist flag) - recompute with the
+                        # window closed so the display reads the gate again.
                         try:
                             _ace._refresh_filament_exist_flags()
                         except Exception:
@@ -193,11 +192,11 @@ class RunoutHelper:
             logging.exception("Script running error")
         self.min_event_systime = self.reactor.monotonic() + self.event_delay
     def note_filament_present(self, is_filament_present, force=False):
-
-
-
-
-
+        # force=True is used by the stock filament_motion_sensor
+        # (_extruder_pos_update_event runout path, _handle_stop_print_job) to
+        # push the note even when the present-state is unchanged. Dropping the
+        # param made those stock calls raise TypeError -> Klipper shutdown
+        # ("System Anomaly") on runout. Keep the stock signature.
         if is_filament_present == self.filament_present and force == False:
             return
         self.filament_present = is_filament_present
@@ -222,14 +221,14 @@ class RunoutHelper:
         is_printing = print_stats.state == "printing"
 
         if is_filament_present:
-
-
+            # Head got filament -> a suppressed empty head is (re)loaded; lift
+            # the recovery runout suppression for it (see ace _runout_suppress_heads).
             ace = self.printer.lookup_object('ace', None)
             if ace is not None and self.extruder_index in getattr(ace, '_runout_suppress_heads', ()):
                 ace._runout_suppress_heads.discard(self.extruder_index)
                 logging.info("[multiACE] note_filament_present: head %d (re)loaded - clearing runout suppression" % self.extruder_index)
-
-
+            # A head that had a background-swap FEED-abort was flagged empty; it
+            # now has filament again -> clear the flag (see ace._bg_left_empty).
             if ace is not None and self.extruder_index in getattr(ace, '_bg_left_empty', ()):
                 ace._bg_left_empty.discard(self.extruder_index)
             if not is_printing and self.insert_gcode is not None:
@@ -251,8 +250,8 @@ class RunoutHelper:
                 logging.info("[multiACE] note_filament_present: runout suppressed for head %d (recovery: empty head awaiting reload)" % self.extruder_index)
                 return
 
-
-            if self.print_task_config is not None and\
+            # Stock 1.4: don't process runout while the print-end action runs.
+            if self.print_task_config is not None and \
                     getattr(self.print_task_config, 'is_exec_print_end_action', False):
                 return
 
@@ -279,8 +278,8 @@ class RunoutHelper:
         self.config['enable'] = bool(self.sensor_enabled)
         logging.info("Filament Sensor: set enable/disable -- %d", self.sensor_enabled)
 
-
-        if self.print_task_config is not None and\
+        # Stock 1.4: refresh print_task_config filament flags on enable/disable.
+        if self.print_task_config is not None and \
                 hasattr(self.print_task_config, 'update_filament_flags'):
             self.print_task_config.update_filament_flags()
 
@@ -297,12 +296,12 @@ class RunoutHelper:
         if print_stats is not None and print_stats.state in ["printing", "paused"]:
             if bool(self.sensor_enabled) and not bool(self.filament_present):
                 ace = self.printer.lookup_object('ace', None)
-
-
-
-
-
-
+                # Resume-gate parity with the runout-EVENT suppression: a
+                # recovery pause marked this head empty-awaiting-reload
+                # (_runout_suppress_heads). The event paths
+                # honored the set but this resume-time check (INNER_RESUME ->
+                # CHECK_FILAMENT_RUNOUT) did not, so the RESUME was still
+                # refused with the runout error the suppression exists for.
                 if ace is not None and self.extruder_index in getattr(
                         ace, '_runout_suppress_heads', ()):
                     logging.info(
@@ -310,18 +309,18 @@ class RunoutHelper:
                         'head %d (recovery: empty head awaiting reload)'
                         % self.extruder_index)
                     return
-
-
-
-
-
-
-
-
-
-
-
-
+                # A NEVER-loaded ACE-driven head cannot be a real runout when
+                # the print's gcode carries multiACE loads (preflight auto-load
+                # block / ACE_SWAP_HEAD lines - sniffed once at print start,
+                # ace._print_has_gcode_loads): its load is ahead in the file,
+                # so a pause that hit BEFORE it ran (e.g. a stock
+                # park-malfunction pause inside the auto-load block) must stay
+                # resumable. Applies to multi AND head mode - both put every
+                # load in the gcode via preflight. A raw Fluidd/slicer upload
+                # has no gcode loads -> flag False -> stock refusal stays. A
+                # real runout keeps its head_source (loaded head, sensor
+                # empty) and still refuses; manual/feeder heads (no gcode
+                # loads, head_uses_ace False) unchanged.
                 if (ace is not None
                         and getattr(ace, '_print_has_gcode_loads', False)
                         and ace.head_uses_ace(self.extruder_index)

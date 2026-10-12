@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 
 import sys, re, os, json
 import urllib.request, urllib.error
@@ -142,14 +142,70 @@ def parse_toolchanges_with_times_from_file(in_path):
 
 _TC_CHANGE_RE = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*(\d+)')
 _TC_BARE_RE = re.compile(r'^T(\d{1,2})\b')
+
+# Body-start detection + fallback (A1). The rewrites flip from "preamble"
+# to "body" at the first '; Change Tool X -> Tool Y' marker. That marker
+# comes from the slicer's filament-change gcode - a user-editable profile
+# field that is empty in copied or hand-built profiles (a SnOrca 2.3.5
+# export had 0 markers). Without it in_body never flips,
+# every T lands in the pre-body branch (no swap), and inject_auto_load
+# falls back to (0, head) -> a zero-swap file the printer refuses. FALLBACK:
+# only when NO tool-change marker exists at all, the first layer-change
+# marker is the body boundary. In every working file the tool-change marker
+# precedes the first layer marker, so a file that has the marker is
+# byte-identical - the fallback
+# is dead code there.
+_TC_MATCH_RE = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*\d+')
+_LAYER_BOUNDARY_RE = re.compile(r'^;\s*(?:LAYER_CHANGE|CHANGE_LAYER)\b')
+
+
+def _file_has_change_tool(in_path):
+    """Cheap pre-scan: does the file carry any '; Change Tool X -> Tool Y'
+    marker? Decides the body-start boundary shared by all three streaming
+    passes (rewrite head / rewrite multi / _scan_body_tools)."""
+    try:
+        with open(in_path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if _TC_MATCH_RE.match(line.lstrip()):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _body_start_re(in_path):
+    """The line predicate that marks the body start: the tool-change marker
+    when the file has one, else the first layer-change marker (A1)."""
+    return _TC_MATCH_RE if _file_has_change_tool(in_path) else _LAYER_BOUNDARY_RE
+
+
+def file_body_detectable(in_path):
+    """True if the print body can be found by EITHER the tool-change marker
+    or a layer-change marker. A multi-colour file where NEITHER exists
+    yields zero swaps by any path (A1's fallback included) - the preflight
+    should refuse it loudly rather than ship a file that silently prints
+    one colour (A2). Public: called via the post_process module from
+    preflight_core. An all-pinned head-mode print is NOT caught here: it has
+    layer markers, so its body is detectable; its zero ACE swaps are
+    legitimate."""
+    try:
+        with open(in_path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                s = line.lstrip()
+                if _TC_MATCH_RE.match(s) or _LAYER_BOUNDARY_RE.match(s):
+                    return True
+    except OSError:
+        pass
+    return False
+
 _TC_M73_RE = re.compile(r'^M73\b.*?\bR(\d+(?:\.\d+)?)')
 
 def _toolchanges_with_times(lines_iter, has_change):
-
-
-
-
-
+    # With Change-Tool comments present, events = the comments only (the
+    # body-split of plan_loadout drops any pre-body bare T); without them,
+    # bare T lines (the parse_toolchanges fallback). M73 is tracked from
+    # the FILE START either way (the slicer emits R before the first
+    # toolchange).
     events = []
     times = []
     last_r = None
@@ -198,15 +254,19 @@ def lookup_live_slots(host, port=80, path='/multiace/api/state', timeout=5.0):
     out = []
     for ace in data.get('aces', []) or []:
         ace_idx = ace.get('idx')
+        # At most 4 units (T = ace*4 + slot, T0-T15); a 5th unit's slots
+        # would become T16+ and print in the wrong colour.
+        if not isinstance(ace_idx, int) or ace_idx > 3:
+            continue
         for slot in ace.get('slots', []) or []:
             if slot.get('state') == 'empty':
                 continue
-
-
-
-
-
-
+            # Trust only physically-known identity (RFID tag or user
+            # override); a 'derived' (job) label is not a real slot and
+            # must not become a preflight target.
+            # 'source' guarded for backward-compat: an older backend that
+            # predates the field falls back to the legacy color/material
+            # gate below.
             if 'source' in slot and slot['source'] not in ('rfid', 'override'):
                 continue
             color = (slot.get('color') or '').strip().lower()
@@ -338,7 +398,7 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
     leaving T1 (DarkBlue) - which would have matched exact_hex -
     stuck on a worse tier.
 
-    Tier order (every tier stays within the slicer head's material —
+    Tier order (every tier stays within the slicer head's material -
     a different material is never substituted, even on fallback):
         1.  exact_hex                            every T tried
         2.  name_exact                           every T tried (skip if strict_color)
@@ -421,7 +481,7 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
         """Iterate unclaimed slot_meta entries, optionally restricted
         to the slicer T's material.
 
-        NOZZLE GATE (2026-08-07): with mixed nozzles the slicer bakes each
+        NOZZLE GATE: with mixed nozzles the slicer bakes each
         tool's own line WIDTH into that tool's extrusions, so a tool may
         only land on a head carrying the SAME nozzle diameter - the head
         is s['slot'] here (synthetic_T = ace*num_heads + slot, so slot IS
@@ -429,8 +489,7 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
         its diameter; None/empty (uniform nozzles, unknown diameters, or
         any non-FOrca file) means no constraint and this stays
         byte-identical. Without it an ordinary reload in a different slot
-        order remapped 4 of 4 tools onto wrong-sized nozzles, silently
-        (HW-reproduced on FOrcaSlicer 2.3.2 cubes, 0.2/0.8/0.4/0.6)."""
+        order remapped 4 of 4 tools onto wrong-sized nozzles, silently."""
         t_mat = t_meta[t]['mat']
         allowed = nozzle_groups.get(t) if nozzle_groups else None
         for sm in slot_meta:
@@ -493,30 +552,21 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
             continue
         _match_pass(tier_name, True, pred)
 
+    # No cross-material matching. Each slicer head keeps its own
+    # material - substituting PETG for PLA (or vice versa) based on
+    # name/colour similarity is exactly the kind of footgun this
+    # preflight is supposed to prevent. Pass 2 (loose-mat color tiers)
+    # used to live here and is intentionally gone.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    # Same-material fallback: if no colour tier matched, take any
+    # unclaimed slot that at least carries the right material.
+    #
+    # NOZZLE GATE: this loop walks slot_meta DIRECTLY, not through
+    # _candidate_slots, so it needs its own gate. It is the SAME gate as
+    # everywhere else (heads of the right diameter) - no extra colour
+    # condition: the view shows the chosen slot's colour in a dropdown, so a
+    # fallback match is visible, marked by its tier and overridable, exactly
+    # like a weak match on the normal path.
     for t in list(pending):
         tm = t_meta[t]
         t_mat = (tm.get('mat') or '').strip().lower()
@@ -549,12 +599,12 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
         for t in list(pending):
             tm = t_meta[t]
             t_mat = (tm.get('mat') or '').strip().lower()
-
-
-
-
-
-
+            # Restrict the doubling-up pool to slots that already carry
+            # the slicer head's material; otherwise we'd quietly assign
+            # a different material to this head. Under an active nozzle
+            # gate, also to the heads this tool may legally print on -
+            # sharing a lane across nozzle sizes would reintroduce the
+            # wrong-width remap the gate exists to prevent.
             allowed = nozzle_groups.get(t) if nozzle_groups else None
             candidates = [sm for sm in already
                           if (not t_mat or not sm['mat']
@@ -596,6 +646,58 @@ def match_colors_to_slots(color_names, live_slots, num_heads=4,
             remap[t] = synthetic_T
     return remap, info, used
 
+class MultiTopology(object):
+    """Slot-to-head resolver for MULTI mode, usable wherever the head-mode
+    family takes `ace_head_of_ace`: slot N of ANY ACE feeds head N. `heads`
+    = the heads an ACE may feed (a manual/hand-fed head is excluded: its
+    slot index is dead for ACE colours). Callable (ace, slot) -> head or
+    None, and `heads` doubles as the ACE-head list."""
+    def __init__(self, heads, num_aces=4):
+        self.heads = sorted(int(h) for h in heads)
+        self.num_aces = int(num_aces)
+
+    def __call__(self, ace, slot):
+        try:
+            s = int(slot)
+        except (TypeError, ValueError):
+            return None
+        return s if s in self.heads else None
+
+
+def _head_of_fn(ace_head_of_ace):
+    """(ace, slot) -> head resolver from either topology description:
+    a callable (MultiTopology) or the head-mode {ace_index: head} dict."""
+    if callable(ace_head_of_ace):
+        return ace_head_of_ace
+    head_of = {int(a): int(h) for a, h in (ace_head_of_ace or {}).items()}
+
+    def fn(ace, slot):
+        try:
+            return head_of.get(int(ace))
+        except (TypeError, ValueError):
+            return None
+    return fn
+
+
+def _all_ace_slots(ace_head_of_ace, num_slots=4):
+    """Every (ace, slot, head) an ACE colour could be loaded into, for the
+    proposal copy planner. Head mode: the wired ACEs x num_slots; multi:
+    every ACE x the ACE-fed heads (slot == head)."""
+    out = []
+    if isinstance(ace_head_of_ace, MultiTopology):
+        for a in range(ace_head_of_ace.num_aces):
+            for h in ace_head_of_ace.heads:
+                out.append((a, h, h))
+        return out
+    head_of = _head_of_fn(ace_head_of_ace)
+    for a in sorted(int(x) for x in (ace_head_of_ace or {})):
+        for si in range(int(num_slots)):
+            h = head_of(a, si)
+            if h is not None:
+                out.append((a, si, h))
+    return out
+
+
 def compute_head_mode_layout(slicer_colors, slicer_types, pinned_heads,
                              ace_slots, ace_head_of_ace, fuzzy_max_distance=None,
                              nozzle_groups=None):
@@ -635,23 +737,26 @@ def compute_head_mode_layout(slicer_colors, slicer_types, pinned_heads,
         except (KeyError, TypeError, ValueError):
             continue
 
-    head_of_ace = {int(a): int(h) for a, h in (ace_head_of_ace or {}).items()}
+    head_of = _head_of_fn(ace_head_of_ace)
+    multi = isinstance(ace_head_of_ace, MultiTopology)
+    head_of_ace = ({} if multi else
+                   {int(a): int(h) for a, h in (ace_head_of_ace or {}).items()})
 
     assignment = {}
     pinned_t = set()
 
-
-
-
+    # 1. Pin pass: prefer a feeder match (no swap) over an ACE slot. Same colour
+    #    tiers as the ACE matcher (exact_hex -> name -> fuzzy), material-strict
+    #    via candidate pre-filtering (a feeder can serve several T of its colour).
     for t in sorted(slicer_colors.keys()):
         c = (slicer_colors.get(t) or '').strip().lstrip('#').lower()
         if not c:
             continue
         mat = (slicer_types.get(t) or '').strip().lower()
-
-
-
-
+        # NOZZLE GATE, pin half: a colour may only pin to a feeder head
+        # whose nozzle matches the one it was sliced for - the line widths
+        # baked into that tool's extrusions belong to that diameter. The
+        # ACE half is gated inside match_colors_to_slots below.
         allowed = nozzle_groups.get(t) if nozzle_groups else None
         cands = []
         for head, p in pins.items():
@@ -668,27 +773,31 @@ def compute_head_mode_layout(slicer_colors, slicer_types, pinned_heads,
             assignment[t] = {'kind': 'pin', 'head': match['head'], 'tier': tier}
             pinned_t.add(t)
 
-
-
-
-
-    usable_slots = [s for s in (ace_slots or []) if int(s['ace']) in head_of_ace]
+    # 2. ACE-slot pass: the rest -> the ACE heads' slots via the existing
+    #    material-strict tier matcher (slots claimed; duplicates last resort).
+    #    Only slots on a wired ACE are usable; the matched slot's ACE head comes
+    #    from ace_head_of_ace.
+    usable_slots = [s for s in (ace_slots or [])
+                    if head_of(s['ace'], s['slot']) is not None]
     rest_colors = {t: slicer_colors[t] for t in slicer_colors if t not in pinned_t}
     rest_types = {t: (slicer_types.get(t) or '') for t in rest_colors}
-
-
-
+    # head_of_ace is MANDATORY in head mode: a slot's head comes from the
+    # ACE it sits on, not from its slot index - without it the gate would
+    # constrain the wrong axis. In multi the matcher's own slot == head
+    # rule applies (head_of_ace None), the usable_slots filter above has
+    # already dropped the slot indices of hand-fed heads.
     _remap, info, _used = match_colors_to_slots(
         rest_colors, usable_slots, num_heads=4,
         filament_types=rest_types, strict_color=False,
         fuzzy_max_distance=fuzzy_max_distance,
-        nozzle_groups=nozzle_groups, head_of_ace=head_of_ace)
+        nozzle_groups=nozzle_groups,
+        head_of_ace=(None if multi else head_of_ace))
     for t, entry in info.items():
         s = entry.get('slot')
         if s is None:
             assignment[t] = {'kind': 'none', 'tier': entry.get('tier', 'no_slot')}
         else:
-            assignment[t] = {'kind': 'ace', 'head': head_of_ace[int(s['ace'])],
+            assignment[t] = {'kind': 'ace', 'head': head_of(s['ace'], s['slot']),
                              'ace': s['ace'], 'slot': s['slot'],
                              'tier': entry.get('tier')}
 
@@ -700,14 +809,23 @@ def compute_head_mode_layout(slicer_colors, slicer_types, pinned_heads,
         'feasible': not infeasible,
         'infeasible': infeasible,
         'pinned': pinned_used,
-        'ace_heads': sorted(set(head_of_ace.values())),
+        'ace_heads': (list(ace_head_of_ace.heads) if multi
+                      else sorted(set(head_of_ace.values()))),
     }
 
-def head_mode_swap_count(events, assignment):
+def head_mode_swap_count(events, assignment, copies=None, bg_heads=None):
     """Swaps the ACE heads perform for a head-mode `assignment` over the slicer
     toolchange sequence `events`. Pinned colours never swap (they print on their
     own feeder head); only (ace,slot) changes on ACE-assigned colours count, per
-    ACE head. The first load on each ACE head counts as a swap."""
+    ACE head. The first load on each ACE head counts as a swap.
+
+    `copies` ({t: [extra 'ace' entries]}, see detect_color_copies): a colour
+    that may print from several heads is counted by the per-event choice of
+    simulate_dynamic_swaps instead of the static walk."""
+    if copies:
+        targets = _targets_with_copies(assignment, copies)
+        swaps, _plan = simulate_dynamic_swaps(events, targets, bg_heads)
+        return swaps
     cur = {}
     swaps = 0
     for t in events:
@@ -720,6 +838,224 @@ def head_mode_swap_count(events, assignment):
             swaps += 1
             cur[head] = key
     return swaps
+
+
+# --------------------------------------------------------------------------- #
+# Colour copies: one colour on SEVERAL heads                                   #
+# --------------------------------------------------------------------------- #
+# Today every slicer colour has exactly ONE target for the whole print. A
+# second spool of the same colour on another head lets the print pick, per
+# toolchange, the head that already holds it (e.g. six colours, 28 swaps
+# -> 7 with one duplicated spool). Three pure functions carry it: detect_color_copies finds the copies
+# that are physically loaded, plan_color_copies suggests which colours to
+# load a second time and where, simulate_dynamic_swaps makes the per-event
+# choice (Belady: evict the head whose colour is needed furthest in the
+# future) and is what the rewriter, the counter and the planner all share.
+# Without copies every path is byte-identical to the static assignment.
+
+def _targets_with_copies(assignment, copies):
+    """{t: [primary entry, copy entries...]} for the simulation."""
+    targets = {}
+    for t, e in (assignment or {}).items():
+        if e and e.get('kind') in ('ace', 'pin'):
+            targets[t] = [dict(e)] + [dict(x) for x in (copies or {}).get(t, [])]
+    return targets
+
+
+def simulate_dynamic_swaps(events, targets_of, bg_heads=None):
+    """Per-event head choice when a colour may print from several targets.
+    A candidate head that already holds the colour costs nothing. Otherwise
+    the candidate head whose CURRENT colour is needed furthest in the future
+    is taken (an empty head first; among empty heads the one that can KEEP
+    the colour longest, i.e. whose next event that only this head can
+    print lies furthest ahead, then the primary target; then a bg-enabled
+    head, then the fewest swaps so far, then list order). Pinned targets never swap and
+    are never evicted. The first load of a head counts as a swap, like
+    head_mode_swap_count. Returns (swaps, plan) with plan[k] = the entry
+    chosen for events[k] (None when the colour has no target)."""
+    import bisect
+    n = len(events)
+    pos = {}
+    for k, t in enumerate(events):
+        pos.setdefault(t, []).append(k)
+
+    def next_use(t, k):
+        p = pos.get(t)
+        if not p:
+            return n
+        i = bisect.bisect_right(p, k)
+        return p[i] if i < len(p) else n
+
+    # Per head: the positions of events only that head can print (every
+    # ACE candidate of the colour sits on it). A colour with a copy
+    # elsewhere forces nothing. Decides between EMPTY heads: the one whose
+    # next forced event lies furthest ahead keeps the colour longest, so
+    # loading it there saves the swap the other head would need later.
+    forced = {}
+    for k, t in enumerate(events):
+        heads = set(e.get('head') for e in (targets_of.get(t) or [])
+                    if e.get('kind') == 'ace')
+        if len(heads) == 1:
+            forced.setdefault(next(iter(heads)), []).append(k)
+
+    def next_forced(h, k):
+        p = forced.get(h)
+        if not p:
+            return n
+        i = bisect.bisect_right(p, k)
+        return p[i] if i < len(p) else n
+
+    bg = set(int(h) for h in (bg_heads or ()))
+    cur = {}            # ace head -> ((ace, slot), tool)
+    swaps_by_head = {}
+    swaps = 0
+    plan = []
+    for k, t in enumerate(events):
+        cands = targets_of.get(t) or []
+        if not cands:
+            plan.append(None)
+            continue
+        chosen = None
+        for e in cands:
+            if e.get('kind') == 'pin':
+                chosen = e                      # its own colour, always
+                break
+            c = cur.get(e.get('head'))
+            if c is not None and c[0] == (e['ace'], e['slot']):
+                chosen = e                      # already loaded there
+                break
+        if chosen is None:
+            best, best_key = None, None
+            for i, e in enumerate(cands):
+                if e.get('kind') != 'ace':
+                    continue
+                h = e.get('head')
+                c = cur.get(h)
+                if c is None:
+                    key = (-(n + 1), -next_forced(h, k), i, 0, i)
+                else:
+                    key = (-next_use(c[1], k), 0,
+                           0 if h in bg else 1,
+                           swaps_by_head.get(h, 0), i)
+                if best_key is None or key < best_key:
+                    best_key, best = key, e
+            if best is None:
+                plan.append(None)
+                continue
+            chosen = best
+            h = chosen['head']
+            swaps += 1
+            swaps_by_head[h] = swaps_by_head.get(h, 0) + 1
+            cur[h] = ((chosen['ace'], chosen['slot']), t)
+        plan.append(chosen)
+    return swaps, plan
+
+
+def detect_color_copies(assignment, slicer_colors, slicer_types, ace_slots,
+                        ace_head_of_ace, nozzle_groups=None, strict=False):
+    """Loaded but UNCLAIMED slots holding the same colour and material as a
+    slicer colour, on a head that colour does not target yet: the second
+    spool. Same colour = the matcher's own tiers 1-4 (exact hex, then the
+    colour name), never fuzzy; strict = exact hex only. Returns
+    {t: ['ace' entries]}; empty when nothing is duplicated, which keeps
+    every consumer byte-identical."""
+    head_of = _head_of_fn(ace_head_of_ace)
+    claimed = set()
+    for e in (assignment or {}).values():
+        if e and e.get('kind') == 'ace':
+            claimed.add((int(e['ace']), int(e['slot'])))
+    out = {}
+    for t, e in (assignment or {}).items():
+        if not e or e.get('kind') not in ('ace', 'pin'):
+            continue
+        c = (slicer_colors.get(t) or '').strip().lstrip('#').lower()
+        if not c:
+            continue
+        mat = (slicer_types.get(t) or '').strip().lower()
+        allowed = nozzle_groups.get(t) if nozzle_groups else None
+        heads_used = {e.get('head')}
+        for sl in (ace_slots or []):
+            try:
+                a, si = int(sl['ace']), int(sl['slot'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            h = head_of(a, si)
+            if h is None:
+                continue
+            if (a, si) in claimed or h in heads_used:
+                continue
+            if allowed is not None and h not in allowed:
+                continue
+            smat = (sl.get('material') or '').strip().lower()
+            if mat and smat and smat != mat:
+                continue
+            cand = {'color': (sl.get('color') or '').strip().lstrip('#').lower()}
+            m, tier = _find_color_match([cand], c, bool(strict), None)
+            if m is None:
+                continue
+            out.setdefault(t, []).append(
+                {'kind': 'ace', 'head': h, 'ace': a, 'slot': si, 'tier': tier})
+            heads_used.add(h)
+    return out
+
+
+def plan_color_copies(events, assignment, empty_slots, ace_head_of_ace,
+                      max_copies, existing_copies=None, bg_heads=None,
+                      nozzle_groups=None):
+    """Loadout suggestion: which colours to load a second (third...) time,
+    and into which EMPTY slot, to cut swaps. Greedy from the assignment plus
+    the copies already present: repeatedly add the (colour, empty slot) pair
+    that saves the most swaps in the simulation, until nothing saves one,
+    every colour is at max_copies, or the empty slots on other heads are
+    used up. Returns {'suggestions': [{'t','ace','slot','head','swaps'}],
+    'swaps_before', 'swaps_after', 'targets': {t: [entries]}}."""
+    head_of = _head_of_fn(ace_head_of_ace)
+    targets = _targets_with_copies(assignment, existing_copies)
+    before, _p = simulate_dynamic_swaps(events, targets, bg_heads)
+    try:
+        limit = max(1, int(max_copies))
+    except (TypeError, ValueError):
+        limit = 1
+    free = []
+    for sl in (empty_slots or []):
+        try:
+            a, si = int(sl['ace']), int(sl['slot'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        h = head_of(a, si)
+        if h is not None:
+            free.append((a, si, h))
+    suggestions = []
+    cur = before
+    while free and limit > 1:
+        best = None
+        for t, lst in targets.items():
+            if len(lst) >= limit:
+                continue
+            allowed = nozzle_groups.get(t) if nozzle_groups else None
+            heads_used = {x.get('head') for x in lst}
+            for (a, si, h) in free:
+                if h in heads_used:
+                    continue
+                if allowed is not None and h not in allowed:
+                    continue
+                trial = dict(targets)
+                trial[t] = lst + [{'kind': 'ace', 'head': h, 'ace': a,
+                                   'slot': si, 'tier': 'copy'}]
+                sw, _p = simulate_dynamic_swaps(events, trial, bg_heads)
+                if sw < cur and (best is None or sw < best[0]):
+                    best = (sw, t, a, si, h)
+        if best is None:
+            break
+        sw, t, a, si, h = best
+        targets[t] = targets[t] + [{'kind': 'ace', 'head': h, 'ace': a,
+                                    'slot': si, 'tier': 'copy'}]
+        free = [f for f in free if not (f[0] == a and f[1] == si)]
+        suggestions.append({'t': t, 'ace': a, 'slot': si, 'head': h,
+                            'swaps': sw})
+        cur = sw
+    return {'suggestions': suggestions, 'swaps_before': before,
+            'swaps_after': cur, 'targets': targets}
 
 def head_mode_flush_cost(events, assignment, flush_matrix):
     """Total same-nozzle transition volume (mm3, slicer flush matrix) a
@@ -746,7 +1082,8 @@ def head_mode_flush_cost(events, assignment, flush_matrix):
         cur[head] = (key, t)
     return total
 
-def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None):
+def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None,
+                       copies=None):
     """Background-unload balance of a head-mode assignment: for every unload
     the rewrite WOULD stamp (same conditions as rewrite_head_mode_to_file -
     a released ACE head whose next arrival needs a different slot), classify
@@ -758,6 +1095,25 @@ def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None):
     event_times = per-event remaining minutes (parse_toolchanges_with_times),
     bg_heads = bg-enabled head indices. Returns {'unloads','bg_ok','bg_small',
     'bg_unknown','bg_disabled','saved_s','details':[{head,window,verdict}]}."""
+    if copies:
+        # With colour copies the head printing an event is the per-event
+        # choice of simulate_dynamic_swaps (the plan the rewriter stamps),
+        # not the static entry. Split every event into (colour, chosen
+        # target) so the static walk below sees one target per key; the
+        # release/next-arrival conditions are unchanged.
+        _sw, plan = simulate_dynamic_swaps(
+            events, _targets_with_copies(assignment, copies), bg_heads)
+        ev2, asn2 = [], {}
+        for k, t in enumerate(events):
+            e = plan[k] if k < len(plan) and plan[k] is not None \
+                else assignment.get(t)
+            if e and e.get('kind') in ('pin', 'ace'):
+                key = (t, e.get('head'), e.get('ace'), e.get('slot'))
+                asn2[key] = e
+            else:
+                key = (t, None, None, None)
+            ev2.append(key)
+        events, assignment = ev2, asn2
     bg_set = set(bg_heads or [])
     stats = {'unloads': 0, 'bg_ok': 0, 'bg_small': 0, 'bg_unknown': 0,
              'bg_disabled': 0, 'saved_s': 0, 'details': []}
@@ -767,11 +1123,11 @@ def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None):
         cur_e = assignment.get(events[i])
         rel_e = assignment.get(events[i - 1])
         if not cur_e or cur_e.get('kind') not in ('pin', 'ace'):
-            continue
+            continue                      # rewrite passes these through, no stamp
         if not rel_e or rel_e.get('kind') != 'ace':
             continue
         if events[i - 1] == events[i] or rel_e.get('head') == cur_e.get('head'):
-            continue
+            continue                      # same head keeps printing - no release
         loaded_now = (rel_e['ace'], rel_e['slot'])
         nxt = None
         nxt_j = None
@@ -783,7 +1139,7 @@ def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None):
                 nxt_j = j
                 break
         if nxt is None or nxt == loaded_now:
-            continue
+            continue                      # same slot next time / never again
         stats['unloads'] += 1
         head = rel_e['head']
         r_now = event_times[i] if have_t else None
@@ -810,7 +1166,8 @@ def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None):
 def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                                num_slots, layer_color_sets=None, max_colors=12,
                                event_times=None, bg_heads=None,
-                               flush_matrix=None, objective='time'):
+                               flush_matrix=None, objective='time',
+                               topology=None):
     """Head-mode loadout OPTIMIZER - the swap-minimal PROPOSED loadout that
     IGNORES the current physical load (plan 'optimize' + plan 'layer'/Belady).
 
@@ -871,8 +1228,8 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
     if n > max_colors:
         return None, None
 
-
-
+    # Bins: 0..F-1 = feeder heads (capacity 1, never swap),
+    #       F..F+K-1 = ACE heads (capacity S each, swap on active-colour change).
     best_c2b = None
     best_key = None
     for combo in product(range(F + K), repeat=n):
@@ -882,12 +1239,12 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
         for b in combo:
             if b < F:
                 feeder_count[b] += 1
-                if feeder_count[b] > 1:
+                if feeder_count[b] > 1:        # a feeder pins exactly one colour
                     ok = False
                     break
             else:
                 ace_count[b - F] += 1
-                if ace_count[b - F] > S:
+                if ace_count[b - F] > S:       # an ACE head holds <= S colours
                     ok = False
                     break
         if not ok:
@@ -895,8 +1252,8 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
 
         c2b = {colors_list[i]: combo[i] for i in range(n)}
 
-
-
+        # Layer-only swap mode: at most ONE colour per ACE head active per layer
+        # (feeders are capacity-1 so distinct colours never collide on a feeder).
         if layer_color_sets is not None:
             conflict = False
             for lset in layer_color_sets:
@@ -913,16 +1270,16 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
             if conflict:
                 continue
 
-
-
-
-
-
-
+        # Swaps: per ACE head, count active-colour changes. The first load on
+        # each ACE head is charged too (matches head_mode_swap_count), so an
+        # all-pinned loadout correctly beats one that touches an ACE for one
+        # colour. With bg info, swaps whose unload fits the released head's
+        # parked window (>= BG_UNLOAD_MIN_WINDOW_MIN, bg-enabled head) are
+        # charged the cheaper background cost.
         have_t = bool(event_times) and len(event_times) == len(events)
         bg_set = set(bg_heads or [])
         cur = {}
-        released_r = {}
+        released_r = {}   # ace bin -> R when its head parked (first release)
         prev_bin = None
         swaps = 0
         bg_ok = 0
@@ -937,30 +1294,30 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                 continue
             if cur.get(b) != t:
                 swaps += 1
-                if cur.get(b) is not None:
+                if cur.get(b) is not None:      # not the first load
                     head = ace_sorted[b - F]
                     rr = released_r.get(b)
                     if (head in bg_set and rr is not None
                             and r_now is not None
                             and rr - r_now >= BG_UNLOAD_MIN_WINDOW_MIN):
                         bg_ok += 1
-
-
-
-
+                    # Colour objective: the slicer's own contamination
+                    # model - same-nozzle transition volume (mm3). Pinned
+                    # colours and cross-head switches cost nothing (own
+                    # nozzle); the first load purges no old colour.
                     if flush_matrix is not None:
                         p_t = cur.get(b)
                         if (0 <= p_t < len(flush_matrix)
                                 and 0 <= t < len(flush_matrix)):
                             flush += flush_matrix[p_t][t]
                 cur[b] = t
-            released_r.pop(b, None)
+            released_r.pop(b, None)             # arrival consumes the release
 
         pins = sum(1 for b in combo if b < F)
-
-
-
-
+        # Lowest print-stall cost first; then fewest swaps, fewest feeders.
+        # objective='color' (needs flush_matrix): lowest same-nozzle flush
+        # volume first - light/sensitive colours get pinned, expensive
+        # pairs land on head boundaries; time cost stays the tiebreak.
         cost = ((swaps - bg_ok) * BG_SWAP_COST_INLINE_S
                 + bg_ok * BG_SWAP_COST_BG_S)
         if objective == 'color' and flush_matrix is not None:
@@ -974,13 +1331,13 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
     if best_c2b is None:
         return None, None
 
-
-
-
+    # Map the abstract bins to concrete output entries, in first-use order so the
+    # proposed loadout reads in print order: feeder bins -> feeder_heads, each
+    # ACE head's colours -> one slot each (slots 0..S-1 per head).
     feeder_bin_to_head = {}
     next_feeder = 0
-    ace_color_to_slot = {}
-    ace_next_slot = {}
+    ace_color_to_slot = {}       # {(ace_head, color): slot}
+    ace_next_slot = {}           # {ace_head: next free slot}
     assignment = {}
     for t in events:
         if t in assignment:
@@ -993,9 +1350,16 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                 slot = ace_next_slot.get(head, 0)
                 ace_color_to_slot[(head, t)] = slot
                 ace_next_slot[head] = slot + 1
-            assignment[t] = {'kind': 'ace', 'head': head,
-                             'ace': int(ace_num_of_head.get(head, head)),
-                             'slot': slot, 'tier': 'optimize'}
+            if isinstance(topology, MultiTopology):
+                # multi: a head's k-th colour sits in slot <head> of the
+                # k-th ACE (slot N of every ACE feeds head N).
+                assignment[t] = {'kind': 'ace', 'head': head,
+                                 'ace': slot, 'slot': head,
+                                 'tier': 'optimize'}
+            else:
+                assignment[t] = {'kind': 'ace', 'head': head,
+                                 'ace': int(ace_num_of_head.get(head, head)),
+                                 'slot': slot, 'tier': 'optimize'}
         else:
             head = feeder_bin_to_head.get(b)
             if head is None:
@@ -1006,89 +1370,85 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
 
     return assignment, head_mode_swap_count(events, assignment)
 
-
-
-
-
-
+# Cushion when NO explicit un-retract follows a toolchange (the slicer
+# refills distributed over the wipe strokes instead - SnOrca layer 0): hand
+# the head over nearly full, like stock's freshly-primed arrival (the stock
+# preextrude ends -0.5), so the colour's first tower block doesn't start
+# ~10mm lean. Big enough to survive the short return travel without drool.
 ANTI_OOZE_NO_UNRETRACT = 1.0
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# Background-unload look-ahead window (minutes of print time the released
+# head stays parked, from the slicer's M73 R=<remaining minutes> lines).
+# The FULL bg unload needs ~90s (heat ~30 + cold-pull ~20 +
+# bulk ~40), but a PARTIAL run already pays: once heat+pull are done and
+# the pick lands in the bulk phase, the engine does NOT abort - the
+# arrival swap waits only the bulk remainder (<=~40s, picked nozzle is
+# empty = no ooze) and skips the whole inline heat+INNER (~50s net win).
+# M73 R has 1-minute granularity: delta>=2 GUARANTEES >=~1 real minute
+# ("reaches the bulk" = heat+pull done, pick mid-bulk only WAITS); a
+# delta of 1 is a lottery (real window ~5s..2min). Threshold 1 stamps
+# everything except same-minute returns - a missed attempt costs ~nothing
+# (the QUIET abort
+# in HEAT/PULL donates its preheat to the inline swap, ~20s faster), it
+# only adds sub-minute abort noise. Raise back to 2 (the smallest
+# guarantee-based value) if that noise turns out to annoy in practice.
+# Below the threshold the pick lands in HEAT/PULL and the engine aborts.
+# Files without M73 stamp unconditionally (engine aborts stay the safety
+# net).
 BG_UNLOAD_MIN_WINDOW_MIN = 1
 
-
-
-
-
-
-
-
+# Bg-aware loadout scoring (compute_head_mode_optimize) + report estimate
+# (head_mode_bg_stats). Since BG-Load v1 a COMPLETE background swap
+# (unload + feed + grip + prime) makes the arrival toolchange a near
+# no-op: a full inline swap stalls the print ~3.5min (heat + unload incl.
+# probes + load + flush), a bg-completed arrival only re-heats (~30s).
+# The report's saved_s uses the difference (~3min per bg-ok swap).
 BG_SWAP_COST_INLINE_S = 210
 BG_SWAP_COST_BG_S = 30
 BG_UNLOAD_INLINE_SAVING_S = BG_SWAP_COST_INLINE_S - BG_SWAP_COST_BG_S
 
+# [PROTOTYPE] Background the initial-load phase. The auto-load
+# block loads every initial ACE head sequentially inline (~90s each). With
+# this on, every SECOND initial head (that is bg-enabled) is stamped as a
+# leading ACE_BG_SWAP so it loads in the BACKGROUND while the previous head
+# loads inline - pairs (h0 inline || h1 bg), (h2 inline || h3 bg), ~halving
+# the start phase. Reuses the full bg-swap (unload-if-already-loaded + load
+# + pick-check verify at first arrival) and the proven inline||bg
+# concurrency. Two heaters at once is not a new risk: every mid-print bg
+# swap already heats the parked head to load temp while the active head
+# prints - the start phase is the same, just earlier.
+BG_INITIAL_LOAD = True
 
-
-
-
-
-
-
-
-
-
-
-BG_INITIAL_LOAD = False
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# PER-PAIR PURGE (flush-matrix wiring): the
+# inline flush is a flat top-up (stock 80mm) ON TOP of the wipe tower,
+# which already purges the slicer's matrix-sized volume per colour pair -
+# so the flat 80 heavily over-purges cheap pairs (white->dark needs
+# 256mm3, we add 192mm3 more) while adding little for the expensive ones.
+# Flush TIME is length-dependent: 80mm = 28.2s, 120mm = 34.85s measured
+# = 0.166 s/mm + ~15s fixed choreography -> per-pair sizing saves time AND
+# filament (on a long multi-colour print ~110g + ~1.5-2h). The rewriters stamp ACE_SET_PURGE LENGTH=<mm> before each
+# emitted swap: our top-up = clamp(pair_mm * FRAC, MIN, MAX) with
+# pair_mm = matrix_mm3 / 2.405 (1.75mm filament). The floor keeps the
+# melt-zone clear + flow-verify function; the tower still does the real
+# transition purge. bg swaps get the value as a PURGE= parameter on the
+# ACE_BG_SWAP line instead - the bg prime reads get_purge_length MINUTES
+# later (async greenlet), a global override stamped in gcode order would
+# race with later inline stamps. No matrix in the file -> no stamps, old
+# behaviour (slicer-authored swap lines also pass through unstamped). inject_auto_load stamps ACE_SET_PURGE RESET=1 at
+# the block top so every processed print starts override-free.
+# Processing-format version, stamped as "; multiACE processed: format=N"
+# into the auto-load block. Re-processing an already-processed file is
+# REFUSED by the preflight (pass 2 reads
+# pass 1's "skipped" comments as unpaired bare Ts and invents wrong-slot
+# swap-backs; the ACE_SET_PURGE stamps add a second trip hazard). A clean
+# un-process is impossible - dropped preextrude lines and remapped
+# M104/M109 targets are unrecoverable - so the answer is "upload the
+# original slicer export". Files from builds BEFORE this constant carry
+# only the auto-load marker (no format=) and are refused as "unknown older
+# version". Bump on emitted-format changes.
+# 2: standby temperatures that would cool the printing head are dropped
+# instead of remapped (see scan_cooling_standbys). 3: purge stamps sized
+# from the RAW flush matrix. 4: flush_multiplier inherited upward only.
 PP_FORMAT_VERSION = 4
 
 def detect_processed(text):
@@ -1102,8 +1462,8 @@ def detect_processed(text):
         return True, None
     return False, None
 
-
-
+# The printer refuses to extrude below min_extrude_temp (170 on the U1), so a
+# target under it on the head that is about to PRINT is never legitimate.
 STANDBY_MIN_EXTRUDE_C = 170
 
 def scan_cooling_standbys(in_path, head_of_tool):
@@ -1117,15 +1477,15 @@ def scan_cooling_standbys(in_path, head_of_tool):
     parked colour can land on the head that prints the next one.
 
     Most of them are HARMLESS and must be kept: a pre-toolchange cooldown
-    parks its own head (that is the anti-ooze measure, S35 dock drooling),
+    parks its own head (the anti-ooze measure against dock drooling),
     and even after a collision the arriving tool's M109 overrides it one line
     later. A 6-colour Snapmaker Orca file with the same setting and two
     colours on one head has 831 of them and 0 of 1,024,850 extrusions below
     the limit. Dangerous is only the case where nothing re-heats before the
     head extrudes again: at an object start in print-by-object mode the
     slicer sets all OTHER tools to standby AFTER the change, and the head
-    then cools through the limit mid-object (djfilament 2026-08-11: 144
-    extrusions at target 90 instead of 245, "under temp error").
+    then cools through the limit mid-object (one field file: 144
+    extrusions at target 90 instead of 245, an under-temp error).
 
     Telling those apart needs the forward view, not a per-line test, so this
     replays the file: track the active head and each head's target, and when
@@ -1134,12 +1494,12 @@ def scan_cooling_standbys(in_path, head_of_tool):
     without the collision comes out byte-identical.
     """
     danger = set()
-
-
-
-
+    # Per head, the sub-limit setters that have NOT been superseded by a
+    # re-heat. A list, not one line: an object start emits a standby for
+    # every other tool, so several of them can land on the same head and
+    # dropping only the last would leave the head cold anyway.
     cold_setters = {}
-    target = {}
+    target = {}         # head -> current target
     active = None
     t_re = re.compile(r'^T(\d{1,2})\s*$')
     m_re = re.compile(r'^M10[49]\b')
@@ -1167,8 +1527,8 @@ def scan_cooling_standbys(in_path, head_of_tool):
                 if 0 < val < STANDBY_MIN_EXTRUDE_C:
                     cold_setters.setdefault(h, []).append(no)
                 else:
-
-
+                    # A re-heat (or a shutdown, which is never blamed)
+                    # clears the debt: everything before it is overridden.
                     cold_setters[h] = []
                 continue
             if code[:2] in ('G0', 'G1') and active is not None:
@@ -1181,28 +1541,22 @@ def scan_cooling_standbys(in_path, head_of_tool):
                 except ValueError:
                     continue
                 tg = target.get(active)
-
+                # S=0 is a shutdown, not a standby - never blamed.
                 if tg is not None and 0 < tg < STANDBY_MIN_EXTRUDE_C:
                     danger.update(cold_setters.get(active, ()))
     return danger
 
 PURGE_MATRIX_ENABLE = True
 FILAMENT_MM3_PER_MM = 2.405
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# Share of a pair's RAW matrix value our swap flush adds on top of the wipe
+# tower. 0.45 comes from the measured failure point: black->red (433 mm3
+# raw = 180 mm) washed at a 40 mm top-up while a fixed 80 mm was clean, so
+# f >= 80/180. RAW basis on purpose: flush_multiplier is the user's TOWER
+# calibration, while our top-up serves the melt zone, a machine property the
+# tower slider must not silently scale down. The multiplier is inherited
+# UPWARD only (max(1, mult) in parse_flush_matrix_raw_from_file), so a
+# tower-less print can raise it; the multiplied matrix is still what the
+# optimizer/flush-cost preview uses (tower model).
 PURGE_MATRIX_TOPUP_FRAC = 0.45
 PURGE_MATRIX_MIN_MM = 40.
 PURGE_MATRIX_MAX_MM = 150.
@@ -1257,20 +1611,18 @@ def parse_flush_matrix_from_file(in_path):
 
 def parse_flush_matrix_raw_from_file(in_path):
     """The stamp basis: pair values as authored, with the file's
-    flush_multiplier applied UPWARD ONLY (max(1, mult) - Dirk 2026-08-17,
-    b/w squares test). The asymmetry is the whole point:
-      - mult < 1 is the user's TOWER-economy calibration (Dirk's own BUGY
-        trim ran 0.6) and must not scale our melt-zone top-up below the
-        HW-proven floor (black->red washed under ~80 mm) - so downward it
-        is ignored, exactly as before;
+    flush_multiplier applied UPWARD ONLY (max(1, mult)). The asymmetry is
+    the whole point:
+      - mult < 1 is the user's TOWER-economy calibration and must not scale
+        our melt-zone top-up below the measured floor (black->red washed
+        under ~80 mm) - so downward it is ignored;
       - mult > 1 is the one slicer-side knob a TOWER-LESS print has to
-        raise the stamps to the full transition (the b/w test: 0.45 x raw
-        left half of each into-black square as wash in the part; there is
-        no tower to absorb it). Deliberate per-pair reductions go through
+        raise the stamps to the full transition (without a tower, 0.45 x
+        raw leaves wash in the part). Deliberate per-pair reductions go through
         the raw cells, which keep working 1:1 in both directions.
     The multiplied variant stays the contract of the public parse
     functions (optimizer/flush-cost = tower model; changing their return
-    would break preflight_core across a version skew, S21)."""
+    would break preflight_core across a version skew)."""
     raw = None
     mult = 1.0
     try:
@@ -1300,17 +1652,17 @@ def _flush_matrix_build(raw, mult):
     n = int(round(len(vals) ** 0.5))
     if n < 2 or n * n != len(vals):
         return None
-
-
-
-
-
-
-
-
-
-
-
+    # A non-positive multiplier is treated as 1.0, i.e. the matrix is used as
+    # authored. Multiplying by it would zero EVERY pair, so every swap lands
+    # on PURGE_MATRIX_MIN_MM - which is BELOW the stock 80 mm the engine used
+    # before this feature existed, so the "improvement" would silently halve
+    # the purge on every swap and invite colour bleed. Seen on a real file:
+    # `flush_multiplier = 0` with a fully populated
+    # matrix of 203-733 mm3, all 28 stamps came out at 40. Our value is a
+    # TOP-UP on top of the wipe tower, so a multiplier that scales all flush
+    # volumes to nothing is not a purge instruction - it is an unset field,
+    # and it arrives that way from foreign profiles (this file came from
+    # another user; the same slicer's own default export carries 1).
     if not mult or mult <= 0:
         mult = 1.0
     return [[vals[i * n + j] * mult for j in range(n)] for i in range(n)]
@@ -1328,8 +1680,8 @@ def _matrix_purge_mm(matrix, t_from, t_to):
     mm = max(PURGE_MATRIX_MIN_MM, min(PURGE_MATRIX_MAX_MM, mm))
     return int(round(mm))
 
-
-
+# Explicit toolchange un-retract: a pure-E positive move (no X/Y/Z), e.g.
+# "G1 E10 F1800" (SnOrca, layer 1+) - tolerate F before or after E.
 _UNRETRACT_RE = re.compile(
     r'^G[01]\s+(?:F[0-9.]+\s+)?E([0-9.]+)(?:\s+F[0-9.]+)?\s*$')
 
@@ -1340,7 +1692,7 @@ def _scan_post_t_unretracts(in_path):
     in the wipe; SnOrca layer 0). The rewrite mirrors this value in the swap's
     ANTI_OOZE stamp: the swap's end-retract must equal exactly what the slicer
     pushes back, or the wipe starts lean (cushion too big) / the un-retract
-    blobs into a fuller nozzle (cushion too small, eb775cf3)."""
+    blobs into a fuller nozzle (cushion too small)."""
     bare_t = re.compile(r'^T(\d{1,2})\s*$')
     result = {}
     open_t = None
@@ -1363,7 +1715,7 @@ def _scan_post_t_unretracts(in_path):
                     pass
                 open_t = None
             elif _is_extruding_move(stripped) or dist > 300:
-                open_t = None
+                open_t = None   # no explicit un-retract -> distributed refill
     return result
 
 def _fmt_anti_ooze(v):
@@ -1382,7 +1734,7 @@ def _scan_body_tools(in_path):
     T; None when the file carries no M73) and the raw 0-based line number
     of the T line - the same numbering _scan_post_t_unretracts keys on,
     so the bg-swap stamp can look up the FUTURE arrival's un-retract
-    (its ANTI_OOZE contract, S35)."""
+    (its ANTI_OOZE contract)."""
     change_t = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*\d+')
     bare_t = re.compile(r'^T(\d{1,2})\s*$')
     m73_r = re.compile(r'^M73\b.*?\bR(\d+(?:\.\d+)?)')
@@ -1391,6 +1743,7 @@ def _scan_body_tools(in_path):
     line_nos = []
     last_r = None
     in_body = False
+    body_start = _body_start_re(in_path)
     with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
         for line_no, line in enumerate(fin):
             stripped = line.rstrip('\r\n')
@@ -1398,7 +1751,7 @@ def _scan_body_tools(in_path):
             if mr:
                 last_r = float(mr.group(1))
                 continue
-            if not in_body and change_t.match(stripped):
+            if not in_body and body_start.match(stripped):
                 in_body = True
                 continue
             m = bare_t.match(stripped)
@@ -1409,7 +1762,8 @@ def _scan_body_tools(in_path):
     return tools, times, line_nos
 
 def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
-                              progress=None, pickup_cleaning=False):
+                              progress=None, pickup_cleaning=False,
+                              copies=None, bg_heads=None, bg_stamps=True):
     """Streaming head-mode rewrite of the ORIGINAL slicer gcode. Each slicer
     T<n> is rewritten per `assignment` (compute_head_mode_layout):
       - 'pin' -> T<pin_head>                       (feeder head, no swap)
@@ -1420,13 +1774,20 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
     M104/M109 T<n> and the pre-body tool selection are remapped to the assigned
     physical head (no swap). SM_PRINT_PREEXTRUDE_FILAMENT for an ACE colour is
     DROPPED (a real swap flushes anyway; per-swap primes stacked ooze drops on
-    the tower and their SKIP_POS_RESTORE coupling knocked docked heads off,
-    HW 2026-07-04); instead each ACE head gets ONE forced prime at its first
+    the tower and their SKIP_POS_RESTORE coupling knocked docked heads off);
+    instead each ACE head gets ONE forced prime at its first
     body use, and the initial tool gets its prime from the auto-load block
     (inject_auto_load_to_file). For a pinned colour the line is remapped to the
     head (stock, un-forced; first one FORCE=1). No apply_remap step is needed -
     the assignment IS the remap. (`ace_head` is unused, kept for signature
-    compatibility.) Returns (active_swaps, skipped_swaps)."""
+    compatibility.) Returns (active_swaps, skipped_swaps).
+
+    `copies` ({t: [extra 'ace' entries]}, detect_color_copies): a colour with
+    a second spool on another head is placed PER EVENT by
+    simulate_dynamic_swaps over the body sequence, and every lookup below
+    (M104/preextrude head, the body T, the bg look-ahead) reads that plan
+    by position instead of the static entry. No copies -> the plan is the
+    static assignment at every position, byte-identical output."""
     def head_of(n):
         e = assignment.get(n)
         if not e:
@@ -1448,44 +1809,89 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
 
     def fix_m104(line):
         def repl(m):
-            h = head_of(int(m.group(1)))
+            h = head_of_next(int(m.group(1)))
             return 'T' + str(h if h is not None else int(m.group(1)) % 4)
         return re.sub(r'T(\d{1,2})', repl, line)
 
     in_body = False
-
-
+    body_start = _body_start_re(in_path)
+    # Head mode collapses every ACE colour onto ONE head, so it is if
+    # anything more exposed to the standby collision than multi.
     cooling_standbys = scan_cooling_standbys(in_path, head_of)
-    cur = {}
-    cur_tool = {}
+    cur = {}        # {ace_head: (ace, slot)} currently loaded per ACE head
+    cur_tool = {}   # {ace_head: slicer tool} for the per-pair purge stamp
     active = 0
     skipped = 0
-    primed_ace = set()
-    primed_pin = set()
-
-
-
-
-
+    primed_ace = set()  # ACE heads with one forced first-use prime emitted
+    primed_pin = set()  # pinned/feeder heads whose first prime was forced
+    # Per-toolchange look-ahead: each swap is stamped ANTI_OOZE=<the explicit
+    # un-retract that actually follows this T in the file> (scanned up front,
+    # keyed by raw line_no), or ANTI_OOZE_NO_UNRETRACT when none follows
+    # (distributed wipe refill, SnOrca layer 0 - a big cushion there left the
+    # colour's FIRST tower block ~10mm lean; stock arrives freshly primed).
     post_t_unret = _scan_post_t_unretracts(in_path)
-
-
-
+    # Per-pair purge sizing (PURGE_MATRIX_* const note). None = no matrix in
+    # the file -> no stamps, engine default (old behaviour). RAW matrix on
+    # purpose - the stamps must not inherit the tower's flush_multiplier.
     flush_matrix = (parse_flush_matrix_raw_from_file(in_path)
                     if PURGE_MATRIX_ENABLE else None)
-
-
-
-
-
-
+    # Background-unload look-ahead: body tool sequence + a moving index, so
+    # each toolchange knows which head it RELEASES and whether that head's
+    # next arrival needs a different slot -> ACE_BG_UNLOAD HEAD=h QUIET=1
+    # stamped right after the arrival (the engine gates by its own per-head
+    # open-dock config and skips QUIET requests harmlessly; on a printer
+    # without the module the line is just an "Unknown command" echo).
     body_tools, body_times, body_lines = _scan_body_tools(in_path)
     bt_idx = 0
+    plan = None
+    if copies:
+        # bg_heads = the same tie-break the preview simulated with, so the
+        # stamped plan is the previewed one.
+        _sw, plan = simulate_dynamic_swaps(
+            body_tools, _targets_with_copies(assignment, copies), bg_heads)
+
+    def ent_at(j):
+        """The entry printing the j-th body event (planned, else static)."""
+        if plan is not None and 0 <= j < len(plan) and plan[j] is not None:
+            return plan[j]
+        if 0 <= j < len(body_tools):
+            return assignment.get(body_tools[j])
+        return None
+
+    def head_at(j):
+        e = ent_at(j)
+        return e.get('head') if e and e.get('kind') in ('pin', 'ace') else None
+
+    def ace_entry_at(j):
+        e = ent_at(j)
+        if e and e.get('kind') == 'ace':
+            return (e['head'], e['ace'], e['slot'])
+        return None
+
+    def next_body_idx(n, j):
+        for i in range(max(j, 0), len(body_tools)):
+            if body_tools[i] == n:
+                return i
+        return None
+
+    def head_of_next(n):
+        """Head that will print tool n at its NEXT body use (M104 preheat and
+        preextrude lines precede that use); static when none is left."""
+        if plan is None:
+            return head_of(n)
+        i = next_body_idx(n, bt_idx)
+        return head_at(i) if i is not None else head_of(n)
+
+    def ace_entry_next(n):
+        if plan is None:
+            return ace_entry_of(n)
+        i = next_body_idx(n, bt_idx)
+        return ace_entry_at(i) if i is not None else ace_entry_of(n)
     total = os.path.getsize(in_path) or 1
     seen = 0
     last_pr = 0
 
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
          open(out_path, 'w', encoding='utf-8') as fout:
         for line_no, line in enumerate(fin):
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -1504,29 +1910,29 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
             mp = preextr_re.match(stripped)
             if mp:
                 n = int(mp.group(1))
-                ae = ace_entry_of(n)
+                ae = ace_entry_next(n)
                 if ae is not None:
-
-
-
-
-
-
-
-
-
-
+                    # ACE colour: DROP the slicer preextrude line entirely. A real
+                    # swap already flushes (INNER_FLUSH + wipe) right before
+                    # returning, so a per-swap prime only re-pressurises a clean
+                    # nozzle and leaves it nearly unretracted (macro retract 0.5mm
+                    # vs the swap's 10mm anti-ooze) -> ooze drops stacked on the
+                    # tower from layer 2. The one prime an ACE
+                    # head genuinely needs - first use after sitting in the dock
+                    # since its auto-load - is emitted at the head's first body
+                    # T-line below (primed_ace); the initial tool's prime is
+                    # appended to the auto-load block by inject_auto_load_to_file.
                     last_pr = _emit_progress(progress, seen, total, last_pr)
                     continue
-                h = head_of(n)
+                h = head_of_next(n)
                 if h is None:
                     fout.write(line)
                 elif h not in primed_pin:
-
-
-
-
-
+                    # Feeder/pinned head: one fixed colour, no swap. Force its
+                    # FIRST prime (FORCE=1) so the upload/SD path isn't gated ->
+                    # otherwise a half prime line on the feeder too. Later
+                    # appearances of the same feeder colour keep the stock
+                    # un-forced line (already primed).
                     primed_pin.add(h)
                     fout.write(
                         'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d FORCE=1\n' % h)
@@ -1535,59 +1941,64 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
 
-            if not in_body and change_t.match(stripped):
+            if not in_body and body_start.match(stripped):
                 in_body = True
 
             mt = bare_t.match(stripped)
             if mt:
                 n = int(mt.group(1))
-                h = head_of(n)
+                _is_body_ev = (in_body and bt_idx < len(body_tools)
+                               and body_tools[bt_idx] == n)
+                h = head_at(bt_idx) if _is_body_ev else head_of(n)
                 if h is None:
-                    fout.write(line)
-
-
+                    fout.write(line)             # infeasible/unknown: leave as-is
+                    # keep the bg-unload look-ahead pointer in sync (this
+                    # tool is in body_tools too)
                     if (in_body and bt_idx < len(body_tools)
                             and body_tools[bt_idx] == n):
                         bt_idx += 1
                     last_pr = _emit_progress(progress, seen, total, last_pr)
                     continue
                 fout.write('T%d\n' % h)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+                # Background-unload stamp for the head this toolchange just
+                # RELEASED - BEFORE the arrival's own ACE_SWAP_HEAD:
+                # the arrival swap takes ~90 s during which the released head is
+                # already parked; stamping after it wasted that window on every
+                # swapping arrival. Safe to run in parallel: strict 1:1 head↔ACE
+                # means the released head's ACE, heater and trapq are
+                # disjoint from the arrival's; the stamp sits after the full T
+                # (park done), and _wait_bg_op still serializes a feed op that
+                # targets the bg head itself. Runs for EVERY body T incl. pin
+                # arrivals - the released head may be an ACE head either way:
+                # its currently loaded slot is by definition the released
+                # tool's own assignment; if the head's NEXT body arrival needs
+                # a DIFFERENT slot, unload it now, in the background. Same slot
+                # next time (or never used again) -> no stamp.
                 if (in_body and bt_idx < len(body_tools)
                         and body_tools[bt_idx] == n):
-                    if bt_idx > 0:
+                    # bg_stamps False = the multi topology (one ACE feeds
+                    # several heads, no background swaps): no ACE_BG_SWAP
+                    # lines at all.
+                    if bt_idx > 0 and bg_stamps:
                         rel_tool = body_tools[bt_idx - 1]
-                        ae_rel = ace_entry_of(rel_tool)
+                        ae_rel = ace_entry_at(bt_idx - 1)
                         if (ae_rel is not None and rel_tool != n
-                                and ae_rel[0] != head_of(n)):
+                                and ae_rel[0] != head_at(bt_idx)):
                             loaded_now = (ae_rel[1], ae_rel[2])
                             nxt = None
                             nxt_j = None
                             for j in range(bt_idx + 1, len(body_tools)):
-                                e2 = ace_entry_of(body_tools[j])
+                                e2 = ace_entry_at(j)
                                 if e2 is not None and e2[0] == ae_rel[0]:
                                     nxt = (e2[1], e2[2])
                                     nxt_j = j
                                     break
                             if nxt is not None and nxt != loaded_now:
-
-
-
-
-
+                                # M73 window look-ahead: only stamp when the
+                                # released head stays parked long enough (see
+                                # BG_UNLOAD_MIN_WINDOW_MIN; the overlap with
+                                # the arrival swap comes on top of the M73
+                                # window, so this stays conservative).
                                 r_now = body_times[bt_idx]
                                 r_nxt = body_times[nxt_j]
                                 window = None
@@ -1602,24 +2013,24 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                         % (ae_rel[0], int(window),
                                            BG_UNLOAD_MIN_WINDOW_MIN))
                                 else:
-
-
-
-
-
-
-
-
-
+                                    # Full background SWAP (BG-Load v1):
+                                    # unload + feed/grip/prime of the NEXT
+                                    # slot; the arrival no-ops. ANTI_OOZE =
+                                    # the FUTURE arrival's own un-retract
+                                    # (post_t_unret keyed by its raw line
+                                    # number) so the bg prime's end retract
+                                    # matches what the slicer pushes back
+                                    # (the arrival line's
+                                    # stamp never runs - it no-ops).
                                     ao = post_t_unret.get(
                                         body_lines[nxt_j])
                                     if ao is None:
                                         ao = ANTI_OOZE_NO_UNRETRACT
-
-
-
-
-
+                                    # Per-pair purge as an ON-LINE param:
+                                    # the bg prime reads it minutes later
+                                    # (async), a global ACE_SET_PURGE
+                                    # stamped here would race with later
+                                    # inline stamps (PURGE_MATRIX_* note).
                                     _bgp = _matrix_purge_mm(
                                         flush_matrix, rel_tool,
                                         body_tools[nxt_j])
@@ -1630,13 +2041,15 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                            _fmt_anti_ooze(ao),
                                            (' PURGE=%d' % _bgp)
                                            if _bgp is not None else ''))
+                    ae = ace_entry_at(bt_idx)
                     bt_idx += 1
-                ae = ace_entry_of(n)
+                else:
+                    ae = ace_entry_of(n)
                 if not in_body:
-
-
-
-
+                    # Pre-body tool select = the initial tool. Its first prime is
+                    # appended to the auto-load block by inject_auto_load_to_file
+                    # (the head is not loaded yet at this file position) - mark it
+                    # primed so the first swap BACK to it doesn't prime again.
                     if ae is not None:
                         primed_ace.add(ae[0])
                 elif ae is not None:
@@ -1647,26 +2060,26 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                    % (head, a, s))
                         skipped += 1
                         cur_tool[head] = n
-
-
+                        # Same-slot return = no swap = no cleaning move. Stamp a
+                        # Pickup-Clean (no-op at runtime unless the feature is on).
                         if pickup_cleaning:
                             fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % head)
                     else:
-
-
-
-
-
-
-
-
+                        # Plain swap with the FULL pos-restore. SKIP_POS_RESTORE=1
+                        # here was a dead end: it promised "a prime follows", but
+                        # the slicer only carries a preextrude line at a colour's
+                        # FIRST use - on a repeat-colour swap nothing followed and
+                        # the print resumed from the LOAD position (dock row
+                        # Y~300): the next moves swept the dock line and knocked
+                        # parked heads off. Never couple
+                        # the restore to a line the slicer may not emit.
                         v = post_t_unret.get(line_no)
                         if v is None:
                             v = ANTI_OOZE_NO_UNRETRACT
-
-
-
-
+                        # Per-pair flush top-up for the swap's INNER_FLUSH
+                        # (PURGE_MATRIX_* const note). Synchronous gcode
+                        # order: the swap reads get_purge_length during
+                        # this very command - no race.
                         _pp = _matrix_purge_mm(flush_matrix,
                                                cur_tool.get(head), n)
                         if _pp is not None:
@@ -1678,17 +2091,17 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                         cur_tool[head] = n
                         active += 1
                     if head not in primed_ace:
-
-
-
-
-
+                        # First body use of this ACE head. Its auto-load flushed
+                        # minutes ago (other heads loaded since, first layers
+                        # printed) and a same-slot swap line no-ops in ace.py
+                        # (already loaded, no flush) - the nozzle has drooled
+                        # empty in the dock. One forced prime, once per head.
                         primed_ace.add(head)
                         fout.write('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d '
                                    'FORCE=1\n' % head)
                 elif pickup_cleaning:
-
-
+                    # in_body pinned/feeder head (ae is None): a plain T with no
+                    # swap -> a bare-T pick with no cleaning move.
                     fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % h)
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
@@ -1726,8 +2139,7 @@ def parse_nozzle_diameters(gcode):
 
     The parser itself is slicer-agnostic (every Orca/Prusa descendant
     emits the line), but the GATE that consumes it is deliberately scoped
-    to FOrcaSlicer files (Dirk 2026-08-07: "bitte erstmal an forca
-    haengen"). Rationale, verified in stock 1.5.2: a mixed-nozzle job
+    to FOrcaSlicer files. Rationale, verified in stock 1.5.2: a mixed-nozzle job
     cannot reach the machine any other way. Stock Orca emits
     SET_PRINT_TASK_PARAMETERS, whose guard compares the file's
     nozzle_diameter[0] - index 0 ALWAYS - against every USED extruder
@@ -1738,10 +2150,20 @@ def parse_nozzle_diameters(gcode):
     FOrca therefore covers the entire exposed population while leaving
     the normal workflow provably untouched.
 
+    Version drift, re-checked per firmware tree: on 1.5.2 and 1.6.0 that
+    check sits behind 'if nozzle_diameter is not None', so a command
+    without NOZZLE_DIAMETER_LIST skips it - FOrca's omission of the whole
+    line still skips far more. 1.6.0 adds a second axis: the nozzle
+    VOLUME TYPE (standard/high_flow, per-extruder, exception_code 19 on
+    mismatch) with its own guard - gated on FILAMENT_VOLUME_TYPE being
+    present, plus a SnapmakerOrca-only branch that demands all-standard
+    when it is absent. FOrca's banner is not 'SnapmakerOrca', so neither
+    branch fires for it today.
+
     Empty dict when the line is absent - callers must then treat the
     diameters as UNKNOWN and skip the gate, never assume uniformity.
 
-    Why it matters (HW-proven 2026-08-07 on FOrcaSlicer 2.3.2 cubes): with
+    Why it matters (reproduced on FOrcaSlicer 2.3.2 cubes): with
     mixed nozzles the slicer bakes each tool's own line WIDTH into that
     tool's extrusions - T0 tops out at 0.274mm on a 0.2 nozzle while T1
     lays 0.8mm. match_colors_to_slots is colour/material driven and was
@@ -1769,6 +2191,7 @@ def parse_nozzle_diameters(gcode):
             break
     return dia
 
+
 def parse_slicer_name(gcode):
     """The slicer's own '; generated by <name> <version>' banner, or ''."""
     for line in gcode.splitlines()[:300]:
@@ -1780,6 +2203,7 @@ def parse_slicer_name(gcode):
             return m.group(1).strip()
     return ''
 
+
 def is_forca_slicer(slicer_name):
     """True for a FOrcaSlicer banner. The mixed-nozzle handling hangs off
     this (see parse_nozzle_diameters for why that scoping is safe): FOrca
@@ -1787,11 +2211,11 @@ def is_forca_slicer(slicer_name):
     all, so everything gated on it leaves the normal workflow untouched."""
     return 'forcaslicer' in (slicer_name or '').replace(' ', '').lower()
 
+
 def nozzle_gate_groups(tool_dia, head_dia=None, num_heads=4):
     """{tool T -> set of heads that tool may print on}.
 
-    TWO different things, deliberately kept apart (corrected 2026-08-07 after
-    a FOrcaSlicer PTP file made the difference visible):
+    TWO different things, deliberately kept apart:
       tool_dia  {T: mm}    DEMAND - which nozzle each FILAMENT was sliced for.
                            From the file's `nozzle_diameter` header, which is
                            indexed PER FILAMENT (10 filaments -> 10 entries,
@@ -1824,17 +2248,18 @@ def nozzle_gate_groups(tool_dia, head_dia=None, num_heads=4):
             continue
         groups[t] = {h for h, have in head_dia.items()
                      if have and abs(have - want) < 0.001}
-
-
-
-
-
-
-
+    # No constraint only when every tool may use EVERY head - i.e. a uniform
+    # machine printing a file sliced for that same nozzle. "All heads equal"
+    # alone is NOT enough: a file demanding 0.2/0.8/0.4/0.6 on a 4x0.4 machine
+    # fits nowhere, and returning {} there would wave it through silently
+    # (the line widths are baked in, so no head can print it). Such a tool
+    # gets an EMPTY set instead, which the matcher turns into no_slot and the
+    # UI reports as "needs a X mm nozzle - no head has one".
     every = set(head_dia)
     if all(v == every for v in groups.values()):
         return {}
     return groups
+
 
 def parse_color_names(gcode):
     """Best-effort lookup table T-index -> color name. Orca writes
@@ -2119,7 +2544,7 @@ def _suggest_layer_friendly_remap(layer_colors, num_aces):
     return new_t if any(v != k for k, v in new_t.items()) else None
 
 def compute_swap_aware_layout(events, num_aces, num_heads=4,
-                              layer_color_sets=None):
+                              layer_color_sets=None, allowed_heads=None):
     """Search head assignments per color (free distribution - colors
     are NOT bound to head=T%4) for the one that minimizes the runtime
     swap count.
@@ -2138,6 +2563,13 @@ def compute_swap_aware_layout(events, num_aces, num_heads=4,
             when provided, assignments that put 2+ colors on the same
             head within ANY single layer are rejected (= layer-only
             swap mode, no mid-layer changes).
+        allowed_heads: optional {T: set(heads)} from nozzle_gate_groups -
+            the MIXED-NOZZLE constraint. A filament is sliced at the line
+            width of one nozzle diameter and can only ever print on a head
+            carrying that diameter; without this the optimizer is free to
+            move it to a wrong-sized nozzle, which is a silently ruined
+            print. None/empty (uniform machine, unknown diameters) leaves
+            the search unconstrained, i.e. byte-identical to before.
 
     Returns:
         (color_to_head dict, swap_count) on success
@@ -2154,10 +2586,33 @@ def compute_swap_aware_layout(events, num_aces, num_heads=4,
     if n > 12:
         return None, None
 
+    # Per-color head whitelist, resolved once. A color the gate knows
+    # nothing about stays unconstrained rather than being locked out.
+    allow = None
+    if allowed_heads:
+        allow = []
+        for c in colors_list:
+            # MISSING key = the gate knows nothing about this filament ->
+            # unconstrained. EMPTY set = the gate examined it and no head
+            # carries its diameter -> nothing satisfies it, so the search
+            # must come back infeasible instead of placing it anywhere.
+            hs = allowed_heads.get(c, None)
+            allow.append(None if hs is None else set(hs))
+        if all(a is None for a in allow):
+            allow = None
+
     best_assignment = None
     best_swaps = None
 
     for assignment in product(range(num_heads), repeat=n):
+        if allow is not None:
+            ok = True
+            for i, h in enumerate(assignment):
+                if allow[i] is not None and h not in allow[i]:
+                    ok = False
+                    break
+            if not ok:
+                continue
         head_count = [0] * num_heads
         for h in assignment:
             head_count[h] += 1
@@ -2199,6 +2654,7 @@ def compute_swap_aware_layout(events, num_aces, num_heads=4,
     if best_assignment is None:
         return None, None
     return best_assignment, best_swaps
+
 
 def compute_layer_swap_plan(body_gcode, num_aces=4):
     """Analyze whether the print can be served with layer-boundary-only
@@ -2846,7 +3302,7 @@ def inject_auto_load(gcode):
          M109 in the slicer's start gcode and BEFORE the first body
          move. It also extrudes from the initial tool, so the initial
          tool's filament must be loaded by then or the runout sensor
-         triggers an id=523 pause (observed 2026-04-26 14:56). This is
+         triggers an id=523 pause. This is
          the safest anchor for prints that use a single tool or whose
          initial tool is never targeted by a `; Change Tool` marker.
 
@@ -2888,8 +3344,8 @@ def inject_auto_load(gcode):
             continue
         cleaned.append(ln)
     lines = cleaned
-
-
+    # Primary: structural anchor (section boundary before the first extrusion);
+    # slicer/locale-independent. Comment anchors below stay as fallback.
     inject_idx = _structural_inject_idx(lines)
 
     if inject_idx is None:
@@ -2920,12 +3376,12 @@ def inject_auto_load(gcode):
     used_heads = set()
 
     body_start = inject_idx if inject_idx is not None else 0
-
-
-
-
-
-
+    # Pre-anchor start-selection scan - the in-memory twin of the streaming
+    # variant's scan (see inject_auto_load_to_file): a swap
+    # the rewrite emitted BEFORE the anchor is the start selection; last
+    # one per head wins, lines inside an old auto-load block are skipped
+    # (this twin never had block stripping, so a stale INITIAL=1 line
+    # would otherwise seed itself). No-op for standard exports.
     _in_old_block = False
     for i in range(0, body_start):
         ls_pre = lines[i].strip()
@@ -2952,11 +3408,11 @@ def inject_auto_load(gcode):
             if head not in initial:
 
                 j = i + 1
-
-
-
-
-
+                # Skip blank/comment lines and head-mode background-swap stamps
+                # (ACE_BG_SWAP/UNLOAD for the RELEASED head) between the bare T
+                # and the arriving head's ACE_SWAP_HEAD - else this falls to the
+                # (0, head) fallback and auto-loads the wrong ACE. Multi
+                # emits no ACE_BG_ lines -> no-op there.
                 while j < len(lines):
                     sj = lines[j].strip()
                     if (sj == '' or sj.startswith(';')
@@ -2993,9 +3449,9 @@ def inject_auto_load(gcode):
     inject = ['', '; multiACE auto-load: load initial filaments']
     for head in sorted(initial):
         ace, slot = initial[head]
-
-
-
+        # INITIAL=1: block-only flag, swap tail parks at discard instead of
+        # restoring to the meaningless pre-block position (see the streaming
+        # twin in inject_auto_load_to_file).
         inject.append('ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d INITIAL=1'
                       % (head, ace, slot))
     inject.append('; multiACE auto-load: end')
@@ -3100,7 +3556,7 @@ def apply_remap_to_file(in_path, out_path, remap, progress=None):
     total = os.path.getsize(in_path) or 1
     seen = 0
     last_pr = 0
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
          open(out_path, 'w', encoding='utf-8') as fout:
         for line in fin:
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -3132,10 +3588,10 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     drop_pre  = re.compile(r'^SM_PRINT_PREEXTRUDE_FILAMENT INDEX=([4-9]|1[0-5])\b')
     low_pre   = re.compile(r'^SM_PRINT_PREEXTRUDE_FILAMENT INDEX=([0-3])\b')
     change_t  = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*\d+')
-
-
-
-
+    # Same marker, but capturing the ARRIVING slicer tool. apply_remap leaves
+    # these comments intact precisely so downstream stages have a canonical
+    # slicer-T source - and the flush matrix is indexed by slicer
+    # filament, so this is the only correct key for the per-pair purge.
     change_to = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*(\d+)')
     bare_hi   = re.compile(r'^T([4-9]|1[0-5])\s*$')
     bare_lo   = re.compile(r'^T([0-3])\s*$')
@@ -3148,60 +3604,54 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
                       line)
 
     in_body = False
+    body_start = _body_start_re(in_path)
     head_loaded = {0: (0, 0), 1: (0, 1), 2: (0, 2), 3: (0, 3)}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    # Which SLICER filament each head currently holds - the key the flush
+    # matrix is indexed by, and the ONLY correct one for the per-pair purge
+    # (PURGE_MATRIX_* const note).
+    #
+    # This used to be reconstructed as head_loaded[h][0]*4 + h, on the
+    # assumption "slicer tool n <-> (ace=n//4, slot=n%4)". That holds only
+    # when the slicer emits the multiACE virtual convention itself. After the
+    # preflight's remap it does NOT: the matcher assigns colours to slots by
+    # material/colour, so the virtual index and the slicer filament index are
+    # different numbers and the lookup landed in the wrong row (on a real
+    # 6-colour file 43% short on the most demanding transition, hidden
+    # while every value clamped to the floor).
+    # rewrite_head_mode_to_file never had this - it tracks cur_tool[head].
     head_slicer = {}
-
-
+    # RAW matrix on purpose - the stamps must not inherit the tower's
+    # flush_multiplier (PURGE_MATRIX_TOPUP_FRAC note).
     flush_matrix = (parse_flush_matrix_raw_from_file(in_path)
                     if PURGE_MATRIX_ENABLE else None)
     active = 0
     skipped = 0
     swapbacks = 0
-
-
-
+    # Standby lines that provably leave the printing head below
+    # min_extrude_temp (see scan_cooling_standbys). Empty for every file
+    # without the collision, which then comes out byte-identical.
     cooling_standbys = scan_cooling_standbys(in_path, lambda n: n % 4)
-
-
-
-
-
-
-
-
-
-
-
+    # Heads that already got their ONE forced prime (first use), as in the
+    # head-mode preextrude scheme: per-swap FORCE primes are REDUNDANT (every
+    # real swap already flushes 80mm + wipes via INNER_FLUSH) and HARMFUL -
+    # the prime macro ends with only ~0.5mm retract vs the swap's 10mm
+    # anti-ooze, so the head returns pressurised and drools blobs onto the
+    # wipe tower. Only the FIRST prime per head is still needed (stock's
+    # persisted once-per-index gate would skip it on upload/SD starts ->
+    # half prime line); every later colour change is covered by the swap's
+    # own flush.
     primed_first = set()
 
-
-
-
-
-
-
-
-
-
-
-
+    # ANTI_OOZE look-ahead (second half of the head-mode preextrude scheme;
+    # the prime removal above EXPOSES this): the swap's end-retract
+    # must equal exactly what the slicer pushes back after the toolchange.
+    # The old per-swap prime refilled the nozzle regardless and masked any
+    # mismatch; without it, a toolchange the slicer does NOT un-retract
+    # after (distributed wipe refill - straight into "CP TOOLCHANGE WIPE")
+    # starts ~10mm lean with the fixed swap_anti_ooze_retract cushion.
+    # Stamp each emitted swap with the ACTUAL un-retract
+    # that follows its T (or ANTI_OOZE_NO_UNRETRACT when none does);
+    # cmd_ACE_SWAP_HEAD reads the value mode-independently.
     post_t_unret = _scan_post_t_unretracts(in_path)
 
     def _ao_for(t_line_no):
@@ -3211,8 +3661,8 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     pending_head = None
     pending_line_no = None
     pending_blanks: list[str] = []
-
-
+    # Last '; Change Tool X -> Tool Y' seen (Y), and its snapshot taken when
+    # the bare T was parked - flush_pending_* runs one or more lines later.
     pending_slicer = None
     pending_slicer_tool = None
 
@@ -3228,9 +3678,9 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
         guess from the wrong row."""
         if arriving_slicer is not None:
             return head_slicer.get(head), arriving_slicer
-
-
-
+        # No Change Tool markers (single-tool export, or a slicer emitting
+        # the multiACE virtual convention directly). There the old
+        # reconstruction is correct, so those files stay byte-identical.
         prev = head_loaded.get(head)
         return ((prev[0] * 4 + head) if prev else None), arriving_virtual
 
@@ -3259,9 +3709,9 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
         for b in pending_blanks:
             fout.write(b)
         pending_blanks.clear()
-
-
-
+        # Resolve the pair BEFORE recording the arrival - _purge_pair reads
+        # what the head held until now. The arrival is recorded either way:
+        # a same-colour return emits no swap but the head still holds it.
         _pf, _pt = _purge_pair(head, head, arriving)
         if arriving is not None:
             head_slicer[head] = arriving
@@ -3275,8 +3725,8 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             active += 1
             head_loaded[head] = initial_key
         elif pickup_cleaning:
-
-
+            # Bare-T same-colour return (head at its initial slot, no swap-back)
+            # = no cleaning move. Stamp a Pickup-Clean (no-op unless enabled).
             fout.write('ACE_PICKUP_CLEAN HEAD=%d\n' % head)
 
     def flush_pending_paired(fout):
@@ -3296,7 +3746,7 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             fout.write(b)
         pending_blanks.clear()
 
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
          open(out_path, 'w', encoding='utf-8') as fout:
         for _raw_no, line in enumerate(fin):
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -3318,12 +3768,12 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             if mdp:
                 if pending_head is not None:
                     flush_pending_unmatched(fout)
-
-
-
-
-
-
+                # A swapped colour's preextrude (INDEX 4-15): dropped. Only
+                # the head's very FIRST prime is emitted (FORCE=1 - stock's
+                # persisted once-per-index gate would skip an un-forced one
+                # on upload/SD starts -> half prime line); every later swap
+                # is covered by the swap's own 80mm flush + wipe. See the
+                # primed_first comment above (head-mode scheme port).
                 hpre = int(mdp.group(1)) % 4
                 if hpre not in primed_first:
                     primed_first.add(hpre)
@@ -3332,13 +3782,13 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
 
-            if not in_body and change_t.match(stripped):
+            if not in_body and body_start.match(stripped):
                 in_body = True
 
-
-
-
-
+            # Track the arriving slicer filament for the per-pair purge. Has
+            # to be matched on EVERY line, not inside the in_body guard above:
+            # that one fires exactly once, on the transition. Matched before
+            # the pre-body branch too, so the initial tool seeds head_slicer.
             _mct = change_to.match(stripped)
             if _mct:
                 pending_slicer = int(_mct.group(1))
@@ -3366,15 +3816,15 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
                 else:
                     flush_pending_unmatched(fout)
 
-
-
-
-
-
-
-
-
-
+            # An initial-slot colour's preextrude (INDEX 0-3). First
+            # occurrence per head -> FORCE=1 (covers the FIRST load of each
+            # head, the reported "no swaps, 4 ACE colours, prime skipped per
+            # head" case - stock's persisted gate skips un-forced lines on
+            # upload/SD starts). Every later occurrence (swap-backs) is
+            # DROPPED: the swap-back's own flush covers it, and a stock
+            # un-forced line with a fresh gate would re-pressurise the head
+            # right after the anti-ooze retract (the tower-blob mechanism,
+            # see primed_first above).
             mlp = low_pre.match(stripped)
             if mlp:
                 h = int(mlp.group(1))
@@ -3406,7 +3856,7 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
                 ace = n // 4
                 fout.write('T%d\n' % head)
                 key = (ace, head)
-
+                # Pair before arrival (see flush_pending_unmatched).
                 _pf, _pt = _purge_pair(head, n, pending_slicer)
                 if pending_slicer is not None:
                     head_slicer[head] = pending_slicer
@@ -3430,7 +3880,7 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
             if m:
                 pending_head = int(m.group(1))
                 pending_line_no = _raw_no
-
+                # Snapshot: flush_pending_* runs one or more lines later.
                 pending_slicer_tool = pending_slicer
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
@@ -3481,13 +3931,13 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
       4. First ACE_SWAP_HEAD HEAD= line."""
     preextr_re = re.compile(r'^SM_PRINT_PREEXTRUDE_FILAMENT\b')
     chg_re     = re.compile(r'^;\s*Change Tool\s*\d+\s*->\s*Tool\s*(\d+)')
-
-
-
-
-
-
-
+    # Tolerate trailing KEY=VAL flags: the head-mode rewrite emits
+    # "ACE_SWAP_HEAD ... SKIP_POS_RESTORE=1". The old $-anchored
+    # pattern silently missed those swaps, so pass B never saw the paired
+    # swap and every head fell back to the (0, head) default -> the injected
+    # auto-load block loaded ACE 0 / slot==head instead of the assignment
+    # (wrong ACE at print start, head_source wrong, FA armed on the wrong
+    # ACE). Plain multi swaps (no flags) match exactly as before.
     swap_re    = re.compile(
         r'^ACE_SWAP_HEAD HEAD=(\d+) ACE=(\d+) SLOT=(\d+)(?:\s+\S+=\S+)*\s*$')
     bare_t_re  = re.compile(r'^T([0-3])\s*$')
@@ -3497,10 +3947,10 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     first_chg     = None
     first_preextr = None
     first_swap    = None
-
-    first_ext     = None
-    ext_boundary  = None
-    last_boundary = None
+    # structural anchor: nearest section boundary before the first extrusion
+    first_ext     = None   # line_no of the first extruding move
+    ext_boundary  = None   # boundary line_no captured when first_ext was hit
+    last_boundary = None   # running nearest blank / ;===== header
 
     in_old_block = False
     old_block_ranges: list[tuple[int, int]] = []
@@ -3545,9 +3995,9 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     if in_old_block and block_start is not None:
         old_block_ranges.append((block_start, last_line_no))
 
-
-
-
+    # Primary: structural anchor (section boundary before the first extrusion).
+    # If an extrusion was found but no boundary precedes it, fall back to the
+    # extrusion line itself; then the locale-specific comment anchors.
     structural = ext_boundary if ext_boundary is not None else first_ext
     anchor_line_no = None
     for candidate in (structural, first_huaqi, first_chg, first_preextr, first_swap):
@@ -3563,27 +4013,27 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     initial: dict[int, tuple[int, int]] = {}
     used_heads: set[int] = set()
     pending_t_head: int | None = None
-    first_seen_head: int | None = None
+    first_seen_head: int | None = None  # first tool used after the anchor
 
     if anchor_line_no is not None:
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        # Pre-anchor start-selection scan (head mode): a MODIFIED start
+        # gcode can emit the
+        # '; Change Tool' marker before the anchor - the rewrite then
+        # flips in_body there and emits a REAL swap for the start tool,
+        # which pass B below never sees (line_no < anchor skip). The head
+        # fell back to the (0, head) default and the injected block
+        # OVERWROTE the correct pre-anchor load (load right, unload, load
+        # wrong). A swap the rewrite emitted before the anchor IS the
+        # state at the anchor - read it instead of guessing. Rules:
+        #  - LAST swap per head wins (the state AT the anchor, mirroring
+        #    the runtime), pass B's first-wins guards then keep it;
+        #  - old auto-load block ranges are skipped like everywhere else;
+        #  - standard exports have NO pre-anchor swaps (in_body flips
+        #    after the anchor), so this is a byte-identical no-op there.
+        # This is NOT the old 'first ACE_SWAP_HEAD anywhere' logic whose
+        # regression the swap_re comment documents - the restriction to
+        # the pre-anchor region is the whole difference: a swap there is
+        # by definition the start selection.
         with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
             for line_no, line in enumerate(fin):
                 if line_no >= anchor_line_no:
@@ -3603,15 +4053,15 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                 stripped = line.strip()
 
                 if pending_t_head is not None:
-
-
-
-
-
-
-
-
-
+                    # Skip blank/comment lines AND the head-mode background-swap
+                    # stamps (ACE_BG_SWAP/ACE_BG_UNLOAD for the RELEASED head)
+                    # that sit between the bare T and the arriving head's
+                    # ACE_SWAP_HEAD - otherwise the parser bails to the
+                    # (0, head) fallback below and the auto-load loads the
+                    # arriving head from the WRONG ACE (the 1:1 guard then
+                    # refuses the swap and the print halts). Multi emits no
+                    # ACE_BG_ lines so
+                    # this is a no-op there (byte-identical, no gating needed).
                     if (stripped == '' or stripped.startswith(';')
                             or stripped.startswith('ACE_BG_')
                             or stripped.startswith('ACE_SET_PURGE')):
@@ -3656,10 +4106,10 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
         if head not in initial:
             initial[head] = (0, head)
 
-
-
-
-
+    # Head mode: only the ACE-driven (swap) head is auto-loaded via ACE_SWAP_HEAD;
+    # feeder/pinned heads are loaded natively (side feeder) before the print, not
+    # in the gcode - so drop them from the auto-load block. only_heads=None keeps
+    # the multi behaviour (all used heads).
     if only_heads is not None:
         initial = {h: v for h, v in initial.items() if h in only_heads}
 
@@ -3670,20 +4120,20 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                             len(inject_heads))
         inject_block.append('; multiACE processed: format=%d\n'
                             % PP_FORMAT_VERSION)
-
-
-
-
+        # Clear any stale per-pair purge override from a previous print
+        # (PURGE_MATRIX_* const note): the override is process-lifetime in
+        # Klipper, so a processed print always starts from the config
+        # default and only its own stamps apply.
         inject_block.append('ACE_SET_PURGE RESET=1\n')
-
-
-
-
-
-
-
-
-
+        # [PROTOTYPE] Background the initial-load phase (BG_INITIAL_LOAD): pair
+        # (inline head, bg-enabled next head) so the second loads in the
+        # background while the first loads inline. The leading ACE_BG_SWAP
+        # kicks off the async bg-load (unload-if-loaded + load + prime); the
+        # head's own ACE_SWAP_HEAD below is then a no-op arrival that the
+        # pick-check verifies at first body use. Only bg-enabled heads (open
+        # dock) are backgrounded; a busy engine makes the bg refuse -> the
+        # arrival ACE_SWAP_HEAD loads it inline (graceful). Head mode only
+        # (only_heads set); multi keeps the plain sequential block.
         _bg_set = set(bg_heads or ())
         _use_bg = (BG_INITIAL_LOAD and only_heads is not None and bool(_bg_set))
         i = 0
@@ -3696,11 +4146,11 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                 inject_block.append(
                     'ACE_BG_SWAP HEAD=%d ACE=%d SLOT=%d ANTI_OOZE=%s QUIET=1\n'
                     % (hb, ab, sb, _fmt_anti_ooze(ANTI_OOZE_NO_UNRETRACT)))
-
-
-
-
-
+                # INITIAL=1: the swap tail parks at the discard position
+                # instead of restoring to the meaningless pre-block pos
+                # (the bed CENTER - the primed head stood there oozing while
+                # the bg partner's arrival waited). Block-only flag; body
+                # swaps keep the full pos-restore semantics.
                 inject_block.append(
                     'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d INITIAL=1\n'
                     % (h, a, s))
@@ -3713,14 +4163,14 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                     'ACE_SWAP_HEAD HEAD=%d ACE=%d SLOT=%d INITIAL=1\n'
                     % (h, a, s))
                 i += 1
-
-
-
-
-
-
-
-
+        # Head mode: the initial tool prints right after this block, but its
+        # slicer preextrude line was dropped by rewrite_head_mode_to_file (it
+        # sits BEFORE this block in the file, when the head is not loaded yet).
+        # Prime it here, after all loads - it never got one otherwise (the
+        # never-primed-initial-head bug). Inside the
+        # block markers so a re-process strips + re-adds it (idempotent).
+        # only_heads gate keeps multi byte-identical (multi keeps the slicer's
+        # own start-gcode preextrude line instead).
         if (only_heads is not None and first_seen_head is not None
                 and first_seen_head in initial):
             inject_block.append('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d '
@@ -3730,7 +4180,7 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     seen = 0
     last_pr = 0
     injected = False
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
          open(out_path, 'w', encoding='utf-8') as fout:
         for line_no, line in enumerate(fin):
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -3762,7 +4212,7 @@ def apply_layer_remap_to_file(in_path, out_path, layer_info, progress=None):
         total = os.path.getsize(in_path) or 1
         seen = 0
         last_pr = 0
-        with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
+        with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
              open(out_path, 'w', encoding='utf-8') as fout:
             for line in fin:
                 seen += len(line.encode('utf-8', errors='ignore'))
@@ -3822,7 +4272,7 @@ def apply_layer_remap_to_file(in_path, out_path, layer_info, progress=None):
     total = os.path.getsize(in_path) or 1
     seen = 0
     last_pr = 0
-    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin,\
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin, \
          open(out_path, 'w', encoding='utf-8') as fout:
         for line in fin:
             seen += len(line.encode('utf-8', errors='ignore'))
@@ -3942,10 +4392,10 @@ def main():
               '(override with --aces N if needed)' % num_aces)
 
     if live_lookup_host is not None:
-
-
-
-
+        # Manual/TPU head set -> live-lookup colour matching is disabled (it
+        # works off ACE slots and can't place a hand-fed manual head). Abort
+        # here, consistent with the web preflight; lookup_live_slots itself is
+        # left untouched (Pro matcher reuses it).
         if host_has_manual_head(live_lookup_host):
             print('ERROR: a toolhead is set to manual - live-lookup '
                   'colour matching is disabled (cannot place a hand-fed manual '
