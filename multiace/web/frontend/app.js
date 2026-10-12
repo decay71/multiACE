@@ -623,15 +623,28 @@ createApp({
       // ACE transport varies run to run, so the saved values carry a
       // generous margin: the load is stopped by the toolhead sensor
       // anyway, and a swap retract that runs long only costs seconds
-      // while one that stops short leaves filament in the splitter.
+      // while one that stops short leaves filament in the hub.
       loadAllowance: 150, swapAllowance: 100,
-      baselinePrepared: false, routeConfirmed: false,
       panel: 'setup', panelTouched: false, recalibrate: false,
       busy: '', cancelRequested: false, error: '', saved: false,
+      hubAdjust: false, holding: false, restarting: false,
     });
     const calibrationSelectionTouched = reactive({
       ace: false, slot: false, head: false,
     });
+    const CAL_MEASURING = ['prepared', 'feeding', 'feed_paused', 'at_sensor',
+      'retract_ready', 'retracting', 'feed_jogging', 'swap_marked',
+      'returning', 'return_paused'];
+    const CAL_VERIFYING = ['verifying_feed', 'verify_toolhead',
+      'verify_toolhead_adjust', 'verify_toolhead_adjusting',
+      'verifying_splitter', 'verify_splitter', 'verify_splitter_adjusting',
+      'verifying_return', 'verify_paused'];
+    const CAL_MOVING = ['feeding', 'retracting', 'returning', 'feed_jogging',
+      'homing', 'verifying_feed', 'verifying_splitter', 'verifying_return',
+      'verify_toolhead_adjusting', 'verify_splitter_adjusting'];
+    const CAL_PARKED = ['idle', 'complete', 'verified'];
+    // Stopped mid-way with the position kept: can be carried on.
+    const CAL_PAUSED = ['feed_paused', 'return_paused', 'verify_paused'];
     const connectedCalibrationAces = computed(() =>
       state.aces.filter(a => a && a.connected));
     const calibrationSelectedAce = computed(() =>
@@ -645,95 +658,102 @@ createApp({
     const calibrationVerifyMoving = computed(() =>
       ['verifying_feed', 'verifying_splitter', 'verifying_return']
         .includes(state.calibration?.state));
+    const calibrationVerifyActive = computed(() =>
+      CAL_VERIFYING.includes(state.calibration?.state));
     const calibrationMoving = computed(() =>
-      ['feeding', 'retracting', 'returning', 'feed_jogging']
-        .includes(state.calibration?.state)
-        || calibrationVerifyMoving.value
-        || state.calibration?.state === 'verify_toolhead_adjusting');
-    const calibrationRouteLocked = computed(() => {
+      CAL_MOVING.includes(state.calibration?.state));
+    // Calibration filament is (believed to be) somewhere in the tube.
+    const calibrationRouteOccupied = computed(() => {
       const c = state.calibration || {};
       const position = Number(c.tip_position_mm);
-      const tipAwayFromPark = Number.isFinite(position) && position > 0;
-      const nonParkedState = [
-        'feeding', 'at_sensor', 'retract_ready', 'retracting',
-        'swap_marked', 'returning', 'feed_jogging', 'verifying_feed',
-        'verify_toolhead', 'verify_toolhead_adjust',
-        'verify_toolhead_adjusting', 'verifying_splitter', 'verify_splitter',
-        'verifying_return', 'verify_paused', 'cancelled', 'failed',
-      ].includes(c.state);
+      return !CAL_PARKED.includes(c.state || 'idle')
+        && Number.isFinite(position) && position > 0;
+    });
+    const calibrationRouteLocked = computed(() => {
+      const c = state.calibration || {};
       return c.ace != null && c.slot != null && c.head != null
-        && (tipAwayFromPark || nonParkedState);
+        && (calibrationRouteOccupied.value
+          || !CAL_PARKED.includes(c.state || 'idle'));
     });
     const calibrationSelectedHeadSensorKnown = computed(() =>
       typeof calibrationSelectedToolhead.value?.filament_at_extruder === 'boolean');
     const calibrationSelectedHeadClear = computed(() =>
       calibrationSelectedToolhead.value?.filament_at_extruder === false);
+    const calibrationPrinterFree = computed(() =>
+      state.mode !== 'normal'
+        && !['printing', 'paused'].includes(state.printer_state)
+        && !state.swap_in_progress
+        && !(state.bg_swap?.busy || []).length);
     const calibrationCanPrepare = computed(() => {
       const ace = calibrationSelectedAce.value;
       const toolhead = calibrationSelectedToolhead.value;
       return !!ace && ace.connected
         && !!toolhead && !toolhead.manual && !toolhead.feeder
         && calibrationSelectedHeadSensorKnown.value
-        && state.mode !== 'normal'
-        && !['printing', 'paused'].includes(state.printer_state)
-        && !state.swap_in_progress
-        && !(state.bg_swap?.busy || []).length
+        && calibrationPrinterFree.value
         && !calibrationMoving.value;
     });
-    const calibrationCanStart = computed(() => {
-      const ace = calibrationSelectedAce.value;
-      const toolhead = calibrationSelectedToolhead.value;
-      const slot = ace?.slots?.find(
-        s => Number(s.idx) === Number(calibrationUi.slot));
-      return !!ace && ace.connected
-        && calibrationUi.baselinePrepared
-        && calibrationUi.routeConfirmed
-        && calibrationSelectedHeadClear.value
-        && state.mode !== 'normal'
-        && !['printing', 'paused'].includes(state.printer_state)
-        && !state.swap_in_progress
-        && !(state.bg_swap?.busy || []).length
-        && !!slot && slot.state === 'ready'
-        && toolhead?.filament_at_extruder === false
-        && !toolhead?.manual && !toolhead?.feeder
-        && !calibrationMoving.value;
+    // Why a new measurement cannot start right now ('' = it can).
+    const calibrationStartBlockedReason = computed(() => {
+      if (calibrationRouteOccupied.value) return t('ui.calibration.blk_occupied');
+      if (!calibrationSelectedAce.value?.connected) return t('ui.calibration.blk_ace_off');
+      if (calibrationSelectedSlot.value?.state !== 'ready') {
+        return t('ui.calibration.blk_slot_ready');
+      }
+      if (!calibrationSelectedHeadSensorKnown.value) {
+        return t('ui.calibration.blk_sensor_na');
+      }
+      if (calibrationSelectedToolhead.value?.manual
+          || calibrationSelectedToolhead.value?.feeder) {
+        return t('ui.calibration.blk_not_ace_head');
+      }
+      if (!calibrationSelectedHeadClear.value) return t('ui.calibration.blk_head_loaded');
+      if (state.mode === 'normal') return t('ui.calibration.blk_normal_mode');
+      if (['printing', 'paused'].includes(state.printer_state)) {
+        return t('ui.calibration.blk_printing');
+      }
+      if (state.swap_in_progress || (state.bg_swap?.busy || []).length) {
+        return t('ui.calibration.blk_busy');
+      }
+      if (![...CAL_PARKED, 'cancelled', 'failed']
+          .includes(state.calibration?.state || 'idle')) {
+        return t('ui.calibration.blk_session');
+      }
+      return '';
     });
-    const calibrationCanVerifyConfigured = computed(() => {
-      const ace = calibrationSelectedAce.value;
-      const toolhead = calibrationSelectedToolhead.value;
-      const slot = calibrationSelectedSlot.value;
-      return ['idle', 'cancelled', 'failed', 'complete', 'verified']
-        .includes(state.calibration?.state)
-        && calibrationRouteKnown.value
-        && !!ace && ace.connected
-        && !!slot && slot.state === 'ready'
-        && calibrationSelectedHeadClear.value
-        && !!toolhead && !toolhead.manual && !toolhead.feeder
-        && state.mode !== 'normal'
-        && !['printing', 'paused'].includes(state.printer_state)
-        && !state.swap_in_progress
-        && !(state.bg_swap?.busy || []).length
-        && !calibrationMoving.value;
+    const calibrationCanStart = computed(() =>
+      !calibrationStartBlockedReason.value && !calibrationMoving.value);
+    const calibrationVerifyBlockedReason = computed(() => {
+      if (!calibrationRouteKnown.value) return t('ui.calibration.blk_no_values');
+      // Klipper still runs the values from before the save.
+      if (rebootNeeded.value) return t('ui.calibration.blk_reboot');
+      return calibrationStartBlockedReason.value;
     });
+    const calibrationCanVerifyConfigured = computed(() =>
+      !calibrationVerifyBlockedReason.value && !calibrationMoving.value);
     const calibrationProposed = computed(() => {
       const c = state.calibration || {};
       const allowance = (v) => Math.max(0, Number(v) || 0);
       const retract = c.retract_length_mm == null ? null : Number(c.retract_length_mm);
-      let swap = null;
+      // A session primed from saved values already carries its margin;
+      // adding it again would grow the value on every verify + save.
+      const swapFromConfig = c.values_source === 'saved';
+      let swap = null, capped = false;
       if (c.swap_retract_length_mm != null) {
         const base = Number(c.swap_retract_length_mm);
-        // A session primed from saved values already carries its clearance;
-        // adding it again would grow the value on every verify + apply.
-        swap = c.values_source === 'saved'
+        swap = swapFromConfig
           ? base : base + allowance(calibrationUi.swapAllowance);
-        // The swap retract must stay short of the full retract.
-        if (retract != null) swap = Math.max(base, Math.min(swap, retract - 10));
+        // The hub clearance must stay short of the full retract.
+        if (retract != null) {
+          const cap = Math.max(base, retract - 10);
+          capped = swap > cap;
+          swap = Math.min(swap, cap);
+        }
       }
       return {
         load: c.load_length_mm == null ? null
           : Number(c.load_length_mm) + allowance(calibrationUi.loadAllowance),
-        swap,
-        retract,
+        swap, retract, capped, swapFromConfig,
       };
     });
     const calibrationConfiguredRoute = computed(() => {
@@ -758,8 +778,7 @@ createApp({
       const c = state.calibration || {};
       return Number(c.ace) === Number(calibrationUi.ace)
         && Number(c.slot) === Number(calibrationUi.slot)
-        && Number(c.head) === Number(calibrationUi.head)
-        && String(c.scope || 'ace') === String(calibrationUi.scope || 'ace');
+        && Number(c.head) === Number(calibrationUi.head);
     });
     const calibrationRouteAnchors = computed(() => {
       const c = state.calibration || {};
@@ -775,23 +794,36 @@ createApp({
       return {load, swap, source: measuredLoad > 0 && measuredSwap > 0
         ? 'measured' : 'configured'};
     });
+    const _calSavedAt = (cfg, key) => cfg && cfg[key] !== '' && cfg[key] != null
+      && Number.isFinite(Number(cfg[key])) && Number(cfg[key]) > 0;
     // A route counts as CALIBRATED only when a value was actually SAVED at
     // the per-ACE or per-slot level - NOT the shipped global [ace] default
     // (retract_length/swap_retract_length), which is always present and
-    // otherwise makes every fresh install read as "Route known" and pushes
-    // the user to verify instead of a first calibration.
-    // Scope-independent for the question "is this route calibrated": a
-    // per-slot value OR the per-ACE value that the slot inherits both count.
+    // otherwise makes every fresh install read as calibrated.
     const calibrationRouteCalibrated = computed(() => {
-      const ace = Number(calibrationUi.ace);
-      const slot = Number(calibrationUi.slot);
-      const aceCfg = configForm.perAce?.[ace] || {};
-      const slotCfg = aceCfg.perSlot?.[slot] || {};
-      const saved = (key) => [slotCfg[key], aceCfg[key]].some(
-        v => v !== '' && v != null && Number.isFinite(Number(v))
-          && Number(v) > 0);
+      const aceCfg = configForm.perAce?.[Number(calibrationUi.ace)] || {};
+      const slotCfg = aceCfg.perSlot?.[Number(calibrationUi.slot)] || {};
+      const saved = (key) => _calSavedAt(slotCfg, key) || _calSavedAt(aceCfg, key);
       return saved('retract_length') && saved('swap_retract_length');
     });
+    // Slots of the selected ACE that carry their own values.
+    const calibrationOwnValueSlots = computed(() => {
+      const aceCfg = configForm.perAce?.[Number(calibrationUi.ace)] || {};
+      return (aceCfg.perSlot || [])
+        .map((slotCfg, idx) => ({slotCfg, idx}))
+        .filter(({slotCfg}) => ['load_length', 'swap_retract_length', 'retract_length']
+          .some(key => _calSavedAt(slotCfg, key)))
+        .map(({idx}) => idx);
+    });
+    function calibrationSlotBadge(slot) {
+      if (!slot || slot.state !== 'ready') return slot?.state || '';
+      const aceCfg = configForm.perAce?.[Number(calibrationUi.ace)] || {};
+      if (calibrationOwnValueSlots.value.includes(Number(slot.idx))) {
+        return t('ui.calibration.slot_own');
+      }
+      if (_calSavedAt(aceCfg, 'retract_length')) return t('ui.calibration.slot_shared');
+      return t('ui.calibration.slot_none');
+    }
     const calibrationRouteKnown = computed(() => {
       const {load, swap} = calibrationRouteAnchors.value;
       const valid = Number.isFinite(load) && Number.isFinite(swap)
@@ -802,72 +834,95 @@ createApp({
       return calibrationRouteAnchors.value.source === 'measured'
         || calibrationRouteCalibrated.value;
     });
-    const calibrationVerifyBlockedReason = computed(() => {
-      if (!calibrationRouteKnown.value) return t('ui.calibration.blk_no_values');
-      if (!calibrationSelectedAce.value?.connected) return t('ui.calibration.blk_ace_off');
-      if (calibrationSelectedSlot.value?.state !== 'ready') {
-        return t('ui.calibration.blk_slot_ready');
-      }
-      if (!calibrationSelectedHeadSensorKnown.value) {
-        return t('ui.calibration.blk_sensor_na');
-      }
-      if (!calibrationSelectedHeadClear.value) return t('ui.calibration.blk_head_loaded');
-      if (calibrationSelectedToolhead.value?.manual
-          || calibrationSelectedToolhead.value?.feeder) {
-        return t('ui.calibration.blk_not_ace_head');
-      }
-      if (state.mode === 'normal') return t('ui.calibration.blk_normal_mode');
-      if (['printing', 'paused'].includes(state.printer_state)) {
-        return t('ui.calibration.blk_printing');
-      }
-      if (state.swap_in_progress || (state.bg_swap?.busy || []).length) {
-        return t('ui.calibration.blk_busy');
-      }
-      if (!['idle', 'cancelled', 'failed', 'complete', 'verified']
-          .includes(state.calibration?.state)) {
-        return t('ui.calibration.blk_session');
-      }
-      return '';
+    const calibrationMeasureStep = computed(() => {
+      const s = state.calibration?.state;
+      if (['prepared', 'feeding', 'feed_paused'].includes(s)) return 1;
+      if (['at_sensor', 'retract_ready', 'retracting', 'feed_jogging'].includes(s)) return 2;
+      if (['swap_marked', 'returning', 'return_paused'].includes(s)) return 3;
+      return 0;
+    });
+    const calibrationVerifyStep = computed(() => {
+      const c = state.calibration || {};
+      const s = c.state === 'verify_paused' ? c.verify_paused_from : c.state;
+      if (['verifying_feed', 'verify_toolhead', 'verify_toolhead_adjust',
+        'verify_toolhead_adjusting'].includes(s)) return 1;
+      if (['verifying_splitter', 'verify_splitter',
+        'verify_splitter_adjusting'].includes(s)) return 2;
+      if (s === 'verifying_return') return 3;
+      return 0;
     });
     const calibrationTabStatus = computed(() => {
       const c = state.calibration || {};
-      const measuring = ['prepared', 'feeding', 'at_sensor', 'retract_ready',
-        'retracting', 'swap_marked', 'returning'].includes(c.state);
-      const verifying = ['verifying_feed', 'verify_toolhead',
-        'verify_toolhead_adjust', 'verify_toolhead_adjusting',
-        'verifying_splitter', 'verify_splitter', 'verifying_return',
-        'verify_paused'].includes(c.state);
+      const measuring = CAL_MEASURING.includes(c.state);
+      const verifying = CAL_VERIFYING.includes(c.state);
       return {
-        setup: calibrationRouteKnown.value ? t('ui.calibration.st_route_ready') : t('ui.calibration.st_choose_route'),
+        setup: t('ui.calibration.st_route_ready'),
         calibrate: measuring ? t('ui.calibration.st_running')
           : calibrationRouteKnown.value ? t('ui.calibration.st_values') : t('ui.calibration.st_required'),
         verify: verifying ? t('ui.calibration.st_running')
           : c.state === 'verified' ? t('ui.calibration.st_passed')
-            : calibrationRouteKnown.value ? 'Available' : t('ui.calibration.st_needs_values'),
-        results: c.state === 'verified' ? t('ui.calibration.st_passed')
-          : c.state === 'complete' ? t('ui.calibration.st_review') : t('ui.calibration.st_no_result'),
+            : calibrationRouteKnown.value ? t('ui.calibration.st_available') : t('ui.calibration.st_needs_values'),
+        results: calibrationUi.saved ? t('ui.calibration.st_saved')
+          : calibrationResultCase.value === 'passed' ? t('ui.calibration.st_passed')
+            : calibrationResultCase.value ? t('ui.calibration.st_review') : t('ui.calibration.st_no_result'),
       };
     });
-    const calibrationTipPositionMm = computed(() => {
-      if (!calibrationRouteKnown.value) return null;
-      const c = state.calibration || {};
-      const load = calibrationRouteAnchors.value.load;
-      if (c.tip_position_mm != null && Number.isFinite(Number(c.tip_position_mm))) {
-        const fineLimit = Math.max(0, Number(c.verify_fine_limit_mm) || 50);
-        return Math.max(0, Math.min(load + fineLimit, Number(c.tip_position_mm)));
+    // One human-readable status for the route header.
+    const calibrationStatus = computed(() => {
+      const s = state.calibration?.state || 'idle';
+      if (CAL_MOVING.includes(s)) return {text: t('ui.calibration.status_moving'), kind: 'busy'};
+      if (CAL_PAUSED.includes(s)
+          || (['cancelled', 'failed'].includes(s) && calibrationRouteOccupied.value)) {
+        return {text: t('ui.calibration.status_stopped'), kind: 'attention'};
       }
+      if (['at_sensor', 'retract_ready', 'swap_marked', 'verify_toolhead',
+        'verify_toolhead_adjust', 'verify_splitter'].includes(s)) {
+        return {text: t('ui.calibration.status_waiting'), kind: 'attention'};
+      }
+      return calibrationRouteKnown.value
+        ? {text: t('ui.calibration.route_known'), kind: 'ready'}
+        : {text: t('ui.calibration.route_needs'), kind: 'attention'};
+    });
+    // A stopped move is never a dead end: null, or what the user can do.
+    const calibrationRecovery = computed(() => {
+      const c = state.calibration || {};
+      if (CAL_PAUSED.includes(c.state)) return {canResume: true};
+      if (['cancelled', 'failed'].includes(c.state)
+          && calibrationRouteOccupied.value) return {canResume: false};
+      return null;
+    });
+    const calibrationNothingToSave = computed(() => {
+      const c = state.calibration || {};
+      return c.state === 'verified' && c.values_source === 'saved'
+        && !c.verify_remeasured_mm && !c.verify_hub_extra_mm;
+    });
+    const calibrationResultCase = computed(() => {
+      const c = state.calibration || {};
+      if (!['complete', 'verified'].includes(c.state)) return '';
+      if (c.state === 'complete') return 'measured';
+      if (calibrationNothingToSave.value) return 'passed';
+      return c.verify_remeasured_mm || c.verify_hub_extra_mm
+        ? 'changed' : 'measured';
+    });
+    const calibrationTipPositionMm = computed(() => {
+      if (!calibrationRouteKnown.value
+          && !CAL_MEASURING.includes(state.calibration?.state)
+          && !calibrationRouteOccupied.value) return null;
+      const c = state.calibration || {};
+      if (c.tip_position_mm != null && Number.isFinite(Number(c.tip_position_mm))) {
+        return Math.max(0, Number(c.tip_position_mm));
+      }
+      const load = calibrationRouteAnchors.value.load;
       if (calibrationSelectedToolhead.value?.filament_at_extruder === true) return load;
       if (['complete', 'verified'].includes(c.state)) return 0;
-      const slot = calibrationSelectedAce.value?.slots?.find(
-        item => Number(item.idx) === Number(calibrationUi.slot));
-      if (slot?.state === 'ready'
+      if (calibrationSelectedSlot.value?.state === 'ready'
           && calibrationSelectedToolhead.value?.filament_at_extruder === false) return 0;
       return null;
     });
     // Where the marker is DRAWN. A position taken from the lane encoder is
     // drawn as is. A time estimate runs ahead of the filament (the ACE
     // starts late), so while moving the marker is held back by a margin and
-    // does not show the splitter as passed before the filament is there.
+    // does not show the hub as passed before the filament is there.
     const CALIBRATION_ESTIMATE_MARGIN_MM = 75;
     const calibrationTipEstimated = computed(() =>
       calibrationMoving.value
@@ -883,62 +938,76 @@ createApp({
         : Math.min(Number.isFinite(load) ? load : position,
                    position + CALIBRATION_ESTIMATE_MARGIN_MM);
     });
+    // Hub position on the route, in mm from the park position (null while
+    // it is not known yet, e.g. during the first measurement).
+    const calibrationHubMm = computed(() => {
+      const {load, swap} = calibrationRouteAnchors.value;
+      return Number.isFinite(load) && Number.isFinite(swap) && swap > 0 && swap < load
+        ? load - swap : null;
+    });
+    const calibrationRouteLengthMm = computed(() => {
+      const c = state.calibration || {};
+      const load = calibrationRouteAnchors.value.load;
+      if (Number.isFinite(load) && load > 0) return load;
+      return Number(c.max_feed_mm) > 0 ? Number(c.max_feed_mm) : null;
+    });
     const calibrationTipSegment = computed(() => {
       const position = calibrationTipDrawnMm.value;
-      if (position == null) return 'ace';
-      const {load, swap} = calibrationRouteAnchors.value;
-      const splitter = load - swap;
-      return position <= splitter ? 'ace' : 'toolhead';
+      const hub = calibrationHubMm.value;
+      if (position == null || hub == null) return 'ace';
+      return position <= hub ? 'ace' : 'toolhead';
     });
     const calibrationTipSegmentPercent = computed(() => {
       const position = calibrationTipDrawnMm.value;
       if (position == null) return 50;
-      const {load, swap} = calibrationRouteAnchors.value;
-      const splitter = load - swap;
-      const percent = position <= splitter
-        ? (splitter > 0 ? 100 * position / splitter : 0)
-        : (swap > 0 ? 100 * (position - splitter) / swap : 0);
+      const hub = calibrationHubMm.value;
+      const total = calibrationRouteLengthMm.value;
+      let percent = 0;
+      if (hub == null) {
+        percent = total > 0 ? 100 * position / total : 0;
+      } else if (position <= hub) {
+        percent = hub > 0 ? 100 * position / hub : 0;
+      } else {
+        percent = total - hub > 0 ? 100 * (position - hub) / (total - hub) : 0;
+      }
       return Math.max(0, Math.min(100, percent));
+    });
+    // Tube columns sized from the real distances, so the marker moves at
+    // one speed along the whole route.
+    const calibrationRouteGrid = computed(() => {
+      const hub = calibrationHubMm.value;
+      const total = calibrationRouteLengthMm.value;
+      if (hub == null || !(total > hub)) return 'auto 1fr auto 1fr auto';
+      return `auto minmax(56px, ${Math.round(hub)}fr) auto `
+        + `minmax(56px, ${Math.round(total - hub)}fr) auto`;
     });
     const calibrationTipLabel = computed(() => {
       const c = state.calibration || {};
       const position = calibrationTipPositionMm.value;
-      if (!calibrationRouteKnown.value) return t('ui.calibration.tip_no_anchors');
-      if (position == null) return t('ui.calibration.tip_pos_na');
-      if (c.state === 'verify_paused') {
-        return t('ui.calibration.tip_paused', {mm: Math.round(position)});
+      if (position == null) {
+        return calibrationRouteKnown.value
+          ? t('ui.calibration.tip_pos_na') : t('ui.calibration.tip_no_anchors');
       }
-      if (c.state === 'verify_toolhead_adjust') {
-        const offset = Number(c.verify_fine_offset_mm) || 0;
-        return t('ui.calibration.tip_adjust', {mm: (offset >= 0 ? '+' : '') + offset});
-      }
-      if (c.state === 'verify_toolhead_adjusting') {
-        return t('ui.calibration.tip_fine', {mm: Math.round(position)});
-      }
-      if (c.state === 'verify_toolhead') return t('ui.calibration.tip_at_head');
-      if (c.state === 'verify_splitter') return t('ui.calibration.tip_at_splitter');
-      if (c.state === 'verified') return t('ui.calibration.tip_verified');
-      if (c.state === 'complete') return t('ui.calibration.tip_parked');
+      const mm = Math.round(position);
+      if (c.state === 'homing') return t('ui.calibration.tip_homing', {mm});
       if (calibrationMoving.value) {
         return t(calibrationTipEstimated.value
-          ? 'ui.calibration.tip_moving' : 'ui.calibration.tip_moving_enc',
-          {mm: Math.round(position)});
+          ? 'ui.calibration.tip_moving' : 'ui.calibration.tip_moving_enc', {mm});
       }
-      const source = calibrationRouteAnchors.value.source === 'configured'
-        ? t('ui.calibration.tip_src_config') : t('ui.calibration.tip_src_measured');
-      return t('ui.calibration.tip_estimate', {source: source, mm: Math.round(position)});
+      if (calibrationRecovery.value) return t('ui.calibration.tip_stopped', {mm});
+      if (['at_sensor', 'verify_toolhead'].includes(c.state)) return t('ui.calibration.tip_at_head');
+      if (c.state === 'verify_splitter') return t('ui.calibration.tip_at_splitter');
+      if (mm <= 0) return t('ui.calibration.tip_parked');
+      return t('ui.calibration.tip_at', {mm});
     });
 
     watch(() => state.calibration?.state, (next, previous) => {
-      const verifying = ['verifying_feed', 'verify_toolhead',
-        'verify_toolhead_adjust', 'verify_toolhead_adjusting',
-        'verifying_splitter', 'verify_splitter', 'verifying_return',
-        'verify_paused'];
-      const measuring = ['prepared', 'feeding', 'at_sensor', 'retract_ready',
-        'retracting', 'swap_marked', 'returning'];
-      if (verifying.includes(next)) {
+      if (!['verify_splitter', 'verify_splitter_adjusting'].includes(next)) {
+        calibrationUi.hubAdjust = false;
+      }
+      if (CAL_VERIFYING.includes(next)) {
         calibrationSetPanel('verify', false);
-      } else if (measuring.includes(next)) {
+      } else if (CAL_MEASURING.includes(next)) {
         calibrationSetPanel('calibrate', false);
       } else if (next === 'verified' && previous && previous !== 'verified') {
         calibrationSetPanel('results', false);
@@ -947,10 +1016,6 @@ createApp({
       }
     });
 
-    function calibrationResetPreparation() {
-      calibrationUi.baselinePrepared = false;
-      calibrationUi.routeConfirmed = false;
-    }
     function calibrationSetPanel(panel, touched=true) {
       if (!['setup', 'calibrate', 'verify', 'results'].includes(panel)) return;
       calibrationUi.panel = panel;
@@ -968,18 +1033,11 @@ createApp({
       calibrationUi.recalibrate = false;
       calibrationUi.error = '';
     }
+    // Where the result is saved - decided on the Results panel, at the
+    // moment of saving, not before anything has been measured.
     function calibrationSetScope(scope) {
-      if (calibrationRouteLocked.value || calibrationUi.busy
-          || !['ace', 'slot'].includes(scope)) return;
+      if (calibrationUi.busy || !['ace', 'slot'].includes(scope)) return;
       calibrationUi.scope = scope;
-      calibrationResetPreparation();
-      calibrationUi.recalibrate = false;
-    }
-    function calibrationRouteChanged() {
-      if (!calibrationRouteLocked.value) {
-        calibrationResetPreparation();
-        calibrationUi.recalibrate = false;
-      }
     }
 
     function syncCalibrationDefaults() {
@@ -988,7 +1046,6 @@ createApp({
         calibrationUi.ace = Number(c.ace);
         calibrationUi.slot = Number(c.slot);
         calibrationUi.head = Number(c.head);
-        calibrationUi.scope = c.scope === 'slot' ? 'slot' : 'ace';
         return;
       }
       const connected = state.aces.filter(ace => ace?.connected);
@@ -1021,20 +1078,13 @@ createApp({
         calibrationUi.head = Number(mapped);
       }
     }
+    // Unload the selected toolhead so the measurement starts from a clear
+    // sensor. Has its own out-of-band cancel (calibrationCancelPrepare).
     async function calibrationPrepare() {
       calibrationUi.busy = 'prepare';
       calibrationUi.cancelRequested = false;
       calibrationUi.error = '';
-      calibrationResetPreparation();
       try {
-        if (['cancelled', 'failed'].includes(state.calibration?.state)) {
-          const resetOk = await calibrationRequest('action', {
-            action: 'reset',
-            session_id: Number(state.calibration?.session_id || 0),
-          }, 'prepare');
-          calibrationUi.busy = 'prepare';
-          if (!resetOk) return;
-        }
         if (calibrationSelectedHeadClear.value) return;
         const ok = await run('ACE_UNLOAD_HEAD', {
           HEAD: Number(calibrationUi.head),
@@ -1058,33 +1108,6 @@ createApp({
         calibrationUi.cancelRequested = false;
       }
     }
-    async function calibrationConfirmBaseline() {
-      if (!calibrationCanPrepare.value || !calibrationSelectedHeadClear.value
-          || calibrationUi.busy) return;
-      calibrationUi.busy = 'confirm-baseline';
-      calibrationUi.error = '';
-      calibrationResetPreparation();
-      try {
-        if (['cancelled', 'failed'].includes(state.calibration?.state)) {
-          const resetOk = await calibrationRequest('action', {
-            action: 'reset',
-            session_id: Number(state.calibration?.session_id || 0),
-          }, 'confirm-baseline');
-          calibrationUi.busy = 'confirm-baseline';
-          if (!resetOk) return;
-        }
-        await reloadState();
-        if (!calibrationSelectedHeadClear.value) {
-          throw new Error(
-            t('ui.calibration.err_head_not_clear'));
-        }
-        calibrationUi.baselinePrepared = true;
-      } catch (e) {
-        calibrationUi.error = String(e?.message || e);
-      } finally {
-        calibrationUi.busy = '';
-      }
-    }
     async function calibrationCancelPrepare() {
       if (calibrationUi.busy !== 'prepare' || calibrationUi.cancelRequested) return;
       calibrationUi.cancelRequested = true;
@@ -1099,43 +1122,36 @@ createApp({
         calibrationUi.error = String(e?.message || e);
       }
     }
-    function calibrationConfirmRoute() {
-      if (!calibrationUi.baselinePrepared || calibrationMoving.value) return;
-      calibrationUi.routeConfirmed = !calibrationUi.routeConfirmed;
-      calibrationUi.error = '';
-    }
 
+    function _calibrationRouteReset() {
+      calibrationUi.error = '';
+      calibrationUi.saved = false;
+      calibrationUi.recalibrate = false;
+    }
     function calibrationSelectAce(idx) {
       if (calibrationRouteLocked.value || calibrationUi.busy) return;
       calibrationSelectionTouched.ace = true;
       calibrationUi.ace = Number(idx);
-      calibrationResetPreparation();
       if (state.mode === 'head') {
         const h = (state.ace_heads || []).find(
           head => Number(state.head_ace?.[String(head)] ?? state.head_ace?.[head] ?? head)
             === Number(idx));
         if (h != null) calibrationUi.head = Number(h);
       }
-      calibrationUi.error = '';
-      calibrationUi.saved = false;
-      calibrationUi.recalibrate = false;
+      _calibrationRouteReset();
     }
     function calibrationSelectSlot(idx) {
       if (calibrationRouteLocked.value || calibrationUi.busy) return;
       calibrationSelectionTouched.slot = true;
       calibrationUi.slot = Number(idx);
-      calibrationResetPreparation();
       if (state.mode === 'multi') calibrationUi.head = Number(idx);
-      calibrationUi.error = '';
-      calibrationUi.saved = false;
-      calibrationUi.recalibrate = false;
+      _calibrationRouteReset();
     }
-    function calibrationSelectHead() {
+    function calibrationSelectHead(idx) {
       if (calibrationRouteLocked.value || calibrationUi.busy) return;
       calibrationSelectionTouched.head = true;
-      calibrationRouteChanged();
-      calibrationUi.error = '';
-      calibrationUi.saved = false;
+      calibrationUi.head = Number(idx);
+      _calibrationRouteReset();
     }
     async function calibrationRequest(path, body, busy) {
       calibrationUi.busy = busy;
@@ -1163,6 +1179,16 @@ createApp({
         calibrationUi.busy = '';
       }
     }
+    // Poll until the session state satisfies `done` (a stop is booked a
+    // moment after the command returns, once the lane has come to rest).
+    async function _calibrationWaitState(done, timeoutMs=4000) {
+      const until = Date.now() + timeoutMs;
+      while (!done(state.calibration?.state) && Date.now() < until) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        await reloadState();
+      }
+      return done(state.calibration?.state);
+    }
     async function calibrationStart() {
       calibrationUi.saved = false;
       calibrationSetPanel('calibrate', false);
@@ -1170,7 +1196,7 @@ createApp({
         ace: Number(calibrationUi.ace),
         slot: Number(calibrationUi.slot),
         head: Number(calibrationUi.head),
-        scope: calibrationUi.scope,
+        scope: 'ace',
       }, 'start');
       if (ok) await calibrationAction('feed');
     }
@@ -1180,24 +1206,67 @@ createApp({
       // has to be applicable again.
       calibrationUi.saved = false;
       calibrationSetPanel('verify', false);
+      // Where the result gets saved is a UI choice made at save time; the
+      // printer must not read a different choice as a different route.
+      const sessionScope = calibrationSessionMatchesSelection.value
+        ? (state.calibration?.scope || 'ace') : 'ace';
       return calibrationRequest('action', {
         action: 'verify_start',
         session_id: Number(state.calibration?.session_id || 0),
         ace: Number(calibrationUi.ace),
         slot: Number(calibrationUi.slot),
         head: Number(calibrationUi.head),
-        scope: calibrationUi.scope,
+        scope: sessionScope,
       }, 'verify_start');
     }
     async function calibrationAction(action, length=null) {
-      const ok = await calibrationRequest('action', {
+      return calibrationRequest('action', {
         action, length,
         session_id: Number(state.calibration?.session_id || 0),
       }, action);
-      if (ok && ['cancel', 'reset'].includes(action)) {
-        calibrationResetPreparation();
+    }
+    // Hub mark and return in one go - after marking there is nothing else
+    // the user could want to do.
+    async function calibrationMarkAndReturn() {
+      if (await calibrationAction('mark_swap')) {
+        await calibrationAction('return_park');
       }
-      return ok;
+    }
+    async function calibrationUndoMark() {
+      if (state.calibration?.state === 'returning') {
+        if (!await calibrationAction('stop')) return;
+        await _calibrationWaitState(s => s !== 'returning');
+      }
+      await calibrationAction('mark_undo');
+    }
+    // Hold to pull back: one long retract while the button is held, a stop
+    // on release. If the release never arrives the retract ends at the park
+    // position, which is where a full return would end anyway.
+    let _calibrationHoldPromise = null;
+    function calibrationHoldStart() {
+      const c = state.calibration || {};
+      if (calibrationUi.holding || calibrationMoving.value || calibrationUi.busy) return;
+      const length = Math.min(5000,
+        Number(c.load_length_mm || 0) - Number(c.commanded_retract_mm || 0));
+      if (!(length >= 5)) return;
+      calibrationUi.holding = true;
+      window.addEventListener('pointerup', calibrationHoldEnd);
+      window.addEventListener('pointercancel', calibrationHoldEnd);
+      window.addEventListener('blur', calibrationHoldEnd);
+      _calibrationHoldPromise = calibrationAction('retract', Math.floor(length));
+    }
+    async function calibrationHoldEnd() {
+      if (!calibrationUi.holding) return;
+      calibrationUi.holding = false;
+      window.removeEventListener('pointerup', calibrationHoldEnd);
+      window.removeEventListener('pointercancel', calibrationHoldEnd);
+      window.removeEventListener('blur', calibrationHoldEnd);
+      await _calibrationHoldPromise;
+      _calibrationHoldPromise = null;
+      if (state.calibration?.state === 'retracting') {
+        await calibrationAction('stop');
+        await _calibrationWaitState(s => s !== 'retracting');
+      }
     }
     async function calibrationApply() {
       const c = state.calibration || {};
@@ -1225,7 +1294,7 @@ createApp({
         calibrationUi.error = t('ui.calibration.err_no_section');
         return;
       }
-      if (c.scope === 'slot') {
+      if (calibrationUi.scope === 'slot') {
         target.perSlot[slot].load_length = v.load;
         target.perSlot[slot].swap_retract_length = v.swap;
         target.perSlot[slot].retract_length = v.retract;
@@ -1235,12 +1304,34 @@ createApp({
         target.retract_length = v.retract;
       }
       calibrationUi.busy = 'apply';
+      const before = configLog.value;
       await saveConfigForm();
       calibrationUi.busy = '';
-      calibrationUi.saved = rebootNeeded.value;
+      // saveConfigForm reports through configLog: a line starting with the
+      // check mark is the only success it writes.
+      calibrationUi.saved = configLog.value !== before
+        && String(configLog.value || '').startsWith('✓');
       if (!calibrationUi.saved) {
         calibrationUi.error = configLog.value || t('ui.calibration.err_save');
       }
+    }
+    // A config save needs a full printer restart (see rebootNeeded).
+    function calibrationReboot() {
+      confirm({
+        title: t('ui.calibration.reboot_title'),
+        message: t('ui.calibration.reboot_msg'),
+        okLabel: t('ui.calibration.reboot_now'),
+        onOk: async () => {
+          calibrationUi.restarting = true;
+          try {
+            const r = await fetch(`${API}/reboot`, {method: 'POST'});
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          } catch (e) {
+            calibrationUi.restarting = false;
+            calibrationUi.error = String(e?.message || e);
+          }
+        },
+      });
     }
 
     function clearAllErrors() {
@@ -4970,6 +5061,7 @@ createApp({
     // actually starts (klippy down). Mode changes do NOT use this - crossing
     // 'normal' raises a backend reboot error that reaches the display too.
     const rebootNeeded = ref(false);
+    watch(rebootNeeded, (needed) => { if (!needed) calibrationUi.restarting = false; });
     function paramsToForm(params, perAceParams) {
       if (!params) return;
       const num  = (k) => params[k] != null ? Number(params[k]) : configForm[k];
@@ -7378,21 +7470,27 @@ createApp({
       calibrationUi, connectedCalibrationAces, calibrationSelectedAce,
       calibrationSelectedSlot,
       calibrationSelectedToolhead, calibrationMoving, calibrationRouteLocked,
-      calibrationVerifyMoving, calibrationRouteKnown, calibrationRouteAnchors,
-      calibrationVerifyBlockedReason, calibrationTabStatus, CALIBRATION_TAB,
+      calibrationVerifyMoving, calibrationVerifyActive, calibrationRouteKnown,
+      calibrationRouteAnchors, calibrationRouteOccupied,
+      calibrationVerifyBlockedReason, calibrationStartBlockedReason,
+      calibrationTabStatus, CALIBRATION_TAB,
+      calibrationStatus, calibrationRecovery, calibrationMeasureStep,
+      calibrationVerifyStep, calibrationResultCase, calibrationNothingToSave,
+      calibrationOwnValueSlots, calibrationSlotBadge,
       calibrationTipPositionMm, calibrationTipSegment,
       calibrationTipSegmentPercent, calibrationTipLabel,
+      calibrationHubMm, calibrationRouteLengthMm, calibrationRouteGrid,
       calibrationSelectedHeadSensorKnown, calibrationSelectedHeadClear,
       calibrationCanPrepare,
       calibrationCanStart, calibrationCanVerifyConfigured, calibrationProposed,
       calibrationTipEstimated,
       calibrationSetPanel, calibrationContinueRoute,
       calibrationBeginRecalibration, calibrationKeepSaved,
-      calibrationSetScope, calibrationRouteChanged, calibrationPrepare,
-      calibrationConfirmBaseline,
-      calibrationCancelPrepare, calibrationConfirmRoute,
+      calibrationSetScope, calibrationPrepare,
+      calibrationCancelPrepare,
       calibrationSelectAce, calibrationSelectSlot, calibrationSelectHead,
-      calibrationStart,
+      calibrationStart, calibrationMarkAndReturn, calibrationUndoMark,
+      calibrationHoldStart, calibrationReboot,
       calibrationVerifyConfigured, calibrationAction, calibrationApply,
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,

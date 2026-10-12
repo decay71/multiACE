@@ -16,7 +16,7 @@
     }
     * { box-sizing: border-box; }
     body { margin: 0; color: var(--fg); background: var(--bg); font: 14px/1.45 system-ui, sans-serif; }
-    button { font: inherit; color: inherit; }
+    button, select, input { font: inherit; color: inherit; }
     header {
       position: sticky; top: 0; z-index: 5; display: flex; align-items: center;
       gap: 18px; min-height: 58px; padding: 9px 18px; background: #222;
@@ -30,10 +30,11 @@
     .spacer { flex: 1; }
     .online { color: var(--ok); font-size: 12px; }
     .prototype {
-      padding: 8px 18px; text-align: center; color: #b8f5f7;
+      display: flex; justify-content: center; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 8px 18px; color: #b8f5f7;
       background: #102f31; border-bottom: 1px solid #28686c; font-size: 12px;
-      white-space: normal; overflow-wrap: anywhere;
     }
+    .prototype select { padding: 3px 6px; border: 1px solid #28686c; border-radius: 4px; background: #0b2224; }
     main { width: min(1100px, calc(100% - 28px)); margin: 24px auto 60px; }
     .page-head { display: flex; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
     h1 { margin: 0 0 5px; font-size: 23px; }
@@ -51,22 +52,23 @@
     .route-head strong { display: block; font-size: 15px; }
     .route-head small { color: var(--muted); }
     .route-status { color: var(--ok); font-size: 12px; white-space: nowrap; }
-    .route {
-      display: grid; grid-template-columns: 130px 1fr 120px 1fr 130px;
-      align-items: center; gap: 10px;
-    }
+    .route-status.busy { color: var(--accent); }
+    .route-status.attention { color: var(--warn); }
+    /* Tube columns are sized from the real distances (see drawRoute). */
+    .route { display: grid; align-items: center; gap: 10px; }
     .node { padding: 11px 8px; text-align: center; border-radius: 6px; background: var(--deep); border: 1px solid var(--line); color: var(--muted); font-size: 12px; }
     .node b { display: block; color: var(--fg); font-size: 14px; }
     .node.sensor-on { border-color: #3d8047; background: var(--ok-bg); }
     .tube { height: 4px; border-radius: 5px; background: #4b4b4b; position: relative; }
     .tube.active { background: linear-gradient(90deg, var(--accent) var(--fill, 0%), #4b4b4b var(--fill, 0%)); }
+    .tube small { position: absolute; top: 9px; left: 50%; transform: translateX(-50%); color: var(--muted); font-size: 10px; white-space: nowrap; }
     .tip {
       position: absolute; left: var(--tip, 0%); top: 50%; width: 20px; height: 20px;
       display: grid; place-items: center; transform: translate(-50%,-50%);
       border-radius: 50%; background: var(--accent); color: var(--accent-ink);
-      border: 2px solid #111; font-size: 10px; transition: left .18s linear;
+      border: 2px solid #111; font-size: 10px; transition: left .12s linear;
     }
-    .route-caption { display: flex; justify-content: space-between; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+    .route-caption { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; color: var(--muted); font-size: 12px; }
     .route-caption strong { color: var(--fg); }
 
     .workflow { overflow: hidden; }
@@ -81,6 +83,7 @@
     .workflow-tab.active { background: rgba(21,189,198,.1); box-shadow: inset 0 -3px var(--accent); }
     .workflow-tab.active b { color: var(--accent); }
     .workflow-tab .done { color: var(--ok); }
+    .workflow-tab .now { color: var(--accent); }
     .workflow-body { padding: 22px; min-height: 385px; }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
@@ -97,17 +100,15 @@
     .check i { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: var(--ok-bg); color: var(--ok); font-style: normal; }
     .check span { margin-left: auto; color: var(--muted); font-size: 12px; }
     .actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 18px; }
-    .btn { border: 1px solid var(--line); border-radius: 5px; padding: 9px 14px; background: #2b2b2b; cursor: pointer; }
+    .btn { border: 1px solid var(--line); border-radius: 5px; padding: 9px 14px; background: #2b2b2b; cursor: pointer; user-select: none; }
     .btn:hover { border-color: #666; }
     .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 750; }
     .btn.large { padding: 12px 20px; font-size: 15px; }
     .btn.danger { color: var(--danger); border-color: #754040; background: var(--danger-bg); }
+    .btn.hold { min-width: 230px; text-align: center; touch-action: none; }
+    .btn.hold.holding { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
     .btn:disabled { opacity: .42; cursor: not-allowed; }
     .link-btn { border: 0; padding: 5px; background: transparent; color: var(--accent); cursor: pointer; }
-    .choice-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-    .choice { padding: 13px; background: var(--deep); border: 1px solid var(--line); border-radius: 6px; }
-    .choice small { color: var(--muted); display: block; margin-top: 3px; }
-    .choice.selected { border-color: var(--accent); background: rgba(21,189,198,.08); }
     .selector-block { margin-top: 16px; }
     .selector-block > label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 12px; }
     .option-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
@@ -117,158 +118,255 @@
     .route-option small { margin-top: 2px; color: var(--muted); }
     .route-option.selected { border-color: var(--accent); background: rgba(21,189,198,.08); }
     .route-option:disabled { opacity: .38; cursor: not-allowed; }
-    .derived-route { display: flex; justify-content: space-between; gap: 12px; padding: 12px; margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--deep); }
-    .derived-route span { color: var(--muted); }
     .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin: 15px 0; }
+    .metrics.two { grid-template-columns: repeat(2, 1fr); }
     .metric { padding: 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--deep); }
     .metric small { display: block; color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: .05em; }
     .metric b { display: block; margin-top: 4px; font-size: 20px; }
+    .metric span { color: var(--muted); font-size: 11px; }
     .step-line { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: 13px 0; }
     .step-chip { padding: 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); background: var(--deep); font-size: 12px; }
     .step-chip.active { color: var(--accent); border-color: #347176; }
     .step-chip.done { color: var(--ok); border-color: #376e40; }
-    .progress { height: 7px; overflow: hidden; border-radius: 99px; background: #111; margin: 16px 0; }
-    .progress div { width: 0%; height: 100%; background: var(--accent); transition: width .2s; }
-    .fine { display: none; padding: 14px; border: 1px solid #77582d; border-radius: 6px; background: var(--warn-bg); margin-top: 14px; }
-    .fine.show { display: block; }
-    .fine-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-    .fine-head span { color: var(--warn); }
+    .jog-panel { padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--deep); margin-top: 14px; }
     .jog-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 9px; }
+    .jog-row > span { color: var(--muted); }
     .jogs { display: flex; gap: 6px; flex-wrap: wrap; }
     .jogs .btn { padding: 7px 10px; }
+    table.review { width: 100%; border-collapse: collapse; margin: 14px 0; }
+    table.review th, table.review td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: right; }
+    table.review th:first-child, table.review td:first-child { text-align: left; }
+    table.review th { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    table.review td small { display: block; color: var(--muted); font-size: 11px; }
+    table.review td.save { color: var(--accent); font-weight: 750; font-size: 16px; }
+    table.review input { width: 70px; padding: 4px 6px; text-align: right; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); }
+    .radio-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     .hidden { display: none !important; }
     details { margin-top: 18px; color: var(--muted); }
     details summary { cursor: pointer; color: var(--fg); }
+    details dl { display: grid; grid-template-columns: max-content 1fr; gap: 5px 14px; margin: 10px 0 0; }
+    details dt { color: var(--fg); }
+    details dd { margin: 0; }
     footer { margin-top: 14px; text-align: right; color: var(--muted); font-size: 11px; }
     @media (max-width: 760px) {
       .top-nav { display: none; }
       .page-head, .task-head, .route-head, .route-caption { flex-direction: column; }
       .route-head { align-items: flex-start; }
       .pills { justify-content: flex-start; }
-      .route { grid-template-columns: minmax(72px,1fr) 18px minmax(72px,1fr) 18px minmax(72px,1fr); gap: 4px; }
       .node { padding: 8px 4px; font-size: 10px; }
       .node b { font-size: 11px; }
-      .tube { width: 100%; height: 3px; margin: 0; }
-      .tip { left: var(--tip, 0%); top: 50%; }
       .workflow-tabs { grid-template-columns: 1fr 1fr; }
       .workflow-tab:nth-child(2) { border-right: 0; }
-      .choice-row, .metrics, .step-line { grid-template-columns: 1fr; }
+      .metrics, .metrics.two, .step-line, .radio-row { grid-template-columns: 1fr; }
       .option-grid { grid-template-columns: 1fr 1fr; }
-      .derived-route { flex-direction: column; }
-      .jog-row, .fine-head { align-items: flex-start; flex-direction: column; }
+      .jog-row { align-items: flex-start; flex-direction: column; }
     }
   </style>
 </head>
 <body>
   <header>
     <div class='brand'>m<i>Ult1</i>ACE</div>
-    <div class='top-nav'><span>Dashboard</span><span class='active'>Calibration</span><span>Config</span></div>
+    <div class='top-nav'><span>Dashboard</span><span>Spools</span><span>Config</span><span class='active'>Calibration</span></div>
     <div class='spacer'></div><div class='online'>Printer connected</div>
   </header>
-  <div class='prototype'>Interactive UX prototype &middot; no printer commands are sent</div>
+  <div class='prototype'>
+    <span>Interactive UX prototype &middot; no printer commands are sent</span>
+    <label>Scenario
+      <select id='scenario'>
+        <option value='ok'>Everything on target</option>
+        <option value='late'>Toolhead sensor 60 mm late on verify</option>
+        <option value='hub'>Tip not clear of the hub on verify</option>
+      </select>
+    </label>
+    <label>Unit
+      <select id='unit'>
+        <option value='v2'>ACE 2 Pro (lane encoder)</option>
+        <option value='v1'>ACE Pro (time estimate)</option>
+      </select>
+    </label>
+  </div>
 
   <main>
     <div class='page-head'>
-      <div><h1>Filament path</h1><p class='muted'>Set up, calibrate, and verify one route at a time.</p></div>
-      <div class='pills'><span class='pill ok'>ACE 1 connected</span><span class='pill'>T4 mapped</span><span class='pill ok'>Saved calibration</span></div>
+      <div><h1>Calibration</h1><p class='muted'>Measure and check the filament path of one ACE slot at a time.</p></div>
+      <div class='pills'><span class='pill ok'>ACE 1 connected</span><span class='pill'>T4 mapped</span><span id='savedPill' class='pill ok'>Saved calibration</span></div>
     </div>
 
     <section class='card route-card'>
       <div class='route-head'>
-        <div><strong id='routeTitle'>ACE 1 &middot; Slot 4 &rarr; Toolhead T4</strong><small id='routeMessage'>Filament parked at the ACE preload position</small></div>
+        <div><strong id='routeTitle'>ACE 1 &middot; Slot 2 &rarr; Toolhead T4</strong><small id='routeMessage'>Filament at the park position</small></div>
         <div id='routeStatus' class='route-status'>Ready</div>
       </div>
-      <div class='route'>
-        <div class='node'><b id='aceRouteNode'>ACE 1 &middot; S4</b>automatic preload</div>
-        <div id='tubeA' class='tube active'><i id='tipA' class='tip'>●</i></div>
-        <div class='node'><b>4 &rarr; 1 splitter</b>shared junction</div>
-        <div id='tubeB' class='tube'><i id='tipB' class='tip hidden'>●</i></div>
+      <div id='route' class='route'>
+        <div class='node'><b id='aceRouteNode'>ACE 1 &middot; S2</b>park position</div>
+        <div id='tubeA' class='tube active'><i id='tipA' class='tip'>●</i><small id='tubeALabel'></small></div>
+        <div class='node'><b>Hub</b>4 &rarr; 1</div>
+        <div id='tubeB' class='tube'><i id='tipB' class='tip hidden'>●</i><small id='tubeBLabel'></small></div>
         <div id='headNode' class='node'><b>Toolhead T4</b><span id='sensorText'>sensor clear</span></div>
       </div>
-      <div class='route-caption'><span>Configured anchors: splitter <strong>1320 mm</strong> &middot; toolhead <strong>1840 mm</strong></span><span><strong id='scopeLabel'>Slot 4 override</strong> &middot; <span id='tipLabel'>Tip position: parked</span></span></div>
+      <div class='route-caption'><span id='anchorCaption'></span><span id='tipLabel'>Tip: parked</span></div>
+      <details>
+        <summary>What do these words mean?</summary>
+        <dl>
+          <dt>Park position</dt><dd>Where the ACE holds the filament after it has pulled it in by itself. Every distance is counted from here.</dd>
+          <dt>Hub</dt><dd>The junction where the tubes of all slots join into the one tube to the toolhead.</dd>
+          <dt>Toolhead distance</dt><dd>Park position to the toolhead sensor. Also used as the full retract.</dd>
+          <dt>Hub clearance</dt><dd>How far to pull back from the toolhead so the tip is out of the hub and another slot can pass.</dd>
+          <dt>Margin</dt><dd>Extra distance added on top of a measured value when saving.</dd>
+        </dl>
+      </details>
     </section>
 
     <section class='card workflow'>
       <div class='workflow-tabs' role='tablist'>
-        <button class='workflow-tab' data-tab='setup'><b>Setup</b><small class='done'>&#10003; Route ready</small></button>
-        <button class='workflow-tab' data-tab='calibrate'><b>Calibrate</b><small class='done'>&#10003; Values saved</small></button>
-        <button class='workflow-tab active' data-tab='verify'><b>Verify</b><small>Recommended next</small></button>
-        <button class='workflow-tab' data-tab='results'><b>Results</b><small id='resultsTabState'>No new result</small></button>
+        <button class='workflow-tab' data-tab='setup'><b>Setup</b><small id='tabSetup' class='done'>&#10003; Route chosen</small></button>
+        <button class='workflow-tab' data-tab='calibrate'><b>Calibrate</b><small id='tabCalibrate' class='done'>&#10003; Values saved</small></button>
+        <button class='workflow-tab active' data-tab='verify'><b>Verify</b><small id='tabVerify'>Recommended next</small></button>
+        <button class='workflow-tab' data-tab='results'><b>Results</b><small id='tabResults'>Nothing new</small></button>
       </div>
       <div class='workflow-body'>
+
+        <!-- SETUP: only "which route". How the result is saved is asked in Results. -->
         <section id='setupPanel' class='tab-panel'>
-          <div class='task-head'><div><div class='eyebrow'>Setup</div><h2>Choose one physical route</h2><p>The page remembers this path. You only need to return here when changing ACE, slot, or toolhead.</p></div></div>
+          <div class='task-head'><div><div class='eyebrow'>Setup</div><h2>Choose the route</h2><p>Pick the ACE, the slot to measure through, and the toolhead it feeds. You only come back here to change one of them.</p></div></div>
           <div class='selector-block'>
             <label>ACE unit</label>
             <div class='option-grid two'>
-              <button class='route-option ace-option selected' data-ace='1'><b>ACE 1</b><small>ACE 2 Pro &middot; connected</small></button>
+              <button class='route-option selected'><b>ACE 1</b><small>ACE 2 Pro &middot; connected</small></button>
               <button class='route-option' disabled><b>ACE 2</b><small>Not connected</small></button>
             </div>
           </div>
           <div class='selector-block'>
-            <label>Apply calibration to</label>
-            <div class='option-grid two'>
-              <button class='route-option scope-option' data-scope='ace'><b>Entire ACE unit</b><small>Shared defaults for every slot on ACE 1</small></button>
-              <button class='route-option scope-option selected' data-scope='slot'><b>Single Bowden tube</b><small>Override only the selected slot path</small></button>
+            <label>ACE measurement slot</label>
+            <div class='option-grid'>
+              <button class='route-option slot-option' data-slot='1' disabled><b>Slot 1</b><small>Empty</small></button>
+              <button class='route-option slot-option selected' data-slot='2'><b>Slot 2</b><small>Ready &middot; calibrated</small></button>
+              <button class='route-option slot-option' data-slot='3'><b>Slot 3</b><small>Ready &middot; uses ACE values</small></button>
+              <button class='route-option slot-option' data-slot='4'><b>Slot 4</b><small>Ready &middot; own values</small></button>
             </div>
           </div>
           <div class='selector-block'>
-            <label id='slotFieldLabel'>Bowden tube / filament slot</label>
+            <label>Toolhead</label>
             <div class='option-grid'>
-              <button class='route-option slot-option' data-slot='1'><b>Slot 1</b><small>Ready &middot; saved calibration</small></button>
-              <button class='route-option slot-option' data-slot='2' disabled><b>Slot 2</b><small>Empty</small></button>
-              <button class='route-option slot-option' data-slot='3' disabled><b>Slot 3</b><small>Empty</small></button>
-              <button class='route-option slot-option selected' data-slot='4'><b>Slot 4</b><small>Ready &middot; saved calibration</small></button>
+              <button class='route-option' disabled><b>T1</b><small>Feeder &middot; not ACE-fed</small></button>
+              <button class='route-option' disabled><b>T2</b><small>Feeder &middot; not ACE-fed</small></button>
+              <button class='route-option' disabled><b>T3</b><small>Feeder &middot; not ACE-fed</small></button>
+              <button class='route-option selected'><b>T4</b><small>Fed by ACE 1</small></button>
             </div>
           </div>
-          <div class='derived-route'><div><span>Connected toolhead</span><h3>Toolhead T4</h3></div><div><span id='derivedRouteHint'>Per-slot override</span><h3 id='derivedRoute'>ACE 1 &middot; Slot 4 &rarr; T4</h3></div></div>
-          <div class='checks'><div class='check'><i>&#10003;</i>Printer is idle<span>required</span></div><div class='check'><i>&#10003;</i>No other route is moving<span>required</span></div><div class='check'><i>&#10003;</i>T4 sensor is clear<span>required</span></div></div>
+          <div class='checks'><div class='check'><i>&#10003;</i>Printer is idle</div><div class='check'><i>&#10003;</i>No other filament is moving</div></div>
           <div class='actions'><button class='btn primary large' data-go='verify'>Continue with this route</button></div>
         </section>
 
+        <!-- CALIBRATE -->
         <section id='calibratePanel' class='tab-panel'>
-          <div id='calibrateSummary'>
-            <div class='task-head'><div><div class='eyebrow'>Calibrate</div><h2>This route already has measurements</h2><p>Recalibration is optional. Verify the saved path first unless the tubes or splitter changed.</p></div><span class='recommended'>Saved 4 Aug</span></div>
-            <div class='metrics'><div class='metric'><small>Toolhead distance</small><b>1840 mm</b></div><div class='metric'><small>Splitter retract</small><b>520 mm</b></div><div class='metric'><small>Park return</small><b>1840 mm</b></div></div>
-            <div class='actions'><button class='btn primary large' data-go='verify'>Verify saved calibration</button><button id='recalibrateBtn' class='btn'>Recalibrate this route</button></div>
+          <div id='calSummary'>
+            <div class='task-head'><div><div class='eyebrow'>Calibrate</div><h2>This route is already calibrated</h2><p>Check it with Verify first. Measure again only if a tube, the hub, or the toolhead changed.</p></div></div>
+            <div class='metrics two'><div class='metric'><small>Toolhead distance</small><b id='sumLoad'></b><span>park position to toolhead sensor</span></div><div class='metric'><small>Hub clearance</small><b id='sumSwap'></b><span>pull-back from the toolhead, margin included</span></div></div>
+            <div class='actions'><button class='btn primary large' data-go='verify'>Verify this route</button><button id='recalibrateBtn' class='btn'>Measure again</button></div>
           </div>
-          <div id='calibrateGuide' class='hidden'>
-            <div class='task-head'><div><div class='eyebrow'>Guided calibration</div><h2 id='calTitle'>Start from a clean path</h2><p id='calText'>Only T4 will be unloaded. Remove loose filament from the splitter after unloading.</p></div><span id='calCount' class='recommended'>Step 1 of 3</span></div>
-            <div class='step-line'><div id='calChip1' class='step-chip active'>1 &middot; Clean path</div><div id='calChip2' class='step-chip'>2 &middot; Confirm preload</div><div id='calChip3' class='step-chip'>3 &middot; Measure</div></div>
-            <div class='notice warn' id='calNotice'><strong>T4 contains filament</strong>The route must be clear before a new measurement.</div>
-            <div class='actions'><button id='calPrimary' class='btn primary large'>Unload selected T4</button><button id='cancelRecalibrate' class='link-btn'>Keep saved values</button></div>
+
+          <div id='calGuide' class='hidden'>
+            <div class='task-head'><div><div class='eyebrow'>Measure</div><h2 id='calTitle'></h2><p id='calText'></p></div><span id='calCount' class='recommended'></span></div>
+            <div class='step-line'><div id='calChip1' class='step-chip'>1 &middot; Feed to the toolhead</div><div id='calChip2' class='step-chip'>2 &middot; Clear the hub</div><div id='calChip3' class='step-chip'>3 &middot; Return to park</div></div>
+
+            <!-- one screen before anything moves -->
+            <div id='calPre'>
+              <div class='checks'>
+                <div class='check'><i>&#10003;</i>T4 toolhead sensor is clear<span>checked by the printer</span></div>
+                <div class='check'><i>&#10003;</i>Slot 2 holds filament at the park position<span>reported by the ACE</span></div>
+                <div class='check'><i>&#10003;</i>Nothing is heated or extruded<span>cold move only</span></div>
+              </div>
+              <details><summary>Not sure the filament is really at the park position?</summary><p>Pull it out of the ACE inlet, push it back in and wait until the ACE has drawn it in. Do this after a cancelled run or if you moved the filament by hand.</p></details>
+              <div class='actions'><button id='calStart' class='btn primary large'>Start measurement</button><button id='calKeep' class='link-btn'>Keep the saved values</button></div>
+            </div>
+
+            <div id='calFeed' class='hidden'>
+              <div class='metrics two'><div class='metric'><small>Fed so far</small><b id='feedMm'>0 mm</b><span id='feedSrc'></span></div><div class='metric'><small>Stops automatically at</small><b>Toolhead sensor</b><span>or after 2400 mm without it</span></div></div>
+              <div class='actions'><button class='btn danger stop-btn'>Stop</button></div>
+            </div>
+
+            <div id='calHub' class='hidden'>
+              <div class='metrics'><div class='metric'><small>Toolhead distance</small><b id='hubLoad'></b><span id='hubLoadSrc'></span></div><div class='metric'><small>Pulled back</small><b id='hubRetract'>0 mm</b><span>from the toolhead sensor</span></div><div class='metric'><small>Tip is now</small><b id='hubTip'></b><span>from the park position</span></div></div>
+              <div class='jog-panel'>
+                <div class='jog-row'><span>Coarse</span><button id='holdRetract' class='btn hold'>Hold to pull back</button></div>
+                <div class='jog-row'><span>Toward ACE</span><div class='jogs'><button class='btn jog' data-jog='-5'>5</button><button class='btn jog' data-jog='-10'>10</button><button class='btn jog' data-jog='-25'>25</button><button class='btn jog' data-jog='-100'>100 mm</button></div></div>
+                <div class='jog-row'><span>Toward toolhead</span><div class='jogs'><button class='btn jog' data-jog='5'>5</button><button class='btn jog' data-jog='10'>10</button><button class='btn jog' data-jog='25'>25 mm</button></div></div>
+              </div>
+              <p class='muted' style='margin-top:10px'>Prototype: on this route the tip leaves the hub after about 950 mm.</p>
+              <div class='actions'><button id='hubMark' class='btn primary large' disabled>Tip is clear of the hub &mdash; save and return</button><button class='btn danger stop-btn'>Stop</button></div>
+            </div>
+
+            <div id='calReturn' class='hidden'>
+              <div class='notice ok'><strong id='returnNote'></strong>Returning to the park position by itself.</div>
+              <div class='actions'><button id='undoMark' class='btn'>Undo &mdash; I marked too early</button><button class='btn danger stop-btn'>Stop</button></div>
+            </div>
           </div>
+
+          <!-- shared by Calibrate and Verify: a stopped move is never a dead end -->
+          <div id='calStopped' class='hidden'></div>
         </section>
 
+        <!-- VERIFY -->
         <section id='verifyPanel' class='tab-panel active'>
-          <div class='task-head'><div><div class='eyebrow'>Verify</div><h2 id='verifyTitle'>Test the saved route</h2><p id='verifyLead'>The filament travels to T4, pauses at the toolhead and splitter, then returns to its parked position.</p></div><span class='recommended'>Recommended</span></div>
+          <div class='task-head'><div><div class='eyebrow'>Verify</div><h2 id='verifyTitle'>Check this route</h2><p>The filament runs to the toolhead, comes back to the hub clearance point, waits for you to look, then returns to the park position.</p></div><span id='verifyBadge' class='recommended'>Recommended</span></div>
           <div id='verifyReady'>
-            <div class='checks'><div class='check'><i>&#10003;</i><span id='verifySlotCheck' style='margin:0;color:inherit;font-size:inherit'>Slot 4 is parked at ACE preload</span><span>ready</span></div><div class='check'><i>&#10003;</i>T4 toolhead sensor is clear<span>ready</span></div><div class='check'><i>&#10003;</i>Saved route values are valid<span>ready</span></div></div>
-            <div class='notice'><strong>What will happen</strong>Three continuous moves with a manual stop at the toolhead and splitter. You can pause or cancel at any time.</div>
-            <div class='actions'><button id='startVerify' class='btn primary large'>Start verification</button><button class='link-btn' data-go='setup'>Review route</button></div>
+            <div class='checks'><div class='check'><i>&#10003;</i>Slot 2 holds filament at the park position</div><div class='check'><i>&#10003;</i>T4 toolhead sensor is clear</div><div class='check'><i>&#10003;</i>Printer is idle</div></div>
+            <div class='notice'><strong>What will happen</strong>One feed to the toolhead sensor, one pull-back to the hub clearance point, one stop for you to confirm, then the return. Nothing is heated.</div>
+            <div class='actions'><button id='startVerify' class='btn primary large'>Start verification</button><button class='link-btn' data-go='setup'>Change route</button></div>
           </div>
           <div id='verifyRun' class='hidden'>
-            <div class='step-line'><div id='vChip1' class='step-chip active'>1 &middot; Toolhead</div><div id='vChip2' class='step-chip'>2 &middot; Splitter</div><div id='vChip3' class='step-chip'>3 &middot; Return</div></div>
-            <div class='progress'><div id='verifyProgress'></div></div>
-            <div id='verifyNotice' class='notice'><strong>Moving toward T4</strong>The sensor is monitored continuously.</div>
-            <div id='finePanel' class='fine'>
-              <div class='fine-head'><div><strong>Expected endpoint reached &middot; sensor still clear</strong><p>Move the tip a small amount until T4 detects it.</p></div><span>Correction <b id='fineOffset'>+0 mm</b></span></div>
-              <div class='jog-row'><span>Toward toolhead</span><div class='jogs'><button class='btn jog' data-jog='1'>+1</button><button class='btn jog' data-jog='2'>+2</button><button class='btn jog' data-jog='5'>+5</button><button class='btn jog' data-jog='10'>+10 mm</button></div></div>
-              <div class='jog-row'><span>Toward ACE</span><div class='jogs'><button class='btn jog' data-jog='-1'>-1</button><button class='btn jog' data-jog='-2'>-2</button><button class='btn jog' data-jog='-5'>-5</button><button class='btn jog' data-jog='-10'>-10 mm</button></div></div>
+            <div class='step-line'><div id='vChip1' class='step-chip'>1 &middot; Toolhead</div><div id='vChip2' class='step-chip'>2 &middot; Hub clearance</div><div id='vChip3' class='step-chip'>3 &middot; Return to park</div></div>
+            <div id='verifyNotice' class='notice'></div>
+            <div id='hubAdjust' class='jog-panel hidden'>
+              <div class='jog-row'><span>Pull back further</span><div class='jogs'><button class='btn vjog' data-jog='5'>5</button><button class='btn vjog' data-jog='10'>10</button><button class='btn vjog' data-jog='25'>25</button><button class='btn vjog' data-jog='50'>50 mm</button></div></div>
+              <div class='jog-row'><span>Added to the hub clearance</span><b id='hubExtra'>+0 mm</b></div>
             </div>
-            <div class='actions'><button id='verifyPrimary' class='btn primary large hidden'>Continue to splitter</button><button id='pauseVerify' class='btn'>Pause</button><button id='stopVerify' class='btn danger'>Stop &amp; cancel</button></div>
+            <div class='actions'>
+              <button id='hubYes' class='btn primary large hidden'>Tip is clear &mdash; return to park</button>
+              <button id='hubNo' class='btn hidden'>Not clear &mdash; pull back more</button>
+              <button id='pauseVerify' class='btn'>Pause</button>
+              <button class='btn danger stop-btn'>Stop</button>
+            </div>
           </div>
-          <details><summary>Advanced verification details</summary><p>Configured toolhead 1840 mm &middot; splitter 1320 mm &middot; correction limit +/-50 mm &middot; encoder telemetry is diagnostic only.</p></details>
+          <div id='verifyStopped' class='hidden'></div>
         </section>
 
+        <!-- RESULTS -->
         <section id='resultsPanel' class='tab-panel'>
-          <div class='task-head'><div><div class='eyebrow'>Results</div><h2 id='resultTitle'>Saved calibration</h2><p id='resultLead'>Run verification to create a new confidence result for this route.</p></div></div>
-          <div id='resultEmpty' class='notice'>No verification has been completed in this prototype session.</div>
-          <div id='resultSuccess' class='hidden'>
-            <div class='notice ok'><strong>Route verified and parked</strong>The toolhead and splitter checkpoints passed. Filament returned to ACE preload.</div>
-            <div class='metrics'><div class='metric'><small>Toolhead correction</small><b>+7 mm</b></div><div class='metric'><small>Splitter</small><b>Confirmed</b></div><div class='metric'><small>Final position</small><b>Parked</b></div></div>
-            <p class='muted'>The +7 mm correction is diagnostic. It has not changed the saved calibration values.</p>
-            <div class='actions'><button id='verifyAgain' class='btn primary' data-go='verify'>Verify again</button><button class='btn' data-go='calibrate'>Recalibrate using this result</button></div>
+          <div class='task-head'><div><div class='eyebrow'>Results</div><h2 id='resultTitle'>Nothing new to save</h2><p id='resultLead'>Run a measurement or a verification to get a result for this route.</p></div></div>
+          <div id='resultEmpty'>
+            <div class='metrics two'><div class='metric'><small>Toolhead distance</small><b id='emptyLoad'></b><span>saved</span></div><div class='metric'><small>Hub clearance</small><b id='emptySwap'></b><span>saved, margin included</span></div></div>
+            <div class='actions'><button class='btn primary' data-go='verify'>Verify this route</button><button class='btn' data-go='calibrate'>Measure again</button></div>
+          </div>
+          <div id='resultBody' class='hidden'>
+            <div id='resultNotice' class='notice ok'></div>
+            <table class='review'>
+              <thead><tr><th>Value</th><th>Saved now</th><th>Measured</th><th>Margin</th><th>Will save</th></tr></thead>
+              <tbody>
+                <tr><td>Load budget<small>load_length &middot; the feed stops at the toolhead sensor anyway</small></td><td id='rLoadOld'></td><td id='rLoadMeas'></td><td>+ <input id='loadMargin' type='number' min='0' max='500' step='10' value='150'></td><td id='rLoadNew' class='save'></td></tr>
+                <tr><td>Hub clearance<small>swap_retract_length &middot; too long costs seconds, too short blocks the hub</small></td><td id='rSwapOld'></td><td id='rSwapMeas'></td><td>+ <input id='swapMargin' type='number' min='0' max='500' step='10' value='100'></td><td id='rSwapNew' class='save'></td></tr>
+                <tr><td>Full retract<small>retract_length &middot; saved exactly as measured</small></td><td id='rRetOld'></td><td id='rRetMeas'></td><td class='muted'>none</td><td id='rRetNew' class='save'></td></tr>
+              </tbody>
+            </table>
+            <div id='capNote' class='notice warn hidden'><strong>Hub clearance limited</strong>It cannot be longer than the full retract. On this route the hub sits close to the ACE, so a swap pulls the filament almost all the way back.</div>
+            <div class='selector-block'>
+              <label>Save for</label>
+              <div class='radio-row'>
+                <button class='route-option scope-option selected' data-scope='ace'><b>All slots of ACE 1</b><small>They share the tube from the hub to T4</small></button>
+                <button class='route-option scope-option' data-scope='slot'><b id='scopeSlotTitle'>Only Slot 2</b><small>This slot gets its own values</small></button>
+              </div>
+            </div>
+            <div id='overrideNote' class='notice warn'><strong>Slot 4 keeps its own values</strong>It was calibrated separately earlier. Saving for the whole ACE does not change it.</div>
+            <div id='saveActions' class='actions'><button id='saveBtn' class='btn primary large'>Save to config</button><button class='btn' data-go='verify' id='verifyFirst'>Verify first</button><button id='discardBtn' class='link-btn'>Discard this result</button></div>
+            <div id='savedBox' class='hidden'>
+              <div class='notice ok'><strong>Saved, with a backup of the old config</strong>Klipper has to restart before it uses the new values.</div>
+              <div class='actions'><button id='restartBtn' class='btn primary large'>Restart Klipper now</button><span class='muted'>Homing is lost; heaters are off.</span></div>
+            </div>
+            <div id='restartedBox' class='hidden'>
+              <div class='notice ok'><strong>Klipper is running with the new values</strong>Verify once to see the saved route in action.</div>
+              <div class='actions'><button class='btn primary large' data-go='verify' id='verifyAfter'>Verify this route</button></div>
+            </div>
           </div>
         </section>
       </div>
@@ -278,7 +376,17 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    let timer = null, paused = false, phase = 'ready', progress = 0, fine = 0, calStep = 0, selectedSlot = 4, selectedScope = 'slot';
+    // The "printer": where things physically are on this prototype route.
+    const TRUE_LOAD = 1367, HUB_CLEAR_AT = 950, FEED_LIMIT = 2400;
+    // What is saved in the config, and what the open session has measured.
+    let saved = {load: 1517, swap: 1050, retract: 1367};
+    let session = null;          // {load, swap, source:'measured'|'saved', note}
+    let selectedSlot = 2, scope = 'ace';
+    let tip = 0, timer = null, paused = false, phase = 'idle', where = 'verify';
+    let retracted = 0, hubExtra = 0, resume = null;
+
+    const encoder = () => $('unit').value === 'v2';
+    const srcText = () => encoder() ? 'lane encoder' : 'time estimate';
 
     function showTab(name) {
       document.querySelectorAll('.workflow-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
@@ -286,128 +394,332 @@
       $(name + 'Panel').classList.add('active');
     }
     document.querySelectorAll('.workflow-tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
-    document.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => showTab(b.dataset.go)));
-    function updateScopeSummary() {
-      const wholeAce = selectedScope === 'ace';
-      $('scopeLabel').textContent = wholeAce ? 'Entire ACE defaults' : 'Slot ' + selectedSlot + ' override';
-      $('slotFieldLabel').textContent = wholeAce ? 'Measurement slot' : 'Bowden tube / filament slot';
-      $('derivedRouteHint').textContent = wholeAce ? 'Shared ACE values measured through this route' : 'Per-slot override';
-    }
-    document.querySelectorAll('.scope-option').forEach(button => button.addEventListener('click', () => {
-      selectedScope = button.dataset.scope;
-      document.querySelectorAll('.scope-option').forEach(item => item.classList.toggle('selected', item === button));
-      updateScopeSummary();
+    document.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => {
+      if (b.dataset.go === 'calibrate' && b.closest('#resultsPanel')) beginRecalibrate();
+      showTab(b.dataset.go);
     }));
+
+    // ---- route diagram, drawn to scale --------------------------------
+    function anchors() {
+      const load = session ? session.load : saved.retract;
+      const swap = session && session.swap != null ? session.swap : saved.swap;
+      return {load, hub: Math.max(0, load - swap)};
+    }
+    function drawRoute() {
+      const {load, hub} = anchors();
+      $('route').style.gridTemplateColumns =
+        `130px minmax(70px, ${Math.max(1, hub)}fr) 110px minmax(70px, ${Math.max(1, load - hub)}fr) 130px`;
+      $('tubeALabel').textContent = hub + ' mm';
+      $('tubeBLabel').textContent = (load - hub) + ' mm';
+      $('anchorCaption').innerHTML = (session && session.source === 'measured' ? 'Measured' : 'Saved')
+        + ': hub clearance point <strong>' + hub + ' mm</strong> &middot; toolhead <strong>' + load + ' mm</strong>';
+      setTip(tip);
+    }
+    function setTip(mm, label) {
+      tip = mm;
+      const {load, hub} = anchors();
+      const inA = mm <= hub;
+      $('tipA').classList.toggle('hidden', !inA);
+      $('tipB').classList.toggle('hidden', inA);
+      const moving = !!timer;
+      const glyph = moving && !encoder() ? '○' : '●';
+      $('tipA').textContent = glyph; $('tipB').textContent = glyph;
+      const pct = (v, span) => Math.max(0, Math.min(100, span > 0 ? v / span * 100 : 0)) + '%';
+      if (inA) {
+        $('tubeA').style.setProperty('--fill', pct(mm, hub)); $('tipA').style.setProperty('--tip', pct(mm, hub));
+        $('tubeB').classList.remove('active');
+      } else {
+        $('tubeA').style.setProperty('--fill', '100%'); $('tubeB').classList.add('active');
+        $('tubeB').style.setProperty('--fill', pct(mm - hub, load - hub)); $('tipB').style.setProperty('--tip', pct(mm - hub, load - hub));
+      }
+      $('tipLabel').textContent = label || (mm <= 0 ? 'Tip: parked'
+        : 'Tip: ' + (encoder() ? '' : 'about ') + Math.round(mm) + ' mm from park (' + srcText() + ')');
+    }
+    function status(text, kind, message) {
+      $('routeStatus').textContent = text; $('routeStatus').className = 'route-status ' + (kind || '');
+      if (message) $('routeMessage').textContent = message;
+    }
+    function sensor(on) {
+      $('headNode').classList.toggle('sensor-on', on); $('sensorText').textContent = on ? 'sensor triggered' : 'sensor clear';
+    }
+
+    // ---- motion ----------------------------------------------------------
+    function stopTimer() { if (timer) clearInterval(timer); timer = null; setTip(tip); }
+    function move(target, done, onStep) {
+      stopTimer(); paused = false; $('pauseVerify').textContent = 'Pause';
+      resume = () => move(target, done, onStep);
+      timer = setInterval(() => {
+        if (paused) return;
+        const dir = target > tip ? 1 : -1;
+        const next = tip + dir * Math.min(28, Math.abs(target - tip));
+        setTip(next);
+        if (onStep && onStep(next) === false) return;
+        if (next === target) { stopTimer(); resume = null; done(); }
+      }, 60);
+    }
+
+    // A stopped move keeps its position and always offers a way back.
+    function stopMove() {
+      if (!timer && !['hub', 'hubAsk', 'hubAdjust'].includes(phase)) return;
+      stopTimer();
+      const box = where === 'verify' ? $('verifyStopped') : $('calStopped');
+      (where === 'verify' ? $('verifyRun') : $('calGuide')).classList.add('hidden');
+      status('Stopped', 'attention', 'Stopped with the tip ' + Math.round(tip) + ' mm from park');
+      box.className = '';
+      box.innerHTML = "<div class='notice warn'><strong>Stopped with the tip " + Math.round(tip) + " mm from the park position</strong>"
+        + "Nothing is lost. Carry on where you stopped, or bring the filament home and start over.</div>"
+        + "<div class='actions'>" + (resume ? "<button id='resumeBtn' class='btn primary large'>Carry on</button>" : "")
+        + "<button id='homeBtn' class='btn" + (resume ? "" : " primary large") + "'>Return filament to the ACE</button></div>";
+      if (resume) $('resumeBtn').addEventListener('click', () => {
+        box.className = 'hidden'; (where === 'verify' ? $('verifyRun') : $('calGuide')).classList.remove('hidden');
+        status('Moving', 'busy'); resume();
+      });
+      $('homeBtn').addEventListener('click', () => {
+        box.innerHTML = "<div class='notice'><strong>Returning the filament to the ACE</strong>Pulling back " + Math.round(tip) + " mm.</div>";
+        status('Moving', 'busy', 'Returning to the park position'); sensor(false);
+        resume = null;
+        move(0, () => { box.className = 'hidden'; session = null; idle(); });
+      });
+    }
+    document.querySelectorAll('.stop-btn').forEach(b => b.addEventListener('click', stopMove));
+
+    // ---- calibrate -------------------------------------------------------
+    function calStep(n, title, text) {
+      ['calChip1', 'calChip2', 'calChip3'].forEach((id, i) =>
+        $(id).className = 'step-chip' + (i + 1 < n ? ' done' : i + 1 === n ? ' active' : ''));
+      $('calTitle').textContent = title; $('calText').textContent = text;
+      $('calCount').textContent = n ? 'Step ' + n + ' of 3' : 'Ready';
+      ['calPre', 'calFeed', 'calHub', 'calReturn'].forEach((id, i) => $(id).classList.toggle('hidden', i !== n));
+    }
+    function beginRecalibrate() {
+      $('calSummary').classList.add('hidden'); $('calGuide').classList.remove('hidden');
+      calStep(0, 'Measure this route', 'The filament is fed cold to the toolhead sensor, you pull it back until it is clear of the hub, and it returns to the ACE by itself.');
+    }
+    $('recalibrateBtn').addEventListener('click', beginRecalibrate);
+    $('calKeep').addEventListener('click', () => { $('calGuide').classList.add('hidden'); $('calSummary').classList.remove('hidden'); });
+    $('calStart').addEventListener('click', () => {
+      where = 'calibrate'; phase = 'feed'; session = {load: FEED_LIMIT, swap: null, source: 'measured'};
+      session.load = saved.retract; drawRoute();
+      calStep(1, 'Feeding to the toolhead', 'The feed stops by itself when the T4 sensor sees the filament.');
+      $('feedSrc').textContent = srcText(); $('tabCalibrate').className = 'now'; $('tabCalibrate').textContent = 'In progress';
+      status('Moving', 'busy', 'Feeding toward T4');
+      move(TRUE_LOAD, atSensor, (mm) => { $('feedMm').textContent = Math.round(mm) + ' mm'; });
+    });
+    function atSensor() {
+      // Without an encoder the distance is a time estimate and comes out long.
+      phase = 'hub'; retracted = 0; sensor(true);
+      session.load = encoder() ? TRUE_LOAD : Math.ceil(TRUE_LOAD / 50) * 50;
+      drawRoute(); setTip(session.load);
+      calStep(2, 'Pull back until the tip is clear of the hub', 'Watch the hub. Hold the button for the long stretch, use the small steps to finish. You can go back toward the toolhead if you overshoot.');
+      $('hubLoad').textContent = session.load + ' mm'; $('hubLoadSrc').textContent = srcText();
+      status('Waiting for you', 'attention', 'At the T4 sensor');
+      refreshHub();
+    }
+    function refreshHub() {
+      $('hubRetract').textContent = Math.round(retracted) + ' mm';
+      $('hubTip').textContent = Math.round(session.load - retracted) + ' mm';
+      $('hubMark').disabled = retracted <= 0;
+      sensor(retracted <= 0);
+    }
+    function jogHub(delta) {   // delta < 0 = toward the ACE
+      if (phase !== 'hub') return;
+      retracted = Math.max(0, Math.min(session.load - 20, retracted - delta));
+      setTip(session.load - retracted); refreshHub();
+    }
+    document.querySelectorAll('.jog').forEach(b => b.addEventListener('click', () => jogHub(Number(b.dataset.jog))));
+    let holdTimer = null;
+    const hold = $('holdRetract');
+    const holdStop = () => { if (holdTimer) clearInterval(holdTimer); holdTimer = null; hold.classList.remove('holding'); hold.textContent = 'Hold to pull back'; };
+    hold.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); hold.classList.add('holding'); hold.textContent = 'Pulling back… release to stop';
+      holdTimer = setInterval(() => jogHub(-18), 60);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => hold.addEventListener(ev, holdStop));
+    $('hubMark').addEventListener('click', () => {
+      session.swap = Math.round(retracted); phase = 'return'; drawRoute();
+      calStep(3, 'Returning to the park position', 'No need to look inside the ACE: the same distance that was fed is pulled back.');
+      $('returnNote').textContent = 'Hub clearance saved at ' + session.swap + ' mm';
+      status('Moving', 'busy', 'Returning to the park position');
+      move(0, () => { session.note = 'measured'; idle(); showResults(); showTab('results'); });
+    });
+    $('undoMark').addEventListener('click', () => {
+      stopTimer(); resume = null; retracted = session.load - tip; session.swap = null; phase = 'hub'; drawRoute();
+      calStep(2, 'Pull back until the tip is clear of the hub', 'The mark is removed. You are where the return had got to; go back toward the toolhead if needed.');
+      $('hubLoad').textContent = session.load + ' mm'; status('Waiting for you', 'attention', 'Mark removed'); refreshHub();
+    });
+
+    // ---- verify ----------------------------------------------------------
+    function vStep(n) {
+      ['vChip1', 'vChip2', 'vChip3'].forEach((id, i) =>
+        $(id).className = 'step-chip' + (i + 1 < n ? ' done' : i + 1 === n ? ' active' : ''));
+    }
+    function vNotice(kind, title, text) {
+      $('verifyNotice').className = 'notice ' + kind; $('verifyNotice').innerHTML = '<strong>' + title + '</strong>' + text;
+    }
+    $('startVerify').addEventListener('click', () => {
+      where = 'verify'; phase = 'feed'; hubExtra = 0;
+      if (!session) session = {load: saved.retract, swap: saved.swap, source: 'saved'};
+      session.verify = null; drawRoute();
+      $('verifyReady').classList.add('hidden'); $('verifyRun').classList.remove('hidden'); $('verifyStopped').className = 'hidden';
+      $('hubYes').classList.add('hidden'); $('hubNo').classList.add('hidden'); $('hubAdjust').classList.add('hidden'); $('pauseVerify').classList.remove('hidden');
+      $('verifyTitle').textContent = 'Verification in progress'; $('tabVerify').className = 'now'; $('tabVerify').textContent = 'In progress';
+      vStep(1); vNotice('', 'Feeding to T4', 'One move. The toolhead sensor stops it; if it has not tripped at ' + session.load + ' mm the feed carries on for up to 200 mm.');
+      status('Moving', 'busy', 'Feeding toward T4');
+      const late = $('scenario').value === 'late' ? 60 : 3;
+      move(session.load + late, () => verifyAtHead(late));
+    });
+    function verifyAtHead(delta) {
+      sensor(true);
+      const remeasured = Math.abs(delta) > 10;
+      if (remeasured) { session.load += delta; session.source = 'measured'; drawRoute(); }
+      session.verify = {delta, remeasured, hubExtra: 0};
+      setTip(session.load);
+      vNotice(remeasured ? 'warn' : 'ok', 'Toolhead sensor reached at ' + session.load + ' mm',
+        remeasured ? 'That is ' + (delta > 0 ? '+' : '') + delta + ' mm from the saved distance, so the distance is re-measured. Carrying on to the hub.'
+                   : 'Within tolerance of the saved distance. Carrying on to the hub.');
+      status('Moving', 'busy', 'Toolhead reached');
+      // No click here: the sensor already confirmed the endpoint.
+      setTimeout(() => {
+        if (phase !== 'feed') return;
+        phase = 'toHub'; sensor(false); vStep(2);
+        status('Moving', 'busy', 'Pulling back to the hub clearance point');
+        move(session.load - session.swap, verifyAtHub);
+      }, 1100);
+    }
+    function verifyAtHub() {
+      phase = 'hubAsk';
+      vNotice('warn', 'Look at the hub', 'The filament was pulled back ' + session.swap + ' mm, as a swap would do. Is the tip out of the hub?');
+      $('hubYes').classList.remove('hidden'); $('hubNo').classList.remove('hidden'); $('pauseVerify').classList.add('hidden');
+      status('Waiting for you', 'attention', 'At the hub clearance point');
+    }
+    $('hubNo').addEventListener('click', () => {
+      phase = 'hubAdjust'; $('hubAdjust').classList.remove('hidden'); $('hubNo').classList.add('hidden');
+      $('hubYes').textContent = 'Clear now — return to park';
+      vNotice('warn', 'Pull back until the tip is clear', 'Every step is added to the hub clearance for this route.');
+    });
+    document.querySelectorAll('.vjog').forEach(b => b.addEventListener('click', () => {
+      if (phase !== 'hubAdjust') return;
+      const step = Math.min(Number(b.dataset.jog), tip - 10);
+      hubExtra += step; setTip(tip - step);
+      $('hubExtra').textContent = '+' + hubExtra + ' mm';
+    }));
+    $('hubYes').addEventListener('click', () => {
+      if (hubExtra) { session.swap += hubExtra; session.verify.hubExtra = hubExtra; session.source = 'measured'; drawRoute(); }
+      phase = 'return'; vStep(3);
+      $('hubYes').classList.add('hidden'); $('hubNo').classList.add('hidden'); $('hubAdjust').classList.add('hidden'); $('pauseVerify').classList.remove('hidden');
+      $('hubYes').textContent = 'Tip is clear — return to park';
+      vNotice('', 'Returning to the park position', 'One move.');
+      status('Moving', 'busy', 'Returning to the park position');
+      move(0, () => { session.note = 'verified'; idle(); showResults(); showTab('results'); });
+    });
+    $('pauseVerify').addEventListener('click', () => {
+      paused = !paused; $('pauseVerify').textContent = paused ? 'Resume' : 'Pause';
+      status(paused ? 'Paused' : 'Moving', paused ? 'attention' : 'busy');
+    });
+
+    // ---- results ---------------------------------------------------------
+    function proposed() {
+      const loadM = Math.max(0, Number($('loadMargin').value) || 0);
+      // Values that came from the config already carry their margin.
+      const swapFromConfig = session.source === 'saved' || (session.note === 'verified' && !session.swapMeasured);
+      const swapM = swapFromConfig ? 0 : Math.max(0, Number($('swapMargin').value) || 0);
+      const wanted = session.swap + swapM, cap = session.load - 10;
+      return {load: session.load + loadM, swap: Math.max(session.swap, Math.min(wanted, cap)),
+              retract: session.load, capped: wanted > cap, swapFromConfig};
+    }
+    function showResults() {
+      const v = session.verify, changed = session.source === 'measured';
+      $('resultEmpty').classList.add('hidden'); $('resultBody').classList.remove('hidden');
+      $('savedBox').classList.add('hidden'); $('restartedBox').classList.add('hidden'); $('saveActions').classList.remove('hidden');
+      if (session.note === 'measured') {
+        $('resultTitle').textContent = 'Measurement finished'; $('resultLead').textContent = 'Check the values, then save them or verify first.';
+        $('resultNotice').className = 'notice ok'; $('resultNotice').innerHTML = '<strong>Route measured and parked</strong>Toolhead distance ' + session.load + ' mm (' + srcText() + '), hub clearance ' + session.swap + ' mm.';
+        session.swapMeasured = true;
+      } else if (changed) {
+        $('resultTitle').textContent = 'Verification changed the values'; $('resultLead').textContent = 'The route works, but not with the saved numbers. Save the corrected ones.';
+        $('resultNotice').className = 'notice warn';
+        $('resultNotice').innerHTML = '<strong>Corrected during verification</strong>'
+          + (v.remeasured ? 'Toolhead sensor found ' + (v.delta > 0 ? '+' : '') + v.delta + ' mm from the saved distance. ' : '')
+          + (v.hubExtra ? 'Hub clearance extended by ' + v.hubExtra + ' mm.' : '');
+        if (v.hubExtra) session.swapMeasured = false;
+      } else {
+        $('resultTitle').textContent = 'Verification passed'; $('resultLead').textContent = 'The saved values work for this route. Nothing needs saving.';
+        $('resultNotice').className = 'notice ok'; $('resultNotice').innerHTML = '<strong>Route checked and parked</strong>Toolhead sensor reached ' + (v.delta >= 0 ? '+' : '') + v.delta + ' mm from the saved distance; hub clearance confirmed.';
+      }
+      const nothingToSave = session.note === 'verified' && !changed;
+      $('saveActions').classList.toggle('hidden', nothingToSave);
+      document.querySelector('table.review').classList.toggle('hidden', nothingToSave);
+      document.querySelector('#resultBody .selector-block').classList.toggle('hidden', nothingToSave);
+      $('overrideNote').classList.toggle('hidden', nothingToSave || scope !== 'ace');
+      $('verifyFirst').classList.toggle('hidden', session.note === 'verified');
+      $('restartedBox').classList.toggle('hidden', !nothingToSave);
+      if (nothingToSave) $('restartedBox').innerHTML = "<div class='actions'><button class='btn primary' id='againBtn'>Verify again</button><button class='btn' id='remeasureBtn'>Measure again</button></div>";
+      if (nothingToSave) { $('againBtn').onclick = () => showTab('verify'); $('remeasureBtn').onclick = () => { beginRecalibrate(); showTab('calibrate'); }; }
+      $('tabResults').className = nothingToSave ? 'done' : 'now'; $('tabResults').textContent = nothingToSave ? '✓ Passed' : 'Ready to save';
+      refreshTable();
+    }
+    function refreshTable() {
+      if (!session) return;
+      const p = proposed();
+      $('rLoadOld').textContent = saved.load; $('rSwapOld').textContent = saved.swap; $('rRetOld').textContent = saved.retract;
+      $('rLoadMeas').textContent = session.load; $('rSwapMeas').textContent = session.swap; $('rRetMeas').textContent = session.load;
+      $('rLoadNew').textContent = p.load; $('rSwapNew').textContent = p.swap; $('rRetNew').textContent = p.retract;
+      $('swapMargin').disabled = p.swapFromConfig; $('swapMargin').title = p.swapFromConfig ? 'The saved value already includes its margin' : '';
+      $('capNote').classList.toggle('hidden', !p.capped);
+    }
+    ['loadMargin', 'swapMargin'].forEach(id => $(id).addEventListener('input', refreshTable));
+    document.querySelectorAll('.scope-option').forEach(b => b.addEventListener('click', () => {
+      scope = b.dataset.scope;
+      document.querySelectorAll('.scope-option').forEach(o => o.classList.toggle('selected', o === b));
+      $('overrideNote').classList.toggle('hidden', scope !== 'ace');
+    }));
+    $('saveBtn').addEventListener('click', () => {
+      const p = proposed(); saved = {load: p.load, swap: p.swap, retract: p.retract};
+      $('saveActions').classList.add('hidden'); $('savedBox').classList.remove('hidden');
+      $('tabResults').className = 'done'; $('tabResults').textContent = '✓ Saved';
+    });
+    $('restartBtn').addEventListener('click', () => {
+      $('restartBtn').disabled = true; $('restartBtn').textContent = 'Restarting…';
+      setTimeout(() => {
+        $('savedBox').classList.add('hidden'); $('restartBtn').disabled = false; $('restartBtn').textContent = 'Restart Klipper now';
+        $('restartedBox').innerHTML = "<div class='notice ok'><strong>Klipper is running with the new values</strong>Verify once to see the saved route in action.</div><div class='actions'><button class='btn primary large' id='verifyAfter'>Verify this route</button></div>";
+        $('restartedBox').classList.remove('hidden'); $('verifyAfter').onclick = () => showTab('verify');
+        session = null; idle(true);
+      }, 1200);
+    });
+    $('discardBtn').addEventListener('click', () => { session = null; idle(); showTab('verify'); });
+
+    // ---- idle / reset ----------------------------------------------------
+    function idle(keepResults) {
+      stopTimer(); phase = 'idle'; resume = null; sensor(false);
+      status('Ready', '', 'Filament at the park position');
+      $('verifyReady').classList.remove('hidden'); $('verifyRun').classList.add('hidden'); $('verifyStopped').className = 'hidden';
+      $('verifyTitle').textContent = 'Check this route';
+      $('calSummary').classList.remove('hidden'); $('calGuide').classList.add('hidden'); $('calStopped').className = 'hidden';
+      $('tabCalibrate').className = 'done'; $('tabCalibrate').textContent = '✓ Values saved';
+      $('tabVerify').className = ''; $('tabVerify').textContent = session && session.note === 'verified' ? 'Done' : 'Recommended next';
+      $('sumLoad').textContent = saved.retract + ' mm'; $('sumSwap').textContent = saved.swap + ' mm';
+      $('emptyLoad').textContent = saved.retract + ' mm'; $('emptySwap').textContent = saved.swap + ' mm';
+      if (!session && !keepResults) {
+        $('resultEmpty').classList.remove('hidden'); $('resultBody').classList.add('hidden');
+        $('resultTitle').textContent = 'Nothing new to save'; $('resultLead').textContent = 'Run a measurement or a verification to get a result for this route.';
+        $('tabResults').className = ''; $('tabResults').textContent = 'Nothing new';
+      }
+      tip = 0; drawRoute();
+    }
     document.querySelectorAll('.slot-option').forEach(button => button.addEventListener('click', () => {
       selectedSlot = Number(button.dataset.slot);
       document.querySelectorAll('.slot-option').forEach(item => item.classList.toggle('selected', item === button));
       $('routeTitle').innerHTML = 'ACE 1 &middot; Slot ' + selectedSlot + ' &rarr; Toolhead T4';
-      $('aceRouteNode').textContent = 'ACE 1 &middot; S' + selectedSlot;
-      $('derivedRoute').innerHTML = 'ACE 1 &middot; Slot ' + selectedSlot + ' &rarr; T4';
-      $('verifySlotCheck').textContent = 'Slot ' + selectedSlot + ' is parked at ACE preload';
-      $('routeMessage').textContent = 'Selected slot is parked at the ACE preload position';
-      $('resultsTabState').textContent = 'No new result';
-      updateScopeSummary();
+      $('aceRouteNode').innerHTML = 'ACE 1 &middot; S' + selectedSlot;
+      $('scopeSlotTitle').textContent = 'Only Slot ' + selectedSlot;
     }));
-
-    function setTip(mm, message) {
-      const split = 1320, load = 1840;
-      $('tipA').classList.toggle('hidden', mm > split);
-      $('tipB').classList.toggle('hidden', mm <= split);
-      if (mm <= split) {
-        $('tubeA').style.setProperty('--fill', Math.max(0, Math.min(100, mm / split * 100)) + '%');
-        $('tipA').style.setProperty('--tip', Math.max(0, Math.min(100, mm / split * 100)) + '%');
-        $('tubeB').classList.remove('active');
-        $('tubeB').style.setProperty('--fill', '0%');
-      } else {
-        $('tubeA').style.setProperty('--fill', '100%');
-        $('tubeB').classList.add('active');
-        $('tubeB').style.setProperty('--fill', Math.max(0, Math.min(100, (mm - split) / (load - split) * 100)) + '%');
-        $('tipB').style.setProperty('--tip', Math.max(0, Math.min(100, (mm - split) / (load - split) * 100)) + '%');
-      }
-      $('tipLabel').textContent = message;
-    }
-    function stopTimer() { if (timer) clearInterval(timer); timer = null; }
-    function animate(target, nextPhase) {
-      stopTimer(); paused = false; $('pauseVerify').textContent = 'Pause';
-      timer = setInterval(() => {
-        if (paused) return;
-        const dir = target > progress ? 1 : -1;
-        progress += dir * Math.min(75, Math.abs(target - progress));
-        setTip(progress, 'Tip position: approximately ' + Math.round(progress) + ' mm from preload');
-        $('verifyProgress').style.width = (phase === 'feed' ? progress / 1840 * 33 : phase === 'splitter' ? 33 + (1840 - progress) / 520 * 33 : 66 + (1320 - progress) / 1320 * 34) + '%';
-        if (progress === target) { stopTimer(); nextPhase(); }
-      }, 80);
-    }
-    function startVerification() {
-      phase = 'feed'; progress = 0; fine = 0; $('verifyReady').classList.add('hidden'); $('verifyRun').classList.remove('hidden');
-      $('verifyTitle').textContent = 'Verification in progress'; $('routeStatus').textContent = 'Moving'; $('routeMessage').textContent = 'Feeding continuously toward T4';
-      animate(1840, () => {
-        phase = 'adjust'; $('routeStatus').textContent = 'Needs input'; $('routeMessage').textContent = 'Expected endpoint reached; T4 sensor is clear';
-        $('verifyNotice').className = 'notice warn'; $('verifyNotice').innerHTML = '<strong>Almost there</strong>Use the small movement buttons to trip the T4 sensor.';
-        $('finePanel').classList.add('show'); $('pauseVerify').classList.add('hidden');
-      });
-    }
-    function jog(delta) {
-      if (phase !== 'adjust') return;
-      fine = Math.max(-50, Math.min(50, fine + delta));
-      $('fineOffset').textContent = (fine >= 0 ? '+' : '') + fine + ' mm';
-      setTip(1840 + fine, 'Toolhead correction: ' + (fine >= 0 ? '+' : '') + fine + ' mm');
-      if (fine >= 7) {
-        phase = 'toolhead'; $('finePanel').classList.remove('show'); $('headNode').classList.add('sensor-on'); $('sensorText').textContent = 'sensor triggered';
-        $('routeStatus').textContent = 'Waiting at T4'; $('routeMessage').textContent = 'T4 sensor triggered at +7 mm';
-        $('verifyNotice').className = 'notice ok'; $('verifyNotice').innerHTML = '<strong>T4 reached</strong>Inspect the endpoint, then continue to the splitter.';
-        $('verifyPrimary').classList.remove('hidden'); $('pauseVerify').classList.add('hidden');
-      }
-    }
-    function continueVerification() {
-      if (phase === 'toolhead') {
-        phase = 'splitter'; $('vChip1').className = 'step-chip done'; $('vChip2').className = 'step-chip active'; $('verifyPrimary').classList.add('hidden'); $('pauseVerify').classList.remove('hidden');
-        $('headNode').classList.remove('sensor-on'); $('sensorText').textContent = 'sensor clear'; $('routeStatus').textContent = 'Moving'; $('routeMessage').textContent = 'Retracting continuously to the splitter';
-        $('verifyNotice').className = 'notice'; $('verifyNotice').innerHTML = '<strong>Moving to splitter</strong>The move completes in one continuous leg.';
-        progress = 1847; animate(1320, () => {
-          phase = 'splitter-hold'; $('routeStatus').textContent = 'Waiting at splitter'; $('routeMessage').textContent = 'Confirm the tip is clear of the junction';
-          $('verifyNotice').className = 'notice warn'; $('verifyNotice').innerHTML = '<strong>Splitter checkpoint</strong>Confirm the tip is clear before returning to ACE.';
-          $('verifyPrimary').textContent = 'Splitter is clear - return to ACE'; $('verifyPrimary').classList.remove('hidden'); $('pauseVerify').classList.add('hidden');
-        });
-      } else if (phase === 'splitter-hold') {
-        phase = 'return'; $('vChip2').className = 'step-chip done'; $('vChip3').className = 'step-chip active'; $('verifyPrimary').classList.add('hidden'); $('pauseVerify').classList.remove('hidden');
-        $('routeStatus').textContent = 'Moving'; $('routeMessage').textContent = 'Returning continuously to ACE preload';
-        animate(0, completeVerification);
-      }
-    }
-    function completeVerification() {
-      phase = 'done'; $('vChip3').className = 'step-chip done'; $('verifyProgress').style.width = '100%'; $('routeStatus').textContent = 'Verified'; $('routeMessage').textContent = 'Filament parked at the ACE preload position'; setTip(0, 'Tip position: parked');
-      $('verifyNotice').className = 'notice ok'; $('verifyNotice').innerHTML = '<strong>Verification complete</strong>The route passed and returned to preload.';
-      $('pauseVerify').classList.add('hidden'); $('stopVerify').classList.add('hidden'); $('resultsTabState').textContent = 'Passed'; $('resultEmpty').classList.add('hidden'); $('resultSuccess').classList.remove('hidden'); $('resultTitle').textContent = 'Verification passed'; $('resultLead').textContent = 'ACE 1 Slot ' + selectedSlot + ' to T4 completed the full round trip.';
-      setTimeout(() => showTab('results'), 550);
-    }
-    $('startVerify').addEventListener('click', startVerification);
-    document.querySelectorAll('.jog').forEach(b => b.addEventListener('click', () => jog(Number(b.dataset.jog))));
-    $('verifyPrimary').addEventListener('click', continueVerification);
-    $('pauseVerify').addEventListener('click', () => { paused = !paused; $('pauseVerify').textContent = paused ? 'Resume' : 'Pause'; $('routeStatus').textContent = paused ? 'Paused' : 'Moving'; });
-    $('stopVerify').addEventListener('click', resetDemo);
-    $('verifyAgain').addEventListener('click', resetDemo);
-
-    $('recalibrateBtn').addEventListener('click', () => { $('calibrateSummary').classList.add('hidden'); $('calibrateGuide').classList.remove('hidden'); });
-    $('cancelRecalibrate').addEventListener('click', () => { $('calibrateGuide').classList.add('hidden'); $('calibrateSummary').classList.remove('hidden'); });
-    $('calPrimary').addEventListener('click', () => {
-      calStep += 1;
-      if (calStep === 1) { $('calChip1').className = 'step-chip done'; $('calChip2').className = 'step-chip active'; $('calCount').textContent = 'Step 2 of 3'; $('calTitle').textContent = 'Confirm automatic preload'; $('calText').textContent = 'Reinsert Slot 4 and wait for the ACE to finish its short preload.'; $('calNotice').className = 'notice ok'; $('calNotice').innerHTML = '<strong>T4 is clear</strong>Only the selected route was unloaded.'; $('calPrimary').textContent = 'Preload is ready'; }
-      else if (calStep === 2) { $('calChip2').className = 'step-chip done'; $('calChip3').className = 'step-chip active'; $('calCount').textContent = 'Step 3 of 3'; $('calTitle').textContent = 'Measure the route'; $('calText').textContent = 'The guided measurement will feed to T4 and stop on its sensor.'; $('calNotice').className = 'notice'; $('calNotice').innerHTML = '<strong>Everything is ready</strong>One clear primary action starts the measurement.'; $('calPrimary').textContent = 'Start measurement'; }
-      else { showTab('verify'); resetDemo(); }
+    $('unit').addEventListener('change', () => setTip(tip));
+    $('resetDemo').addEventListener('click', () => {
+      saved = {load: 1517, swap: 1050, retract: 1367}; session = null;
+      $('loadMargin').value = 150; $('swapMargin').value = 100; idle(); showTab('verify');
     });
-
-    function resetDemo() {
-      stopTimer(); paused = false; phase = 'ready'; progress = 0; fine = 0; calStep = 0;
-      $('verifyReady').classList.remove('hidden'); $('verifyRun').classList.add('hidden'); $('verifyTitle').textContent = 'Test the saved route'; $('verifyProgress').style.width = '0%'; $('finePanel').classList.remove('show'); $('verifyPrimary').classList.add('hidden'); $('verifyPrimary').textContent = 'Continue to splitter'; $('pauseVerify').classList.remove('hidden'); $('stopVerify').classList.remove('hidden');
-      ['vChip1','vChip2','vChip3'].forEach((id,i) => $(id).className = 'step-chip' + (i === 0 ? ' active' : ''));
-      $('headNode').classList.remove('sensor-on'); $('sensorText').textContent = 'sensor clear'; $('routeStatus').textContent = 'Ready'; $('routeMessage').textContent = 'Filament parked at the ACE preload position'; setTip(0, 'Tip position: parked');
-      $('resultEmpty').classList.remove('hidden'); $('resultSuccess').classList.add('hidden'); $('resultsTabState').textContent = 'No new result'; $('calibrateSummary').classList.remove('hidden'); $('calibrateGuide').classList.add('hidden');
-    }
-    $('resetDemo').addEventListener('click', () => { resetDemo(); showTab('verify'); });
-    updateScopeSummary();
-    setTip(0, 'Tip position: parked');
+    idle();
   </script>
 </body>
 </html>

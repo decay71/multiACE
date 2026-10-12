@@ -3643,8 +3643,8 @@ async def calibration_action(payload: CalibrationAction) -> dict:
         script = 'ACE_CALIBRATION_FEED'
     elif action == 'retract':
         length = int(payload.length or 0)
-        if length < 5 or length > 500:
-            raise HTTPException(400, 'retract length must be 5-500 mm')
+        if length < 5 or length > 5000:
+            raise HTTPException(400, 'retract length must be 5-5000 mm')
         script = 'ACE_CALIBRATION_RETRACT LENGTH=%d' % length
     elif action == 'feed_jog':
         length = int(payload.length or 0)
@@ -3653,6 +3653,19 @@ async def calibration_action(payload: CalibrationAction) -> dict:
         script = 'ACE_CALIBRATION_FEED_JOG LENGTH=%d' % length
     elif action == 'mark_swap':
         script = 'ACE_CALIBRATION_MARK MARK=swap'
+    elif action == 'mark_undo':
+        script = 'ACE_CALIBRATION_MARK MARK=undo'
+    elif action == 'stop':
+        script = 'ACE_CALIBRATION_STOP'
+    elif action == 'resume':
+        script = 'ACE_CALIBRATION_RESUME'
+    elif action == 'home':
+        script = 'ACE_CALIBRATION_HOME'
+    elif action == 'verify_hub_jog':
+        length = int(payload.length or 0)
+        if length not in (5, 10, 25, 50):
+            raise HTTPException(400, 'hub jog must be 5, 10, 25 or 50 mm')
+        script = 'ACE_CALIBRATION_VERIFY ACTION=hub_jog LENGTH=%d' % length
     elif action == 'return_park':
         script = 'ACE_CALIBRATION_RETURN'
     elif action == 'verify_start':
