@@ -250,22 +250,30 @@ ACE 2  Slot 3 ──────┘
 ```
 
 ### USB Connection
+Each ACE Pro 2 connects to the Snapmaker U1 via USB (data only - each ACE has its own power supply). The USB connection setup depends on whether you are using the ACE Pro v1 or ACE Pro v2.
 
-Each ACE Pro 2 connects to the Snapmaker U1 via USB (data only - each ACE has its own power supply). The ACE units are daisy-chained through the USB ports on the back of each ACE:
+ACE Pro v1: Supports daisy-chaining.
 
+ACE Pro v2: Does not support daisy-chaining. Each unit must connect directly to a dedicated USB Hub. Each ACE Pro 2 requires the supplied K3 Cable paired with an RS485-to-USB adapter. Refer to the [Cable Guide](https://postapocalyptic-diy.com/ace-pro-1-2-cable-guide/) for complete wiring details.
+
+ACE Pro v1 (Daisy Chain)
 ```
 Snapmaker U1 USB Port
         │
       ACE 0 ─── ACE 1 ─── ACE 2 ─── ACE 3
-       (USB out → USB in, daisy chain)
-```
-```
-Snapmaker U1 USB Port - HUB
-        │           │        │         │
-      ACE2 0      ACE2 1    ACE2 2     ACE2 3
-       (USB out → USB in, daisy chain)
+        (USB out → USB in, daisy chain)
 ```
 
+ACE Pro v2 (USB Hub)
+```
+Snapmaker U1 USB Port
+        │
+   [ USB Hub ]
+  ┌─────┼─────┬─────┐
+  │     │     │     │
+ACE 0 ACE 1 ACE 2 ACE 3
+  (K3 Cable + RS485-to-USB adapter per unit)
+```
 > **Note:** VCC (5V) is not connected in the USB cable - only data lines. Each ACE Pro is powered by its own external power supply.
 
 
