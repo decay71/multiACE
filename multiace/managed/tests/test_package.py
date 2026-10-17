@@ -78,8 +78,9 @@ class PackageTests(unittest.TestCase):
             self.assertNotIn("[save_variables]", config_text)
             self.assertIn("[ace]", config_text)
             self.assertRegex(config_text, r"(?m)^ace_device_count:\s*1$")
-            # Generic discovery and ACE 2 support are opt-in. Verify the
-            # false defaults and the commented opt-in examples.
+            # ACE 2 support stays enabled in the shipped config, while
+            # generic probing remains an explicit opt-in. Both code fallbacks
+            # are false.
             tree = ast.parse(ace_source)
             default_calls = {
                 node.args[0].value: node
@@ -96,8 +97,13 @@ class PackageTests(unittest.TestCase):
                 call = default_calls[option]
                 self.assertIsInstance(call.args[1], ast.Constant)
                 self.assertIs(call.args[1].value, False)
-                self.assertNotRegex(config_text, rf'(?m)^{option}:')
-                self.assertRegex(config_text, rf'(?m)^#{option}:\s*true$')
+            self.assertRegex(config_text, r'(?m)^enable_ace_v2:\s*true$')
+            self.assertNotRegex(config_text, r'(?m)^v2_probe_generic_usb:')
+            self.assertRegex(config_text,
+                             r'(?m)^#v2_probe_generic_usb:\s*true$')
+            self.assertIn(
+                '# Generic adapter discovery sends identity queries only when the opt-in below',
+                config_text)
             source_config = (build_package.ROOT / "config/extended/ace.cfg").read_text()
             self.assertIn("[gcode_macro ACEH__Update_Check]", source_config)
             self.assertIn("[gcode_macro ACEH__Update_Apply]", source_config)

@@ -1331,8 +1331,11 @@ class MultiAce:
         self._v2_generic_probe_cursor = None
         self._v2_generic_probe_cache = {}
         self._v2_generic_probe_in_progress = set()
-        self._configured_serial_paths = self._read_configured_serial_paths(
-            config)
+        self._configured_serial_paths = set()
+        self._configured_serial_paths_valid = True
+        if self._v2_probe_generic_usb:
+            self._configured_serial_paths = self._read_configured_serial_paths(
+                config)
         if self._v2_extra_usb_ids:
             logging.info('[multiACE] V2 extra USB IDs (opt-in): %s' % (
                 ', '.join('%s:%s' % p for p in self._v2_extra_usb_ids)))
@@ -2421,6 +2424,8 @@ class MultiAce:
                 for path in self._configured_serial_paths}
 
     def _probe_v2_generic_candidate(self, path, active_paths, probe_budget):
+        if not (self._enable_ace_v2 and self._v2_probe_generic_usb):
+            return False
         real_path = os.path.realpath(path)
         if real_path in active_paths:
             return True
@@ -2539,17 +2544,12 @@ class MultiAce:
             if (ser is not None and getattr(ser, 'is_open', False)
                     and idx < len(self._ace_devices)):
                 active_paths.add(os.path.realpath(self._ace_devices[idx]))
-        configured_serial_paths = self._configured_serial_path_set()
 
         for protocol_cls in active_protocols:
             for path in discovered_by_protocol[protocol_cls]:
                 if path in ace_devices:
                     continue
                 real_path = os.path.realpath(path)
-                if real_path in configured_serial_paths:
-                    logging.info('[multiACE] Discovery skipped configured '
-                                 'serial path %s', path)
-                    continue
                 if protocol_cls is AceProtocolV2:
                     if real_path not in active_paths:
                         official = AceProtocolV2.is_official_usb_path(path)
@@ -2557,15 +2557,10 @@ class MultiAce:
                         usb_ids = AceProtocolV2._read_usb_ids(real_dev)
                         explicitly_configured = (
                             usb_ids in self._v2_extra_usb_ids)
-                        if official or explicitly_configured:
-                            if AceProtocolV2.serial_port_in_use(path):
-                                logging.info(
-                                    '[multiACE] V2 discovery skipped '
-                                    'path=%s category=port_in_use', path)
-                                continue
-                        elif (not self._v2_probe_generic_usb
-                              or not self._probe_v2_generic_candidate(
-                                  path, active_paths, probe_budget)):
+                        if not (official or explicitly_configured) and (
+                                not self._v2_probe_generic_usb
+                                or not self._probe_v2_generic_candidate(
+                                    path, active_paths, probe_budget)):
                             continue
                 self._ace_path_protocol[path] = protocol_cls
                 ace_devices.append(path)
@@ -2592,7 +2587,7 @@ class MultiAce:
                 real_path = os.path.realpath(path)
                 if real_path in known_real_paths:
                     continue
-                if real_path in configured_serial_paths:
+                if real_path in self._configured_serial_path_set():
                     logging.info('[multiACE] Generic V2 probe skipped '
                                  'configured serial path %s', path)
                     continue

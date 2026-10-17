@@ -1,3 +1,4 @@
+import ast
 import errno
 import pathlib
 import sys
@@ -8,7 +9,7 @@ import unittest
 from unittest import mock
 
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parent
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / 'multiace' / 'klipper'))
 
 from extras.ace_protocol_v2 import AceProtocolV2, Cmd, crc16_kermit, pb_uint32
@@ -73,6 +74,43 @@ class _FakeSerial:
 
     def close(self):
         self.is_open = False
+
+
+class DiscoveryScopeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        source = (REPO_ROOT / 'multiace' / 'klipper' / 'extras'
+                  / 'ace.py').read_text(encoding='utf-8')
+        cls.tree = ast.parse(source)
+        cls.methods = {
+            node.name: node
+            for node in ast.walk(cls.tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+    def test_port_ownership_probe_is_confined_to_generic_candidate(self):
+        callers = set()
+        for name, method in self.methods.items():
+            if any(isinstance(node, ast.Call)
+                   and isinstance(node.func, ast.Attribute)
+                   and node.func.attr == 'serial_port_in_use'
+                   for node in ast.walk(method)):
+                callers.add(name)
+        self.assertEqual(callers, {'_probe_v2_generic_candidate'})
+
+    def test_known_device_scan_does_not_apply_generic_port_exclusions(self):
+        scan = self.methods['_scan_ace_devices']
+        checked_methods = {
+            node.func.attr for node in ast.walk(scan)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in (
+                'serial_port_in_use', '_configured_serial_path_set')
+        }
+        self.assertNotIn('serial_port_in_use', checked_methods)
+        # Configured-path exclusions only appear in the opt-in candidate loop;
+        # the default protocol discovery branch preserves its previous behavior.
+        self.assertEqual(checked_methods, {'_configured_serial_path_set'})
 
 
 class V2ProbeTests(unittest.TestCase):
