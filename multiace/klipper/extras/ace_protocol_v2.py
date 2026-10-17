@@ -328,6 +328,8 @@ class AceProtocolV2(AceProtocol):
                 timeout=0.05,
                 write_timeout=0.25,
                 exclusive=True,
+                dtr=False,
+                rts=False,
             )
         except Exception as e:
             return {'ok': False, 'category': cls._probe_error_category(e),
@@ -457,7 +459,6 @@ class AceProtocolV2(AceProtocol):
         return serial.Serial(
             port=path,
             baudrate=cls.DEFAULT_BAUD,
-            exclusive=True,
             **cls.SERIAL_KWARGS,
         )
 

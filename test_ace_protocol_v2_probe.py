@@ -32,8 +32,10 @@ class _FakeSerial:
     responder = None
     open_error = None
     seen_requests = []
+    seen_open_kwargs = []
 
     def __init__(self, **kwargs):
+        self.seen_open_kwargs.append(dict(kwargs))
         if self.open_error is not None:
             raise self.open_error
         self.timeout = kwargs.get('timeout', 0.05)
@@ -83,6 +85,7 @@ class V2ProbeTests(unittest.TestCase):
         _FakeSerial.responder = self._valid_responder
         _FakeSerial.open_error = None
         _FakeSerial.seen_requests = []
+        _FakeSerial.seen_open_kwargs = []
         self.temp_path = tempfile.NamedTemporaryFile(delete=False).name
 
     def tearDown(self):
@@ -115,6 +118,20 @@ class V2ProbeTests(unittest.TestCase):
                                          0x3456789a))
         self.assertEqual(_FakeSerial.seen_requests,
                          [(1, Cmd.DISCOVER_DEVICE), (2, Cmd.GET_INFO)])
+        self.assertFalse(_FakeSerial.seen_open_kwargs[0]['dtr'])
+        self.assertFalse(_FakeSerial.seen_open_kwargs[0]['rts'])
+
+    def test_regular_transport_does_not_request_exclusive_open(self):
+        captured = {}
+
+        def fake_serial(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        self.serial_module.Serial = fake_serial
+        AceProtocolV2.open_transport(self.temp_path, AceProtocolV2.DEFAULT_BAUD)
+
+        self.assertNotIn('exclusive', captured)
 
     def test_open_permission_error_is_distinct(self):
         _FakeSerial.open_error = PermissionError(

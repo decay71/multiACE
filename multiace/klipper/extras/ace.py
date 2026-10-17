@@ -1310,7 +1310,7 @@ class MultiAce:
         self._homing_flag_path = config.get(
             'homing_flag_path', '/tmp/multiace_homing_active')
 
-        self._enable_ace_v2 = config.getboolean('enable_ace_v2', True)
+        self._enable_ace_v2 = config.getboolean('enable_ace_v2', False)
 
         self._v2_order = config.getchoice('v2_order',
                                           {'usb': 'usb', 'first': 'first',
@@ -1327,7 +1327,7 @@ class MultiAce:
             config.get('v2_extra_usb_ids', ''))
         AceProtocolV2.EXTRA_USB_IDS = self._v2_extra_usb_ids
         self._v2_probe_generic_usb = config.getboolean(
-            'v2_probe_generic_usb', True)
+            'v2_probe_generic_usb', False)
         self._v2_generic_probe_cursor = None
         self._v2_generic_probe_cache = {}
         self._v2_generic_probe_in_progress = set()

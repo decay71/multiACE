@@ -78,8 +78,8 @@ class PackageTests(unittest.TestCase):
             self.assertNotIn("[save_variables]", config_text)
             self.assertIn("[ace]", config_text)
             self.assertRegex(config_text, r"(?m)^ace_device_count:\s*1$")
-            # Fresh installs rely on the packaged code's automatic defaults.
-            # Verify those defaults and retain the explicit disable switches.
+            # Generic discovery and ACE 2 support are opt-in. Verify the
+            # false defaults and the commented opt-in examples.
             tree = ast.parse(ace_source)
             default_calls = {
                 node.args[0].value: node
@@ -95,9 +95,9 @@ class PackageTests(unittest.TestCase):
             for option in ('enable_ace_v2', 'v2_probe_generic_usb'):
                 call = default_calls[option]
                 self.assertIsInstance(call.args[1], ast.Constant)
-                self.assertIs(call.args[1].value, True)
+                self.assertIs(call.args[1].value, False)
                 self.assertNotRegex(config_text, rf'(?m)^{option}:')
-                self.assertRegex(config_text, rf'(?m)^#{option}:\s*false$')
+                self.assertRegex(config_text, rf'(?m)^#{option}:\s*true$')
             source_config = (build_package.ROOT / "config/extended/ace.cfg").read_text()
             self.assertIn("[gcode_macro ACEH__Update_Check]", source_config)
             self.assertIn("[gcode_macro ACEH__Update_Apply]", source_config)
