@@ -167,35 +167,6 @@ Support for FOrca Slicer (https://github.com/jiyang1018/FOrcaSlicer) Gcode, Uplo
 Foraca Slicer [Version ](https://github.com/jiyang1018/FOrcaSlicer/releases/tag/v2.3.2-fos.8.6.0)
 
 
-## Upcoming features
-
-Planned web UI features, in the order they are expected to land. Each row is updated by the pull request that delivers it.
-
-| Status | Legend |
-| --- | --- |
-| 🔴 ⏳ | Planned |
-| 🟡 🚧 | In progress or pull request open |
-| 🟢 ✅ | Released |
-
-| | ID | Feature |
-| --- | --- | --- |
-| 🔴 ⏳ | U1 | New UI shell: navigation rail and restyled tabs |
-| 🔴 ⏳ | F1 | Preflight time and cost breakdown |
-| 🔴 ⏳ | F2 | Per-pair purge calibration |
-| 🔴 ⏳ | F3 | Async analyze with progress and ETA |
-| 🔴 ⏳ | F4 | G-code 3D preview and thumbnails |
-| 🔴 ⏳ | F5 | Print queue |
-| 🔴 ⏳ | F6 | Print history, reprint and swap stats |
-| 🔴 ⏳ | F7 | Estimated vs. actual print duration |
-| 🔴 ⏳ | F8 | Print analysis report |
-| 🔴 ⏳ | F9 | Favourites |
-| 🔴 ⏳ | F10 | Monitor: webcam, console and live print control |
-| 🔴 ⏳ | F11 | Automatic load retry |
-| 🔴 ⏳ | F12 | Config diff before apply and restart buttons |
-| 🔴 ⏳ | F13 | Remember last filament |
-| 🔴 ⏳ | F14 | Virtual loadout persistence |
-| 🔴 ⏳ | F15 | Purge guard: min/max clamp, colour-aware purge, bin tracking |
-
 ## Requirements
 
 - Snapmaker U1 printer

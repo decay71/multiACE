@@ -1029,10 +1029,10 @@ def _mock_load(name: str, default: Any = None) -> Any:
     return data
 
 def _mock_enabled(request: Request | None = None) -> bool:
-    """Mock mode is process-wide (env), but a request can force it with
-    ?mock=1 / ?mock=0 so mocked and live data can be compared without
-    restarting the server."""
-    if request is not None:
+    """Mock mode is process-wide (env). While it is on, a request can
+    compare against live data with ?mock=0 / ?mock=1; with mock mode off
+    the query is ignored, so a real printer never serves fixture data."""
+    if request is not None and MOCK_MODE:
         q = request.query_params.get("mock")
         if q is not None:
             return q.strip().lower() in ("1", "true", "yes", "on")

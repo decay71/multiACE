@@ -125,3 +125,7 @@ class TestDebugEndpointsAreGated:
 
     def test_sample_gcode_refused_outside_mock_mode(self, live_client):
         assert live_client.get("/api/debug/sample-gcode").status_code == 403
+
+    def test_query_param_cannot_enable_mock(self, live_client):
+        for path in ("/api/state?mock=1", "/api/version?mock=1"):
+            assert live_client.get(path).json().get("mock") is not True
