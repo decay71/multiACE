@@ -1,7 +1,10 @@
 const { createApp, ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
-const API = "/multiace/api";
+// Behind nginx the UI lives at /multiace; the dev server serves it from the
+// root. Deriving the base from the path keeps one bundle working in both.
+const BASE = location.pathname.startsWith("/multiace") ? "/multiace" : "";
+const API = BASE + "/api";
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://")
-             + location.host + "/multiace/ws";
+             + location.host + BASE + "/ws";
 const SCREEN = "/screen";
 createApp({
   setup() {
