@@ -51,6 +51,27 @@ createApp({
         }
       }
     }
+    // The navigation entries, in order. The top bar renders this list, so
+    // a feature adds a tab by adding one entry here instead of editing the
+    // markup.
+    const navItems = computed(() => {
+      const items = [];
+      if (state.mode !== "normal") {
+        items.push({key: "dashboard", label: t("ui.tabs.dashboard")});
+      }
+      items.push({key: "spools", label: t("ui.tabs.spools")});
+      items.push({key: "config", label: t("ui.tabs.config")});
+      // Calibration hangs off Config: shown only while one of the two is
+      // open, so it cannot vanish under the user once selected.
+      if (CALIBRATION_TAB && state.mode !== "normal"
+          && (tab.value === "config" || tab.value === "calibration")) {
+        items.push({key: "calibration", label: t("ui.tabs.calibration")});
+      }
+      for (const p of plugins.items) {
+        items.push({key: "plugin:" + p.name, label: p.label});
+      }
+      return items;
+    });
     function pluginIframeSrc(p) {
       const u = (p && p.ui_url) || "/";
       return `/plugin/${p.name}${u.startsWith("/") ? u : "/" + u}`;
@@ -7414,6 +7435,7 @@ createApp({
       headPlanMapping, multiTopology, slotHead, pinLabel,
       updateState, updateCheck, updateApply,
       debugState, debugEnable, debugDisable,
+      navItems,
       plugins, refreshPlugins, pluginIframeSrc,
       notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications,
       confirmDialog, okConfirm, altConfirm, cancelConfirm, confirmInputError,

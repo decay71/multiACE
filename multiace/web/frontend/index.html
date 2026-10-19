@@ -311,17 +311,8 @@
              :title="t('ui.common.firmware') + ' ' + printerFw">· {{ printerName }}</small>
     </h1>
     <nav>
-      <button v-if="state.mode !== 'normal'"
-              :class="{active: tab==='dashboard'}" @click="tab='dashboard'">{{ t('ui.tabs.dashboard') }}</button>
-      <button :class="{active: tab==='spools'}" @click="tab='spools'">{{ t('ui.tabs.spools') }}</button>
-      <button :class="{active: tab==='config'}" @click="tab='config'">{{ t('ui.tabs.config') }}</button>
-      <!-- Calibration hangs off Config: shown only while one of the two is
-           open, so it cannot vanish under the user once selected. -->
-      <button v-if="CALIBRATION_TAB && state.mode !== 'normal' && (tab==='config' || tab==='calibration')"
-              :class="{active: tab==='calibration'}" @click="tab='calibration'">{{ t('ui.tabs.calibration') }}</button>
-      <button v-for="p in plugins.items" :key="p.name"
-              :class="{active: tab===('plugin:'+p.name)}"
-              @click="tab='plugin:'+p.name">{{ p.label }}</button>
+      <button v-for="it in navItems" :key="it.key"
+              :class="{active: tab===it.key}" @click="tab=it.key">{{ it.label }}</button>
     </nav>
     <input ref="uploadInput" type="file" accept=".gcode,.gco,.g"
            class="upload-input" @change="onUploadGcode($event.target.files)">
