@@ -1,0 +1,376 @@
+{
+  "_comment": "Mock /api/state payload for the dev UI in head mode (MULTIACE_MOCK_MODE=1, MULTIACE_MOCK_STATE_FILE=mock_state_head.json). Same shape as mock_state.json - see that file's comment - but mode is 'head' so the per-head dashboard renders: ACE picker per head, feeder-combo checkbox, background-swap toggle. Head 1 has feeder_combo on (Y-splitter joining its stock feeder onto ACE 0's path) to exercise that state.",
+  "_generated": "2026-08-26",
+  "klippy": "ready",
+  "printer_state": "printing",
+  "mode": "head",
+  "active_device": 0,
+  "device_count": 2,
+  "ace_status": "ready",
+  "ace_temp": 27,
+  "ace_head": 0,
+  "ace_heads": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "head_feeder": {
+    "0": false,
+    "1": false,
+    "2": false,
+    "3": true
+  },
+  "head_feeder_combo": {
+    "0": false,
+    "1": true,
+    "2": false,
+    "3": false
+  },
+  "head_ace": {
+    "0": 0,
+    "1": 0,
+    "2": 1,
+    "3": 1
+  },
+  "pickup_cleaning": false,
+  "swap_in_progress": false,
+  "display_index_base": 0,
+  "dryer": {
+    "status": "stop",
+    "target_temp": 0,
+    "duration": 0,
+    "remain_time": 0
+  },
+  "save_variables": {},
+  "bg_swap": {
+    "available": true,
+    "enabled_heads": [
+      0,
+      1
+    ],
+    "busy": [],
+    "version": "0.4"
+  },
+  "tipform": {
+    "available": true,
+    "mode": "custom",
+    "tables": [
+      "PLA",
+      "PETG"
+    ]
+  },
+  "aces": [
+    {
+      "idx": 0,
+      "connected": true,
+      "status": "ready",
+      "temp": 27,
+      "humidity": 31,
+      "protocol": "v2",
+      "feed_assist": -1,
+      "dryer": {
+        "status": "stop",
+        "target_temp": 0,
+        "remain_time": 0
+      },
+      "dryer_status": {
+        "status": "stop",
+        "target_temp": 0,
+        "remain_time": 0
+      },
+      "slots": [
+        {
+          "idx": 0,
+          "state": "ready",
+          "status": "ready",
+          "rfid": 1,
+          "material": "PLA",
+          "subtype": "Basic",
+          "brand": "Snapmaker",
+          "sku": "",
+          "color": "#d94040",
+          "color_rgb": null,
+          "rfid_data": null,
+          "source": "rfid"
+        },
+        {
+          "idx": 1,
+          "state": "ready",
+          "status": "ready",
+          "rfid": 0,
+          "material": "PLA",
+          "subtype": "Matte",
+          "brand": "Generic",
+          "sku": "",
+          "color": "#3f7fd0",
+          "color_rgb": null,
+          "rfid_data": null,
+          "source": "override"
+        },
+        {
+          "idx": 2,
+          "state": "empty",
+          "status": "empty",
+          "rfid": 0,
+          "material": "",
+          "subtype": "",
+          "brand": "",
+          "sku": "",
+          "color": null,
+          "color_rgb": null,
+          "rfid_data": null,
+          "source": null
+        },
+        {
+          "idx": 3,
+          "state": "ready",
+          "status": "ready",
+          "rfid": 0,
+          "material": "PETG",
+          "subtype": "",
+          "brand": "Generic",
+          "sku": "",
+          "color": "#3cc07a",
+          "color_rgb": null,
+          "rfid_data": null,
+          "source": "override"
+        }
+      ]
+    },
+    {
+      "idx": 1,
+      "connected": true,
+      "status": "ready",
+      "temp": 26,
+      "humidity": 29,
+      "protocol": "v1",
+      "feed_assist": -1,
+      "dryer": {
+        "status": "stop",
+        "target_temp": 0,
+        "remain_time": 0
+      },
+      "dryer_status": {
+        "status": "stop",
+        "target_temp": 0,
+        "remain_time": 0
+      },
+      "slots": [
+        {
+          "idx": 0,
+          "state": "ready",
+          "status": "ready",
+          "rfid": 0,
+          "material": "ABS",
+          "subtype": "",
+          "brand": "Generic",
+          "sku": "",
+          "color": "#222222",
+          "color_rgb": null,
+          "rfid_data": null,
+          "source": "override"
+        },
+        {
+          "idx": 1,
+          "state": "empty",
+          "status": "empty",
+          "rfid": 0,
+          "material": "",
+          "subtype": "",
+          "brand": "",
+          "sku": "",
+          "color": null,
+          "color_rgb": null,
+          "rfid_data": null,
+          "source": null
+        },
+        {
+          "idx": 2,
+          "state": "empty",
+          "status": "empty",
+          "rfid": 0,
+          "material": "",
+          "subtype": "",
+          "brand": "",
+          "sku": "",
+          "color": null,
+          "color_rgb": null,
+          "rfid_data": null,
+          "source": null
+        },
+        {
+          "idx": 3,
+          "state": "ready",
+          "status": "ready",
+          "rfid": 0,
+          "material": "TPU",
+          "subtype": "",
+          "brand": "Generic",
+          "sku": "",
+          "color": "#e0a020",
+          "color_rgb": null,
+          "rfid_data": null,
+          "source": "override"
+        }
+      ]
+    }
+  ],
+  "toolheads": [
+    {
+      "idx": 0,
+      "name": "T0",
+      "ace": 0,
+      "slot": 0,
+      "module_exist": true,
+      "filament_detected": true,
+      "material": "PLA",
+      "color": "#d94040",
+      "brand": "Generic",
+      "subtype": "",
+      "manual": false,
+      "feeder": false,
+      "source": {
+        "ace_index": 0,
+        "slot": 0
+      }
+    },
+    {
+      "_comment": "Head 1 has the hybrid feeder-combo on (Y-splice joining its stock feeder onto ACE 0's path) and is currently idle on the feeder side - not sourced from an ACE slot, with filament sitting detected in its stock loader. Exercises the combo_feeder tile/spool-picker/Load button (added alongside the ACE picker + feeder-combo checkbox, which read head_feeder_combo/head_ace directly above and don't depend on this head's load state).",
+      "idx": 1,
+      "name": "T1",
+      "ace": null,
+      "slot": "feeder",
+      "module_exist": true,
+      "filament_detected": true,
+      "filament_in_toolhead": true,
+      "filament_at_extruder": false,
+      "channel_state": "preload_finish",
+      "head_source_known": false,
+      "material": "PETG",
+      "color": "#3cc07a",
+      "brand": "Generic",
+      "subtype": "",
+      "manual": false,
+      "feeder": false,
+      "combo_feeder": true,
+      "source": null
+    },
+    {
+      "_comment": "A failed load, so the collapsed lane-header chips have an error state to cope with as well as an absent one (ACE 1 slot 1 and 2 are empty).",
+      "idx": 2,
+      "name": "T2",
+      "ace": 1,
+      "slot": 3,
+      "module_exist": true,
+      "filament_detected": false,
+      "head_source_known": true,
+      "load_failed": true,
+      "material": "TPU",
+      "color": "#e0a020",
+      "brand": "Generic",
+      "subtype": "",
+      "manual": false,
+      "feeder": false,
+      "source": {
+        "ace_index": 1,
+        "slot": 3,
+        "load_failed": true
+      }
+    },
+    {
+      "_comment": "Head 3 is a plain stock-feeder head (not ACE-driven), so it exercises the multi-mode-style feeder checkbox inside head mode.",
+      "idx": 3,
+      "name": "T3",
+      "ace": null,
+      "slot": null,
+      "module_exist": true,
+      "filament_detected": true,
+      "material": "",
+      "color": null,
+      "brand": "",
+      "subtype": "",
+      "manual": false,
+      "feeder": true,
+      "source": null
+    }
+  ],
+  "wiring": [
+    {
+      "ace": 0,
+      "slot": 0,
+      "head": 0,
+      "color": "#d94040"
+    }
+  ],
+  "spools": {
+    "1": {
+      "id": "1",
+      "material": "PLA",
+      "color": "D94040",
+      "vendor": "Snapmaker",
+      "subtype": "Basic",
+      "label": "",
+      "sku": "",
+      "weight_g": 850.0,
+      "weight_initial_g": 1000.0,
+      "price_per_kg": 18.5
+    },
+    "2": {
+      "id": "2",
+      "material": "PLA",
+      "color": "3F7FD0",
+      "vendor": "Generic",
+      "subtype": "Matte",
+      "label": "",
+      "sku": "",
+      "weight_g": 620.0,
+      "weight_initial_g": 1000.0,
+      "price_per_kg": 22.0
+    },
+    "3": {
+      "id": "3",
+      "material": "PETG",
+      "color": "3CC07A",
+      "vendor": "Generic",
+      "subtype": "",
+      "label": "",
+      "sku": "",
+      "weight_g": 900.0,
+      "weight_initial_g": 1000.0,
+      "price_per_kg": 25.0
+    },
+    "4": {
+      "id": "4",
+      "material": "ABS",
+      "color": "222222",
+      "vendor": "Generic",
+      "subtype": "",
+      "label": "",
+      "sku": "",
+      "weight_g": 400.0,
+      "weight_initial_g": 1000.0,
+      "price_per_kg": 19.0
+    },
+    "5": {
+      "id": "5",
+      "material": "TPU",
+      "color": "E0A020",
+      "vendor": "Generic",
+      "subtype": "",
+      "label": "",
+      "sku": "",
+      "weight_g": 500.0,
+      "weight_initial_g": 500.0,
+      "price_per_kg": 32.0
+    }
+  },
+  "spool_binding": {
+    "0_0": "1",
+    "0_1": "2",
+    "0_3": "3",
+    "1_0": "4",
+    "1_3": "5",
+    "h1": "3"
+  }
+}

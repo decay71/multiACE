@@ -53,6 +53,18 @@ from i18n_path import resolve_i18n_dir
 
 MOONRAKER_URL = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125")
 
+#: Dev/demo mode: serve fixtures instead of talking to Moonraker, so the
+#: web UI can be worked on and reviewed without a printer.
+MOCK_MODE = os.environ.get("MULTIACE_MOCK_MODE", "").strip().lower() in (
+    "1", "true", "yes", "on")
+MOCK_DATA_DIR = os.environ.get(
+    "MULTIACE_MOCK_DIR",
+    str(Path(__file__).resolve().parents[3] / "tests" / "fixtures"),
+)
+#: Which fixture under MOCK_DATA_DIR is served as /api/state. Point it at
+#: mock_state_head.json to develop against a head-mode printer.
+MOCK_STATE_FILE = os.environ.get("MULTIACE_MOCK_STATE_FILE", "mock_state.json")
+
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in (
@@ -996,12 +1008,46 @@ async def _mr_post(path: str, body: dict | None = None, timeout: float = 30.0) -
         r.raise_for_status()
         return r.json()
 
+_mock_cache: dict[str, tuple[float, Any]] = {}
+
+def _mock_load(name: str, default: Any = None) -> Any:
+    """Read tests/fixtures/<name>. mtime-aware so a dev can edit the
+    fixture and just refresh the browser."""
+    p = Path(MOCK_DATA_DIR) / name
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return default
+    hit = _mock_cache.get(name)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+    _mock_cache[name] = (mtime, data)
+    return data
+
+def _mock_enabled(request: Request | None = None) -> bool:
+    """Mock mode is process-wide (env), but a request can force it with
+    ?mock=1 / ?mock=0 so mocked and live data can be compared without
+    restarting the server."""
+    if request is not None:
+        q = request.query_params.get("mock")
+        if q is not None:
+            return q.strip().lower() in ("1", "true", "yes", "on")
+    return MOCK_MODE
+
 @app.get("/api/health")
 async def health() -> dict:
-    return {"status": "ok", "version": VERSION, "ts": time.time()}
+    return {"status": "ok", "version": VERSION, "ts": time.time(),
+            "mock_mode": MOCK_MODE}
 
 @app.get("/api/version")
-async def version() -> dict:
+async def version(request: Request) -> dict:
+    if _mock_enabled(request):
+        return {**(_mock_load("mock_version.json") or {}),
+                "web": VERSION, "mock": True}
 
     printer = {}
     try:
@@ -2124,8 +2170,12 @@ async def upload_and_print(file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=502, detail=f"moonraker: {e}")
 
 @app.get("/api/state")
-async def get_state() -> dict:
+async def get_state(request: Request) -> dict:
     """Aggregated dashboard state (ACEs + toolheads + dryer + status)."""
+    if _mock_enabled(request):
+        mock = dict(_mock_load(MOCK_STATE_FILE) or {})
+        mock["mock"] = True
+        return mock
     try:
         status = await _query_state_gated()
     except httpx.HTTPStatusError as e:
@@ -4911,17 +4961,50 @@ async def _spoolman_tag_sweep_loop() -> None:
 async def _start_log_listener() -> None:
     # Who runs this process decides what an update can restart (S98 starts
     # it as root; a lava-owned instance cannot restart the init scripts).
+    # os.getuid does not exist on Windows, where mock mode runs for UI work.
+    _uid = os.getuid() if hasattr(os, "getuid") else -1
     try:
         import pwd
-        _user = pwd.getpwuid(os.getuid()).pw_name
+        _user = pwd.getpwuid(_uid).pw_name
     except Exception:
         _user = "?"
     _trace.info("multiace web starting: pid=%d uid=%d user=%s cwd=%s",
-                os.getpid(), os.getuid(), _user, os.getcwd())
+                os.getpid(), _uid, _user, os.getcwd())
     asyncio.create_task(_moonraker_log_listener())
     asyncio.create_task(_spoolman_periodic_push())
     asyncio.create_task(_spoolman_startup_push())
     asyncio.create_task(_spoolman_tag_sweep_loop())
+
+@app.post("/api/debug/simulate")
+async def debug_simulate(payload: dict) -> dict:
+    """Inject a fake event so notification UI can be built and reviewed
+    without a printer. Only reachable in mock mode."""
+    if not MOCK_MODE:
+        raise HTTPException(403, "simulation is only available in mock mode")
+    event = str((payload or {}).get("event") or "").strip().lower()
+    if event == "gcode_error":
+        _record_notification("!! [multiACE] " + str(
+            payload.get("msg") or "Simulated error"))
+    elif event == "clear":
+        async with _notifications_lock:
+            _notifications.clear()
+    else:
+        raise HTTPException(400, f"unknown event: {event}")
+    return {"ok": True, "event": event}
+
+@app.get("/api/debug/sample-gcode")
+async def debug_sample_gcode() -> FileResponse:
+    """Stream tests/fixtures/sample_4color.gcode so work on anything that
+    takes a g-code file starts from one click instead of finding a file.
+    Gated on MOCK_MODE like /api/debug/simulate: a debug endpoint must not
+    leak into production."""
+    if not MOCK_MODE:
+        raise HTTPException(403, "the sample file is only available in mock mode")
+    p = Path(MOCK_DATA_DIR) / "sample_4color.gcode"
+    if not p.is_file():
+        raise HTTPException(404, f"sample fixture not found: {p}")
+    return FileResponse(p, media_type="text/plain",
+                        filename="sample_4color.gcode")
 
 @app.get("/api/notifications")
 async def list_notifications() -> dict:
