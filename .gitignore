@@ -3,3 +3,8 @@ __pycache__/
 *.log
 *.log.[0-9]
 /dist/
+
+# Claude Code local files
+.claude/
+scripts/
+.devdata/
