@@ -3,3 +3,5 @@ __pycache__/
 *.log
 *.log.[0-9]
 /dist/
+# Scratch config created by scripts/run-dev-ui
+.devdata/
