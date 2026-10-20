@@ -94,6 +94,22 @@ nav button {
 }
 nav button:hover { border-color: var(--accent); }
 nav button.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+/* Second row: the children of the open tab group. */
+.subnav {
+  display: flex; gap: .3rem; padding: .4rem 1rem; overflow-x: auto;
+  border-bottom: 1px solid var(--border); background: var(--card);
+}
+.subnav button {
+  background: transparent; color: var(--fg);
+  border: 1px solid var(--border);
+  padding: .3rem .8rem; cursor: pointer;
+  border-radius: 4px; font-size: .85rem; white-space: nowrap;
+}
+.subnav button:hover { border-color: var(--accent); }
+.subnav button.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+@media (max-width: 700px) {
+  .subnav button { min-height: 44px; }
+}
 .upload-input { display: none; }
 .upload-btn {
   margin-left: auto;

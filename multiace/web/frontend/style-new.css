@@ -146,6 +146,20 @@ html[data-theme="new"] nav button.active {
   background: transparent; color: var(--nt-fg-strong); font-weight: 600;
   box-shadow: inset 0 -2px 0 var(--accent);
 }
+/* Second row: the children of the open tab group. Same underline marker as
+   the top bar, one step smaller. */
+html[data-theme="new"] .subnav {
+  gap: 0; padding: 0 20px; overflow-x: auto;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+html[data-theme="new"] .subnav button {
+  background: transparent; border: 0; border-radius: 0; padding: 10px 16px;
+  font-size: 13px; font-weight: 500; color: var(--muted); white-space: nowrap;
+}
+html[data-theme="new"] .subnav button:hover { color: var(--fg); }
+html[data-theme="new"] .subnav button.active {
+  color: var(--nt-fg-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent);
+}
 html[data-theme="new"] header .upload-btn {
   order: 5; margin-left: 0; border: 0; border-left: 1px solid var(--border); border-radius: 0;
   background: var(--accent); color: var(--accent-fg);
@@ -559,6 +573,8 @@ html[data-theme="new"] .toolhead-card.nt-head .toolhead-actions { grid-area: act
     order: 6; flex: 1 1 100%; overflow-x: auto; border-top: 1px solid var(--border);
   }
   html[data-theme="new"] header nav button { padding: 12px 14px; white-space: nowrap; }
+  html[data-theme="new"] .subnav { padding: 0 8px; }
+  html[data-theme="new"] .subnav button { min-height: 44px; padding: 12px 14px; }
   html[data-theme="new"] header .conn { margin-left: 0; min-height: 44px; }
   html[data-theme="new"] header .upload-btn { min-height: 44px; }
   html[data-theme="new"] main { padding: 0 12px 16px; }
