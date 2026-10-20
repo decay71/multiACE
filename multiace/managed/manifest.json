@@ -17,7 +17,7 @@
   },
   "payload": [
     "klipper/extras/ace.py",
-    "klipper/extras/multiace_macro_layout.py",
+    "klipper/extras/ace_macro_layout.py",
     "klipper/extras/ace_protocol.py",
     "klipper/extras/ace_protocol_v1.py",
     "klipper/extras/ace_protocol_v2.py",

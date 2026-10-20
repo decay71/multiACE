@@ -111,7 +111,7 @@ rm -f "$CONFIG_DIR/ace_pre_multiace.cfg"
 log "  Removed ace.cfg"
 log "Removing multiACE files..."
 rm -f "$EXTRAS_DIR/ace.py"
-rm -f "$EXTRAS_DIR/multiace_macro_layout.py"
+rm -f "$EXTRAS_DIR/ace_macro_layout.py"
 rm -f "$EXTRAS_DIR/ace_tipform.py"
 rm -f "$EXTRAS_DIR/ace_bg_swap.py"
 rm -f "$EXTRAS_DIR/ace_rc522.py"
@@ -232,7 +232,6 @@ if [ -f "$PRINTER_CFG" ]; then
     fi
 fi
 find "$EXTRAS_DIR/__pycache__" -name "ace*" -delete 2>/dev/null || true
-find "$EXTRAS_DIR/__pycache__" -name "multiace_macro_layout*" -delete 2>/dev/null || true
 find "$EXTRAS_DIR/__pycache__" -name "filament_feed*" -delete 2>/dev/null || true
 find "$EXTRAS_DIR/__pycache__" -name "filament_switch_sensor*" -delete 2>/dev/null || true
 find "$KINEMATICS_DIR/__pycache__" -name "extruder*" -delete 2>/dev/null || true

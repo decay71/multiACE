@@ -329,13 +329,15 @@ Then reboot. The printer returns to stock operation.
 
 ## Frontend Macro Groups
 
-multiACE organizes its controls into purpose-based groups in Fluidd and Mainsail after Klipper starts and each frontend has initialized its Moonraker database. It retries for up to 30 minutes; if a frontend is opened later, reapply the layout with:
+multiACE organizes its controls into purpose-based groups in Fluidd and Mainsail after Klipper starts and each frontend has initialized its Moonraker database. The startup worker stops retrying a frontend after five checks when its database namespace is unavailable (about two minutes at the default interval). If you open a frontend later, reapply the layout with:
 
 ```bash
-python3 /home/lava/klipper/klippy/extras/multiace_macro_layout.py apply
+python3 /home/lava/klipper/klippy/extras/ace_macro_layout.py apply
 ```
 
 Mainsail displays macro groups in Expert Mode. User-created groups and categories remain intact.
+
+Set `macro_layout_enabled: false` in `[ace]` to disable automatic grouping. The setting is preserved across multiACE updates.
 
 The controls include:
 

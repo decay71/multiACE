@@ -64,7 +64,7 @@ log "Klipper kinematics: $KINEMATICS_DIR"
 log "Config dir: $CONFIG_DIR"
 for f in \
     "klipper/extras/ace.py" \
-    "klipper/extras/multiace_macro_layout.py" \
+    "klipper/extras/ace_macro_layout.py" \
     "klipper/extras/filament_feed_ace.py" \
     "klipper/extras/filament_switch_sensor_ace.py" \
     "klipper/extras/ace_bg_swap.py" \
@@ -142,7 +142,7 @@ if [ -f "$CONFIG_DIR/ace.cfg" ] && [ ! -f "$CONFIG_DIR/ace_pre_multiace.cfg" ]; 
 fi
 log "Installing multiACE files..."
 cp "$INSTALL_DIR/klipper/extras/ace.py" "$EXTRAS_DIR/ace.py"
-cp "$INSTALL_DIR/klipper/extras/multiace_macro_layout.py" "$EXTRAS_DIR/multiace_macro_layout.py"
+cp "$INSTALL_DIR/klipper/extras/ace_macro_layout.py" "$EXTRAS_DIR/ace_macro_layout.py"
 cp "$INSTALL_DIR/klipper/extras/ace_protocol.py" "$EXTRAS_DIR/ace_protocol.py"
 cp "$INSTALL_DIR/klipper/extras/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v1.py"
 cp "$INSTALL_DIR/klipper/extras/ace_protocol_v2.py" "$EXTRAS_DIR/ace_protocol_v2.py"
@@ -160,7 +160,7 @@ cp "$INSTALL_DIR/klipper/extras/ace_rc522.py" "$EXTRAS_DIR/ace_rc522.py"
 # Gen 1 tag tunnel - helper module imported lazily by ace.py; used only on
 # ACE Pro units with the tunnel firmware and [ace] gen1_tag_tunnel on.
 cp "$INSTALL_DIR/klipper/extras/ace_gen1_tunnel.py" "$EXTRAS_DIR/ace_gen1_tunnel.py"
-chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/multiace_macro_layout.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py" "$EXTRAS_DIR/ace_tipform.py" "$EXTRAS_DIR/ace_rc522.py" "$EXTRAS_DIR/ace_gen1_tunnel.py"
+chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/ace_macro_layout.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py" "$EXTRAS_DIR/ace_tipform.py" "$EXTRAS_DIR/ace_rc522.py" "$EXTRAS_DIR/ace_gen1_tunnel.py"
 log "  Klipper extras installed"
 cp "$INSTALL_DIR/klipper/kinematics/extruder_ace.py" "$KINEMATICS_DIR/extruder_ace.py"
 chmod 644 "$KINEMATICS_DIR/extruder_ace.py"
@@ -398,8 +398,8 @@ verify_match() {
 }
 verify_match "$INSTALL_DIR/klipper/extras/ace.py" \
              "$EXTRAS_DIR/ace.py" "ace.py"
-verify_match "$INSTALL_DIR/klipper/extras/multiace_macro_layout.py" \
-             "$EXTRAS_DIR/multiace_macro_layout.py" "multiace_macro_layout.py"
+verify_match "$INSTALL_DIR/klipper/extras/ace_macro_layout.py" \
+             "$EXTRAS_DIR/ace_macro_layout.py" "ace_macro_layout.py"
 verify_match "$INSTALL_DIR/klipper/extras/ace_protocol.py" \
              "$EXTRAS_DIR/ace_protocol.py" "ace_protocol.py"
 verify_match "$INSTALL_DIR/klipper/extras/ace_protocol_v1.py" \
@@ -648,7 +648,6 @@ if [ -d "$DATA_DIR" ]; then
         if [ -d "$EXTRAS_DIR" ]; then
             chown "$DATA_OWNER" "$EXTRAS_DIR" 2>>"$LOGFILE" || true
             chown "$DATA_OWNER" "$EXTRAS_DIR"/ace*.py \
-                "$EXTRAS_DIR"/multiace_macro_layout.py \
                 "$EXTRAS_DIR"/filament_feed_ace.py \
                 "$EXTRAS_DIR"/filament_switch_sensor_ace.py \
                 2>>"$LOGFILE" || true

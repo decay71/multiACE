@@ -4,7 +4,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 @decay71 and contributors
 """Apply multiACE's Fluidd and Mainsail macro layout.
 
-This module is loaded by Klipper from the [multiace_macro_layout] section in
+This module is loaded by Klipper from the [ace_macro_layout] section in
 ace.cfg. Its startup worker waits for Klipper's macro list and each frontend's
 Moonraker database namespace before making small, repeatable updates. It can
 also be run directly with the `apply` command for a manual retry.
@@ -29,6 +29,7 @@ DEFAULT_MOONRAKER_URL = "http://127.0.0.1:7125"
 REQUEST_TIMEOUT = 5.0
 WATCH_WINDOW_SECONDS = 1800.0
 POLL_INTERVAL_SECONDS = 30.0
+FRONTEND_NOT_READY_LIMIT = 5
 MAINSAIL_LAYOUTS = (
     "mobileLayout",
     "tabletLayout1",
@@ -241,7 +242,7 @@ def active_groups(macro_names):
     )
 
 
-def merge_fluidd_macros(current, groups):
+def merge_fluidd_macros(current, groups, macro_names=()):
     """Merge provider categories into Fluidd while keeping user choices."""
     state = copy.deepcopy(_dict(current))
     categories = _list(state.get("categories"))
@@ -253,15 +254,17 @@ def merge_fluidd_macros(current, groups):
     }
     custom_ids = category_ids - all_owned_ids
 
-    for item in stored:
-        if (
-            isinstance(item, dict)
-            and isinstance(item.get("name"), str)
-            and item["name"].lower() in INTERNAL_MACRO_KEYS
-        ):
-            item["visible"] = False
-
     stored_by_name = _case_index(stored)
+    active_macro_names = {name.lower() for name in macro_names}
+    for name in INTERNAL_MACRO_NAMES:
+        if name.lower() not in active_macro_names:
+            continue
+        item = stored_by_name.get(name.lower())
+        if item is None:
+            item = {"name": name}
+            stored.append(item)
+            stored_by_name[name.lower()] = item
+        item["visible"] = False
     owned_categories = []
     for group in groups:
         assigned = False
@@ -278,17 +281,21 @@ def merge_fluidd_macros(current, groups):
             item["categoryId"] = group["fluidd_id"]
             assigned = True
         if assigned:
-            category = next(
+            existing_category = next(
                 (
-                    copy.deepcopy(item)
+                    item
                     for item in categories
                     if isinstance(item, dict)
                     and item.get("id") == group["fluidd_id"]
                 ),
-                {},
+                None,
+            )
+            category = (
+                copy.deepcopy(existing_category)
+                if existing_category is not None else {}
             )
             category["id"] = group["fluidd_id"]
-            category["name"] = group["name"]
+            category.setdefault("name", group["name"])
             owned_categories.append(category)
 
     state["categories"] = [
@@ -458,11 +465,11 @@ def apply_frontend(client, frontend, macro_names):
     try:
         namespace = client.get_namespace(frontend)
     except FrontendNotReady as error:
-        return "pending", str(error)
+        return "not_ready", str(error)
 
     if frontend == "fluidd":
         current = namespace.get("macros")
-        updated = merge_fluidd_macros(current, groups)
+        updated = merge_fluidd_macros(current, groups, macro_names)
         if updated != _dict(current):
             client.post_item("fluidd", "macros", updated)
             return "updated", "Fluidd macro categories applied"
@@ -500,23 +507,45 @@ def apply_layout_once(client):
     return results
 
 
-def watch_layout(client, window=WATCH_WINDOW_SECONDS, interval=POLL_INTERVAL_SECONDS, logger=None):
+def watch_layout(
+    client,
+    window=WATCH_WINDOW_SECONDS,
+    interval=POLL_INTERVAL_SECONDS,
+    logger=None,
+    stop_event=None,
+):
     logger = logger or logging.getLogger("multiace.macro_layout")
     window = max(0.0, float(window))
     interval = max(1.0, float(interval))
     deadline = time.monotonic() + window
     pending = {"fluidd", "mainsail"}
     last_results = {}
+    not_ready_counts = {frontend: 0 for frontend in pending}
     attempts = 0
 
-    while pending:
+    while pending and not (stop_event is not None and stop_event.is_set()):
         attempts += 1
         results = apply_layout_once(client)
         for frontend, (status, detail) in results.items():
             last_results[frontend] = (status, detail)
             if status in ("updated", "current"):
                 pending.discard(frontend)
+                not_ready_counts[frontend] = 0
                 logger.info("%s macro layout: %s", frontend.capitalize(), detail)
+            elif status == "not_ready":
+                not_ready_counts[frontend] += 1
+                if not_ready_counts[frontend] >= FRONTEND_NOT_READY_LIMIT:
+                    pending.discard(frontend)
+                    logger.info(
+                        "%s database namespace did not initialize after %d checks; "
+                        "stopping startup retries. Run this module with the 'apply' "
+                        "command after opening the frontend.",
+                        frontend.capitalize(),
+                        FRONTEND_NOT_READY_LIMIT,
+                    )
+            else:
+                not_ready_counts[frontend] = 0
+
         if not pending:
             return 0, last_results
 
@@ -532,7 +561,16 @@ def watch_layout(client, window=WATCH_WINDOW_SECONDS, interval=POLL_INTERVAL_SEC
                     "Waiting for %s macro data (%s): %s",
                     frontend.capitalize(), status, detail,
                 )
-        time.sleep(min(interval, remaining))
+
+        delay = min(interval, remaining)
+        if stop_event is not None:
+            if stop_event.wait(delay):
+                break
+        else:
+            time.sleep(delay)
+
+    if stop_event is not None and stop_event.is_set():
+        return 0, last_results
 
     for frontend in sorted(pending):
         status, detail = last_results.get(
@@ -562,28 +600,65 @@ class MacroLayoutHook:
         if self.timeout <= 0 or self.window < 0 or self.interval <= 0:
             raise config.error("multiACE macro layout timing values must be positive")
         self.logger = logging.getLogger("multiace.macro_layout")
+        self.enabled = config.getsection("ace").getboolean(
+            "macro_layout_enabled", True
+        )
         self._lock = threading.Lock()
         self._worker = None
+        self._stop_event = threading.Event()
+        self._restart_requested = False
+        if not self.enabled:
+            self.logger.info(
+                "Automatic multiACE macro layout is disabled by "
+                "[ace] macro_layout_enabled"
+            )
+            return
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
+        self.printer.register_event_handler(
+            "klippy:disconnect", self._handle_disconnect
+        )
+
+    def _handle_disconnect(self):
+        self._stop_event.set()
+
+    def _start_worker_locked(self):
+        self._stop_event.clear()
+        self._worker = threading.Thread(
+            target=self._run,
+            name="multiACE-macro-layout",
+            daemon=True,
+        )
+        self._worker.start()
 
     def _handle_ready(self):
         with self._lock:
             if self._worker is not None and self._worker.is_alive():
+                if self._stop_event.is_set():
+                    self._restart_requested = True
                 return
-            self._worker = threading.Thread(
-                target=self._run,
-                name="multiACE-macro-layout",
-                daemon=True,
-            )
-            self._worker.start()
+            self._restart_requested = False
+            self._start_worker_locked()
 
     def _run(self):
         self.logger.info(
-            "Starting multiACE macro layout; waiting up to %.0f seconds for frontend data",
-            self.window,
+            "Starting multiACE macro layout; waiting for frontend data",
         )
-        client = MoonrakerClient(self.url, self.timeout)
-        watch_layout(client, self.window, self.interval, self.logger)
+        try:
+            client = MoonrakerClient(self.url, self.timeout)
+            watch_layout(
+                client,
+                self.window,
+                self.interval,
+                self.logger,
+                self._stop_event,
+            )
+        finally:
+            with self._lock:
+                if self._worker is threading.current_thread():
+                    self._worker = None
+                if self._restart_requested:
+                    self._restart_requested = False
+                    self._start_worker_locked()
 
 
 def main(argv=None):
