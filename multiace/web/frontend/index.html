@@ -311,8 +311,8 @@
              :title="t('ui.common.firmware') + ' ' + printerFw">· {{ printerName }}</small>
     </h1>
     <nav>
-      <button v-for="it in navItems" :key="it.key"
-              :class="{active: tab===it.key}" @click="tab=it.key">{{ it.label }}</button>
+      <button v-for="it in topItems" :key="it.key"
+              :class="{active: topActive(it)}" @click="openNav(it)">{{ it.label }}</button>
     </nav>
     <input ref="uploadInput" type="file" accept=".gcode,.gco,.g"
            class="upload-input" @change="onUploadGcode($event.target.files)">
@@ -333,6 +333,13 @@
     </button>
     <span class="conn" :class="connClass">{{ connText }}</span>
   </header>
+  <!-- Second row: the children of the open group (see NAV_GROUPS in app.js). -->
+  <div v-if="subItems.length && !panelMode" class="subnav">
+    <button v-for="it in subItems" :key="it.key"
+            :class="{active: tab===it.key}"
+            :aria-current="tab===it.key ? 'page' : null"
+            @click="tab=it.key">{{ it.label }}</button>
+  </div>
   <div v-if="rebootNeeded && !panelMode" class="reboot-banner">{{ t('ui.common.please_restart') }}</div>
   <div v-if="state.preflight_inbox?.pending && !panelMode" class="inbox-banner">
     <span>{{ t('ui.inbox.banner', {name: state.preflight_inbox?.name}) }}</span>

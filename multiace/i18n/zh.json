@@ -12,6 +12,7 @@
       "ws_error": "WebSocket 错误"
     },
     "tabs": {
+      "print_hub": "打印中心",
       "dashboard": "控制台",
       "dry": "烘干",
       "config": "配置",

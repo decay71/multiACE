@@ -12,6 +12,7 @@
       "ws_error": "WS error"
     },
     "tabs": {
+      "print_hub": "Print Hub",
       "dashboard": "Dashboard",
       "dry": "Dry",
       "config": "Config",

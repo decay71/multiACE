@@ -12,6 +12,7 @@
       "ws_error": "WS-Fehler"
     },
     "tabs": {
+      "print_hub": "Print Hub",
       "dashboard": "Übersicht",
       "dry": "Trocknen",
       "config": "Konfiguration",
