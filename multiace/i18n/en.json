@@ -11,7 +11,14 @@
       "offline": "offline",
       "ws_error": "WS error"
     },
+    "control": {
+      "webcam": "Webcam",
+      "webcam_loading": "Looking for a camera…",
+      "webcam_unavailable": "Camera unavailable",
+      "webcam_hint": "Add a camera in Moonraker (crowsnest), then reload."
+    },
     "tabs": {
+      "control": "Control",
       "print_hub": "Print Hub",
       "dashboard": "Dashboard",
       "dry": "Dry",

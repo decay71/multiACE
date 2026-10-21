@@ -1503,3 +1503,8 @@ html[data-theme="new"][data-shade="light"] .panel-card.op-unloading { animation-
 html[data-theme="new"][data-shade="light"] .ace-card.offline > :not(h2) { opacity: .5; }
 html[data-theme="new"][data-shade="light"] .panel:has(.panel-temp .ace-offline-text) .panel-cards { opacity: .55; }
 html[data-theme="new"][data-shade="light"] .preflight-dialog .row > button.primary:disabled { opacity: 1; background: var(--nt-main-dis-bg); border-color: var(--nt-main-dis-bg); color: var(--nt-main-dis-fg); }
+
+/* Control tab (Print Hub): the camera. The shared rules in style.css use the
+   theme variables; this only squares the card with the other tabs. */
+html[data-theme="new"] .control-webcam { border-radius: 0; }
+html[data-theme="new"] .control-webcam .webcam-foot { background: var(--nt-bg2); border-top-color: var(--nt-line); }

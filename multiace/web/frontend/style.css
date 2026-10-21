@@ -1951,3 +1951,13 @@ body:has(.panel) .overlay .dialog {
   background: var(--card); border: 1px solid var(--border);
   border-radius: 4px; white-space: pre-wrap; font-size: .8rem; }
 
+
+/* Control tab (Print Hub): the camera. */
+.control-tab { display: flex; flex-direction: column; gap: 1rem; max-width: 1100px; }
+.control-webcam { background: var(--card); border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; max-width: 720px; }
+.control-webcam .webcam-img { width: 100%; display: block; background: #000; object-fit: contain; }
+.control-webcam .webcam-none { padding: 1.5rem 1rem; display: flex; flex-direction: column; gap: .4rem; }
+.control-webcam .webcam-none p { margin: 0; }
+.control-webcam .webcam-foot { display: flex; align-items: center; justify-content: space-between;
+  gap: .6rem; padding: .4rem .6rem; border-top: 1px solid var(--border); }

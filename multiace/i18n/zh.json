@@ -11,7 +11,14 @@
       "offline": "离线",
       "ws_error": "WebSocket 错误"
     },
+    "control": {
+      "webcam": "摄像头",
+      "webcam_loading": "正在查找摄像头…",
+      "webcam_unavailable": "摄像头不可用",
+      "webcam_hint": "请在 Moonraker (crowsnest) 中添加摄像头，然后重新加载。"
+    },
     "tabs": {
+      "control": "控制",
       "print_hub": "打印中心",
       "dashboard": "控制台",
       "dry": "烘干",

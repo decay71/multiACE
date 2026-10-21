@@ -11,7 +11,14 @@
       "offline": "offline",
       "ws_error": "WS-Fehler"
     },
+    "control": {
+      "webcam": "Webcam",
+      "webcam_loading": "Suche Kamera…",
+      "webcam_unavailable": "Kamera nicht verfügbar",
+      "webcam_hint": "Kamera in Moonraker (crowsnest) einrichten, dann neu laden."
+    },
     "tabs": {
+      "control": "Steuerung",
       "print_hub": "Print Hub",
       "dashboard": "Übersicht",
       "dry": "Trocknen",

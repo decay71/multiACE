@@ -1351,6 +1351,26 @@
         </div>
       </div>
     </section>
+    <!-- Control (Print Hub): the printer's camera, routed in from the
+         Fluidd/Moonraker side so it is on the same page as the ACEs. -->
+    <section v-show="tab==='control'" class="control-tab">
+      <div class="control-webcam">
+        <img v-if="webcam.available && webcamSrc" :src="webcamSrc" class="webcam-img"
+             :style="{aspectRatio: webcam.aspect}"
+             :alt="webcam.name || t('ui.control.webcam')">
+        <div v-else-if="!webcam.available" class="webcam-none">
+          <p>{{ webcam.loaded ? t('ui.control.webcam_unavailable')
+                              : t('ui.control.webcam_loading') }}</p>
+          <p class="muted small" v-if="webcam.reason">{{ webcam.reason }}</p>
+          <p class="muted small">{{ t('ui.control.webcam_hint') }}</p>
+        </div>
+        <div class="webcam-foot">
+          <span class="muted small">{{ webcam.name || t('ui.control.webcam') }}</span>
+          <button @click="loadWebcam">{{ t('ui.common.reload') }}</button>
+        </div>
+      </div>
+    </section>
+
     <section v-show="tab==='spools'" class="nt-spools-tab">
       <h2>{{ t('ui.spools.title') }}
         <span v-if="state.spool_mode !== 'local'" class="src-badge"

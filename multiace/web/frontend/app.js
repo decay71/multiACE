@@ -11,7 +11,7 @@ createApp({
     // Bowden-path calibration tab (physicsG port): hidden for now, also on
     // dev (Dirk 2026-09-25). The code stays; flip to true to show it.
     const CALIBRATION_TAB = false;
-    const _validTabs = new Set(["dashboard", "spools", "config"]);
+    const _validTabs = new Set(["dashboard", "control", "spools", "config"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
     const _storedTab = localStorage.getItem("multiace.tab");
     const _isPluginTab = (s) => typeof s === "string" && s.startsWith("plugin:");
@@ -59,6 +59,9 @@ createApp({
       if (state.mode !== "normal") {
         items.push({key: "dashboard", label: t("ui.tabs.dashboard")});
       }
+      // Print Hub children, in their fixed order: Control, History, Queue,
+      // Favorites. Each feature adds its own entry here.
+      items.push({key: "control", group: "printhub", label: t("ui.tabs.control")});
       items.push({key: "spools", label: t("ui.tabs.spools")});
       items.push({key: "config", label: t("ui.tabs.config")});
       // Calibration hangs off Config: shown only while one of the two is
@@ -7325,6 +7328,44 @@ createApp({
         },
       });
     }
+    // Control tab: the printer's camera, proxied through the backend. The
+    // stream is only opened while the tab is showing, so a hidden tab does
+    // not keep a connection to the camera.
+    const webcam = reactive({
+      loaded: false, available: false, reason: "", name: "", proxy: "",
+      aspect: "16 / 9",
+      // Cache-buster: an MJPEG <img> that was torn down keeps its old
+      // connection cached, so re-opening the tab shows a frozen frame
+      // until the src actually changes.
+      nonce: 0,
+    });
+    const webcamShown = computed(() => !panelMode && tab.value === "control");
+    const webcamSrc = computed(() =>
+      webcam.available && webcamShown.value
+        ? `${BASE}${webcam.proxy}?n=${webcam.nonce}` : "");
+    async function loadWebcam() {
+      try {
+        const r = await fetch(`${API}/webcam/info`);
+        const j = r.ok ? await r.json() : {available: false, reason: `HTTP ${r.status}`};
+        webcam.available = !!(j.available && j.proxy_path);
+        webcam.proxy = j.proxy_path || "";
+        webcam.reason = j.reason || "";
+        webcam.name = j.name || "";
+        webcam.aspect = String(j.aspect_ratio || "16:9").replace(":", " / ");
+      } catch (e) {
+        webcam.available = false;
+        webcam.reason = String(e);
+      } finally {
+        webcam.loaded = true;
+        webcam.nonce++;
+      }
+    }
+    watch(webcamShown, (shown) => {
+      if (!shown) return;
+      if (!webcam.loaded) loadWebcam();
+      else webcam.nonce++;
+    }, {immediate: true});
+
     let resizeObserver = null;
     onMounted(async () => {
       // Page loaded straight into the spools tab (stored tab) - the watcher
@@ -7485,6 +7526,7 @@ createApp({
       updateState, updateCheck, updateApply,
       debugState, debugEnable, debugDisable,
       navItems, topItems, subItems, topActive, openNav,
+      webcam, webcamSrc, loadWebcam,
       plugins, refreshPlugins, pluginIframeSrc,
       notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications,
       confirmDialog, okConfirm, altConfirm, cancelConfirm, confirmInputError,
