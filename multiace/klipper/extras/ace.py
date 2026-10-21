@@ -730,6 +730,9 @@ class MultiAce:
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
         self._name = config.get_name()
+        # Read this here too so [ace] accepts the option if
+        # [ace_macro_layout] is removed from the config.
+        config.getboolean('macro_layout_enabled', True)
         self.send_time = None
         self.ace_dev_fd = None
         self.heartbeat_timer = None
