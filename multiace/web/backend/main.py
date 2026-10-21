@@ -2270,6 +2270,70 @@ async def webcam_snapshot(request: Request):
                     media_type=r.headers.get("content-type", "image/jpeg"),
                     headers={"Cache-Control": "no-store"})
 
+CONSOLE_BUFFER_MAX = int(os.environ.get("MULTIACE_CONSOLE_BUFFER", "300"))
+_console_lines: deque = deque(maxlen=CONSOLE_BUFFER_MAX)
+_next_console_id = 0
+
+def _console_kind(text: str) -> str:
+    s = (text or "").strip()
+    body = s[3:].strip() if s.startswith("// ") else s
+    if body.startswith("!!") or "Error:" in body:
+        return "error"
+    if s.startswith("//"):
+        return "response"
+    return "command"
+
+def _record_console_line(text: str) -> dict | None:
+    """Append one Klipper console line to the ring buffer.
+
+    Fed by the Moonraker websocket that already powers the error
+    notifications, so the console costs no extra printer polling."""
+    global _next_console_id
+    if not isinstance(text, str) or not text.strip():
+        return None
+    _next_console_id += 1
+    line = {"id": _next_console_id, "ts": time.time(),
+            "msg": text.rstrip(), "kind": _console_kind(text)}
+    _console_lines.append(line)
+    return line
+
+async def _seed_console_from_gcode_store() -> None:
+    """Backfill the buffer from Moonraker's own history, so a freshly
+    started backend does not show an empty console."""
+    global _next_console_id
+    try:
+        data = await _mr_get(f"/server/gcode_store?count={CONSOLE_BUFFER_MAX}")
+    except Exception:
+        return
+    entries = (data.get("result") or {}).get("gcode_store") or []
+    for e in entries:
+        msg = e.get("message")
+        if not msg:
+            continue
+        _next_console_id += 1
+        _console_lines.append({
+            "id": _next_console_id,
+            "ts": float(e.get("time") or time.time()),
+            "msg": str(msg).rstrip(),
+            "kind": ("command" if e.get("type") == "command"
+                     else _console_kind(str(msg))),
+        })
+
+@app.get("/api/console-logs")
+async def console_logs(request: Request, lines: int = 100,
+                       since_id: int = 0) -> dict:
+    """Recent console lines, read only. `since_id` returns only what is
+    newer, so a poller stays incremental."""
+    n = max(1, min(int(lines or 100), CONSOLE_BUFFER_MAX))
+    if _mock_enabled(request):
+        mock = _mock_load("mock_console.json") or {"lines": []}
+        out = [ln for ln in mock.get("lines", []) if ln.get("id", 0) > since_id]
+        return {"lines": out[-n:], "mock": True}
+    if not _console_lines:
+        await _seed_console_from_gcode_store()
+    out = [ln for ln in _console_lines if ln["id"] > since_id]
+    return {"lines": out[-n:], "buffer_max": CONSOLE_BUFFER_MAX}
+
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:
 
@@ -5031,6 +5095,7 @@ async def _moonraker_log_listener() -> None:
                     if not params:
                         continue
                     text = params[0]
+                    _record_console_line(text)
                     if (isinstance(text, str)
                             and _SPOOL_UNMATCHED_RE.search(text)):
                         # Klipper just read a tag with no table entry -
