@@ -2334,6 +2334,253 @@ async def console_logs(request: Request, lines: int = 100,
     out = [ln for ln in _console_lines if ln["id"] > since_id]
     return {"lines": out[-n:], "buffer_max": CONSOLE_BUFFER_MAX}
 
+# ---------------------------------------------------------------------------
+# Live print control: verbs, not G-code
+# ---------------------------------------------------------------------------
+#
+# The Control tab does what tapping the printer's own screen does mid-print.
+# Nothing here forwards a string from the browser: each request is a verb
+# from a fixed list plus a number, and the number is clamped SERVER-side, so
+# a stale page, a curl or a slider that fires an out-of-range value on touch
+# all land on the same ceiling.
+
+#: Verb -> (min, max). Speed, fan, pause/resume/cancel are not hardware
+#: risks (worst case: a ruined print). Flow and the heaters are: M221 at a
+#: high value is sustained over-extrusion, and a temperature above the
+#: material's range carbonises filament in the melt zone.
+PRINT_CONTROL_RANGES = {
+    "speed": (25.0, 300.0),
+    "flow":  (75.0, 125.0),
+    "fan":   (0.0, 100.0),
+}
+
+#: Z babystep is the damaging control: it moves the nozzle relative to the
+#: bed while printing, and repeated negative steps drive it into the plate.
+#: Discrete steps only (the UI has buttons, never a slider), and a
+#: cumulative floor, because the situation where a user keeps pressing
+#: "down" is the one where the next press does damage.
+BABYSTEP_MAX_STEP_MM = 0.05
+BABYSTEP_MAX_TOTAL_MM = 0.5
+
+#: Fallback heater ceilings, used only when Moonraker's config cannot be
+#: read. Klipper's own max_temp catches the extreme; the MATERIAL limit is
+#: tighter and Klipper knows nothing about it.
+DEFAULT_HEATER_LIMITS = {"nozzle": (0.0, 300.0), "bed": (0.0, 120.0)}
+
+MATERIAL_TEMP_LIMITS = {
+    "PLA":  (170.0, 230.0), "PLA+": (180.0, 240.0), "SILK": (190.0, 240.0),
+    "PETG": (210.0, 260.0), "ABS":  (220.0, 270.0), "ASA": (230.0, 270.0),
+    "TPU":  (200.0, 245.0), "PC":   (240.0, 300.0), "PVA": (170.0, 225.0),
+    "PA":   (240.0, 300.0), "HIPS": (220.0, 250.0),
+}
+
+_EXTRUDERS = ["extruder"] + ["extruder%d" % i for i in range(1, 4)]
+
+class PrintControl(BaseModel):
+    verb: str
+    value: float | None = None
+
+#: Cumulative babystep for the current job, reset on a job change rather
+#: than on page reload: a reload must not hand back the other half of the
+#: allowance.
+_babystep_state: dict = {"job": None, "total": 0.0}
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(value)))
+
+async def _print_status() -> dict:
+    """Raw Moonraker status for the Control tab. A query of its own, so the
+    shared state poll does not grow for a tab most people have closed."""
+    objs = ["toolhead", "print_stats", "display_status", "virtual_sdcard",
+            "gcode_move", "fan", "heater_bed"] + _EXTRUDERS
+    data = await _mr_get("/printer/objects/query?" + "&".join(objs))
+    return data.get("result", {}).get("status", {}) or {}
+
+def _active_extruder(status: dict) -> str:
+    name = str((status.get("toolhead") or {}).get("extruder") or "extruder")
+    return name if name in _EXTRUDERS else "extruder"
+
+def _pct(v, default=100.0):
+    try:
+        return round(float(v) * 100.0, 1)
+    except (TypeError, ValueError):
+        return default
+
+def _print_control_state(status: dict) -> dict:
+    """Speed, flow, fan, temperatures and progress, READ BACK from
+    Moonraker so a change made on the printer's display shows up here."""
+    gm = status.get("gcode_move") or {}
+    ext = status.get(_active_extruder(status)) or {}
+    bed = status.get("heater_bed") or {}
+    homing = gm.get("homing_origin") or [0, 0, 0, 0]
+    try:
+        z_offset = round(float(homing[2]), 3)
+    except (TypeError, ValueError, IndexError):
+        z_offset = 0.0
+    return {
+        "speed_factor":   _pct(gm.get("speed_factor")),
+        "extrude_factor": _pct(gm.get("extrude_factor")),
+        "fan":            _pct((status.get("fan") or {}).get("speed"), 0.0),
+        "z_offset":       z_offset,
+        "nozzle": {"temp": ext.get("temperature"), "target": ext.get("target")},
+        "bed":    {"temp": bed.get("temperature"), "target": bed.get("target")},
+        "progress": round(float(
+            (status.get("virtual_sdcard") or {}).get("progress") or 0.0) * 100.0, 1),
+        "message":  (status.get("display_status") or {}).get("message") or "",
+        "state":    (status.get("print_stats") or {}).get("state") or "",
+        "filename": (status.get("print_stats") or {}).get("filename") or "",
+    }
+
+async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float, float]:
+    """(min, max) for a heater: Klipper's configured limits min()-ed with
+    the loaded material's range. Read from Moonraker's config, never
+    hardcoded: a different hotend has different limits."""
+    lo, hi = DEFAULT_HEATER_LIMITS.get(which, (0.0, 250.0))
+    section = extruder if which == "nozzle" else "heater_bed"
+    try:
+        cfg = await _mr_get("/printer/objects/query?configfile")
+        settings = ((cfg.get("result") or {}).get("status") or {}) \
+            .get("configfile", {}).get("settings", {}) or {}
+        block = settings.get(section) or {}
+        if block.get("min_temp") is not None:
+            lo = max(lo, float(block["min_temp"]))
+        if block.get("max_temp") is not None:
+            hi = min(hi, float(block["max_temp"]))
+    except Exception:
+        pass
+    if which == "nozzle":
+        try:
+            parsed = _parse_state(await _query_state_gated())
+            for th in parsed.get("toolheads") or []:
+                if not th.get("filament_detected"):
+                    continue
+                mat = MATERIAL_TEMP_LIMITS.get(
+                    str(th.get("material") or "").strip().upper())
+                if mat:
+                    lo, hi = max(lo, mat[0]), min(hi, mat[1])
+        except Exception:
+            pass
+    return lo, hi
+
+async def _babystep_allowance(delta: float) -> tuple[float, str]:
+    """Clamp one babystep against the per-press and per-job limits."""
+    step = _clamp(delta, -BABYSTEP_MAX_STEP_MM, BABYSTEP_MAX_STEP_MM)
+    try:
+        ps = (await _print_status()).get("print_stats") or {}
+        job = ps.get("filename") or ps.get("state")
+    except Exception:
+        job = None
+    if _babystep_state["job"] != job:
+        _babystep_state["job"] = job
+        _babystep_state["total"] = 0.0
+    total = _babystep_state["total"] + step
+    if total < -BABYSTEP_MAX_TOTAL_MM:
+        return 0.0, (f"-{BABYSTEP_MAX_TOTAL_MM:.2f} mm reached - "
+                     "re-level instead of stepping further down")
+    if total > BABYSTEP_MAX_TOTAL_MM:
+        return 0.0, f"+{BABYSTEP_MAX_TOTAL_MM:.2f} mm reached"
+    _babystep_state["total"] = total
+    return step, ""
+
+@app.get("/api/print-control")
+async def print_control_state(request: Request) -> dict:
+    if _mock_enabled(request):
+        return {**(_mock_load("mock_print_control.json") or {}), "mock": True}
+    try:
+        return _print_control_state(await _print_status())
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+
+@app.post("/api/print-control")
+async def print_control(request: Request, req: PrintControl) -> dict:
+    """A whitelisted verb + value, never a raw string from the UI.
+
+    Returns the APPLIED value so the UI can snap back to the truth: an
+    out-of-range request is clamped, not silently rejected, because a
+    slider that keeps showing 400 % after the printer refused it is a
+    slider that lies about the machine."""
+    verb = (req.verb or "").strip().lower()
+    value = req.value
+    mocked = _mock_enabled(request)
+
+    if verb in PRINT_CONTROL_RANGES:
+        if value is None:
+            raise HTTPException(status_code=400, detail=f"{verb} needs a value")
+        lo, hi = PRINT_CONTROL_RANGES[verb]
+        applied = _clamp(value, lo, hi)
+        if verb == "speed":
+            script = f"M220 S{applied:.0f}"
+        elif verb == "flow":
+            script = f"M221 S{applied:.0f}"
+        else:
+            # Percent in, 0-255 out: the UI thinks in percent and M106
+            # does not.
+            script = f"M106 S{round(applied * 255 / 100):d}"
+    elif verb in ("nozzle", "bed"):
+        if value is None:
+            raise HTTPException(status_code=400, detail=f"{verb} needs a value")
+        heater = "heater_bed"
+        if verb == "nozzle":
+            try:
+                heater = _active_extruder(await _print_status())
+            except Exception:
+                heater = "extruder"
+        lo, hi = await _heater_limits(verb, heater)
+        applied = _clamp(value, lo, hi)
+        script = f"SET_HEATER_TEMPERATURE HEATER={heater} TARGET={applied:.0f}"
+    elif verb == "babystep":
+        if value is None:
+            raise HTTPException(status_code=400, detail="babystep needs a value")
+        applied, refused = await _babystep_allowance(value)
+        if refused:
+            return {"ok": False, "verb": verb, "applied": 0.0,
+                    "total_mm": _babystep_state["total"], "detail": refused}
+        script = f"SET_GCODE_OFFSET Z_ADJUST={applied:.3f} MOVE=1"
+    elif verb in ("pause", "resume", "cancel"):
+        applied = None
+        script = {"pause": "PAUSE", "resume": "RESUME",
+                  "cancel": "CANCEL_PRINT"}[verb]
+    else:
+        raise HTTPException(status_code=400, detail=f"unknown verb: {verb}")
+
+    if mocked:
+        # Mock mode never contacts Moonraker: it has to work with no
+        # printer attached.
+        return {"ok": True, "verb": verb, "applied": applied,
+                "script": script, "mock": True}
+    try:
+        await _mr_post("/printer/gcode/script", {"script": script}, timeout=30.0)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code,
+                            detail=f"moonraker: {e.response.text}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"moonraker: {e}")
+    out = {"ok": True, "verb": verb, "applied": applied, "script": script}
+    if verb == "babystep":
+        out["total_mm"] = round(_babystep_state["total"], 3)
+    return out
+
+@app.get("/api/print-control/limits")
+async def print_control_limits() -> dict:
+    """The clamps the UI should render, so a slider cannot even offer a
+    value the server will refuse. The server check stays regardless: this
+    is convenience, not the guard."""
+    try:
+        extruder = _active_extruder(await _print_status())
+    except Exception:
+        extruder = "extruder"
+    nozzle = await _heater_limits("nozzle", extruder)
+    bed = await _heater_limits("bed")
+    return {
+        "ranges": {k: {"min": v[0], "max": v[1]}
+                   for k, v in PRINT_CONTROL_RANGES.items()},
+        "nozzle": {"min": nozzle[0], "max": nozzle[1]},
+        "bed":    {"min": bed[0], "max": bed[1]},
+        "babystep": {"step": BABYSTEP_MAX_STEP_MM,
+                     "total": BABYSTEP_MAX_TOTAL_MM,
+                     "used": round(_babystep_state["total"], 3)},
+    }
+
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:
 
