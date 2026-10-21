@@ -2143,6 +2143,133 @@ async def fluidd_camera() -> dict:
         raise HTTPException(status_code=502,
                             detail=f"moonraker: {e}")
 
+WEBCAM_BASE = os.environ.get("MULTIACE_WEBCAM_BASE", "")
+
+def _webcam_base() -> str:
+    """Where a relative camera URL ('/webcam/?action=stream') points.
+
+    Moonraker stores those relative to the printer's own web root, not to
+    Moonraker's port, so strip the port off MOONRAKER_URL rather than
+    reusing it whole."""
+    if WEBCAM_BASE:
+        return WEBCAM_BASE.rstrip("/")
+    m = re.match(r"^(https?)://([^/:]+)", MOONRAKER_URL)
+    if not m:
+        return "http://127.0.0.1"
+    return f"{m.group(1)}://{m.group(2)}"
+
+def _abs_webcam_url(url: str) -> str:
+    if not url:
+        return ""
+    if url.startswith(("http://", "https://")):
+        return url
+    return f"{_webcam_base()}/{url.lstrip('/')}"
+
+async def _resolve_webcam() -> dict:
+    """First real camera Moonraker knows about.
+
+    Skips our own Fluidd panel entry: it is an iframe pointing back at
+    this UI, and embedding it in the UI's own page would be a mirror
+    tunnel rather than a webcam.
+    """
+    try:
+        listing = await _mr_get("/server/webcams/list")
+    except Exception as e:
+        return {"available": False, "reason": f"moonraker: {e}"}
+    cams = (listing.get("result") or {}).get("webcams") or []
+    for cam in cams:
+        name = str(cam.get("name", ""))
+        if name.strip().lower() == FLUIDD_CAMERA_NAME.lower():
+            continue
+        if str(cam.get("service", "")).lower() == "iframe":
+            continue
+        if cam.get("enabled") is False:
+            continue
+        stream = str(cam.get("stream_url") or "")
+        if not stream:
+            continue
+        return {
+            "available": True,
+            "name": name,
+            "service": str(cam.get("service") or "mjpegstreamer"),
+            "stream_url": _abs_webcam_url(stream),
+            "snapshot_url": _abs_webcam_url(str(cam.get("snapshot_url") or "")),
+            "aspect_ratio": cam.get("aspect_ratio") or "16:9",
+        }
+    return {"available": False,
+            "reason": "no camera configured in Moonraker"}
+
+@app.get("/api/webcam/info")
+async def webcam_info(request: Request) -> dict:
+    if _mock_enabled(request):
+        return {**(_mock_load("mock_webcam.json") or {"available": False,
+                                                      "reason": "no fixture"}),
+                "mock": True}
+    info = await _resolve_webcam()
+    if info.get("available"):
+        # The browser always goes through our proxy: the camera may live
+        # on a host/port the UI's origin cannot reach, and https pages
+        # refuse plain-http streams. The path is relative to the client's
+        # own API base (the UI is mounted at /multiace behind nginx but
+        # at / on the dev server).
+        info["proxy_path"] = "/api/webcam/stream"
+        info.pop("stream_url", None)
+        info.pop("snapshot_url", None)
+    return info
+
+@app.get("/api/webcam/stream")
+async def webcam_stream(request: Request):
+    """Pipe the camera's MJPEG stream through this service."""
+    from fastapi.responses import StreamingResponse
+
+    if _mock_enabled(request):
+        raise HTTPException(503, "webcam stream unavailable in mock mode")
+    info = await _resolve_webcam()
+    if not info.get("available"):
+        raise HTTPException(503, info.get("reason") or "no webcam")
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None))
+    try:
+        upstream = await client.send(
+            client.build_request("GET", info["stream_url"]), stream=True)
+        upstream.raise_for_status()
+    except httpx.HTTPError as e:
+        await client.aclose()
+        raise HTTPException(502, f"webcam: {e}")
+
+    async def _pump():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        except httpx.HTTPError:
+            return
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    ctype = upstream.headers.get(
+        "content-type", "multipart/x-mixed-replace; boundary=boundarydonotcross")
+    return StreamingResponse(_pump(), media_type=ctype,
+                             headers={"Cache-Control": "no-store"})
+
+@app.get("/api/webcam/snapshot")
+async def webcam_snapshot(request: Request):
+    if _mock_enabled(request):
+        raise HTTPException(503, "webcam snapshot unavailable in mock mode")
+    info = await _resolve_webcam()
+    url = info.get("snapshot_url") or ""
+    if not info.get("available") or not url:
+        raise HTTPException(503, info.get("reason") or "no webcam snapshot")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"webcam: {e}")
+    return Response(content=r.content,
+                    media_type=r.headers.get("content-type", "image/jpeg"),
+                    headers={"Cache-Control": "no-store"})
+
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:
 
