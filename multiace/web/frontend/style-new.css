@@ -1504,7 +1504,14 @@ html[data-theme="new"][data-shade="light"] .ace-card.offline > :not(h2) { opacit
 html[data-theme="new"][data-shade="light"] .panel:has(.panel-temp .ace-offline-text) .panel-cards { opacity: .55; }
 html[data-theme="new"][data-shade="light"] .preflight-dialog .row > button.primary:disabled { opacity: 1; background: var(--nt-main-dis-bg); border-color: var(--nt-main-dis-bg); color: var(--nt-main-dis-fg); }
 
-/* Control tab (Print Hub): the camera. The shared rules in style.css use the
-   theme variables; this only squares the card with the other tabs. */
-html[data-theme="new"] .control-webcam { border-radius: 0; }
+/* Control tab (Print Hub): camera, print panel, console. The shared rules in
+   style.css use the theme variables; this squares the cards with the other
+   tabs and puts the console on the well tokens. */
+html[data-theme="new"] .control-webcam,
+html[data-theme="new"] .control-print,
+html[data-theme="new"] .control-console { border-radius: 0; }
 html[data-theme="new"] .control-webcam .webcam-foot { background: var(--nt-bg2); border-top-color: var(--nt-line); }
+html[data-theme="new"] .control-print h3,
+html[data-theme="new"] .control-console h3 {
+  font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--nt-label); }
+html[data-theme="new"] .console-log { background: var(--nt-well); border-color: var(--nt-well-edge); border-radius: 0; }

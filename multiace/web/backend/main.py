@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import html
 import asyncio
 import json
 import logging
@@ -2188,10 +2189,12 @@ async def _resolve_webcam() -> dict:
         stream = str(cam.get("stream_url") or "")
         if not stream:
             continue
+        service = str(cam.get("service") or "mjpegstreamer")
         return {
             "available": True,
             "name": name,
-            "service": str(cam.get("service") or "mjpegstreamer"),
+            "service": service,
+            "webrtc": "webrtc" in service.lower(),
             "stream_url": _abs_webcam_url(stream),
             "snapshot_url": _abs_webcam_url(str(cam.get("snapshot_url") or "")),
             "aspect_ratio": cam.get("aspect_ratio") or "16:9",
@@ -2212,7 +2215,14 @@ async def webcam_info(request: Request) -> dict:
         # refuse plain-http streams. The path is relative to the client's
         # own API base (the UI is mounted at /multiace behind nginx but
         # at / on the dev server).
-        info["proxy_path"] = "/api/webcam/stream"
+        # A WebRTC camera (camera-streamer) has no MJPEG stream: the media
+        # travels browser-to-camera over ICE, and only the signalling goes
+        # through us.
+        if info["webrtc"]:
+            info["signal_path"] = "/api/webcam/webrtc-signal"
+        else:
+            info["proxy_path"] = "/api/webcam/stream"
+        info["snapshot_path"] = "/api/webcam/snapshot"
         info.pop("stream_url", None)
         info.pop("snapshot_url", None)
     return info
@@ -2225,8 +2235,8 @@ async def webcam_stream(request: Request):
     if _mock_enabled(request):
         raise HTTPException(503, "webcam stream unavailable in mock mode")
     info = await _resolve_webcam()
-    if not info.get("available"):
-        raise HTTPException(503, info.get("reason") or "no webcam")
+    if not info.get("available") or info.get("webrtc"):
+        raise HTTPException(503, info.get("reason") or "no MJPEG webcam")
 
     client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None))
     try:
@@ -2252,6 +2262,31 @@ async def webcam_stream(request: Request):
     return StreamingResponse(_pump(), media_type=ctype,
                              headers={"Cache-Control": "no-store"})
 
+@app.post("/api/webcam/webrtc-signal")
+async def webcam_webrtc_signal(request: Request) -> dict:
+    """Relay one leg of the browser<->camera SDP handshake.
+
+    camera-streamer sends no CORS headers and answers OPTIONS with 501, so
+    a browser POST straight to it is blocked at the preflight. From the
+    browser's side this is same-origin; httpx talks to the camera directly,
+    where CORS does not apply."""
+    if _mock_enabled(request):
+        raise HTTPException(503, "webrtc signalling unavailable in mock mode")
+    info = await _resolve_webcam()
+    if not info.get("available") or not info.get("webrtc"):
+        raise HTTPException(503, info.get("reason") or "no WebRTC camera")
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "invalid JSON")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(info["stream_url"], json=body)
+            r.raise_for_status()
+            return r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        raise HTTPException(502, f"webrtc signal: {e}")
+
 @app.get("/api/webcam/snapshot")
 async def webcam_snapshot(request: Request):
     if _mock_enabled(request):
@@ -2274,6 +2309,13 @@ CONSOLE_BUFFER_MAX = int(os.environ.get("MULTIACE_CONSOLE_BUFFER", "300"))
 _console_lines: deque = deque(maxlen=CONSOLE_BUFFER_MAX)
 _next_console_id = 0
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+def _console_text(text: str) -> str:
+    """Klipper messages from some modules carry colour markup (Fluidd
+    renders it); the console shows plain text."""
+    return html.unescape(_HTML_TAG_RE.sub("", text))
+
 def _console_kind(text: str) -> str:
     s = (text or "").strip()
     body = s[3:].strip() if s.startswith("// ") else s
@@ -2290,6 +2332,9 @@ def _record_console_line(text: str) -> dict | None:
     notifications, so the console costs no extra printer polling."""
     global _next_console_id
     if not isinstance(text, str) or not text.strip():
+        return None
+    text = _console_text(text)
+    if not text.strip():
         return None
     _next_console_id += 1
     line = {"id": _next_console_id, "ts": time.time(),
@@ -2310,13 +2355,16 @@ async def _seed_console_from_gcode_store() -> None:
         msg = e.get("message")
         if not msg:
             continue
+        msg = _console_text(str(msg))
+        if not msg.strip():
+            continue
         _next_console_id += 1
         _console_lines.append({
             "id": _next_console_id,
             "ts": float(e.get("time") or time.time()),
-            "msg": str(msg).rstrip(),
+            "msg": msg.rstrip(),
             "kind": ("command" if e.get("type") == "command"
-                     else _console_kind(str(msg))),
+                     else _console_kind(msg)),
         })
 
 @app.get("/api/console-logs")
@@ -2526,7 +2574,9 @@ async def print_control(request: Request, req: PrintControl) -> dict:
             except Exception:
                 heater = "extruder"
         lo, hi = await _heater_limits(verb, heater)
-        applied = _clamp(value, lo, hi)
+        # 0 is "off" and is always allowed: the material range is a floor
+        # for printing, not for switching the heater off.
+        applied = 0.0 if value <= 0 else _clamp(value, lo, hi)
         script = f"SET_HEATER_TEMPERATURE HEATER={heater} TARGET={applied:.0f}"
     elif verb == "babystep":
         if value is None:

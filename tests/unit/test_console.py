@@ -33,6 +33,12 @@ class TestRecord:
         c = main._record_console_line("M105")
         assert b is None and a["msg"] == "G28" and c["id"] == a["id"] + 1
 
+    def test_colour_markup_is_stripped(self, main):
+        line = main._record_console_line(
+            '<span style="color:#90EE90">ACE 1: Connected</span> &amp; ready')
+        assert line["msg"] == "ACE 1: Connected & ready"
+        assert main._record_console_line("<br>") is None
+
     def test_non_strings_are_ignored(self, main):
         assert main._record_console_line(None) is None
         assert main._record_console_line(5) is None

@@ -144,13 +144,86 @@ class TestEndpoints:
             assert c.get("/api/webcam/snapshot").status_code == 503
 
 
+def _rtc_cam(**kw):
+    return _cam(name="case", service="webrtc-camerastreamer",
+                stream_url="/webcam/webrtc", snapshot_url="/webcam/snapshot.jpg", **kw)
+
+
+class TestWebrtc:
+    def _client(self, main):
+        from fastapi.testclient import TestClient
+        return TestClient(main.app)
+
+    def test_info_offers_the_signal_path_not_a_stream(self, main, monkeypatch):
+        _listing(main, monkeypatch, [_rtc_cam()])
+        with self._client(main) as c:
+            j = c.get("/api/webcam/info").json()
+        assert j["available"] is True and j["webrtc"] is True
+        assert j["signal_path"] == "/api/webcam/webrtc-signal"
+        assert j["snapshot_path"] == "/api/webcam/snapshot"
+        assert "proxy_path" not in j and "stream_url" not in j
+
+    def test_an_mjpeg_camera_has_no_signal_path(self, main, monkeypatch):
+        _listing(main, monkeypatch, [_cam()])
+        with self._client(main) as c:
+            j = c.get("/api/webcam/info").json()
+        assert j["webrtc"] is False and "signal_path" not in j
+
+    def test_stream_refuses_a_webrtc_camera(self, main, monkeypatch):
+        _listing(main, monkeypatch, [_rtc_cam()])
+        with self._client(main) as c:
+            assert c.get("/api/webcam/stream").status_code == 503
+
+    def test_signal_relays_the_body_to_the_camera_and_returns_its_answer(
+            self, main, monkeypatch):
+        _listing(main, monkeypatch, [_rtc_cam()])
+        monkeypatch.setattr(main, "WEBCAM_BASE", "http://cam.local")
+        seen = {}
+
+        def handler(req):
+            seen["url"] = str(req.url)
+            seen["body"] = req.content
+            return httpx.Response(200, json={"id": "1", "type": "offer", "sdp": "v=0"})
+        real = httpx.AsyncClient
+        monkeypatch.setattr(
+            main.httpx, "AsyncClient",
+            lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+        with self._client(main) as c:
+            r = c.post("/api/webcam/webrtc-signal", json={"type": "request"})
+        assert r.json() == {"id": "1", "type": "offer", "sdp": "v=0"}
+        assert seen["url"] == "http://cam.local/webcam/webrtc"
+        assert b'"request"' in seen["body"]
+
+    def test_signal_camera_error_is_502(self, main, monkeypatch):
+        _listing(main, monkeypatch, [_rtc_cam()])
+        real = httpx.AsyncClient
+        monkeypatch.setattr(
+            main.httpx, "AsyncClient",
+            lambda **kw: real(transport=httpx.MockTransport(
+                lambda req: httpx.Response(501)), **kw))
+        with self._client(main) as c:
+            r = c.post("/api/webcam/webrtc-signal", json={"type": "request"})
+        assert r.status_code == 502
+
+    def test_signal_refuses_an_mjpeg_camera_and_bad_json(self, main, monkeypatch):
+        _listing(main, monkeypatch, [_cam()])
+        with self._client(main) as c:
+            assert c.post("/api/webcam/webrtc-signal", json={}).status_code == 503
+        _listing(main, monkeypatch, [_rtc_cam()])
+        with self._client(main) as c:
+            r = c.post("/api/webcam/webrtc-signal", content=b"not json",
+                       headers={"content-type": "application/json"})
+        assert r.status_code == 400
+
+
 class TestMockMode:
     def test_info_comes_from_the_fixture(self, mock_client):
         j = mock_client.get("/api/webcam/info").json()
         assert j["mock"] is True and j["available"] is False
 
-    def test_stream_and_snapshot_refuse(self, mock_client):
+    def test_stream_snapshot_and_signal_refuse(self, mock_client):
         assert mock_client.get("/api/webcam/stream").status_code == 503
+        assert mock_client.post("/api/webcam/webrtc-signal", json={}).status_code == 503
         assert mock_client.get("/api/webcam/snapshot").status_code == 503
 
     def test_query_param_cannot_enable_mock_on_a_real_printer(self, live_client):

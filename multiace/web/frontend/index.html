@@ -1354,19 +1354,136 @@
     <!-- Control (Print Hub): the printer's camera, routed in from the
          Fluidd/Moonraker side so it is on the same page as the ACEs. -->
     <section v-show="tab==='control'" class="control-tab">
-      <div class="control-webcam">
-        <img v-if="webcam.available && webcamSrc" :src="webcamSrc" class="webcam-img"
-             :style="{aspectRatio: webcam.aspect}"
-             :alt="webcam.name || t('ui.control.webcam')">
-        <div v-else-if="!webcam.available" class="webcam-none">
-          <p>{{ webcam.loaded ? t('ui.control.webcam_unavailable')
-                              : t('ui.control.webcam_loading') }}</p>
-          <p class="muted small" v-if="webcam.reason">{{ webcam.reason }}</p>
-          <p class="muted small">{{ t('ui.control.webcam_hint') }}</p>
+      <div class="control-top">
+        <div class="control-webcam">
+          <video v-if="webcam.available && webcam.webrtc" ref="webcamVideo" class="webcam-img"
+                 :style="{aspectRatio: webcam.aspect}" autoplay muted playsinline
+                 :aria-label="webcam.name || t('ui.control.webcam')"></video>
+          <img v-else-if="webcam.available && webcamSrc" :src="webcamSrc" class="webcam-img"
+               :style="{aspectRatio: webcam.aspect}"
+               :alt="webcam.name || t('ui.control.webcam')">
+          <div v-else-if="!webcam.available" class="webcam-none">
+            <p>{{ webcam.loaded ? t('ui.control.webcam_unavailable')
+                                : t('ui.control.webcam_loading') }}</p>
+            <p class="muted small" v-if="webcam.reason">{{ webcam.reason }}</p>
+            <p class="muted small">{{ t('ui.control.webcam_hint') }}</p>
+          </div>
+          <div class="webcam-foot">
+            <span class="muted small">
+              {{ webcam.name || t('ui.control.webcam') }}
+              <template v-if="webcam.connFailed">
+                &middot; {{ t('ui.control.webcam_unavailable') }}<span v-if="webcam.reason"> ({{ webcam.reason }})</span>
+              </template>
+            </span>
+            <button @click="reloadWebcam">{{ t('ui.common.reload') }}</button>
+          </div>
         </div>
-        <div class="webcam-foot">
-          <span class="muted small">{{ webcam.name || t('ui.control.webcam') }}</span>
-          <button @click="loadWebcam">{{ t('ui.common.reload') }}</button>
+
+        <div class="control-print">
+          <h3>{{ t('ui.control.print') }}</h3>
+          <p v-if="printCtlError" class="error small">{{ printCtlError }}</p>
+          <div class="pc-status">
+            <span class="pill">{{ printCtl.state || '–' }}</span>
+            <span v-if="printCtl.progress" class="pill">{{ printCtl.progress }} %</span>
+            <span v-if="printCtl.filename" class="muted small pc-file">{{ printCtl.filename }}</span>
+            <span v-if="printCtl.message" class="muted small">{{ printCtl.message }}</span>
+          </div>
+
+          <label class="pc-row">
+            <span>{{ t('ui.control.speed') }}</span>
+            <input type="range" :min="printCtlLimits.ranges.speed.min"
+                   :max="printCtlLimits.ranges.speed.max" step="5"
+                   v-model.number="printCtlDraft.speed"
+                   @input="printCtlSlide('speed', printCtlDraft.speed)"
+                   @change="printCtlRelease('speed', printCtlDraft.speed)">
+            <b>{{ printCtl.speed_factor }} %</b>
+            <button class="pc-reset" @click.prevent="printCtlReset('speed')"
+                    :title="t('ui.control.reset_hint')">100 %</button>
+          </label>
+          <label class="pc-row">
+            <span>{{ t('ui.control.flow') }}</span>
+            <input type="range" :min="printCtlLimits.ranges.flow.min"
+                   :max="printCtlLimits.ranges.flow.max" step="1"
+                   v-model.number="printCtlDraft.flow"
+                   @input="printCtlSlide('flow', printCtlDraft.flow)"
+                   @change="printCtlRelease('flow', printCtlDraft.flow)">
+            <b>{{ printCtl.extrude_factor }} %</b>
+            <button class="pc-reset" @click.prevent="printCtlReset('flow')"
+                    :title="t('ui.control.reset_hint')">100 %</button>
+          </label>
+          <label class="pc-row">
+            <span>{{ t('ui.control.fan') }}</span>
+            <input type="range" min="0" max="100" step="5"
+                   v-model.number="printCtlDraft.fan"
+                   @input="printCtlSlide('fan', printCtlDraft.fan)"
+                   @change="printCtlRelease('fan', printCtlDraft.fan)">
+            <b>{{ printCtl.fan }} %</b>
+            <button class="pc-reset" @click.prevent="printCtlReset('fan')">0 %</button>
+          </label>
+
+          <div class="pc-row pc-temps">
+            <span>{{ t('ui.control.nozzle') }}</span>
+            <b>{{ printCtl.nozzle.temp !== null ? Math.round(printCtl.nozzle.temp) : '–' }}
+               / {{ printCtl.nozzle.target !== null ? Math.round(printCtl.nozzle.target) : '–' }} °C</b>
+            <input type="number" class="pc-temp-in"
+                   min="0" :max="printCtlLimits.nozzle.max"
+                   :placeholder="t('ui.control.target')"
+                   @change="printCtlHeat('nozzle', $event)">
+          </div>
+          <div class="pc-row pc-temps">
+            <span>{{ t('ui.control.bed') }}</span>
+            <b>{{ printCtl.bed.temp !== null ? Math.round(printCtl.bed.temp) : '–' }}
+               / {{ printCtl.bed.target !== null ? Math.round(printCtl.bed.target) : '–' }} °C</b>
+            <input type="number" class="pc-temp-in"
+                   min="0" :max="printCtlLimits.bed.max"
+                   :placeholder="t('ui.control.target')"
+                   @change="printCtlHeat('bed', $event)">
+          </div>
+
+          <!-- Z offset is BUTTONS, never a slider: a slider makes it easy to
+               send a large negative step in one gesture, which drives the
+               nozzle into the plate. -->
+          <div class="pc-row pc-baby">
+            <span>{{ t('ui.control.babystep') }}</span>
+            <button @click="sendPrintControl('babystep', -0.05)">−0.05</button>
+            <button @click="sendPrintControl('babystep', -0.01)">−0.01</button>
+            <b>{{ printCtl.z_offset.toFixed(3) }} mm</b>
+            <button @click="sendPrintControl('babystep', 0.01)">+0.01</button>
+            <button @click="sendPrintControl('babystep', 0.05)">+0.05</button>
+          </div>
+          <p class="muted small">
+            {{ t('ui.control.babystep_used', {
+                 used: printCtlLimits.babystep.used,
+                 max: printCtlLimits.babystep.total }) }}
+          </p>
+
+          <div class="pc-row pc-actions">
+            <button @click="sendPrintControl('pause')"
+                    :disabled="!printCtlCan.pause || printCtlBusy !== ''">{{ t('ui.control.pause') }}</button>
+            <button @click="sendPrintControl('resume')"
+                    :disabled="!printCtlCan.resume || printCtlBusy !== ''">{{ t('ui.control.resume') }}</button>
+            <button class="warn" @click="printCtlCancel"
+                    :disabled="!printCtlCan.cancel || printCtlBusy !== ''">{{ t('ui.control.cancel') }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-console">
+        <h3>{{ t('ui.control.console') }}</h3>
+        <div ref="consoleEl" class="console-log">
+          <div v-for="ln in consoleLines" :key="ln.id"
+               class="console-line" :class="'console-' + ln.kind">
+            <span class="console-ts">{{ consoleTime(ln.ts) }}</span>
+            <span class="console-msg">{{ ln.msg }}</span>
+          </div>
+          <p v-if="!consoleLines.length" class="muted small">{{ t('ui.control.console_empty') }}</p>
+        </div>
+        <div class="console-controls">
+          <label class="console-follow">
+            <input type="checkbox" v-model="consoleFollow">
+            {{ t('ui.control.console_follow') }}
+          </label>
+          <button @click="loadConsole">{{ t('ui.common.reload') }}</button>
         </div>
       </div>
     </section>

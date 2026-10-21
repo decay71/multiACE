@@ -7328,27 +7328,115 @@ createApp({
         },
       });
     }
-    // Control tab: the printer's camera, proxied through the backend. The
-    // stream is only opened while the tab is showing, so a hidden tab does
-    // not keep a connection to the camera.
+    // Control tab: the printer's camera. MJPEG comes through the backend as
+    // an <img>; a WebRTC camera (camera-streamer) is a <video> whose media
+    // travels browser-to-camera, with only the handshake going through the
+    // backend. The stream is only opened while the tab is showing, so a
+    // hidden tab does not keep a connection to the camera.
     const webcam = reactive({
-      loaded: false, available: false, reason: "", name: "", proxy: "",
-      aspect: "16 / 9",
+      loaded: false, available: false, reason: "", name: "",
+      webrtc: false, proxy: "", signal: "", aspect: "16 / 9",
+      connFailed: false,
       // Cache-buster: an MJPEG <img> that was torn down keeps its old
       // connection cached, so re-opening the tab shows a frozen frame
       // until the src actually changes.
       nonce: 0,
     });
-    const webcamShown = computed(() => !panelMode && tab.value === "control");
+    const controlShown = computed(() => !panelMode && tab.value === "control");
+    const webcamVideo = ref(null);
     const webcamSrc = computed(() =>
-      webcam.available && webcamShown.value
+      webcam.available && !webcam.webrtc && controlShown.value
         ? `${BASE}${webcam.proxy}?n=${webcam.nonce}` : "");
+    let webcamPc = null;
+    let webcamRetry = null;
+    function stopWebrtc() {
+      clearTimeout(webcamRetry);
+      if (webcamPc) { webcamPc.close(); webcamPc = null; }
+      if (webcamVideo.value) webcamVideo.value.srcObject = null;
+    }
+    // camera-streamer's handshake is reversed from a typical WHIP/WHEP
+    // flow: the SERVER makes the offer (it knows the video track) and the
+    // browser answers, over two plain POSTs of JSON-wrapped SDP.
+    async function startWebrtc() {
+      stopWebrtc();
+      webcam.connFailed = false;
+      webcam.reason = "";
+      await nextTick();
+      const video = webcamVideo.value;
+      if (!video || !webcam.signal) return;
+      const post = (body) => fetch(`${BASE}${webcam.signal}`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      const pc = new RTCPeerConnection();
+      webcamPc = pc;
+      const fail = (why) => {
+        if (pc !== webcamPc) return;
+        webcam.reason = why;
+        webcam.connFailed = true;
+        // Retry while the tab is open, but not in a tight loop.
+        if (controlShown.value) {
+          webcamRetry = setTimeout(() => { if (pc === webcamPc) startWebrtc(); }, 5000);
+        }
+      };
+      pc.addTransceiver("video", {direction: "recvonly"});
+      pc.addEventListener("track", (evt) => {
+        if (pc === webcamPc && evt.track.kind === "video") video.srcObject = evt.streams[0];
+      });
+      // "track" fires as soon as the transceiver is negotiated, before any
+      // media arrives, so it proves nothing. Some LAN cameras never resolve
+      // Chrome's mDNS-obfuscated host candidates, leaving the connection in
+      // "checking" with no "failed" event: a flat timeout catches that.
+      const connectTimeout = setTimeout(() => {
+        if (pc === webcamPc && pc.connectionState !== "connected") fail("connection timed out");
+      }, 10000);
+      pc.addEventListener("connectionstatechange", () => {
+        if (pc !== webcamPc) return;
+        if (pc.connectionState === "connected") {
+          clearTimeout(connectTimeout);
+          webcam.connFailed = false;
+        } else if (["failed", "disconnected"].includes(pc.connectionState)) {
+          clearTimeout(connectTimeout);
+          fail(pc.connectionState);
+        }
+      });
+      try {
+        const offerRes = await post({type: "request"});
+        if (!offerRes.ok) throw new Error(`camera: HTTP ${offerRes.status}`);
+        const offer = await offerRes.json();
+        await pc.setRemoteDescription(offer);
+        await pc.setLocalDescription(await pc.createAnswer());
+        await new Promise((resolve) => {
+          if (pc.iceGatheringState === "complete") { resolve(); return; }
+          const check = () => {
+            if (pc.iceGatheringState === "complete") {
+              pc.removeEventListener("icegatheringstatechange", check);
+              resolve();
+            }
+          };
+          pc.addEventListener("icegatheringstatechange", check);
+        });
+        if (pc !== webcamPc) return;
+        const ans = await post({type: pc.localDescription.type, id: offer.id,
+                                sdp: pc.localDescription.sdp});
+        if (!ans.ok) throw new Error(`camera: HTTP ${ans.status}`);
+      } catch (e) {
+        clearTimeout(connectTimeout);
+        fail(e.message || String(e));
+      }
+    }
+    function reloadWebcam() {
+      if (webcam.available && webcam.webrtc) startWebrtc();
+      else loadWebcam();
+    }
     async function loadWebcam() {
       try {
         const r = await fetch(`${API}/webcam/info`);
         const j = r.ok ? await r.json() : {available: false, reason: `HTTP ${r.status}`};
-        webcam.available = !!(j.available && j.proxy_path);
+        webcam.webrtc = !!j.webrtc;
         webcam.proxy = j.proxy_path || "";
+        webcam.signal = j.signal_path || "";
+        webcam.available = !!(j.available && (webcam.proxy || webcam.signal));
         webcam.reason = j.reason || "";
         webcam.name = j.name || "";
         webcam.aspect = String(j.aspect_ratio || "16:9").replace(":", " / ");
@@ -7358,13 +7446,180 @@ createApp({
       } finally {
         webcam.loaded = true;
         webcam.nonce++;
+        if (controlShown.value && webcam.available && webcam.webrtc) startWebrtc();
+        else stopWebrtc();
       }
     }
-    watch(webcamShown, (shown) => {
-      if (!shown) return;
+    watch(controlShown, (shown) => {
+      if (!shown) { stopWebrtc(); return; }
       if (!webcam.loaded) loadWebcam();
+      else if (webcam.webrtc) startWebrtc();
       else webcam.nonce++;
     }, {immediate: true});
+    onUnmounted(stopWebrtc);
+
+    // Print panel: speed, flow, fan, temperatures, Z offset and the job
+    // verbs. Every value shown is READ BACK from the printer (polled while
+    // the tab is open), never remembered locally: a change made on the
+    // printer's own display has to show up here too.
+    const printCtl = reactive({
+      speed_factor: 100, extrude_factor: 100, fan: 0, z_offset: 0,
+      nozzle: {temp: null, target: null}, bed: {temp: null, target: null},
+      progress: 0, message: "", state: "", filename: "",
+    });
+    const printCtlLimits = reactive({
+      ranges: {speed: {min: 25, max: 300}, flow: {min: 75, max: 125},
+               fan: {min: 0, max: 100}},
+      nozzle: {min: 0, max: 300}, bed: {min: 0, max: 120},
+      babystep: {step: 0.05, total: 0.5, used: 0},
+    });
+    // Local slider positions. They follow the readback except while the
+    // user is holding one.
+    const printCtlDraft = reactive({speed: 100, flow: 100, fan: 0});
+    const printCtlDragging = ref("");
+    const printCtlBusy = ref("");
+    const printCtlError = ref("");
+    const printCtlCan = computed(() => ({
+      pause: printCtl.state === "printing",
+      resume: printCtl.state === "paused",
+      cancel: printCtl.state === "printing" || printCtl.state === "paused",
+    }));
+    async function loadPrintControl() {
+      try {
+        const r = await fetch(`${API}/print-control`);
+        if (!r.ok) { printCtlError.value = `HTTP ${r.status}`; return; }
+        const pc = await r.json();
+        printCtlError.value = "";
+        Object.assign(printCtl, pc);
+        if (printCtlDragging.value !== "speed") printCtlDraft.speed = pc.speed_factor;
+        if (printCtlDragging.value !== "flow") printCtlDraft.flow = pc.extrude_factor;
+        if (printCtlDragging.value !== "fan") printCtlDraft.fan = pc.fan;
+      } catch (e) {
+        printCtlError.value = e.message || String(e);
+      }
+    }
+    async function loadPrintControlLimits() {
+      try {
+        const r = await fetch(`${API}/print-control/limits`);
+        if (r.ok) Object.assign(printCtlLimits, await r.json());
+      } catch (_) {}
+    }
+    async function sendPrintControl(verb, value) {
+      printCtlBusy.value = verb;
+      printCtlError.value = "";
+      try {
+        const r = await fetch(`${API}/print-control`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(value === undefined ? {verb} : {verb, value}),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `${r.status}`);
+        // Snap the slider to what the server ACTUALLY applied: it clamps,
+        // and a control showing a value the printer refused lies about the
+        // machine.
+        if (j.applied !== null && j.applied !== undefined) {
+          if (verb === "speed") printCtlDraft.speed = j.applied;
+          if (verb === "flow") printCtlDraft.flow = j.applied;
+          if (verb === "fan") printCtlDraft.fan = j.applied;
+        }
+        if (j.ok === false && j.detail) printCtlError.value = j.detail;
+        if (verb === "babystep" && j.total_mm !== undefined) {
+          printCtlLimits.babystep.used = j.total_mm;
+        }
+        await loadPrintControl();
+      } catch (e) {
+        printCtlError.value = e.message || String(e);
+      } finally {
+        printCtlBusy.value = "";
+      }
+    }
+    // One command per ~250 ms of dragging, and ALWAYS a final one on
+    // release: an undelivered last event is how a slider lies.
+    let _ctlDebounce = null;
+    function printCtlSlide(verb, value) {
+      printCtlDragging.value = verb;
+      if (_ctlDebounce) clearTimeout(_ctlDebounce);
+      _ctlDebounce = setTimeout(() => sendPrintControl(verb, Number(value)), 250);
+    }
+    function printCtlRelease(verb, value) {
+      if (_ctlDebounce) { clearTimeout(_ctlDebounce); _ctlDebounce = null; }
+      printCtlDragging.value = "";
+      sendPrintControl(verb, Number(value));
+    }
+    function printCtlReset(verb) {
+      printCtlRelease(verb, verb === "fan" ? 0 : 100);
+    }
+    // An empty box is "nothing typed", not 0: sending 0 would switch the
+    // heater off.
+    function printCtlHeat(verb, ev) {
+      const raw = String(ev.target.value).trim();
+      if (raw === "") return;
+      const v = Number(raw);
+      if (Number.isFinite(v)) sendPrintControl(verb, v);
+      ev.target.value = "";
+    }
+    function printCtlCancel() {
+      confirm({
+        title: t("ui.control.cancel_title"),
+        message: t("ui.control.cancel_msg"),
+        okLabel: t("ui.control.cancel_ok"),
+        onOk: () => sendPrintControl("cancel"),
+      });
+    }
+
+    // Console, read only. Polled incrementally while the tab is open.
+    const CONSOLE_MAX = 400;
+    const consoleLines = ref([]);
+    const consoleFollow = ref(localStorage.getItem("multiace.console.follow") !== "0");
+    const consoleEl = ref(null);
+    let lastConsoleId = 0;
+    watch(consoleFollow,
+          v => localStorage.setItem("multiace.console.follow", v ? "1" : "0"));
+    async function loadConsole() {
+      try {
+        const r = await fetch(`${API}/console-logs?lines=200&since_id=${lastConsoleId}`);
+        if (!r.ok) return;
+        const lines = (await r.json()).lines || [];
+        if (!lines.length) return;
+        for (const ln of lines) {
+          if (ln.id <= lastConsoleId) continue;
+          lastConsoleId = ln.id;
+          consoleLines.value.push(ln);
+        }
+        if (consoleLines.value.length > CONSOLE_MAX) {
+          consoleLines.value.splice(0, consoleLines.value.length - CONSOLE_MAX);
+        }
+        if (consoleFollow.value) {
+          nextTick(() => {
+            const el = consoleEl.value;
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }
+      } catch (_) {}
+    }
+    function consoleTime(ts) {
+      if (!ts) return "";
+      try { return new Date(ts * 1000).toLocaleTimeString(); }
+      catch (_) { return ""; }
+    }
+
+    // Poll the printer only while the Control tab is showing.
+    const CONTROL_POLL_MS = 2000;
+    let controlTimer = null;
+    function controlPoll() {
+      loadPrintControl();
+      loadConsole();
+    }
+    watch(controlShown, (shown) => {
+      clearInterval(controlTimer);
+      controlTimer = null;
+      if (!shown) return;
+      loadPrintControlLimits();
+      controlPoll();
+      controlTimer = setInterval(controlPoll, CONTROL_POLL_MS);
+    }, {immediate: true});
+    onUnmounted(() => clearInterval(controlTimer));
 
     let resizeObserver = null;
     onMounted(async () => {
@@ -7526,7 +7781,11 @@ createApp({
       updateState, updateCheck, updateApply,
       debugState, debugEnable, debugDisable,
       navItems, topItems, subItems, topActive, openNav,
-      webcam, webcamSrc, loadWebcam,
+      webcam, webcamSrc, webcamVideo, reloadWebcam,
+      printCtl, printCtlLimits, printCtlDraft, printCtlBusy, printCtlError, printCtlCan,
+      printCtlSlide, printCtlRelease, printCtlReset, printCtlHeat, printCtlCancel,
+      sendPrintControl,
+      consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,
       plugins, refreshPlugins, pluginIframeSrc,
       notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications,
       confirmDialog, okConfirm, altConfirm, cancelConfirm, confirmInputError,

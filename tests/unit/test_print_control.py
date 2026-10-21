@@ -125,7 +125,13 @@ class TestHeaters:
         printer.toolheads = [{"filament_detected": True, "material": "PLA"}]
         j = post(client, "nozzle", 300).json()
         assert j["applied"] == 230
-        assert post(client, "nozzle", 0).json()["applied"] == 170
+        assert post(client, "nozzle", 100).json()["applied"] == 170
+
+    @pytest.mark.parametrize("value", [0, -10])
+    def test_zero_is_off_whatever_the_material_floor(self, client, printer, value):
+        printer.toolheads = [{"filament_detected": True, "material": "PLA"}]
+        assert post(client, "nozzle", value).json()["applied"] == 0
+        assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0"]
 
     def test_unloaded_heads_do_not_count(self, client, printer):
         printer.toolheads = [{"filament_detected": False, "material": "PLA"}]
