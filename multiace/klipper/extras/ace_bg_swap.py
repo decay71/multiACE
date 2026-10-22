@@ -29,7 +29,8 @@
 # verified unload uses.
 #
 # Commands: ACE_BG_SWAP (unload-if-loaded + load), ACE_BG_UNLOAD (unload
-# only), ACE_BG_STATUS, ACE_BG_SET_HEAD, ACE_BG_MOVE (debug). Failures leave
+# only), ACE_BG_WAIT (arrival hold until a docked bg swap is eligible),
+# ACE_BG_STATUS, ACE_BG_SET_HEAD, ACE_BG_MOVE (debug). Failures leave
 # head_source INTACT unless the ACE retract completed (the state where
 # clearing is truthful).
 #
@@ -40,7 +41,7 @@ import logging
 import chelper
 from . import force_move
 
-BG_SWAP_VERSION = 'v0.9'
+BG_SWAP_VERSION = 'v0.9.1' # Oct 22 2026 | Author: DocX-Tech
 
 # --- background LOAD (the BG-Load v1 feature) ---
 # The bowden feed runs the full padded get_load_length and is stopped by the
@@ -258,6 +259,8 @@ class AceBgSwap:
                                     desc=self.cmd_ACE_BG_SET_HEAD_help)
         self.gcode.register_command('ACE_BG_SWAP', self.cmd_ACE_BG_SWAP,
                                     desc=self.cmd_ACE_BG_SWAP_help)
+        self.gcode.register_command('ACE_BG_WAIT', self.cmd_ACE_BG_WAIT,
+                                    desc=self.cmd_ACE_BG_WAIT_help)
 
     def get_status(self, eventtime):
         # Queried by the web backend (/api/state bg selector + the preflight
@@ -1204,6 +1207,27 @@ class AceBgSwap:
             lambda et, h=head, u=un, l=(ace_ld, slot_ld), t=temp, sf=soft,
                    ao=anti_ooze, ut=u_temp, pg=purge:
                 self._run_swap(h, u, l, t, sf, ao, ut, pg))
+
+    cmd_ACE_BG_WAIT_help = (
+        '[multiACE] Hold the arriving toolhead until a background swap on a '
+        'docked HEAD reaches PULL (or late HEAT). ACE_BG_WAIT HEAD=0-3. '
+        'Parks at the discard position and restores print coordinates before '
+        'returning. On timeout or ineligibility, logs and returns so the '
+        'inline swap can proceed.')
+
+    def cmd_ACE_BG_WAIT(self, gcmd):
+        # HEAD is required and must be a valid toolhead index (0-3), same
+        # contract as the other ACE_BG_* commands. gcode.get_int raises a
+        # command error (not a printer shutdown) if it is missing or
+        # out of range.
+        head = gcmd.get_int('HEAD', minval=0, maxval=3)
+        # Milestone 1 skeleton: parse/validate only. Wait loop, park/restore,
+        # and eligibility live in later milestones; returning here is the
+        # graceful pass-through so an early stamp cannot stall a print.
+        gcmd.respond_info('[bg-wait] ACE_BG_WAIT HEAD=%d (skeleton)'
+                          % self._dh(head))
+        logging.debug('[multiACE] [bg-wait] ACE_BG_WAIT HEAD=%d (skeleton)'
+                      % self._dh(head))
 
     cmd_ACE_BG_STATUS_help = '[EXPERIMENTAL] Show background unload states.'
 
