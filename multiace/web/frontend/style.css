@@ -1978,6 +1978,7 @@ body:has(.panel) .overlay .dialog {
 .pc-baby { flex-wrap: wrap; row-gap: .3rem; }
 .pc-baby button { min-width: 3.2rem; }
 .pc-baby b { flex: 1; text-align: center; }
+.pc-enclosure b { flex: 1; min-width: 0; text-align: left; font-weight: 600; }
 .pc-light .pc-bulb { flex: 0 0 auto; color: var(--muted); }
 .pc-light.on .pc-bulb { color: var(--warn); }
 .pc-light.on .pc-bulb-glass { fill: currentColor; fill-opacity: .25; }

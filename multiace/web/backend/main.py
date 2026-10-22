@@ -2342,30 +2342,48 @@ def _record_console_line(text: str) -> dict | None:
     _console_lines.append(line)
     return line
 
+_console_seeded = False
+_console_seed_lock = asyncio.Lock()
+
 async def _seed_console_from_gcode_store() -> None:
-    """Backfill the buffer from Moonraker's own history, so a freshly
-    started backend does not show an empty console."""
-    global _next_console_id
-    try:
-        data = await _mr_get(f"/server/gcode_store?count={CONSOLE_BUFFER_MAX}")
-    except Exception:
-        return
-    entries = (data.get("result") or {}).get("gcode_store") or []
-    for e in entries:
-        msg = e.get("message")
-        if not msg:
-            continue
-        msg = _console_text(str(msg))
-        if not msg.strip():
-            continue
-        _next_console_id += 1
-        _console_lines.append({
-            "id": _next_console_id,
-            "ts": float(e.get("time") or time.time()),
-            "msg": msg.rstrip(),
-            "kind": ("command" if e.get("type") == "command"
-                     else _console_kind(msg)),
-        })
+    """Backfill the buffer from Moonraker's own history, once, so a freshly
+    started backend does not show an empty console.
+
+    Live lines that arrived before the first view are part of that history
+    too, so the history replaces them; only lines newer than the request
+    are kept, because the history cannot contain those yet."""
+    global _next_console_id, _console_seeded
+    async with _console_seed_lock:
+        if _console_seeded:
+            return
+        started = time.time()
+        try:
+            data = await _mr_get(f"/server/gcode_store?count={CONSOLE_BUFFER_MAX}")
+        except Exception:
+            return
+        entries = (data.get("result") or {}).get("gcode_store") or []
+        newer = [ln for ln in _console_lines if ln["ts"] >= started]
+        _console_lines.clear()
+        for e in entries:
+            msg = e.get("message")
+            if not msg:
+                continue
+            msg = _console_text(str(msg))
+            if not msg.strip():
+                continue
+            _next_console_id += 1
+            _console_lines.append({
+                "id": _next_console_id,
+                "ts": float(e.get("time") or time.time()),
+                "msg": msg.rstrip(),
+                "kind": ("command" if e.get("type") == "command"
+                         else _console_kind(msg)),
+            })
+        for ln in newer:
+            _next_console_id += 1
+            ln["id"] = _next_console_id
+            _console_lines.append(ln)
+        _console_seeded = True
 
 @app.get("/api/console-logs")
 async def console_logs(request: Request, lines: int = 100,
@@ -2377,7 +2395,7 @@ async def console_logs(request: Request, lines: int = 100,
         mock = _mock_load("mock_console.json") or {"lines": []}
         out = [ln for ln in mock.get("lines", []) if ln.get("id", 0) > since_id]
         return {"lines": out[-n:], "mock": True}
-    if not _console_lines:
+    if not _console_seeded:
         await _seed_console_from_gcode_store()
     out = [ln for ln in _console_lines if ln["id"] > since_id]
     return {"lines": out[-n:], "buffer_max": CONSOLE_BUFFER_MAX}
@@ -2406,6 +2424,13 @@ PRINT_CONTROL_RANGES = {
 #: The printer's own chamber light: a single white channel, driven with
 #: SET_LED. Not every Klipper printer has one, so the verb checks for it.
 CHAMBER_LED = "led cavity_led"
+
+#: Snapmaker's enclosure: the `purifier` object drives the exhaust and inner
+#: fans and has its own attach detection (power_detected). The cavity
+#: temperature sensor is part of the printer itself and reads without an
+#: enclosure too.
+PURIFIER = "purifier"
+CAVITY_SENSOR = "temperature_sensor cavity"
 
 #: Z babystep is the damaging control: it moves the nozzle relative to the
 #: bed while printing, and repeated negative steps drive it into the plate.
@@ -2461,7 +2486,8 @@ async def _print_status() -> dict:
         while _homing_active() and time.time() < deadline:
             await asyncio.sleep(0.05)
     objs = ["toolhead", "print_stats", "display_status", "virtual_sdcard",
-            "gcode_move", "fan", "heater_bed", CHAMBER_LED] + _EXTRUDERS
+            "gcode_move", "fan", "heater_bed", CHAMBER_LED, PURIFIER,
+            CAVITY_SENSOR] + _EXTRUDERS
     data = await _mr_get("/printer/objects/query?"
                          + "&".join(o.replace(" ", "%20") for o in objs))
     status = data.get("result", {}).get("status", {}) or {}
@@ -2491,6 +2517,24 @@ def _chamber_light_pct(status: dict):
     except (KeyError, IndexError, TypeError, ValueError):
         return None
 
+def _enclosure_state(status: dict):
+    """Chamber temperature and, with an enclosure attached, its fans.
+
+    None when the printer has neither the cavity sensor nor the purifier
+    object, so the UI shows nothing instead of a row of dashes."""
+    sensor = status.get(CAVITY_SENSOR)
+    purifier = status.get(PURIFIER)
+    if not isinstance(sensor, dict) and not isinstance(purifier, dict):
+        return None
+    out = {"temp": sensor.get("temperature") if isinstance(sensor, dict) else None,
+           "attached": None, "exhaust": None, "inner": None}
+    if isinstance(purifier, dict):
+        out["attached"] = bool(purifier.get("power_detected"))
+        for key, fan in (("exhaust", "exhaust_fan"), ("inner", "inner_fan")):
+            obj = purifier.get(fan)
+            out[key] = _pct(obj.get("speed") if isinstance(obj, dict) else None, 0.0)
+    return out
+
 def _print_control_state(status: dict) -> dict:
     """Speed, flow, fan, temperatures and progress, READ BACK from
     Moonraker so a change made on the printer's display shows up here."""
@@ -2508,6 +2552,7 @@ def _print_control_state(status: dict) -> dict:
         "fan":            _pct((status.get("fan") or {}).get("speed"), 0.0),
         "z_offset":       z_offset,
         "light":          _chamber_light_pct(status),
+        "enclosure":      _enclosure_state(status),
         "nozzle": {"temp": ext.get("temperature"), "target": ext.get("target")},
         "bed":    {"temp": bed.get("temperature"), "target": bed.get("target")},
         "progress": round(float(
@@ -2589,6 +2634,16 @@ async def _babystep_allowance(delta: float) -> tuple[float, str]:
     _babystep_state["total"] = total
     return step, ""
 
+async def _require_object(name: str, what: str) -> None:
+    """409 unless the printer has this Klipper object: not every Klipper
+    printer has a chamber light or an enclosure."""
+    try:
+        present = name in await _print_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+    if not present:
+        raise HTTPException(409, f"this printer has no {what}")
+
 @app.get("/api/print-control")
 async def print_control_state(request: Request) -> dict:
     if _mock_enabled(request):
@@ -2625,12 +2680,7 @@ async def print_control(request: Request, req: PrintControl) -> dict:
             script = f"M106 S{round(applied * 255 / 100):d}"
         else:
             if not mocked:
-                try:
-                    has_led = CHAMBER_LED in await _print_status()
-                except httpx.HTTPError as e:
-                    raise HTTPException(502, f"moonraker: {e}")
-                if not has_led:
-                    raise HTTPException(409, "this printer has no chamber light")
+                await _require_object(CHAMBER_LED, "chamber light")
             script = f"SET_LED LED=cavity_led WHITE={applied / 100:.2f} TRANSMIT=1"
     elif verb in ("nozzle", "bed"):
         if value is None:
@@ -2654,6 +2704,15 @@ async def print_control(request: Request, req: PrintControl) -> dict:
             return {"ok": False, "verb": verb, "applied": 0.0,
                     "total_mm": _babystep_state["total"], "detail": refused}
         script = f"SET_GCODE_OFFSET Z_ADJUST={applied:.3f} MOVE=1"
+    elif verb == "enclosure_off":
+        # Stops the enclosure fans. This is the one enclosure command that
+        # stock itself sends (PRINT_END and CANCEL_PRINT), so its meaning is
+        # known: MODE=0 is "off". Other modes and fan speeds are not driven
+        # from here.
+        applied = None
+        if not mocked:
+            await _require_object(PURIFIER, "enclosure")
+        script = "SET_PURIFIER_MODE MODE=0"
     elif verb in ("pause", "resume", "cancel"):
         applied = None
         script = {"pause": "PAUSE", "resume": "RESUME",

@@ -1441,6 +1441,11 @@
                    @change="printCtlHeat('bed', $event)">
           </div>
 
+          <div class="pc-row pc-temps" v-if="printCtl.enclosure">
+            <span>{{ t('ui.control.chamber') }}</span>
+            <b>{{ printCtl.enclosure.temp !== null ? Math.round(printCtl.enclosure.temp) : '–' }} °C</b>
+          </div>
+
           <div class="pc-row pc-light" :class="{on: printCtl.light > 0}" v-if="printCtl.light !== null">
             <svg class="pc-bulb" viewBox="0 0 24 24" width="22" height="22" fill="none"
                  stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
@@ -1454,6 +1459,17 @@
                     @click="sendPrintControl('light', printCtl.light > 0 ? 0 : 100)">
               <span class="pc-knob">{{ printCtl.light > 0 ? t('ui.control.on') : t('ui.control.off') }}</span>
             </button>
+          </div>
+
+          <!-- Only with an enclosure attached (the printer's own attach detection).
+               The page can switch its fans off, which is what stock does at the
+               end of a print; it does not start them or set a speed. -->
+          <div class="pc-row pc-enclosure" v-if="printCtl.enclosure && printCtl.enclosure.attached">
+            <span>{{ t('ui.control.enclosure_fans') }}</span>
+            <b>{{ t('ui.control.exhaust') }} {{ Math.round(printCtl.enclosure.exhaust) }} %
+               &middot; {{ t('ui.control.inner') }} {{ Math.round(printCtl.enclosure.inner) }} %</b>
+            <button :disabled="printCtlBusy !== '' || (!printCtl.enclosure.exhaust && !printCtl.enclosure.inner)"
+                    @click="sendPrintControl('enclosure_off')">{{ t('ui.control.fans_off') }}</button>
           </div>
 
           <!-- Z offset is BUTTONS, never a slider: a slider makes it easy to

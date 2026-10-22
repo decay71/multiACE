@@ -7387,13 +7387,16 @@ createApp({
       // media arrives, so it proves nothing. Some LAN cameras never resolve
       // Chrome's mDNS-obfuscated host candidates, leaving the connection in
       // "checking" with no "failed" event: a flat timeout catches that.
+      // The same check covers a connection that comes up but delivers no
+      // video (a stale session on the camera): it fails visibly and retries.
       const connectTimeout = setTimeout(() => {
-        if (pc === webcamPc && pc.connectionState !== "connected") fail("connection timed out");
+        if (pc !== webcamPc) return;
+        if (pc.connectionState !== "connected") fail("connection timed out");
+        else if (!video.videoWidth) fail("no video received");
       }, 10000);
       pc.addEventListener("connectionstatechange", () => {
         if (pc !== webcamPc) return;
         if (pc.connectionState === "connected") {
-          clearTimeout(connectTimeout);
           webcam.connFailed = false;
         } else if (["failed", "disconnected"].includes(pc.connectionState)) {
           clearTimeout(connectTimeout);
@@ -7463,7 +7466,7 @@ createApp({
     // the tab is open), never remembered locally: a change made on the
     // printer's own display has to show up here too.
     const printCtl = reactive({
-      speed_factor: 100, extrude_factor: 100, fan: 0, z_offset: 0, light: null,
+      speed_factor: 100, extrude_factor: 100, fan: 0, z_offset: 0, light: null, enclosure: null,
       nozzle: {temp: null, target: null}, bed: {temp: null, target: null},
       progress: 0, message: "", state: "", filename: "",
     });

@@ -71,6 +71,47 @@ class TestSeed:
         assert not main._console_lines
 
 
+class TestSeedWithLiveLines:
+    """On a real printer lines arrive constantly, so live lines are almost
+    always in the buffer before anyone opens the console."""
+
+    def test_history_is_still_loaded_and_not_duplicated(self, main, monkeypatch):
+        main._record_console_line("// early live line")   # also in the history
+
+        async def fake(path):
+            main._record_console_line("// arrived during the request")
+            return {"result": {"gcode_store": [
+                {"message": "G28", "time": 1.0, "type": "command"},
+                {"message": "// early live line", "time": 2.0, "type": "response"}]}}
+        monkeypatch.setattr(main, "_mr_get", fake)
+        asyncio.run(main._seed_console_from_gcode_store())
+        assert [l["msg"] for l in main._console_lines] == [
+            "G28", "// early live line", "// arrived during the request"]
+        ids = [l["id"] for l in main._console_lines]
+        assert ids == sorted(ids) and len(set(ids)) == 3
+
+    def test_it_is_seeded_only_once(self, main, monkeypatch):
+        calls = []
+
+        async def fake(path):
+            calls.append(path)
+            return {"result": {"gcode_store": [{"message": "G28", "time": 1.0}]}}
+        monkeypatch.setattr(main, "_mr_get", fake)
+        asyncio.run(main._seed_console_from_gcode_store())
+        asyncio.run(main._seed_console_from_gcode_store())
+        assert len(calls) == 1 and len(main._console_lines) == 1
+
+    def test_a_failed_seed_is_retried_and_keeps_the_live_lines(self, main, monkeypatch):
+        main._record_console_line("// live")
+
+        async def boom(path):
+            raise httpx.ConnectError("down")
+        monkeypatch.setattr(main, "_mr_get", boom)
+        asyncio.run(main._seed_console_from_gcode_store())
+        assert [l["msg"] for l in main._console_lines] == ["// live"]
+        assert main._console_seeded is False
+
+
 class TestEndpoint:
     def _client(self, main):
         from fastapi.testclient import TestClient

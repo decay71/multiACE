@@ -253,6 +253,70 @@ class TestLight:
             == {"min": 0.0, "max": 100.0}
 
 
+PURIFIER_OBJ = {
+    "power_detected": True, "mode": 0,
+    "exhaust_fan": {"speed": 0.5, "delay": 180, "speed_threshold": 0},
+    "inner_fan": {"speed": 0.25, "delay": 180, "speed_threshold": 0}}
+CAVITY = {"temperature": 31.4, "measured_min_temp": 18.0, "measured_max_temp": 33.0}
+
+
+class TestEnclosure:
+    def test_attached_enclosure_reports_temperature_and_fans(self, client, printer):
+        printer.status = {"purifier": PURIFIER_OBJ,
+                          "temperature_sensor cavity": CAVITY}
+        assert client.get("/api/print-control").json()["enclosure"] == {
+            "temp": 31.4, "attached": True, "exhaust": 50.0, "inner": 25.0}
+
+    def test_no_enclosure_still_reads_the_chamber_temperature(self, client, printer):
+        # The cavity sensor is part of the printer; power_detected says
+        # whether an enclosure is attached.
+        printer.status = {
+            "purifier": {**PURIFIER_OBJ, "power_detected": False,
+                         "exhaust_fan": {"speed": 0.0}, "inner_fan": {"speed": 0.0}},
+            "temperature_sensor cavity": CAVITY}
+        assert client.get("/api/print-control").json()["enclosure"] == {
+            "temp": 31.4, "attached": False, "exhaust": 0.0, "inner": 0.0}
+
+    def test_a_printer_with_only_the_sensor(self, client, printer):
+        printer.status = {"temperature_sensor cavity": CAVITY}
+        assert client.get("/api/print-control").json()["enclosure"] == {
+            "temp": 31.4, "attached": None, "exhaust": None, "inner": None}
+
+    def test_a_printer_with_neither_has_no_enclosure(self, client, printer):
+        printer.status = {"toolhead": {"extruder": "extruder"}}
+        assert client.get("/api/print-control").json()["enclosure"] is None
+
+    def test_malformed_objects_do_not_crash_the_readback(self, client, printer):
+        printer.status = {"purifier": {"exhaust_fan": None, "inner_fan": "x"},
+                          "temperature_sensor cavity": {}}
+        j = client.get("/api/print-control").json()["enclosure"]
+        assert j["temp"] is None and j["attached"] is False
+        assert j["exhaust"] == 0.0 and j["inner"] == 0.0
+
+    def test_enclosure_off_sends_the_stock_off_command(self, client, printer):
+        printer.status = {"purifier": PURIFIER_OBJ}
+        j = post(client, "enclosure_off").json()
+        assert printer.sent == ["SET_PURIFIER_MODE MODE=0"]
+        assert j["ok"] is True and j["applied"] is None
+
+    def test_enclosure_off_ignores_any_value(self, client, printer):
+        printer.status = {"purifier": PURIFIER_OBJ}
+        post(client, "enclosure_off", 3)
+        assert printer.sent == ["SET_PURIFIER_MODE MODE=0"]
+
+    def test_a_printer_without_the_purifier_is_refused_and_sends_nothing(
+            self, client, printer):
+        printer.status = {"toolhead": {"extruder": "extruder"}}
+        r = post(client, "enclosure_off")
+        assert r.status_code == 409 and printer.sent == []
+
+    def test_there_is_no_verb_that_starts_the_fans(self, client, printer):
+        printer.status = {"purifier": PURIFIER_OBJ}
+        for verb in ("enclosure_on", "exhaust", "inner_fan", "purifier"):
+            assert post(client, verb, 100).status_code == 400
+        assert printer.sent == []
+
+
 class TestQueued:
     def test_a_read_timeout_is_queued_not_an_error(self, client, printer):
         # A swap holds Klipper's queue: the command runs later, so a second
@@ -346,7 +410,7 @@ class TestState:
             "print_stats": {"state": "printing", "filename": "a.gcode"}}
         j = client.get("/api/print-control").json()
         assert j == {"speed_factor": 125.0, "extrude_factor": 95.0, "fan": 50.0,
-                     "z_offset": -0.123, "light": 75.0, "nozzle": {"temp": 201.5, "target": 210},
+                     "z_offset": -0.123, "light": 75.0, "enclosure": None, "nozzle": {"temp": 201.5, "target": 210},
                      "bed": {"temp": 59.9, "target": 60}, "progress": 43.2,
                      "message": "hi", "state": "printing", "filename": "a.gcode"}
 
