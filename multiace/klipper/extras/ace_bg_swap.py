@@ -265,6 +265,10 @@ class AceBgSwap:
                                     desc=self.cmd_ACE_BG_SWAP_help)
         self.gcode.register_command('ACE_BG_WAIT', self.cmd_ACE_BG_WAIT,
                                     desc=self.cmd_ACE_BG_WAIT_help)
+        self.gcode.register_command('ACE_BG_AWAIT_PHASE',
+                                    self.cmd_ACE_BG_AWAIT_PHASE,
+                                    desc=self.cmd_ACE_BG_AWAIT_PHASE_help)
+
 
     def get_status(self, eventtime):
         # Queried by the web backend (/api/state bg selector + the preflight
@@ -1248,6 +1252,37 @@ class AceBgSwap:
                       % self._dh(head))
 
     cmd_ACE_BG_STATUS_help = '[EXPERIMENTAL] Show background unload states.'
+    cmd_ACE_BG_AWAIT_PHASE_help = (
+        '[multiACE] Wait for a background swap on HEAD to reach a target PHASE '
+        '(e.g. HEAT, PULL, RETRACT, BOOKKEEP, LD_FEED, LD_GRIP, LD_PRIME, DONE). '
+        'ACE_BG_AWAIT_PHASE HEAD=0-3 PHASE=<name> [TIMEOUT=60]')
+
+    def cmd_ACE_BG_AWAIT_PHASE(self, gcmd):
+        head = gcmd.get_int('HEAD', minval=0, maxval=3)
+        target_phase = gcmd.get('PHASE').strip().upper()
+        timeout = gcmd.get_float('TIMEOUT', 60., above=0.)
+        deadline = self.reactor.monotonic() + timeout
+
+        gcmd.respond_info('[bg-test] Waiting for head %d to reach phase %s (timeout %.0fs)...'
+                          % (self._dh(head), target_phase, timeout))
+
+        while self.reactor.monotonic() < deadline:
+            cur_phase = self.phase(head).upper()
+            if cur_phase == target_phase or cur_phase.startswith(target_phase):
+                gcmd.respond_info('[bg-test] Head %d reached target phase %s!'
+                                  % (self._dh(head), cur_phase))
+                return
+            if cur_phase.startswith('FAILED'):
+                gcmd.respond_info('[bg-test] Head %d aborted early with %s'
+                                  % (self._dh(head), cur_phase))
+                return
+            # Check every 100ms
+            self._pause(0.10)
+
+        gcmd.respond_info('[bg-test] Timeout (%.0fs) waiting for head %d phase %s (current: %s)'
+                          % (timeout, self._dh(head), target_phase, self.phase(head)))
+
+
 
     def cmd_ACE_BG_STATUS(self, gcmd):
         if not self.state:
