@@ -35,11 +35,9 @@
       "console": "控制台",
       "console_empty": "暂无控制台输出。",
       "console_follow": "跟随",
-      "light": "腔体灯",
+      "light": "灯光",
       "on": "开",
       "off": "关",
-      "turn_on": "打开",
-      "turn_off": "关闭",
       "queued": "已发送。打印机正忙（换料可能需要几分钟），稍后会执行。"
     },
     "tabs": {
