@@ -34,7 +34,13 @@
       "cancel_ok": "取消打印",
       "console": "控制台",
       "console_empty": "暂无控制台输出。",
-      "console_follow": "跟随"
+      "console_follow": "跟随",
+      "light": "腔体灯",
+      "on": "开",
+      "off": "关",
+      "turn_on": "打开",
+      "turn_off": "关闭",
+      "queued": "已发送。打印机正忙（换料可能需要几分钟），稍后会执行。"
     },
     "tabs": {
       "control": "控制",

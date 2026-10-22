@@ -7463,7 +7463,7 @@ createApp({
     // the tab is open), never remembered locally: a change made on the
     // printer's own display has to show up here too.
     const printCtl = reactive({
-      speed_factor: 100, extrude_factor: 100, fan: 0, z_offset: 0,
+      speed_factor: 100, extrude_factor: 100, fan: 0, z_offset: 0, light: null,
       nozzle: {temp: null, target: null}, bed: {temp: null, target: null},
       progress: 0, message: "", state: "", filename: "",
     });
@@ -7479,6 +7479,13 @@ createApp({
     const printCtlDragging = ref("");
     const printCtlBusy = ref("");
     const printCtlError = ref("");
+    // A command that timed out on its way back is QUEUED, not failed: a
+    // multiACE swap holds Klipper's queue for minutes and the command runs
+    // afterwards. Until then the same control stays disabled, so a second
+    // press cannot send it twice.
+    const printCtlNotice = ref("");
+    const printCtlQueued = reactive({});
+    const PRINT_CTL_QUEUED_MS = 180000;
     const printCtlCan = computed(() => ({
       pause: printCtl.state === "printing",
       resume: printCtl.state === "paused",
@@ -7524,6 +7531,12 @@ createApp({
           if (verb === "fan") printCtlDraft.fan = j.applied;
         }
         if (j.ok === false && j.detail) printCtlError.value = j.detail;
+        if (j.queued) {
+          printCtlNotice.value = t("ui.control.queued");
+          printCtlQueued[verb] = true;
+          setTimeout(() => { delete printCtlQueued[verb]; printCtlNotice.value = ""; },
+                     PRINT_CTL_QUEUED_MS);
+        }
         if (verb === "babystep" && j.total_mm !== undefined) {
           printCtlLimits.babystep.used = j.total_mm;
         }
@@ -7783,6 +7796,7 @@ createApp({
       navItems, topItems, subItems, topActive, openNav,
       webcam, webcamSrc, webcamVideo, reloadWebcam,
       printCtl, printCtlLimits, printCtlDraft, printCtlBusy, printCtlError, printCtlCan,
+      printCtlNotice, printCtlQueued,
       printCtlSlide, printCtlRelease, printCtlReset, printCtlHeat, printCtlCancel,
       sendPrintControl,
       consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,

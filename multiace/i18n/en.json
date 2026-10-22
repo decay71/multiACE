@@ -34,7 +34,13 @@
       "cancel_ok": "Cancel the print",
       "console": "Console",
       "console_empty": "No console output yet.",
-      "console_follow": "Follow"
+      "console_follow": "Follow",
+      "light": "Chamber light",
+      "on": "On",
+      "off": "Off",
+      "turn_on": "Turn on",
+      "turn_off": "Turn off",
+      "queued": "Sent. The printer is busy (a filament swap can take minutes) and will run it afterwards."
     },
     "tabs": {
       "control": "Control",

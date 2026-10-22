@@ -3,6 +3,10 @@
 Moonraker is replaced by stubs for `_mr_get` / `_mr_post`; every G-code line
 the endpoint would send is captured instead.
 """
+import os
+import time
+
+import httpx
 import pytest
 
 from .test_mock_mode import _load_main, mock_client, live_client  # noqa: F401
@@ -28,15 +32,22 @@ def printer(main, monkeypatch):
         status = {"toolhead": {"extruder": "extruder"},
                   "print_stats": {"state": "printing", "filename": "a.gcode"}}
         toolheads = []
+        gets = []
+        post_error = None
     P.sent = []
+    P.gets = []
+    P.post_error = None
 
     async def fake_get(path):
+        P.gets.append(path)
         if "configfile" in path:
             return CFG
         return {"result": {"status": P.status}}
 
     async def fake_post(path, body=None, timeout=30.0):
         assert path == "/printer/gcode/script"
+        if P.post_error:
+            raise P.post_error
         P.sent.append(body["script"])
         return {"result": "ok"}
 
@@ -122,20 +133,50 @@ class TestHeaters:
         assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=110"]
 
     def test_loaded_material_tightens_the_nozzle_ceiling(self, client, printer):
-        printer.toolheads = [{"filament_detected": True, "material": "PLA"}]
+        printer.toolheads = [{"idx": 0, "filament_detected": True, "material": "PLA"}]
         j = post(client, "nozzle", 300).json()
         assert j["applied"] == 230
         assert post(client, "nozzle", 100).json()["applied"] == 170
 
     @pytest.mark.parametrize("value", [0, -10])
     def test_zero_is_off_whatever_the_material_floor(self, client, printer, value):
-        printer.toolheads = [{"filament_detected": True, "material": "PLA"}]
+        printer.toolheads = [{"idx": 0, "filament_detected": True, "material": "PLA"}]
         assert post(client, "nozzle", value).json()["applied"] == 0
         assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0"]
 
     def test_unloaded_heads_do_not_count(self, client, printer):
-        printer.toolheads = [{"filament_detected": False, "material": "PLA"}]
+        printer.toolheads = [{"idx": 0, "filament_detected": False, "material": "PLA"}]
         assert post(client, "nozzle", 300).json()["applied"] == 300
+
+    def test_other_heads_materials_do_not_count(self, client, printer):
+        # PLA on the active head 0 and PETG on head 1: the range is PLA's
+        # 170-230, not the 210-230 overlap of both.
+        printer.toolheads = [
+            {"idx": 0, "filament_detected": True, "material": "PLA"},
+            {"idx": 1, "filament_detected": True, "material": "PETG"}]
+        assert post(client, "nozzle", 100).json()["applied"] == 170
+        assert post(client, "nozzle", 999).json()["applied"] == 230
+
+    def test_mixed_materials_cannot_invert_the_range(self, client, printer):
+        # PLA (max 230) next to PC (min 240) used to give 240/230 and land
+        # every target on 240.
+        printer.toolheads = [
+            {"idx": 0, "filament_detected": True, "material": "PLA"},
+            {"idx": 1, "filament_detected": True, "material": "PC"}]
+        assert post(client, "nozzle", 200).json()["applied"] == 200
+
+    def test_the_active_head_decides(self, client, printer):
+        printer.status = {"toolhead": {"extruder": "extruder1"}}
+        printer.toolheads = [
+            {"idx": 0, "filament_detected": True, "material": "PLA"},
+            {"idx": 1, "filament_detected": True, "material": "PETG"}]
+        assert post(client, "nozzle", 100).json()["applied"] == 210
+        assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=210"]
+
+    def test_klipper_config_is_read_once_not_on_every_call(self, client, printer):
+        post(client, "nozzle", 100)
+        post(client, "bed", 50)
+        assert sum("configfile" in g for g in printer.gets) == 1
 
     def test_follows_the_active_extruder(self, client, printer):
         printer.status = {"toolhead": {"extruder": "extruder1"}}
@@ -175,6 +216,121 @@ class TestBabystep:
         assert post(client, "babystep", -0.05).json()["total_mm"] == -0.05
 
 
+class TestLight:
+    HAS_LED = {"toolhead": {"extruder": "extruder"},
+               "led cavity_led": {"color_data": [[0.0, 0.0, 0.0, 0.0]]}}
+
+    @pytest.mark.parametrize("value,script,applied", [
+        (100, "SET_LED LED=cavity_led WHITE=1.00 TRANSMIT=1", 100),
+        (0, "SET_LED LED=cavity_led WHITE=0.00 TRANSMIT=1", 0),
+        (40, "SET_LED LED=cavity_led WHITE=0.40 TRANSMIT=1", 40),
+        (900, "SET_LED LED=cavity_led WHITE=1.00 TRANSMIT=1", 100),
+        (-5, "SET_LED LED=cavity_led WHITE=0.00 TRANSMIT=1", 0),
+    ])
+    def test_value_is_clamped_to_a_percentage(
+            self, client, printer, value, script, applied):
+        printer.status = self.HAS_LED
+        j = post(client, "light", value).json()
+        assert printer.sent == [script] and j["applied"] == applied
+
+    def test_a_printer_without_the_led_is_refused_and_sends_nothing(
+            self, client, printer):
+        printer.status = {"toolhead": {"extruder": "extruder"}}
+        r = post(client, "light", 100)
+        assert r.status_code == 409 and printer.sent == []
+
+    def test_a_value_is_required(self, client, printer):
+        printer.status = self.HAS_LED
+        assert post(client, "light").status_code == 400
+
+    def test_readback_without_a_white_channel_is_unknown(self, main):
+        assert main._chamber_light_pct(
+            {"led cavity_led": {"color_data": [[1.0, 0.5, 0.0]]}}) is None
+        assert main._chamber_light_pct({}) is None
+
+    def test_limits_offer_the_light_range(self, client, printer):
+        assert client.get("/api/print-control/limits").json()["ranges"]["light"] \
+            == {"min": 0.0, "max": 100.0}
+
+
+class TestQueued:
+    def test_a_read_timeout_is_queued_not_an_error(self, client, printer):
+        # A swap holds Klipper's queue: the command runs later, so a second
+        # press must not look like a retry of a failure.
+        printer.post_error = httpx.ReadTimeout("slow")
+        r = post(client, "pause")
+        assert r.status_code == 200
+        assert r.json()["queued"] is True and r.json()["ok"] is True
+
+    def test_a_normal_answer_is_not_queued(self, client, printer):
+        assert "queued" not in post(client, "pause").json()
+
+    def test_a_connect_timeout_is_still_a_failure(self, client, printer):
+        # Never reached Moonraker: nothing was queued.
+        printer.post_error = httpx.ConnectTimeout("no route")
+        assert post(client, "pause").status_code == 502
+
+    def test_other_transport_errors_are_failures(self, client, printer):
+        printer.post_error = httpx.ConnectError("down")
+        assert post(client, "pause").status_code == 502
+
+    def test_a_queued_babystep_keeps_its_allowance_used(self, client, printer):
+        printer.post_error = httpx.ReadTimeout("slow")
+        j = post(client, "babystep", -0.05).json()
+        assert j["queued"] is True and j["total_mm"] == -0.05
+
+
+class TestHomingGate:
+    """While ace.py's homing flag is fresh, the status poll must not reach
+    Moonraker: that I/O competes with the homing probe and bed mesh."""
+
+    @pytest.fixture
+    def homing(self, main, tmp_path, monkeypatch):
+        flag = tmp_path / "homing"
+        monkeypatch.setattr(main, "HOMING_FLAG_PATH", str(flag))
+        monkeypatch.setattr(main, "_GATE_WAIT_MAX", 0.0)
+
+        def on():
+            flag.write_text("1")
+            os.utime(flag, None)
+
+        def off():
+            if flag.exists():
+                flag.unlink()
+        return type("H", (), {"on": staticmethod(on), "off": staticmethod(off)})
+
+    def test_the_last_status_is_served_while_homing(self, client, printer, homing):
+        printer.status = {"print_stats": {"state": "printing", "filename": "a.gcode"}}
+        assert client.get("/api/print-control").json()["state"] == "printing"
+        polls = len(printer.gets)
+        printer.status = {"print_stats": {"state": "paused"}}
+        homing.on()
+        assert client.get("/api/print-control").json()["state"] == "printing"
+        assert len(printer.gets) == polls
+
+    def test_polling_resumes_when_the_flag_goes_stale(
+            self, client, printer, homing):
+        printer.status = {"print_stats": {"state": "printing"}}
+        client.get("/api/print-control")
+        printer.status = {"print_stats": {"state": "paused"}}
+        homing.off()
+        assert client.get("/api/print-control").json()["state"] == "paused"
+
+    def test_klipper_config_is_not_queried_while_homing(
+            self, client, printer, homing):
+        homing.on()
+        post(client, "bed", 200)
+        assert not any("configfile" in g for g in printer.gets)
+
+    def test_a_stale_cache_is_not_served_forever(
+            self, main, client, printer, homing, monkeypatch):
+        client.get("/api/print-control")
+        main._LAST_PRINT_STATUS_TS = time.time() - 3600
+        printer.status = {"print_stats": {"state": "paused"}}
+        homing.on()
+        assert client.get("/api/print-control").json()["state"] == "paused"
+
+
 class TestState:
     def test_readback(self, client, printer):
         printer.status = {
@@ -182,6 +338,7 @@ class TestState:
             "gcode_move": {"speed_factor": 1.25, "extrude_factor": 0.95,
                            "homing_origin": [0, 0, -0.1234, 0]},
             "fan": {"speed": 0.5},
+            "led cavity_led": {"color_data": [[0.0, 0.0, 0.0, 0.75]]},
             "extruder": {"temperature": 201.5, "target": 210},
             "heater_bed": {"temperature": 59.9, "target": 60},
             "virtual_sdcard": {"progress": 0.4321},
@@ -189,7 +346,7 @@ class TestState:
             "print_stats": {"state": "printing", "filename": "a.gcode"}}
         j = client.get("/api/print-control").json()
         assert j == {"speed_factor": 125.0, "extrude_factor": 95.0, "fan": 50.0,
-                     "z_offset": -0.123, "nozzle": {"temp": 201.5, "target": 210},
+                     "z_offset": -0.123, "light": 75.0, "nozzle": {"temp": 201.5, "target": 210},
                      "bed": {"temp": 59.9, "target": 60}, "progress": 43.2,
                      "message": "hi", "state": "printing", "filename": "a.gcode"}
 
@@ -198,6 +355,7 @@ class TestState:
         j = client.get("/api/print-control").json()
         assert j["speed_factor"] == 100.0 and j["fan"] == 0.0
         assert j["nozzle"] == {"temp": None, "target": None}
+        assert j["light"] is None
 
     def test_limits(self, client, printer):
         j = client.get("/api/print-control/limits").json()

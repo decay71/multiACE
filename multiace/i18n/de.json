@@ -34,7 +34,13 @@
       "cancel_ok": "Druck abbrechen",
       "console": "Konsole",
       "console_empty": "Noch keine Konsolenausgabe.",
-      "console_follow": "Folgen"
+      "console_follow": "Folgen",
+      "light": "Kammerlicht",
+      "on": "An",
+      "off": "Aus",
+      "turn_on": "Einschalten",
+      "turn_off": "Ausschalten",
+      "queued": "Gesendet. Der Drucker ist beschäftigt (ein Filamentwechsel kann Minuten dauern) und führt es danach aus."
     },
     "tabs": {
       "control": "Steuerung",

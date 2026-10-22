@@ -1382,6 +1382,7 @@
         <div class="control-print">
           <h3>{{ t('ui.control.print') }}</h3>
           <p v-if="printCtlError" class="error small">{{ printCtlError }}</p>
+          <p v-if="printCtlNotice" class="muted small">{{ printCtlNotice }}</p>
           <div class="pc-status">
             <span class="pill">{{ printCtl.state || '–' }}</span>
             <span v-if="printCtl.progress" class="pill">{{ printCtl.progress }} %</span>
@@ -1440,16 +1441,26 @@
                    @change="printCtlHeat('bed', $event)">
           </div>
 
+          <div class="pc-row pc-light" v-if="printCtl.light !== null">
+            <span>{{ t('ui.control.light') }}</span>
+            <b>{{ printCtl.light > 0 ? t('ui.control.on') : t('ui.control.off') }}</b>
+            <button :class="{active: printCtl.light > 0}" :disabled="printCtlBusy !== ''"
+                    :aria-pressed="printCtl.light > 0 ? 'true' : 'false'"
+                    @click="sendPrintControl('light', printCtl.light > 0 ? 0 : 100)">
+              {{ printCtl.light > 0 ? t('ui.control.turn_off') : t('ui.control.turn_on') }}
+            </button>
+          </div>
+
           <!-- Z offset is BUTTONS, never a slider: a slider makes it easy to
                send a large negative step in one gesture, which drives the
                nozzle into the plate. -->
           <div class="pc-row pc-baby">
             <span>{{ t('ui.control.babystep') }}</span>
-            <button @click="sendPrintControl('babystep', -0.05)">−0.05</button>
-            <button @click="sendPrintControl('babystep', -0.01)">−0.01</button>
+            <button :disabled="printCtlQueued.babystep" @click="sendPrintControl('babystep', -0.05)">−0.05</button>
+            <button :disabled="printCtlQueued.babystep" @click="sendPrintControl('babystep', -0.01)">−0.01</button>
             <b>{{ printCtl.z_offset.toFixed(3) }} mm</b>
-            <button @click="sendPrintControl('babystep', 0.01)">+0.01</button>
-            <button @click="sendPrintControl('babystep', 0.05)">+0.05</button>
+            <button :disabled="printCtlQueued.babystep" @click="sendPrintControl('babystep', 0.01)">+0.01</button>
+            <button :disabled="printCtlQueued.babystep" @click="sendPrintControl('babystep', 0.05)">+0.05</button>
           </div>
           <p class="muted small">
             {{ t('ui.control.babystep_used', {
@@ -1459,11 +1470,11 @@
 
           <div class="pc-row pc-actions">
             <button @click="sendPrintControl('pause')"
-                    :disabled="!printCtlCan.pause || printCtlBusy !== ''">{{ t('ui.control.pause') }}</button>
+                    :disabled="!printCtlCan.pause || printCtlBusy !== '' || printCtlQueued.pause">{{ t('ui.control.pause') }}</button>
             <button @click="sendPrintControl('resume')"
-                    :disabled="!printCtlCan.resume || printCtlBusy !== ''">{{ t('ui.control.resume') }}</button>
+                    :disabled="!printCtlCan.resume || printCtlBusy !== '' || printCtlQueued.resume">{{ t('ui.control.resume') }}</button>
             <button class="warn" @click="printCtlCancel"
-                    :disabled="!printCtlCan.cancel || printCtlBusy !== ''">{{ t('ui.control.cancel') }}</button>
+                    :disabled="!printCtlCan.cancel || printCtlBusy !== '' || printCtlQueued.cancel">{{ t('ui.control.cancel') }}</button>
           </div>
         </div>
       </div>

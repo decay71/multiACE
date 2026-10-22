@@ -2400,7 +2400,12 @@ PRINT_CONTROL_RANGES = {
     "speed": (25.0, 300.0),
     "flow":  (75.0, 125.0),
     "fan":   (0.0, 100.0),
+    "light": (0.0, 100.0),
 }
+
+#: The printer's own chamber light: a single white channel, driven with
+#: SET_LED. Not every Klipper printer has one, so the verb checks for it.
+CHAMBER_LED = "led cavity_led"
 
 #: Z babystep is the damaging control: it moves the nozzle relative to the
 #: bed while printing, and repeated negative steps drive it into the plate.
@@ -2436,13 +2441,33 @@ _babystep_state: dict = {"job": None, "total": 0.0}
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
 
+_LAST_PRINT_STATUS: dict = {}
+_LAST_PRINT_STATUS_TS: float = 0.0
+
 async def _print_status() -> dict:
     """Raw Moonraker status for the Control tab. A query of its own, so the
-    shared state poll does not grow for a tab most people have closed."""
+    shared state poll does not grow for a tab most people have closed.
+
+    Homing-gated like _query_state_gated: while ace.py's homing flag is
+    fresh, the last result is served instead of polling Moonraker, because
+    that I/O competes with the homing probe and bed mesh."""
+    global _LAST_PRINT_STATUS, _LAST_PRINT_STATUS_TS
+    now = time.time()
+    if _homing_active():
+        if _LAST_PRINT_STATUS and (now - _LAST_PRINT_STATUS_TS) <= _STATUS_CACHE_TTL:
+            return _LAST_PRINT_STATUS
+        # No usable cache: wait briefly for the homing window to close.
+        deadline = now + _GATE_WAIT_MAX
+        while _homing_active() and time.time() < deadline:
+            await asyncio.sleep(0.05)
     objs = ["toolhead", "print_stats", "display_status", "virtual_sdcard",
-            "gcode_move", "fan", "heater_bed"] + _EXTRUDERS
-    data = await _mr_get("/printer/objects/query?" + "&".join(objs))
-    return data.get("result", {}).get("status", {}) or {}
+            "gcode_move", "fan", "heater_bed", CHAMBER_LED] + _EXTRUDERS
+    data = await _mr_get("/printer/objects/query?"
+                         + "&".join(o.replace(" ", "%20") for o in objs))
+    status = data.get("result", {}).get("status", {}) or {}
+    _LAST_PRINT_STATUS = status
+    _LAST_PRINT_STATUS_TS = time.time()
+    return status
 
 def _active_extruder(status: dict) -> str:
     name = str((status.get("toolhead") or {}).get("extruder") or "extruder")
@@ -2453,6 +2478,18 @@ def _pct(v, default=100.0):
         return round(float(v) * 100.0, 1)
     except (TypeError, ValueError):
         return default
+
+def _chamber_light_pct(status: dict):
+    """Chamber light brightness in percent, or None when the printer has
+    no such LED. color_data is [[r, g, b, w]]; the light is the white
+    channel."""
+    led = status.get(CHAMBER_LED)
+    if not isinstance(led, dict):
+        return None
+    try:
+        return round(float(led["color_data"][0][3]) * 100.0, 1)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
 
 def _print_control_state(status: dict) -> dict:
     """Speed, flow, fan, temperatures and progress, READ BACK from
@@ -2470,6 +2507,7 @@ def _print_control_state(status: dict) -> dict:
         "extrude_factor": _pct(gm.get("extrude_factor")),
         "fan":            _pct((status.get("fan") or {}).get("speed"), 0.0),
         "z_offset":       z_offset,
+        "light":          _chamber_light_pct(status),
         "nozzle": {"temp": ext.get("temperature"), "target": ext.get("target")},
         "bed":    {"temp": bed.get("temperature"), "target": bed.get("target")},
         "progress": round(float(
@@ -2479,16 +2517,32 @@ def _print_control_state(status: dict) -> dict:
         "filename": (status.get("print_stats") or {}).get("filename") or "",
     }
 
+_KLIPPER_CFG_TTL = 300.0
+_klipper_cfg_cache: dict = {"ts": 0.0, "settings": None}
+
+async def _klipper_settings() -> dict:
+    """Klipper's parsed config, cached: it only changes on a Klipper
+    restart, and the query must not add Moonraker load during homing."""
+    c = _klipper_cfg_cache
+    if c["settings"] is not None and (
+            time.time() - c["ts"] < _KLIPPER_CFG_TTL or _homing_active()):
+        return c["settings"]
+    if _homing_active():
+        return {}
+    cfg = await _mr_get("/printer/objects/query?configfile")
+    settings = ((cfg.get("result") or {}).get("status") or {}) \
+        .get("configfile", {}).get("settings", {}) or {}
+    c["settings"], c["ts"] = settings, time.time()
+    return settings
+
 async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float, float]:
     """(min, max) for a heater: Klipper's configured limits min()-ed with
-    the loaded material's range. Read from Moonraker's config, never
-    hardcoded: a different hotend has different limits."""
+    the material range of the ACTIVE head. Read from Moonraker's config,
+    never hardcoded: a different hotend has different limits."""
     lo, hi = DEFAULT_HEATER_LIMITS.get(which, (0.0, 250.0))
     section = extruder if which == "nozzle" else "heater_bed"
     try:
-        cfg = await _mr_get("/printer/objects/query?configfile")
-        settings = ((cfg.get("result") or {}).get("status") or {}) \
-            .get("configfile", {}).get("settings", {}) or {}
+        settings = await _klipper_settings()
         block = settings.get(section) or {}
         if block.get("min_temp") is not None:
             lo = max(lo, float(block["min_temp"]))
@@ -2497,10 +2551,15 @@ async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float,
     except Exception:
         pass
     if which == "nozzle":
+        # Only the head that owns this extruder: another head's spool says
+        # nothing about what is in this nozzle, and ranges of different
+        # materials can even cancel out (PLA + PC would invert the range).
+        suffix = extruder[len("extruder"):]
+        head = int(suffix) if suffix.isdigit() else 0
         try:
             parsed = _parse_state(await _query_state_gated())
             for th in parsed.get("toolheads") or []:
-                if not th.get("filament_detected"):
+                if th.get("idx") != head or not th.get("filament_detected"):
                     continue
                 mat = MATERIAL_TEMP_LIMITS.get(
                     str(th.get("material") or "").strip().upper())
@@ -2560,10 +2619,19 @@ async def print_control(request: Request, req: PrintControl) -> dict:
             script = f"M220 S{applied:.0f}"
         elif verb == "flow":
             script = f"M221 S{applied:.0f}"
-        else:
+        elif verb == "fan":
             # Percent in, 0-255 out: the UI thinks in percent and M106
             # does not.
             script = f"M106 S{round(applied * 255 / 100):d}"
+        else:
+            if not mocked:
+                try:
+                    has_led = CHAMBER_LED in await _print_status()
+                except httpx.HTTPError as e:
+                    raise HTTPException(502, f"moonraker: {e}")
+                if not has_led:
+                    raise HTTPException(409, "this printer has no chamber light")
+            script = f"SET_LED LED=cavity_led WHITE={applied / 100:.2f} TRANSMIT=1"
     elif verb in ("nozzle", "bed"):
         if value is None:
             raise HTTPException(status_code=400, detail=f"{verb} needs a value")
@@ -2598,14 +2666,24 @@ async def print_control(request: Request, req: PrintControl) -> dict:
         # printer attached.
         return {"ok": True, "verb": verb, "applied": applied,
                 "script": script, "mock": True}
+    queued = False
     try:
         await _mr_post("/printer/gcode/script", {"script": script}, timeout=30.0)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code,
                             detail=f"moonraker: {e.response.text}")
+    except httpx.ReadTimeout:
+        # The request reached Moonraker but the command has not finished:
+        # /printer/gcode/script only returns once it has run, and a
+        # multiACE swap holds Klipper's queue for minutes. The command is
+        # queued and WILL run, so report that instead of an error, or a
+        # second press sends it twice.
+        queued = True
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"moonraker: {e}")
     out = {"ok": True, "verb": verb, "applied": applied, "script": script}
+    if queued:
+        out["queued"] = True
     if verb == "babystep":
         out["total_mm"] = round(_babystep_state["total"], 3)
     return out
