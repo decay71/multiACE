@@ -11,6 +11,16 @@
       "offline": "离线",
       "ws_error": "WebSocket 错误"
     },
+    "restart": {
+      "firmware_btn": "重启固件",
+      "firmware_title": "重启固件？",
+      "firmware_msg": "执行 FIRMWARE_RESTART：Klipper 将重新加载配置并重新连接 MCU。正在进行的打印会被中断。",
+      "firmware_sent": "已请求固件重启。",
+      "printer_btn": "重启打印机",
+      "printer_title": "重启打印机？",
+      "printer_msg": "重启打印机的主板电脑。比固件重启更慢，并会中断任何正在进行的打印。",
+      "printer_sent": "已请求打印机重启。"
+    },
     "control": {
       "webcam": "摄像头",
       "webcam_loading": "正在查找摄像头…",
@@ -40,6 +50,7 @@
       "exhaust": "排风",
       "inner": "内循环",
       "fans_off": "关闭风扇",
+      "restart_blocked": "打印进行中，已禁用",
       "light": "灯光",
       "on": "开",
       "off": "关",

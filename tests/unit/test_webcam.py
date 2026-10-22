@@ -70,6 +70,14 @@ class TestResolve:
         info = asyncio.run(main._resolve_webcam())
         assert info["available"] is False and "moonraker" in info["reason"]
 
+    def test_a_timeout_with_an_empty_message_still_says_what_failed(
+            self, main, monkeypatch):
+        async def boom(path):
+            raise httpx.ReadTimeout("")
+        monkeypatch.setattr(main, "_mr_get", boom)
+        info = asyncio.run(main._resolve_webcam())
+        assert info["reason"] == "moonraker: ReadTimeout"
+
 
 class TestEndpoints:
     def _client(self, main):

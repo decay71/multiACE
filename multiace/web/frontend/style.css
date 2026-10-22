@@ -1997,6 +1997,9 @@ body:has(.panel) .overlay .dialog {
 .pc-switch[aria-checked="true"] .pc-knob { transform: translateX(36px); }
 .pc-actions { gap: .4rem; flex-wrap: wrap; }
 .pc-actions button { flex: 1; }
+.pc-restart { gap: .4rem; flex-wrap: wrap; margin-top: .9rem; padding-top: .7rem;
+  border-top: 1px solid var(--border); }
+.pc-restart button { flex: 1; }
 .console-log { height: 14rem; overflow-y: auto; padding: .4rem .5rem; background: var(--bg);
   border: 1px solid var(--border); border-radius: 4px;
   font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .8rem; }

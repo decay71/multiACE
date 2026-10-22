@@ -11,6 +11,16 @@
       "offline": "offline",
       "ws_error": "WS error"
     },
+    "restart": {
+      "firmware_btn": "Restart Firmware",
+      "firmware_title": "Restart the firmware?",
+      "firmware_msg": "Runs FIRMWARE_RESTART: Klipper reloads its config and reconnects to the MCUs. A print in progress would be interrupted.",
+      "firmware_sent": "Firmware restart requested.",
+      "printer_btn": "Restart Printer",
+      "printer_title": "Restart the printer?",
+      "printer_msg": "Reboots the printer's onboard computer. Slower than a firmware restart and interrupts any running print.",
+      "printer_sent": "Printer restart requested."
+    },
     "control": {
       "webcam": "Webcam",
       "webcam_loading": "Looking for a camera…",
@@ -40,6 +50,7 @@
       "exhaust": "Exhaust",
       "inner": "Inner",
       "fans_off": "Fans off",
+      "restart_blocked": "Blocked while a print is running",
       "light": "Light",
       "on": "On",
       "off": "Off",

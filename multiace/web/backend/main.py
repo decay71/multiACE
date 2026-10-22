@@ -2176,7 +2176,8 @@ async def _resolve_webcam() -> dict:
     try:
         listing = await _mr_get("/server/webcams/list")
     except Exception as e:
-        return {"available": False, "reason": f"moonraker: {e}"}
+        # httpx timeouts have an empty message: name the error then.
+        return {"available": False, "reason": f"moonraker: {str(e) or type(e).__name__}"}
     cams = (listing.get("result") or {}).get("webcams") or []
     for cam in cams:
         name = str(cam.get("name", ""))
@@ -2767,6 +2768,59 @@ async def print_control_limits() -> dict:
                      "total": BABYSTEP_MAX_TOTAL_MM,
                      "used": round(_babystep_state["total"], 3)},
     }
+
+#: Restarts the Control tab can ask for: a fixed list, each one a single
+#: Moonraker call. Klipper's firmware restart reloads its config and
+#: reconnects the MCUs; the printer restart reboots the onboard computer.
+RESTART_ACTIONS = {"firmware": "/printer/firmware_restart",
+                   "printer": "/machine/reboot"}
+
+class RestartRequest(BaseModel):
+    behavior: str
+
+async def _is_printing() -> bool:
+    """True while a print is running or paused. Fresh from Moonraker, never
+    the homing cache: a stale "idle" is how a restart kills a print.
+
+    503 means Klipper is down. That is exactly when a firmware restart is
+    needed, and nothing is printing then, so it must not block it."""
+    try:
+        data = await _mr_get("/printer/objects/query?print_stats")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 503:
+            return False
+        raise HTTPException(502, f"moonraker: {e}")
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+    state = (((data.get("result") or {}).get("status") or {})
+             .get("print_stats") or {}).get("state")
+    return state in ("printing", "paused")
+
+@app.post("/api/restart")
+async def restart(request: Request, req: RestartRequest) -> dict:
+    """Restart the firmware or the printer: a fixed behaviour, refused while
+    a print is running and when the platform manages the install."""
+    behavior = (req.behavior or "").strip().lower()
+    if behavior not in RESTART_ACTIONS:
+        raise HTTPException(400, f"unknown restart behavior: {behavior}")
+    if MULTIACE_MANAGED:
+        raise HTTPException(409, "restarts are managed by the platform.")
+    if _mock_enabled(request):
+        return {"ok": True, "behavior": behavior, "mock": True}
+    if await _is_printing():
+        raise HTTPException(409, "blocked while a print is running")
+    try:
+        await _mr_post(RESTART_ACTIONS[behavior], {}, timeout=15.0)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(e.response.status_code,
+                            f"moonraker: {e.response.text}")
+    except (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError):
+        # The request reached Moonraker, and the machine going down under
+        # it is what a restart looks like from here.
+        pass
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+    return {"ok": True, "behavior": behavior}
 
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:

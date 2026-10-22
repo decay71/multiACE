@@ -11,6 +11,16 @@
       "offline": "offline",
       "ws_error": "WS-Fehler"
     },
+    "restart": {
+      "firmware_btn": "Firmware neu starten",
+      "firmware_title": "Firmware neu starten?",
+      "firmware_msg": "Führt FIRMWARE_RESTART aus: Klipper lädt seine Konfiguration neu und verbindet sich erneut mit den MCUs. Ein laufender Druck würde unterbrochen.",
+      "firmware_sent": "Firmware-Neustart angefordert.",
+      "printer_btn": "Drucker neu starten",
+      "printer_title": "Drucker neu starten?",
+      "printer_msg": "Startet den Bordcomputer des Druckers neu. Langsamer als ein Firmware-Neustart und unterbricht jeden laufenden Druck.",
+      "printer_sent": "Drucker-Neustart angefordert."
+    },
     "control": {
       "webcam": "Webcam",
       "webcam_loading": "Suche Kamera…",
@@ -40,6 +50,7 @@
       "exhaust": "Abluft",
       "inner": "Innen",
       "fans_off": "Lüfter aus",
+      "restart_blocked": "Gesperrt, solange ein Druck läuft",
       "light": "Licht",
       "on": "An",
       "off": "Aus",

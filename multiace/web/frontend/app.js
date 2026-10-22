@@ -7432,7 +7432,9 @@ createApp({
       if (webcam.available && webcam.webrtc) startWebrtc();
       else loadWebcam();
     }
+    let webcamLoading = false;
     async function loadWebcam() {
+      webcamLoading = true;
       try {
         const r = await fetch(`${API}/webcam/info`);
         const j = r.ok ? await r.json() : {available: false, reason: `HTTP ${r.status}`};
@@ -7447,6 +7449,7 @@ createApp({
         webcam.available = false;
         webcam.reason = String(e);
       } finally {
+        webcamLoading = false;
         webcam.loaded = true;
         webcam.nonce++;
         if (controlShown.value && webcam.available && webcam.webrtc) startWebrtc();
@@ -7497,15 +7500,25 @@ createApp({
     async function loadPrintControl() {
       try {
         const r = await fetch(`${API}/print-control`);
-        if (!r.ok) { printCtlError.value = `HTTP ${r.status}`; return; }
+        if (!r.ok) {
+          if (printCtlRestarting.value) restartSawFail = true;
+          else printCtlError.value = `HTTP ${r.status}`;
+          return;
+        }
         const pc = await r.json();
         printCtlError.value = "";
+        if (printCtlRestarting.value && restartSawFail) {
+          // The printer has answered again after the restart.
+          printCtlRestarting.value = false;
+          printCtlNotice.value = "";
+        }
         Object.assign(printCtl, pc);
         if (printCtlDragging.value !== "speed") printCtlDraft.speed = pc.speed_factor;
         if (printCtlDragging.value !== "flow") printCtlDraft.flow = pc.extrude_factor;
         if (printCtlDragging.value !== "fan") printCtlDraft.fan = pc.fan;
       } catch (e) {
-        printCtlError.value = e.message || String(e);
+        if (printCtlRestarting.value) restartSawFail = true;
+        else printCtlError.value = e.message || String(e);
       }
     }
     async function loadPrintControlLimits() {
@@ -7575,6 +7588,44 @@ createApp({
       if (Number.isFinite(v)) sendPrintControl(verb, v);
       ev.target.value = "";
     }
+    // Restart Firmware / Restart Printer. Refused by the server while a
+    // print runs and under a managed install; the buttons mirror that. After
+    // a restart the printer is unreachable for a while, so poll errors are
+    // expected and are not shown until it has answered again.
+    const printCtlRestarting = ref(false);
+    let restartSawFail = false;
+    const printCtlRestartBlocked = computed(() =>
+      printCtl.state === "printing" || printCtl.state === "paused" || printCtlBusy.value !== "");
+    function printCtlRestart(behavior) {
+      confirm({
+        title: t(`ui.restart.${behavior}_title`),
+        message: t(`ui.restart.${behavior}_msg`),
+        okLabel: t(`ui.restart.${behavior}_btn`),
+        onOk: async () => {
+          printCtlBusy.value = "restart";
+          printCtlError.value = "";
+          try {
+            const r = await fetch(`${API}/restart`, {
+              method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({behavior}),
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j.detail || `${r.status}`);
+            printCtlNotice.value = t(`ui.restart.${behavior}_sent`);
+            printCtlRestarting.value = true;
+            restartSawFail = false;
+            setTimeout(() => {
+              printCtlRestarting.value = false;
+              printCtlNotice.value = "";
+            }, 120000);
+          } catch (e) {
+            printCtlError.value = e.message || String(e);
+          } finally {
+            printCtlBusy.value = "";
+          }
+        },
+      });
+    }
     function printCtlCancel() {
       confirm({
         title: t("ui.control.cancel_title"),
@@ -7623,9 +7674,15 @@ createApp({
     // Poll the printer only while the Control tab is showing.
     const CONTROL_POLL_MS = 2000;
     let controlTimer = null;
+    let webcamRetryTick = 0;
     function controlPoll() {
       loadPrintControl();
       loadConsole();
+      // No camera yet (Moonraker was slow, or it was added later): look again
+      // every ~10 s while the tab is open instead of waiting for a click.
+      if (webcam.loaded && !webcam.available && !webcamLoading && ++webcamRetryTick % 5 === 0) {
+        loadWebcam();
+      }
     }
     watch(controlShown, (shown) => {
       clearInterval(controlTimer);
@@ -7799,7 +7856,7 @@ createApp({
       navItems, topItems, subItems, topActive, openNav,
       webcam, webcamSrc, webcamVideo, reloadWebcam,
       printCtl, printCtlLimits, printCtlDraft, printCtlBusy, printCtlError, printCtlCan,
-      printCtlNotice, printCtlQueued,
+      printCtlNotice, printCtlQueued, printCtlRestart, printCtlRestartBlocked,
       printCtlSlide, printCtlRelease, printCtlReset, printCtlHeat, printCtlCancel,
       sendPrintControl,
       consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,

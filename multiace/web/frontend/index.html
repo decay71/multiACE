@@ -1497,6 +1497,16 @@
             <button class="warn" @click="printCtlCancel"
                     :disabled="!printCtlCan.cancel || printCtlBusy !== '' || printCtlQueued.cancel">{{ t('ui.control.cancel') }}</button>
           </div>
+          <!-- The server refuses these while a print runs, and under a managed
+               install the platform owns restarts, so the buttons are not shown. -->
+          <div class="pc-row pc-restart" v-if="!updateState.managed">
+            <button class="warn" :disabled="printCtlRestartBlocked"
+                    :title="printCtlRestartBlocked ? t('ui.control.restart_blocked') : t('ui.restart.firmware_msg')"
+                    @click="printCtlRestart('firmware')">{{ t('ui.restart.firmware_btn') }}</button>
+            <button class="warn" :disabled="printCtlRestartBlocked"
+                    :title="printCtlRestartBlocked ? t('ui.control.restart_blocked') : t('ui.restart.printer_msg')"
+                    @click="printCtlRestart('printer')">{{ t('ui.restart.printer_btn') }}</button>
+          </div>
         </div>
       </div>
 
