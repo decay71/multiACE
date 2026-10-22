@@ -196,14 +196,18 @@ class AceBgSwap:
         # of logging only. False = the pre-gate LOG-ONLY behaviour. Read
         # unconditionally.
         self.pick_gate = config.getboolean('pick_gate', True)
-        # Unload-only switch: False disables the
+        # Unload-only switch / mode: False/0/off disables the
         # bg LOAD half - ACE_BG_SWAP stamps run only the HW-proven unload
         # half, the arrival swap then loads INLINE with full phase3
-        # verification (the exact path every bg-load abort already falls
-        # back to, HW-proven). Use case: docks with a small chute (e.g.
-        # Panda Breath) that swallows the ~60-70mm cold-pull tip but not
-        # the full bg prime purge. Read unconditionally.
-        self.load_enabled = config.getboolean('load_enabled', True)
+        # verification. True/1/on/transport enables the full background load.
+        # Accepts 'transport' as well as standard boolean representations.
+        # Read unconditionally.
+        raw_load_enabled = str(config.get('load_enabled', 'true')).strip().lower()
+        if raw_load_enabled in ('false', '0', 'no', 'off'):
+            self.load_enabled = False
+        else:
+            # Accepts 'true', '1', 'yes', 'on', 'transport', etc.
+            self.load_enabled = True
         self.enabled_heads = set()
         for tok in heads_raw.replace(',', ' ').split():
             try:
@@ -333,6 +337,20 @@ class AceBgSwap:
             self.gcode.respond_raw('// [bg-unload] %s' % msg)
         except Exception:
             pass
+    def phase(self, head):
+        """Phase accessor helper (Milestone 3.1): returns the active phase/state
+        string for a given toolhead index, defaulting to 'IDLE' when unmapped."""
+        return self.state.get(head, 'IDLE')
+
+    def _set_state(self, head, new_state):
+        """Centralized state setter (Milestone 3): updates self.state[head] and
+        automatically prints state transitions to console for live monitoring."""
+        old_state = self.phase(head)
+        self.state[head] = new_state
+        if old_state != new_state:
+            self._say('head %d: state transition [%s -> %s]'
+                      % (self._dh(head), old_state, new_state))
+
 
     def _ext_name(self, head):
         return 'extruder' if head == 0 else 'extruder%d' % head
@@ -1045,7 +1063,7 @@ class AceBgSwap:
             pass
 
         self._busy.add(head)
-        self.state[head] = 'QUEUED'
+        self._set_state(head, 'QUEUED')
         self._say('head %d: bg unload queued [%s] (ACE %d slot %d, '
                   'temp %.0f, soft=%s) - head must stay docked, dock must '
                   'be OPEN below'
@@ -1194,7 +1212,7 @@ class AceBgSwap:
             anti_ooze = float(getattr(ace, 'swap_anti_ooze_retract', 10))
 
         self._busy.add(head)
-        self.state[head] = 'QUEUED'
+        self._set_state(head, 'QUEUED')
         self._say('head %d: bg SWAP queued [%s] (%s -> ACE %d slot %d, '
                   'temp %.0f, anti_ooze %.1f) - head must stay docked, '
                   'dock must be OPEN below'
@@ -1268,7 +1286,7 @@ class AceBgSwap:
         try:
             self._unload_core(head, ace, toolhead, ext, heater, pheaters,
                               ace_idx, slot, temp, soft, retract_done)
-            self.state[head] = 'DONE'
+            self._set_state(head, 'DONE')
             self._say('head %d: BACKGROUND UNLOAD COMPLETE - next '
                       'ACE_SWAP_HEAD/load on this head is load-only'
                       % self._dh(head))
@@ -1281,7 +1299,7 @@ class AceBgSwap:
 
     def _fail_unload(self, head, heater, pheaters, e, retract_done):
         reason = str(e) or e.__class__.__name__
-        self.state[head] = 'FAILED:%s' % reason
+        self._set_state(head, 'FAILED:%s' % reason)
         try:
             pheaters.set_temperature(heater, 0.)
         except Exception:
@@ -1327,7 +1345,7 @@ class AceBgSwap:
 
             # 1. Stop FA on the bg ACE (it is NOT the printing head's ACE -
             # guarded above), mirror the cache convention.
-            self.state[head] = 'FA_STOP'
+            self._set_state(head, 'FA_STOP')
             armed = ace._feed_assist_per_ace.get(ace_idx, -1)
             if isinstance(armed, int) and 0 <= armed <= 3:
                 self._ace_send(ace, ace_idx, {
@@ -1338,7 +1356,7 @@ class AceBgSwap:
                              self._dh(armed)))
 
             # 2. Heat (async target set, greenlet-poll - never blocks gcode).
-            self.state[head] = 'HEAT'
+            self._set_state(head, 'HEAT')
             pheaters.set_temperature(heater, temp)
             self._say('head %d: heating to %.0f' % (self._dh(head), temp))
             deadline = self.reactor.monotonic() + HEAT_TIMEOUT
@@ -1364,7 +1382,7 @@ class AceBgSwap:
             # 3. Cold-pull choreography as stall-free bg moves; after each
             # RETRACT segment reclaim the same length at the ACE so a V2
             # (no freewheel) never accumulates bowden slack.
-            self.state[head] = 'PULL'
+            self._set_state(head, 'PULL')
             # Per-material table from [ace_tipform] (same tables as the
             # inline path); the built-in constants stay the fallback. The
             # config parser guarantees a NET pull, so the per-segment
@@ -1516,7 +1534,7 @@ class AceBgSwap:
             # the per-ACE/per-slot overrides, and 0 -> the full retract_length
             # (also override-aware). Was a bug: bg pulled the full retract_length
             # (~1879) even with swap_retract_length=900 -> ~1000mm over-retract.
-            self.state[head] = 'RETRACT'
+            self._set_state(head, 'RETRACT')
             try:
                 _srl = int(ace.get_swap_retract_length(ace_idx, slot))
             except Exception:
@@ -1624,7 +1642,7 @@ class AceBgSwap:
             # The motion sensor cannot see bg moves (they bypass the extruder
             # trapq), so presence is set via the helper API - runout events
             # for this head are suppressed (step 0), so this can never PAUSE.
-            self.state[head] = 'BOOKKEEP'
+            self._set_state(head, 'BOOKKEEP')
             try:
                 sensor = self.printer.lookup_object(
                     'filament_motion_sensor e%d_filament' % head, None)
@@ -1686,7 +1704,7 @@ class AceBgSwap:
             # verifiably empty and bookkept (sensor False, head_source
             # None), so the arrival swap skips its unload and loads inline
             # - phase3-verified, same as every bg-load abort handover.
-            self.state[head] = 'DONE'
+            self._set_state(head, 'DONE')
             self._say('head %d: %s (load_enabled=False) - the arrival '
                       'swap loads inline'
                       % (self._dh(head),
@@ -1697,7 +1715,7 @@ class AceBgSwap:
         try:
             self._load_core(head, ace, toolhead, ext, heater, pheaters,
                             ld[0], ld[1], temp, anti_ooze, purge=purge)
-            self.state[head] = 'DONE'
+            self._set_state(head, 'DONE')
             # A grip/prime pick-abort returns normally (the head IS loaded)
             # but may have recorded a prime deficit - say so instead of
             # claiming "primed" (the old message lied in that case).
@@ -1719,7 +1737,7 @@ class AceBgSwap:
                              self._dh(ld[1])))
         except Exception as e:
             reason = str(e) or e.__class__.__name__
-            self.state[head] = 'FAILED:%s' % reason
+            self._set_state(head, 'FAILED:%s' % reason)
             self._ace_quiesce(ace, ld[0], ld[1], 'bg load abort')
             try:
                 pheaters.set_temperature(heater, 0.)
@@ -1817,7 +1835,7 @@ class AceBgSwap:
         # NOW so the melt zone is ready by grip time (parallel, not serial).
         # get_load_length is the padded upper bound like inline; the sensor
         # cuts it short, so neither hardware rams the gears.
-        self.state[head] = 'LD_FEED'
+        self._set_state(head, 'LD_FEED')
         pheaters.set_temperature(heater, temp)
         feed_speed = ACE_UNWIND_SPEED_FALLBACK
         try:
@@ -1956,7 +1974,7 @@ class AceBgSwap:
             # forward-assist keeps the ACE feeding WITH it (a V2 just
             # brakes otherwise). Segmented so a pick aborts within one
             # short segment, not a long move.
-            self.state[head] = 'LD_GRIP'
+            self._set_state(head, 'LD_GRIP')
             # PRESS-then-grip (see the BG_LOAD_PRESS_* const note): push the
             # tip from the sensor INTO the gear nip with the ACE feed motor
             # BEFORE the gears start turning - the inline mechanic. A pick
@@ -2078,7 +2096,7 @@ class AceBgSwap:
             # zone, proves flow visually - no sensor can measure flow, see
             # the EDGE-VERIFY POST-MORTEM). Same knob as the inline flush
             # (swap_purge_length / Pro override; 0 = stock default 80).
-            self.state[head] = 'LD_PRIME'
+            self._set_state(head, 'LD_PRIME')
             # Inline knob + bg bonus (see BG_LOAD_PRIME_EXTRA: the bg prime
             # must also FILL the melt zone and has no cutoff/clean).
             # FINE-chunked (BG_LOAD_PRIME_CHUNK, was 4x ~30mm): caps the

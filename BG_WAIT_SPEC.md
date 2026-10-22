@@ -17,11 +17,12 @@
 - [x] 1.2: Parse and validate `HEAD` parameter with error handling.
 - [x] 1.3: Add debug console response and verify registration via console.
 
+
 ### Milestone 2: Bench Test Harness Macro
-- [ ] 2.1: Implement dry-run test macro (`TEST_BG_SWAP_BENCH`) in printer config.
-- [ ] 2.2: Add steps to pick up alternate head (e.g., `T1`) and move to safe resting coordinates.
-- [ ] 2.3: Trigger background swap on docked head (`HEAD=0`) under controlled conditions.
-- [ ] 2.4: Verify state inspection workflow without running live prints.
+- [x] 2.1: Implement dry-run test macro (`TEST_BG_SWAP_BENCH`) in printer config.
+- [x] 2.2: Add steps to pick up alternate head (e.g., `T1`) and move to safe resting coordinates.
+- [x] 2.3: Trigger background swap on docked head (`HEAD=0`) under controlled conditions.
+- [x] 2.4: Verify state inspection workflow without running live prints.
 
 ### Milestone 3: Phase Accessor & Dynamic Gating Logic
 - [ ] 3.1: Implement `phase(head)` helper exposing `self.state[head]` (returning `'IDLE'` fallback).
