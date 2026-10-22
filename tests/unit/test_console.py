@@ -1,5 +1,6 @@
 """Console ring buffer and the read-only /api/console-logs endpoint."""
 import asyncio
+import time
 
 import httpx
 import pytest
@@ -77,6 +78,7 @@ class TestSeedWithLiveLines:
 
     def test_history_is_still_loaded_and_not_duplicated(self, main, monkeypatch):
         main._record_console_line("// early live line")   # also in the history
+        time.sleep(0.05)   # a clearly earlier clock tick than the request
 
         async def fake(path):
             main._record_console_line("// arrived during the request")

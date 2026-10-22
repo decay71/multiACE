@@ -355,8 +355,11 @@ class TestHomingGate:
         monkeypatch.setattr(main, "_GATE_WAIT_MAX", 0.0)
 
         def on():
+            # Fresh, but safely in the past: a file mtime can read a little
+            # ahead of time.time() on Windows, which would count as stale.
             flag.write_text("1")
-            os.utime(flag, None)
+            past = time.time() - 0.2
+            os.utime(flag, (past, past))
 
         def off():
             if flag.exists():
