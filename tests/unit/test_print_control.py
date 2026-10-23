@@ -3,6 +3,7 @@
 Moonraker is replaced by stubs for `_mr_get` / `_mr_post`; every G-code line
 the endpoint would send is captured instead.
 """
+import asyncio
 import os
 import time
 
@@ -20,7 +21,7 @@ CFG = {"result": {"status": {"configfile": {"settings": {
 @pytest.fixture
 def main(monkeypatch, tmp_path):
     m = _load_main(monkeypatch, tmp_path, mock=False)
-    m._babystep_state.update(job=None, total=0.0)
+    m._babystep_state.update(total=0.0)
     return m
 
 
@@ -132,11 +133,37 @@ class TestHeaters:
         post(client, "bed", 200)
         assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=110"]
 
-    def test_loaded_material_tightens_the_nozzle_ceiling(self, client, printer):
+    def test_loaded_material_lowers_the_nozzle_ceiling(self, client, printer):
         printer.toolheads = [{"idx": 0, "filament_detected": True, "material": "PLA"}]
-        j = post(client, "nozzle", 300).json()
-        assert j["applied"] == 230
-        assert post(client, "nozzle", 100).json()["applied"] == 170
+        assert post(client, "nozzle", 300).json()["applied"] == 230
+
+    @pytest.mark.parametrize("material,value", [("PLA", 150), ("PC", 200),
+                                                ("PETG", 100), ("PLA", 1)])
+    def test_a_target_below_the_material_floor_is_not_raised(
+            self, client, printer, material, value):
+        # A standby temperature someone typed on purpose: only the top is
+        # capped, the same way 0 passes as "off".
+        printer.toolheads = [{"idx": 0, "filament_detected": True, "material": material}]
+        assert post(client, "nozzle", value).json()["applied"] == value
+        assert printer.sent[-1] == f"SET_HEATER_TEMPERATURE HEATER=extruder TARGET={value}"
+
+    @pytest.mark.parametrize("material,ceiling", [
+        ("PLA", 230), ("pla", 230), ("PLA+", 240), ("PETG", 260), ("PC", 300),
+        # variants share the ceiling of their base material
+        ("PLA-CF", 230), ("pla-cf", 230), ("PETG-CF", 260), ("PETG-HF", 260),
+        ("ABS-GF", 270), ("PLA+-CF", 240),
+        # no entry: only Klipper's max_temp (300) applies
+        ("PA12", 300), ("FOO", 300), ("", 300), (None, 300)])
+    def test_material_ceiling_matches_the_base_name(
+            self, client, printer, material, ceiling):
+        printer.toolheads = [{"idx": 0, "filament_detected": True, "material": material}]
+        assert post(client, "nozzle", 999).json()["applied"] == ceiling
+
+    def test_material_max_helper(self, main):
+        assert main._material_max("PETG-HF") == 260.0
+        assert main._material_max(" petg ") == 260.0
+        assert main._material_max("PLA+") == 240.0
+        assert main._material_max("nope") is None and main._material_max(None) is None
 
     @pytest.mark.parametrize("value", [0, -10])
     def test_zero_is_off_whatever_the_material_floor(self, client, printer, value):
@@ -149,12 +176,12 @@ class TestHeaters:
         assert post(client, "nozzle", 300).json()["applied"] == 300
 
     def test_other_heads_materials_do_not_count(self, client, printer):
-        # PLA on the active head 0 and PETG on head 1: the range is PLA's
-        # 170-230, not the 210-230 overlap of both.
+        # PLA on the active head 0 and PETG on head 1: the ceiling is PLA's
+        # 230, whatever head 1 holds.
         printer.toolheads = [
             {"idx": 0, "filament_detected": True, "material": "PLA"},
             {"idx": 1, "filament_detected": True, "material": "PETG"}]
-        assert post(client, "nozzle", 100).json()["applied"] == 170
+        assert post(client, "nozzle", 150).json()["applied"] == 150
         assert post(client, "nozzle", 999).json()["applied"] == 230
 
     def test_mixed_materials_cannot_invert_the_range(self, client, printer):
@@ -170,8 +197,8 @@ class TestHeaters:
         printer.toolheads = [
             {"idx": 0, "filament_detected": True, "material": "PLA"},
             {"idx": 1, "filament_detected": True, "material": "PETG"}]
-        assert post(client, "nozzle", 100).json()["applied"] == 210
-        assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=210"]
+        assert post(client, "nozzle", 999).json()["applied"] == 260
+        assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=260"]
 
     def test_klipper_config_is_read_once_not_on_every_call(self, client, printer):
         post(client, "nozzle", 100)
@@ -209,11 +236,47 @@ class TestBabystep:
         assert post(client, "babystep", 0.05).json()["ok"] is True
         assert post(client, "babystep", -0.05).json()["ok"] is True
 
-    def test_new_job_resets_the_total(self, client, printer):
+    @staticmethod
+    def _state(main, state):
+        asyncio.run(main._on_status_update([{"print_stats": {"state": state}}]))
+
+    def _use_up_the_allowance(self, client):
         for _ in range(10):
             post(client, "babystep", -0.05)
-        printer.status = {"print_stats": {"state": "printing", "filename": "b.gcode"}}
+
+    def test_a_print_start_resets_the_total(self, main, client, printer):
+        self._state(main, "printing")
+        self._use_up_the_allowance(client)
+        assert post(client, "babystep", -0.01).json()["ok"] is False
+        self._state(main, "complete")
+        self._state(main, "printing")          # the same file again
         assert post(client, "babystep", -0.05).json()["total_mm"] == -0.05
+
+    def test_a_pause_and_resume_is_the_same_print(self, main, client, printer):
+        self._state(main, "printing")
+        self._use_up_the_allowance(client)
+        self._state(main, "paused")
+        self._state(main, "printing")
+        assert post(client, "babystep", -0.01).json()["ok"] is False
+
+    def test_a_cancelled_print_then_a_new_one_starts_over(self, main, client, printer):
+        self._state(main, "printing")
+        self._use_up_the_allowance(client)
+        self._state(main, "cancelled")
+        self._state(main, "standby")
+        self._state(main, "printing")
+        assert post(client, "babystep", -0.05).json()["ok"] is True
+
+    def test_the_total_is_kept_between_prints_until_one_starts(self, main, client, printer):
+        # Idle stepping accumulates too: the floor protects the plate then as well.
+        self._use_up_the_allowance(client)
+        assert post(client, "babystep", -0.01).json()["ok"] is False
+
+    def test_the_filename_plays_no_part(self, main, client, printer):
+        printer.status = {"print_stats": {"state": "printing", "filename": "a.gcode"}}
+        self._use_up_the_allowance(client)
+        printer.status = {"print_stats": {"state": "printing", "filename": "b.gcode"}}
+        assert post(client, "babystep", -0.01).json()["ok"] is False
 
 
 class TestLight:

@@ -2453,16 +2453,27 @@ MATERIAL_TEMP_LIMITS = {
     "PA":   (240.0, 300.0), "HIPS": (220.0, 250.0),
 }
 
+def _material_max(name: str):
+    """Highest nozzle temperature for a material, or None when unknown.
+
+    Variants share their base material's ceiling: PLA-CF, PETG-HF, ABS-GF.
+    A name with no entry (PA12, a vendor string) gets no material ceiling,
+    only Klipper's max_temp."""
+    key = str(name or "").strip().upper()
+    mat = MATERIAL_TEMP_LIMITS.get(key) or MATERIAL_TEMP_LIMITS.get(key.split("-")[0])
+    return mat[1] if mat else None
+
 _EXTRUDERS = ["extruder"] + ["extruder%d" % i for i in range(1, 4)]
 
 class PrintControl(BaseModel):
     verb: str
     value: float | None = None
 
-#: Cumulative babystep for the current job, reset on a job change rather
-#: than on page reload: a reload must not hand back the other half of the
-#: allowance.
-_babystep_state: dict = {"job": None, "total": 0.0}
+#: Cumulative babystep for the current print. Reset when a print starts (see
+#: _on_status_update), not on page reload: a reload must not hand back the
+#: other half of the allowance, and printing the same file again is a new
+#: print.
+_babystep_state: dict = {"total": 0.0}
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
@@ -2582,9 +2593,15 @@ async def _klipper_settings() -> dict:
     return settings
 
 async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float, float]:
-    """(min, max) for a heater: Klipper's configured limits min()-ed with
-    the material range of the ACTIVE head. Read from Moonraker's config,
-    never hardcoded: a different hotend has different limits."""
+    """(min, max) for a heater: Klipper's configured limits, with the
+    nozzle ceiling lowered to the material maximum of the ACTIVE head. Read
+    from Moonraker's config, never hardcoded: a different hotend has
+    different limits.
+
+    Only the top is capped. A target below the material's printing range is
+    a standby temperature someone typed on purpose, and lifting it to the
+    floor would heat the nozzle more than asked, the same way 0 passes as
+    "off"."""
     lo, hi = DEFAULT_HEATER_LIMITS.get(which, (0.0, 250.0))
     section = extruder if which == "nozzle" else "heater_bed"
     try:
@@ -2607,10 +2624,9 @@ async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float,
             for th in parsed.get("toolheads") or []:
                 if th.get("idx") != head or not th.get("filament_detected"):
                     continue
-                mat = MATERIAL_TEMP_LIMITS.get(
-                    str(th.get("material") or "").strip().upper())
-                if mat:
-                    lo, hi = max(lo, mat[0]), min(hi, mat[1])
+                ceiling = _material_max(th.get("material"))
+                if ceiling is not None:
+                    hi = min(hi, ceiling)
         except Exception:
             pass
     return lo, hi
@@ -2618,14 +2634,6 @@ async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float,
 async def _babystep_allowance(delta: float) -> tuple[float, str]:
     """Clamp one babystep against the per-press and per-job limits."""
     step = _clamp(delta, -BABYSTEP_MAX_STEP_MM, BABYSTEP_MAX_STEP_MM)
-    try:
-        ps = (await _print_status()).get("print_stats") or {}
-        job = ps.get("filename") or ps.get("state")
-    except Exception:
-        job = None
-    if _babystep_state["job"] != job:
-        _babystep_state["job"] = job
-        _babystep_state["total"] = 0.0
     total = _babystep_state["total"] + step
     if total < -BABYSTEP_MAX_TOTAL_MM:
         return 0.0, (f"-{BABYSTEP_MAX_TOTAL_MM:.2f} mm reached - "
@@ -5317,6 +5325,10 @@ async def _on_status_update(params: list) -> None:
     if not st or st == _print_state_last:
         return
     prev, _print_state_last = _print_state_last, st
+    if st == "printing" and prev != "paused":
+        # A print starts (resuming from a pause is the same print): the Z
+        # babystep allowance starts over.
+        _babystep_state["total"] = 0.0
     if st == "paused" and prev == "printing":
         # A spool is only ever swapped with the print paused, and pausing is
         # also when Klipper releases the binding of a slot whose gate ran
