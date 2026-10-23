@@ -1462,14 +1462,26 @@
           </div>
 
           <!-- Only with an enclosure attached (the printer's own attach detection).
-               The page can switch its fans off, which is what stock does at the
-               end of a print; it does not start them or set a speed. -->
-          <div class="pc-row pc-enclosure" v-if="printCtl.enclosure && printCtl.enclosure.attached">
-            <span>{{ t('ui.control.enclosure_fans') }}</span>
-            <b>{{ t('ui.control.exhaust') }} {{ Math.round(printCtl.enclosure.exhaust) }} %
-               &middot; {{ t('ui.control.inner') }} {{ Math.round(printCtl.enclosure.inner) }} %</b>
-            <button :disabled="printCtlBusy !== '' || (!printCtl.enclosure.exhaust && !printCtl.enclosure.inner)"
-                    @click="sendPrintControl('enclosure_off')">{{ t('ui.control.fans_off') }}</button>
+               Fans can be set directly only when stock is not driving them: the
+               server refuses it during a print and while a mode runs, and the
+               sliders say why. "Fans off" returns to idle and stops both at once. -->
+          <div class="pc-enc" v-if="printCtl.enclosure && printCtl.enclosure.attached">
+            <div class="pc-row pc-enclosure">
+              <span>{{ t('ui.control.enclosure_fans') }}</span>
+              <b>{{ enclosureModeText }}</b>
+              <button :disabled="printCtlBusy !== '' || (!printCtl.enclosure.exhaust && !printCtl.enclosure.inner && !printCtl.enclosure.mode)"
+                      @click="sendPrintControl('enclosure_off')">{{ t('ui.control.fans_off') }}</button>
+            </div>
+            <label class="pc-row" v-for="f in ['exhaust', 'inner']" :key="f">
+              <span>{{ t('ui.control.' + f) }}</span>
+              <input type="range" min="0" max="100" step="5"
+                     :disabled="!!enclosureLock || printCtlBusy !== ''"
+                     v-model.number="printCtlDraft[f]"
+                     @input="printCtlSlide(f, printCtlDraft[f])"
+                     @change="printCtlRelease(f, printCtlDraft[f])">
+              <b>{{ Math.round(printCtl.enclosure[f]) }} %</b>
+            </label>
+            <p v-if="enclosureLock" class="muted small">{{ enclosureLock }}</p>
           </div>
 
           <!-- Z offset is BUTTONS, never a slider: a slider makes it easy to

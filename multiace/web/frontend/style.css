@@ -1979,6 +1979,9 @@ body:has(.panel) .overlay .dialog {
 .pc-baby button { min-width: 3.2rem; }
 .pc-baby b { flex: 1; text-align: center; }
 .pc-enclosure b { flex: 1; min-width: 0; text-align: left; font-weight: 600; }
+.pc-enc { margin: .2rem 0; }
+.pc-enc input[type=range] { flex: 1; min-width: 4rem; accent-color: var(--accent); }
+.pc-enc input[type=range]:disabled { opacity: .5; }
 .pc-light .pc-bulb { flex: 0 0 auto; color: var(--muted); }
 .pc-light.on .pc-bulb { color: var(--warn); }
 .pc-light.on .pc-bulb-glass { fill: currentColor; fill-opacity: .25; }

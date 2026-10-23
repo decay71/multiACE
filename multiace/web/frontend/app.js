@@ -7481,7 +7481,7 @@ createApp({
     });
     // Local slider positions. They follow the readback except while the
     // user is holding one.
-    const printCtlDraft = reactive({speed: 100, flow: 100, fan: 0});
+    const printCtlDraft = reactive({speed: 100, flow: 100, fan: 0, exhaust: 0, inner: 0});
     const printCtlDragging = ref("");
     const printCtlBusy = ref("");
     const printCtlError = ref("");
@@ -7497,6 +7497,24 @@ createApp({
       resume: printCtl.state === "paused",
       cancel: printCtl.state === "printing" || printCtl.state === "paused",
     }));
+    // The enclosure fans may be driven directly only when stock is not: not
+    // during a print (the mode comes from the sliced file) and not while a
+    // mode runs. The server enforces both; this only explains it.
+    const enclosureLock = computed(() => {
+      const e = printCtl.enclosure;
+      if (printCtl.state === "printing" || printCtl.state === "paused") {
+        return t("ui.control.enc_locked_print");
+      }
+      if (e && e.mode) return t("ui.control.enc_locked_mode");
+      return "";
+    });
+    const enclosureModeText = computed(() => {
+      const e = printCtl.enclosure;
+      if (!e || e.mode === null || e.mode === undefined) return "";
+      const name = t("ui.control.mode_" + e.mode);
+      return e.desired_temp && (e.mode === 1 || e.mode === 2)
+        ? `${name} · ${Math.round(e.desired_temp)} °C` : name;
+    });
     async function loadPrintControl() {
       try {
         const r = await fetch(`${API}/print-control`);
@@ -7516,6 +7534,11 @@ createApp({
         if (printCtlDragging.value !== "speed") printCtlDraft.speed = pc.speed_factor;
         if (printCtlDragging.value !== "flow") printCtlDraft.flow = pc.extrude_factor;
         if (printCtlDragging.value !== "fan") printCtlDraft.fan = pc.fan;
+        for (const f of ["exhaust", "inner"]) {
+          if (pc.enclosure && pc.enclosure[f] !== null && printCtlDragging.value !== f) {
+            printCtlDraft[f] = pc.enclosure[f];
+          }
+        }
       } catch (e) {
         if (printCtlRestarting.value) restartSawFail = true;
         else printCtlError.value = e.message || String(e);
@@ -7545,6 +7568,7 @@ createApp({
           if (verb === "speed") printCtlDraft.speed = j.applied;
           if (verb === "flow") printCtlDraft.flow = j.applied;
           if (verb === "fan") printCtlDraft.fan = j.applied;
+          if (verb === "exhaust" || verb === "inner") printCtlDraft[verb] = j.applied;
         }
         if (j.ok === false && j.detail) printCtlError.value = j.detail;
         if (j.queued) {
@@ -7857,6 +7881,7 @@ createApp({
       webcam, webcamSrc, webcamVideo, reloadWebcam,
       printCtl, printCtlLimits, printCtlDraft, printCtlBusy, printCtlError, printCtlCan,
       printCtlNotice, printCtlQueued, printCtlRestart, printCtlRestartBlocked,
+      enclosureLock, enclosureModeText,
       printCtlSlide, printCtlRelease, printCtlReset, printCtlHeat, printCtlCancel,
       sendPrintControl,
       consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,

@@ -2420,6 +2420,8 @@ PRINT_CONTROL_RANGES = {
     "flow":  (75.0, 125.0),
     "fan":   (0.0, 100.0),
     "light": (0.0, 100.0),
+    "exhaust": (0.0, 100.0),
+    "inner":   (0.0, 100.0),
 }
 
 #: The printer's own chamber light: a single white channel, driven with
@@ -2539,9 +2541,13 @@ def _enclosure_state(status: dict):
     if not isinstance(sensor, dict) and not isinstance(purifier, dict):
         return None
     out = {"temp": sensor.get("temperature") if isinstance(sensor, dict) else None,
-           "attached": None, "exhaust": None, "inner": None}
+           "attached": None, "exhaust": None, "inner": None,
+           "mode": None, "desired_temp": None}
     if isinstance(purifier, dict):
         out["attached"] = bool(purifier.get("power_detected"))
+        mode = purifier.get("mode")
+        out["mode"] = mode if isinstance(mode, int) and not isinstance(mode, bool) else None
+        out["desired_temp"] = purifier.get("desired_chamber_temp")
         for key, fan in (("exhaust", "exhaust_fan"), ("inner", "inner_fan")):
             obj = purifier.get(fan)
             out[key] = _pct(obj.get("speed") if isinstance(obj, dict) else None, 0.0)
@@ -2653,6 +2659,28 @@ async def _require_object(name: str, what: str) -> None:
     if not present:
         raise HTTPException(409, f"this printer has no {what}")
 
+async def _require_enclosure_idle() -> None:
+    """409 unless the enclosure fans may be driven directly: an enclosure is
+    attached, no print is running, and stock is not running a mode. In modes
+    1 to 3 stock drives the fans itself (dynamically in cool mode), so a
+    direct speed would compete with it, and during a print the mode usually
+    comes from the sliced file."""
+    try:
+        status = await _print_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+    purifier = status.get(PURIFIER)
+    if not isinstance(purifier, dict):
+        raise HTTPException(409, "this printer has no enclosure")
+    if not purifier.get("power_detected"):
+        raise HTTPException(409, "no enclosure is attached")
+    if (status.get("print_stats") or {}).get("state") in ("printing", "paused"):
+        raise HTTPException(409, "not during a print: the enclosure mode comes "
+                                 "from the sliced file")
+    if purifier.get("mode") != 0:
+        raise HTTPException(409, "the enclosure is running a mode and drives "
+                                 "its fans itself; stop it first")
+
 @app.get("/api/print-control")
 async def print_control_state(request: Request) -> dict:
     if _mock_enabled(request):
@@ -2687,6 +2715,12 @@ async def print_control(request: Request, req: PrintControl) -> dict:
             # Percent in, 0-255 out: the UI thinks in percent and M106
             # does not.
             script = f"M106 S{round(applied * 255 / 100):d}"
+        elif verb in ("exhaust", "inner"):
+            # One enclosure fan directly (stock SET_PURIFIER). SPEED=0 starts
+            # stock's delayed turn-off rather than stopping at once.
+            if not mocked:
+                await _require_enclosure_idle()
+            script = f"SET_PURIFIER FAN={verb} SPEED={applied / 100:.2f}"
         else:
             if not mocked:
                 await _require_object(CHAMBER_LED, "chamber light")
@@ -2714,14 +2748,16 @@ async def print_control(request: Request, req: PrintControl) -> dict:
                     "total_mm": _babystep_state["total"], "detail": refused}
         script = f"SET_GCODE_OFFSET Z_ADJUST={applied:.3f} MOVE=1"
     elif verb == "enclosure_off":
-        # Stops the enclosure fans. This is the one enclosure command that
-        # stock itself sends (PRINT_END and CANCEL_PRINT), so its meaning is
-        # known: MODE=0 is "off". Other modes and fan speeds are not driven
-        # from here.
+        # Back to idle and both fans off NOW. Plain MODE=0 only starts stock's
+        # delayed turn-off (180 s by default); the two DELAY_OFF=0 parameters
+        # stop them at once. The other modes (cool, preheat, hot chamber) are
+        # not driven from here: they take extra parameters, and during a print
+        # stock sets them from the sliced file.
         applied = None
         if not mocked:
             await _require_object(PURIFIER, "enclosure")
-        script = "SET_PURIFIER_MODE MODE=0"
+        script = ("SET_PURIFIER_MODE MODE=0 EXHAUST_FAN_DELAY_OFF=0 "
+                  "INNER_FAN_DELAY_OFF=0")
     elif verb in ("pause", "resume", "cancel"):
         applied = None
         script = {"pause": "PAUSE", "resume": "RESUME",

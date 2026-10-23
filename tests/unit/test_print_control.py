@@ -316,6 +316,8 @@ class TestLight:
             == {"min": 0.0, "max": 100.0}
 
 
+OFF_NOW = ("SET_PURIFIER_MODE MODE=0 EXHAUST_FAN_DELAY_OFF=0 "
+           "INNER_FAN_DELAY_OFF=0")
 PURIFIER_OBJ = {
     "power_detected": True, "mode": 0,
     "exhaust_fan": {"speed": 0.5, "delay": 180, "speed_threshold": 0},
@@ -328,7 +330,8 @@ class TestEnclosure:
         printer.status = {"purifier": PURIFIER_OBJ,
                           "temperature_sensor cavity": CAVITY}
         assert client.get("/api/print-control").json()["enclosure"] == {
-            "temp": 31.4, "attached": True, "exhaust": 50.0, "inner": 25.0}
+            "temp": 31.4, "attached": True, "exhaust": 50.0, "inner": 25.0,
+            "mode": 0, "desired_temp": None}
 
     def test_no_enclosure_still_reads_the_chamber_temperature(self, client, printer):
         # The cavity sensor is part of the printer; power_detected says
@@ -338,12 +341,14 @@ class TestEnclosure:
                          "exhaust_fan": {"speed": 0.0}, "inner_fan": {"speed": 0.0}},
             "temperature_sensor cavity": CAVITY}
         assert client.get("/api/print-control").json()["enclosure"] == {
-            "temp": 31.4, "attached": False, "exhaust": 0.0, "inner": 0.0}
+            "temp": 31.4, "attached": False, "exhaust": 0.0, "inner": 0.0,
+            "mode": 0, "desired_temp": None}
 
     def test_a_printer_with_only_the_sensor(self, client, printer):
         printer.status = {"temperature_sensor cavity": CAVITY}
         assert client.get("/api/print-control").json()["enclosure"] == {
-            "temp": 31.4, "attached": None, "exhaust": None, "inner": None}
+            "temp": 31.4, "attached": None, "exhaust": None, "inner": None,
+            "mode": None, "desired_temp": None}
 
     def test_a_printer_with_neither_has_no_enclosure(self, client, printer):
         printer.status = {"toolhead": {"extruder": "extruder"}}
@@ -359,13 +364,13 @@ class TestEnclosure:
     def test_enclosure_off_sends_the_stock_off_command(self, client, printer):
         printer.status = {"purifier": PURIFIER_OBJ}
         j = post(client, "enclosure_off").json()
-        assert printer.sent == ["SET_PURIFIER_MODE MODE=0"]
+        assert printer.sent == [OFF_NOW]
         assert j["ok"] is True and j["applied"] is None
 
     def test_enclosure_off_ignores_any_value(self, client, printer):
         printer.status = {"purifier": PURIFIER_OBJ}
         post(client, "enclosure_off", 3)
-        assert printer.sent == ["SET_PURIFIER_MODE MODE=0"]
+        assert printer.sent == [OFF_NOW]
 
     def test_a_printer_without_the_purifier_is_refused_and_sends_nothing(
             self, client, printer):
@@ -373,11 +378,75 @@ class TestEnclosure:
         r = post(client, "enclosure_off")
         assert r.status_code == 409 and printer.sent == []
 
-    def test_there_is_no_verb_that_starts_the_fans(self, client, printer):
+    def test_the_mode_and_its_target_temperature_are_read_back(self, client, printer):
+        printer.status = {"purifier": {**PURIFIER_OBJ, "mode": 1,
+                                       "desired_chamber_temp": 42}}
+        j = client.get("/api/print-control").json()["enclosure"]
+        assert j["mode"] == 1 and j["desired_temp"] == 42
+
+    def test_there_is_no_way_to_pick_a_mode_or_name_a_fan(self, client, printer):
         printer.status = {"purifier": PURIFIER_OBJ}
-        for verb in ("enclosure_on", "exhaust", "inner_fan", "purifier"):
+        for verb in ("enclosure_on", "enclosure_mode", "purifier", "exhaust_fan",
+                     "inner_fan", "fan=exhaust"):
             assert post(client, verb, 100).status_code == 400
         assert printer.sent == []
+
+
+class TestEnclosureFans:
+    """Direct fan speed: only with an enclosure attached, idle, and no print."""
+    IDLE = {"purifier": PURIFIER_OBJ, "print_stats": {"state": "standby"}}
+
+    @pytest.mark.parametrize("fan,value,script,applied", [
+        ("exhaust", 50, "SET_PURIFIER FAN=exhaust SPEED=0.50", 50),
+        ("inner", 100, "SET_PURIFIER FAN=inner SPEED=1.00", 100),
+        ("exhaust", 900, "SET_PURIFIER FAN=exhaust SPEED=1.00", 100),
+        ("inner", -5, "SET_PURIFIER FAN=inner SPEED=0.00", 0),
+        ("exhaust", 0, "SET_PURIFIER FAN=exhaust SPEED=0.00", 0),
+    ])
+    def test_speed_is_clamped_to_a_fraction(
+            self, client, printer, fan, value, script, applied):
+        printer.status = self.IDLE
+        j = post(client, fan, value).json()
+        assert printer.sent == [script] and j["applied"] == applied
+
+    def test_a_value_is_required(self, client, printer):
+        printer.status = self.IDLE
+        assert post(client, "exhaust").status_code == 400 and printer.sent == []
+
+    @pytest.mark.parametrize("status,why", [
+        ({"print_stats": {"state": "standby"}}, "no enclosure"),
+        ({"purifier": {**PURIFIER_OBJ, "power_detected": False},
+          "print_stats": {"state": "standby"}}, "not attached"),
+        ({"purifier": PURIFIER_OBJ, "print_stats": {"state": "printing"}}, "printing"),
+        ({"purifier": PURIFIER_OBJ, "print_stats": {"state": "paused"}}, "paused"),
+        ({"purifier": {**PURIFIER_OBJ, "mode": 1}, "print_stats": {"state": "standby"}}, "cool"),
+        ({"purifier": {**PURIFIER_OBJ, "mode": 2}, "print_stats": {"state": "standby"}}, "preheat"),
+        ({"purifier": {**PURIFIER_OBJ, "mode": 3}, "print_stats": {"state": "standby"}}, "hot"),
+        ({"purifier": {k: v for k, v in PURIFIER_OBJ.items() if k != "mode"},
+          "print_stats": {"state": "standby"}}, "mode unknown"),
+    ])
+    @pytest.mark.parametrize("fan", ["exhaust", "inner"])
+    def test_refused_and_nothing_sent(self, client, printer, status, why, fan):
+        printer.status = status
+        assert post(client, fan, 50).status_code == 409, why
+        assert printer.sent == []
+
+    def test_an_unreachable_moonraker_blocks_it(self, main, client, printer, monkeypatch):
+        async def boom(path):
+            raise httpx.ConnectError("down")
+        monkeypatch.setattr(main, "_mr_get", boom)
+        assert post(client, "exhaust", 50).status_code == 502
+        assert printer.sent == []
+
+    def test_fans_off_is_not_gated_on_the_mode(self, client, printer):
+        # The way out of a running mode: it must work while one is active.
+        printer.status = {"purifier": {**PURIFIER_OBJ, "mode": 1}}
+        assert post(client, "enclosure_off").status_code == 200
+        assert printer.sent == [OFF_NOW]
+
+    def test_limits_offer_the_fan_ranges(self, client, printer):
+        r = client.get("/api/print-control/limits").json()["ranges"]
+        assert r["exhaust"] == r["inner"] == {"min": 0.0, "max": 100.0}
 
 
 class TestQueued:
