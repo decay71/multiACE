@@ -472,6 +472,18 @@ class TestEnclosureFans:
         assert r["exhaust"] == r["inner"] == {"min": 0.0, "max": 100.0}
 
 
+class TestGcodeErrorText:
+    def test_a_klipper_error_shows_its_message_not_a_traceback(self, client, printer):
+        req = httpx.Request("POST", "http://x")
+        body = {"error": {"code": 400, "message": "Unknown command:\"SET_NOPE\"",
+                          "traceback": "Traceback (most recent call last): ..."}}
+        printer.post_error = httpx.HTTPStatusError(
+            "e", request=req, response=httpx.Response(400, json=body, request=req))
+        r = post(client, "pause")
+        assert r.status_code == 400
+        assert r.json()["detail"] == 'moonraker: Unknown command:"SET_NOPE"'
+
+
 class TestQueued:
     def test_a_read_timeout_is_queued_not_an_error(self, client, printer):
         # A swap holds Klipper's queue: the command runs later, so a second

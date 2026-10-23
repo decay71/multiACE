@@ -140,6 +140,42 @@ class TestTransport:
         assert restart(client, "firmware").status_code == 500
 
 
+class TestErrorText:
+    TRACE = ("Traceback (most recent call last):\n  File \"machine.py\", line 408\n"
+             "ShellCommandError: Error running shell command: 'sudo systemctl reboot'")
+
+    def _json_error(self, code, message):
+        req = httpx.Request("POST", "http://x")
+        body = {"error": {"code": code, "message": message, "traceback": self.TRACE}}
+        return httpx.HTTPStatusError(
+            "e", request=req, response=httpx.Response(code, json=body, request=req))
+
+    def test_only_moonrakers_message_reaches_the_panel_not_its_traceback(
+            self, client, printer):
+        printer.post_error = self._json_error(
+            500, "Error running shell command: 'sudo systemctl reboot'")
+        r = restart(client, "printer")
+        assert r.status_code == 500
+        assert r.json()["detail"] == (
+            "moonraker: Error running shell command: 'sudo systemctl reboot'")
+        assert "Traceback" not in r.text
+
+    def test_a_body_that_is_not_moonrakers_json_is_passed_on_as_is(
+            self, client, printer):
+        req = httpx.Request("POST", "http://x")
+        printer.post_error = httpx.HTTPStatusError(
+            "e", request=req, response=httpx.Response(502, text="Bad Gateway", request=req))
+        assert restart(client, "firmware").json()["detail"] == "moonraker: Bad Gateway"
+
+    @pytest.mark.parametrize("body", [{"error": "plain string"}, {"error": {}},
+                                      {"error": {"message": ""}}, ["not", "a", "dict"]])
+    def test_an_unexpected_json_shape_falls_back_to_the_raw_text(
+            self, main, body):
+        req = httpx.Request("POST", "http://x")
+        resp = httpx.Response(500, json=body, request=req)
+        assert main._moonraker_error(resp) == resp.text
+
+
 class TestMockMode:
     def test_never_reaches_moonraker(self, mock_client, monkeypatch):
         import sys

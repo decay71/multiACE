@@ -2467,6 +2467,17 @@ _babystep_state: dict = {"total": 0.0}
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
 
+def _moonraker_error(resp: "httpx.Response") -> str:
+    """Moonraker's own message for a failed request. Its JSON error carries a
+    full Python traceback, which is no use in the panel; the message is."""
+    try:
+        err = resp.json().get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])
+    except (ValueError, AttributeError):
+        pass
+    return resp.text
+
 _LAST_PRINT_STATUS: dict = {}
 _LAST_PRINT_STATUS_TS: float = 0.0
 
@@ -2762,7 +2773,7 @@ async def print_control(request: Request, req: PrintControl) -> dict:
         await _mr_post("/printer/gcode/script", {"script": script}, timeout=30.0)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code,
-                            detail=f"moonraker: {e.response.text}")
+                            detail=f"moonraker: {_moonraker_error(e.response)}")
     except httpx.ReadTimeout:
         # The request reached Moonraker but the command has not finished:
         # /printer/gcode/script only returns once it has run, and a
@@ -2844,7 +2855,7 @@ async def restart(request: Request, req: RestartRequest) -> dict:
         await _mr_post(RESTART_ACTIONS[behavior], {}, timeout=15.0)
     except httpx.HTTPStatusError as e:
         raise HTTPException(e.response.status_code,
-                            f"moonraker: {e.response.text}")
+                            f"moonraker: {_moonraker_error(e.response)}")
     except (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError):
         # The request reached Moonraker, and the machine going down under
         # it is what a restart looks like from here.
