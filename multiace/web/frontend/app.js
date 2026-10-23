@@ -7469,7 +7469,7 @@ createApp({
     // the tab is open), never remembered locally: a change made on the
     // printer's own display has to show up here too.
     const printCtl = reactive({
-      speed_factor: 100, extrude_factor: 100, fan: 0, z_offset: 0, light: null, enclosure: null,
+      speed_factor: 100, extrude_factor: 100, fan: 0, z_offset: 0, light: null, detection: null, enclosure: null,
       nozzle: {temp: null, target: null}, bed: {temp: null, target: null},
       progress: 0, message: "", state: "", filename: "",
     });
@@ -7500,6 +7500,12 @@ createApp({
     // The enclosure fans may be driven directly only when stock is not: not
     // during a print (the mode comes from the sliced file) and not while a
     // mode runs. The server enforces both; this only explains it.
+    // Stock's defect detection watches the print with the camera, which needs
+    // the chamber light: while it is on during a print the light stays on.
+    // The server refuses it too; this only disables the switch and explains.
+    const lightLocked = computed(() =>
+      printCtl.light > 0 && !!printCtl.detection
+      && (printCtl.state === "printing" || printCtl.state === "paused"));
     const enclosureLock = computed(() => {
       const e = printCtl.enclosure;
       if (printCtl.state === "printing" || printCtl.state === "paused") {
@@ -7881,7 +7887,7 @@ createApp({
       webcam, webcamSrc, webcamVideo, reloadWebcam,
       printCtl, printCtlLimits, printCtlDraft, printCtlBusy, printCtlError, printCtlCan,
       printCtlNotice, printCtlQueued, printCtlRestart, printCtlRestartBlocked,
-      enclosureLock, enclosureModeText,
+      enclosureLock, enclosureModeText, lightLocked,
       printCtlSlide, printCtlRelease, printCtlReset, printCtlHeat, printCtlCancel,
       sendPrintControl,
       consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,

@@ -2435,6 +2435,11 @@ CHAMBER_LED = "led cavity_led"
 PURIFIER = "purifier"
 CAVITY_SENSOR = "temperature_sensor cavity"
 
+#: Stock's AI camera check. It needs the chamber light, which stock turns on
+#: itself at DEFECT_DETECTION_START, so the light must not be switched off
+#: while it is watching a print.
+DEFECT_DETECTION = "defect_detection"
+
 #: Z babystep is the damaging control: it moves the nozzle relative to the
 #: bed while printing, and repeated negative steps drive it into the plate.
 #: Discrete steps only (the UI has buttons, never a slider), and a
@@ -2483,7 +2488,7 @@ async def _print_status() -> dict:
             await asyncio.sleep(0.05)
     objs = ["toolhead", "print_stats", "display_status", "virtual_sdcard",
             "gcode_move", "fan", "heater_bed", CHAMBER_LED, PURIFIER,
-            CAVITY_SENSOR] + _EXTRUDERS
+            CAVITY_SENSOR, DEFECT_DETECTION] + _EXTRUDERS
     data = await _mr_get("/printer/objects/query?"
                          + "&".join(o.replace(" ", "%20") for o in objs))
     status = data.get("result", {}).get("status", {}) or {}
@@ -2512,6 +2517,16 @@ def _chamber_light_pct(status: dict):
         return round(float(led["color_data"][0][3]) * 100.0, 1)
     except (KeyError, IndexError, TypeError, ValueError):
         return None
+
+def _defect_detection_on(status: dict):
+    """Whether stock's defect detection is enabled: its master switch and at
+    least one of its checks. None when the printer has no such object."""
+    dd = status.get(DEFECT_DETECTION)
+    if not isinstance(dd, dict):
+        return None
+    checks = [dd.get(k) for k in ("clean_bed", "noodle", "residue", "nozzle")]
+    return bool(dd.get("main_enable")) and any(
+        isinstance(c, dict) and c.get("enable") for c in checks)
 
 def _enclosure_state(status: dict):
     """Chamber temperature and, with an enclosure attached, its fans.
@@ -2552,6 +2567,7 @@ def _print_control_state(status: dict) -> dict:
         "fan":            _pct((status.get("fan") or {}).get("speed"), 0.0),
         "z_offset":       z_offset,
         "light":          _chamber_light_pct(status),
+        "detection":      _defect_detection_on(status),
         "enclosure":      _enclosure_state(status),
         "nozzle": {"temp": ext.get("temperature"), "target": ext.get("target")},
         "bed":    {"temp": bed.get("temperature"), "target": bed.get("target")},
@@ -2613,15 +2629,16 @@ async def _babystep_allowance(delta: float) -> tuple[float, str]:
     _babystep_state["total"] = total
     return step, ""
 
-async def _require_object(name: str, what: str) -> None:
+async def _require_object(name: str, what: str) -> dict:
     """409 unless the printer has this Klipper object: not every Klipper
-    printer has a chamber light or an enclosure."""
+    printer has a chamber light or an enclosure. Returns the status it read."""
     try:
-        present = name in await _print_status()
+        status = await _print_status()
     except httpx.HTTPError as e:
         raise HTTPException(502, f"moonraker: {e}")
-    if not present:
+    if name not in status:
         raise HTTPException(409, f"this printer has no {what}")
+    return status
 
 async def _require_enclosure_idle() -> None:
     """409 unless the enclosure fans may be driven directly: an enclosure is
@@ -2687,7 +2704,13 @@ async def print_control(request: Request, req: PrintControl) -> dict:
             script = f"SET_PURIFIER FAN={verb} SPEED={applied / 100:.2f}"
         else:
             if not mocked:
-                await _require_object(CHAMBER_LED, "chamber light")
+                status = await _require_object(CHAMBER_LED, "chamber light")
+                printing = (status.get("print_stats") or {}).get("state") in (
+                    "printing", "paused")
+                if applied < 100 and printing and _defect_detection_on(status):
+                    raise HTTPException(
+                        409, "the light stays on during a print while defect "
+                             "detection is enabled: its camera check needs it")
             script = f"SET_LED LED=cavity_led WHITE={applied / 100:.2f} TRANSMIT=1"
     elif verb in ("nozzle", "bed"):
         if value is None:

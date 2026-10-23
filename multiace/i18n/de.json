@@ -58,6 +58,7 @@
       "enc_locked_mode": "Das Gehäuse läuft in einem Modus und steuert seine Lüfter selbst. Zuerst Lüfter aus.",
       "restart_blocked": "Gesperrt, solange ein Druck läuft",
       "light": "Licht",
+      "light_locked": "Bleibt während eines Drucks an: die Fehlererkennung braucht das Licht für ihre Kameraprüfung.",
       "on": "An",
       "off": "Aus",
       "queued": "Gesendet. Der Drucker ist beschäftigt (ein Filamentwechsel kann Minuten dauern) und führt es danach aus."

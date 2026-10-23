@@ -275,6 +275,70 @@ class TestLight:
             == {"min": 0.0, "max": 100.0}
 
 
+DD_ON = {"main_enable": True, "clean_bed": {"enable": True},
+         "noodle": {"enable": True}, "residue": {"enable": False},
+         "nozzle": {"enable": False}}
+LED_ON = {"color_data": [[0.0, 0.0, 0.0, 1.0]]}
+
+
+def light_status(state, detection=DD_ON):
+    st = {"toolhead": {"extruder": "extruder"}, "led cavity_led": LED_ON,
+          "print_stats": {"state": state}}
+    if detection is not None:
+        st["defect_detection"] = detection
+    return st
+
+
+class TestLightAndDefectDetection:
+    """Stock's AI camera check needs the chamber light, which stock turns on
+    itself when it starts, so the light stays on while it is watching."""
+
+    @pytest.mark.parametrize("state", ["printing", "paused"])
+    @pytest.mark.parametrize("value", [0, 40, 99])
+    def test_dimming_or_switching_off_is_refused_during_a_print(
+            self, client, printer, state, value):
+        printer.status = light_status(state)
+        r = post(client, "light", value)
+        assert r.status_code == 409 and "defect detection" in r.json()["detail"]
+        assert printer.sent == []
+
+    @pytest.mark.parametrize("state", ["printing", "paused"])
+    def test_keeping_it_fully_on_is_fine(self, client, printer, state):
+        printer.status = light_status(state)
+        assert post(client, "light", 100).status_code == 200
+        assert printer.sent == ["SET_LED LED=cavity_led WHITE=1.00 TRANSMIT=1"]
+
+    @pytest.mark.parametrize("state", ["standby", "complete", "cancelled", "error"])
+    def test_outside_a_print_it_can_be_switched_off(self, client, printer, state):
+        printer.status = light_status(state)
+        assert post(client, "light", 0).status_code == 200
+
+    @pytest.mark.parametrize("detection", [
+        {**DD_ON, "main_enable": False},                       # master switch off
+        {"main_enable": True, "clean_bed": {"enable": False},  # no check enabled
+         "noodle": {"enable": False}, "residue": {"enable": False},
+         "nozzle": {"enable": False}},
+        None,                                                  # no such object
+        "garbage",
+    ])
+    def test_without_detection_the_light_is_free_during_a_print(
+            self, client, printer, detection):
+        printer.status = light_status("printing", detection)
+        assert post(client, "light", 0).status_code == 200
+
+    @pytest.mark.parametrize("detection,expected", [
+        (DD_ON, True),
+        ({**DD_ON, "main_enable": False}, False),
+        ({"main_enable": True}, False),
+        (None, None),
+        ("garbage", None),
+    ])
+    def test_state_reports_whether_detection_is_on(
+            self, client, printer, detection, expected):
+        printer.status = light_status("printing", detection)
+        assert client.get("/api/print-control").json()["detection"] is expected
+
+
 OFF_NOW = ("SET_PURIFIER_MODE MODE=0 EXHAUST_FAN_DELAY_OFF=0 "
            "INNER_FAN_DELAY_OFF=0")
 PURIFIER_OBJ = {
@@ -504,7 +568,7 @@ class TestState:
             "print_stats": {"state": "printing", "filename": "a.gcode"}}
         j = client.get("/api/print-control").json()
         assert j == {"speed_factor": 125.0, "extrude_factor": 95.0, "fan": 50.0,
-                     "z_offset": -0.123, "light": 75.0, "enclosure": None, "nozzle": {"temp": 201.5, "target": 210},
+                     "z_offset": -0.123, "light": 75.0, "detection": None, "enclosure": None, "nozzle": {"temp": 201.5, "target": 210},
                      "bed": {"temp": 59.9, "target": 60}, "progress": 43.2,
                      "message": "hi", "state": "printing", "filename": "a.gcode"}
 

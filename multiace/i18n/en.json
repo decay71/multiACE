@@ -58,6 +58,7 @@
       "enc_locked_mode": "The enclosure is running a mode and drives its fans itself. Use Fans off first.",
       "restart_blocked": "Blocked while a print is running",
       "light": "Light",
+      "light_locked": "Kept on during a print: defect detection needs the light for its camera check.",
       "on": "On",
       "off": "Off",
       "queued": "Sent. The printer is busy (a filament swap can take minutes) and will run it afterwards."

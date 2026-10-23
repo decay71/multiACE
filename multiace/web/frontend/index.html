@@ -1455,11 +1455,12 @@
             <span class="pc-light-label">{{ t('ui.control.light') }}</span>
             <button type="button" role="switch" class="pc-switch"
                     :aria-checked="printCtl.light > 0 ? 'true' : 'false'"
-                    :aria-label="t('ui.control.light')" :disabled="printCtlBusy !== ''"
+                    :aria-label="t('ui.control.light')" :disabled="printCtlBusy !== '' || lightLocked"
                     @click="sendPrintControl('light', printCtl.light > 0 ? 0 : 100)">
               <span class="pc-knob">{{ printCtl.light > 0 ? t('ui.control.on') : t('ui.control.off') }}</span>
             </button>
           </div>
+          <p v-if="lightLocked" class="muted small">{{ t('ui.control.light_locked') }}</p>
 
           <!-- Only with an enclosure attached (the printer's own attach detection).
                Fans can be set directly only when stock is not driving them: the
