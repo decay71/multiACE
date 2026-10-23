@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 from collections import deque
@@ -2838,6 +2839,38 @@ async def _is_printing() -> bool:
              .get("print_stats") or {}).get("state")
     return state in ("printing", "paused")
 
+def _moonraker_is_local() -> bool:
+    from urllib.parse import urlparse
+    host = (urlparse(MOONRAKER_URL).hostname or "").lower()
+    return host in ("127.0.0.1", "localhost", "::1")
+
+def _local_reboot_command():
+    """The reboot binary, when this process may and should reboot the machine
+    itself: it runs as root on the same machine as Moonraker, so rebooting this
+    machine is rebooting the printer. A backend on a dev box talking to a remote
+    printer, or one that is not root, never qualifies."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0 or not _moonraker_is_local():
+        return None
+    # reboot lives in /usr/sbin, which the service's own PATH (set by the init
+    # script: .local/bin:/usr/bin:/bin) does not include.
+    return shutil.which("reboot") or shutil.which("reboot", path="/usr/sbin:/sbin")
+
+async def _reboot_here(cmd: str) -> None:
+    """Run reboot without waiting for the machine to go down."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+    except asyncio.TimeoutError:
+        return   # still going down: that is what a reboot looks like from here
+    except OSError as e:
+        raise HTTPException(500, f"reboot: {e}")
+    if proc.returncode:
+        raise HTTPException(500, f"reboot failed (rc={proc.returncode}): "
+                                 f"{(out or b'').decode('utf-8', 'replace').strip()}")
+
 @app.post("/api/restart")
 async def restart(request: Request, req: RestartRequest) -> dict:
     """Restart the firmware or the printer: a fixed behaviour, refused while
@@ -2851,18 +2884,27 @@ async def restart(request: Request, req: RestartRequest) -> dict:
         return {"ok": True, "behavior": behavior, "mock": True}
     if await _is_printing():
         raise HTTPException(409, "blocked while a print is running")
+    via = "moonraker"
     try:
         await _mr_post(RESTART_ACTIONS[behavior], {}, timeout=15.0)
     except httpx.HTTPStatusError as e:
-        raise HTTPException(e.response.status_code,
-                            f"moonraker: {_moonraker_error(e.response)}")
+        # Moonraker's reboot runs `sudo systemctl reboot`. The Snapmaker U1
+        # has neither sudo nor systemd (busybox init), so it always fails
+        # there. Where this process runs as root on the printer itself, reboot
+        # directly; anywhere else the failure is reported as it is.
+        cmd = _local_reboot_command() if behavior == "printer" else None
+        if cmd is None:
+            raise HTTPException(e.response.status_code,
+                                f"moonraker: {_moonraker_error(e.response)}")
+        await _reboot_here(cmd)
+        via = "local"
     except (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError):
         # The request reached Moonraker, and the machine going down under
         # it is what a restart looks like from here.
         pass
     except httpx.HTTPError as e:
         raise HTTPException(502, f"moonraker: {e}")
-    return {"ok": True, "behavior": behavior}
+    return {"ok": True, "behavior": behavior, "via": via}
 
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:
