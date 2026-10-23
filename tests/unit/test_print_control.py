@@ -133,72 +133,26 @@ class TestHeaters:
         post(client, "bed", 200)
         assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=110"]
 
-    def test_loaded_material_lowers_the_nozzle_ceiling(self, client, printer):
-        printer.toolheads = [{"idx": 0, "filament_detected": True, "material": "PLA"}]
-        assert post(client, "nozzle", 300).json()["applied"] == 230
-
-    @pytest.mark.parametrize("material,value", [("PLA", 150), ("PC", 200),
-                                                ("PETG", 100), ("PLA", 1)])
-    def test_a_target_below_the_material_floor_is_not_raised(
-            self, client, printer, material, value):
-        # A standby temperature someone typed on purpose: only the top is
-        # capped, the same way 0 passes as "off".
+    @pytest.mark.parametrize("material", ["PLA", "PETG", "PC", "PLA-CF", "FOO", None])
+    def test_the_loaded_material_does_not_lower_the_ceiling(
+            self, client, printer, material):
+        # Stock loads and unloads above a material's printing range (PLA loads
+        # at 250), so heating up to clear a clog must work with any spool in.
         printer.toolheads = [{"idx": 0, "filament_detected": True, "material": material}]
+        assert post(client, "nozzle", 250).json()["applied"] == 250
+        assert post(client, "nozzle", 999).json()["applied"] == 300
+
+    @pytest.mark.parametrize("value", [150, 200, 100, 1])
+    def test_a_target_below_any_printing_range_is_not_raised(
+            self, client, printer, value):
+        printer.toolheads = [{"idx": 0, "filament_detected": True, "material": "PC"}]
         assert post(client, "nozzle", value).json()["applied"] == value
         assert printer.sent[-1] == f"SET_HEATER_TEMPERATURE HEATER=extruder TARGET={value}"
 
-    @pytest.mark.parametrize("material,ceiling", [
-        ("PLA", 230), ("pla", 230), ("PLA+", 240), ("PETG", 260), ("PC", 300),
-        # variants share the ceiling of their base material
-        ("PLA-CF", 230), ("pla-cf", 230), ("PETG-CF", 260), ("PETG-HF", 260),
-        ("ABS-GF", 270), ("PLA+-CF", 240),
-        # no entry: only Klipper's max_temp (300) applies
-        ("PA12", 300), ("FOO", 300), ("", 300), (None, 300)])
-    def test_material_ceiling_matches_the_base_name(
-            self, client, printer, material, ceiling):
-        printer.toolheads = [{"idx": 0, "filament_detected": True, "material": material}]
-        assert post(client, "nozzle", 999).json()["applied"] == ceiling
-
-    def test_material_max_helper(self, main):
-        assert main._material_max("PETG-HF") == 260.0
-        assert main._material_max(" petg ") == 260.0
-        assert main._material_max("PLA+") == 240.0
-        assert main._material_max("nope") is None and main._material_max(None) is None
-
     @pytest.mark.parametrize("value", [0, -10])
-    def test_zero_is_off_whatever_the_material_floor(self, client, printer, value):
-        printer.toolheads = [{"idx": 0, "filament_detected": True, "material": "PLA"}]
+    def test_zero_is_off(self, client, printer, value):
         assert post(client, "nozzle", value).json()["applied"] == 0
         assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0"]
-
-    def test_unloaded_heads_do_not_count(self, client, printer):
-        printer.toolheads = [{"idx": 0, "filament_detected": False, "material": "PLA"}]
-        assert post(client, "nozzle", 300).json()["applied"] == 300
-
-    def test_other_heads_materials_do_not_count(self, client, printer):
-        # PLA on the active head 0 and PETG on head 1: the ceiling is PLA's
-        # 230, whatever head 1 holds.
-        printer.toolheads = [
-            {"idx": 0, "filament_detected": True, "material": "PLA"},
-            {"idx": 1, "filament_detected": True, "material": "PETG"}]
-        assert post(client, "nozzle", 150).json()["applied"] == 150
-        assert post(client, "nozzle", 999).json()["applied"] == 230
-
-    def test_mixed_materials_cannot_invert_the_range(self, client, printer):
-        # PLA (max 230) next to PC (min 240) used to give 240/230 and land
-        # every target on 240.
-        printer.toolheads = [
-            {"idx": 0, "filament_detected": True, "material": "PLA"},
-            {"idx": 1, "filament_detected": True, "material": "PC"}]
-        assert post(client, "nozzle", 200).json()["applied"] == 200
-
-    def test_the_active_head_decides(self, client, printer):
-        printer.status = {"toolhead": {"extruder": "extruder1"}}
-        printer.toolheads = [
-            {"idx": 0, "filament_detected": True, "material": "PLA"},
-            {"idx": 1, "filament_detected": True, "material": "PETG"}]
-        assert post(client, "nozzle", 999).json()["applied"] == 260
-        assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=260"]
 
     def test_klipper_config_is_read_once_not_on_every_call(self, client, printer):
         post(client, "nozzle", 100)
@@ -214,6 +168,11 @@ class TestHeaters:
         printer.status = {"toolhead": {"extruder": "extruder; M112"}}
         post(client, "nozzle", 100)
         assert printer.sent == ["SET_HEATER_TEMPERATURE HEATER=extruder TARGET=100"]
+
+    def test_the_limits_endpoint_reports_klippers_range_only(self, client, printer):
+        j = client.get("/api/print-control/limits").json()
+        assert j["nozzle"] == {"min": 0.0, "max": 300.0}
+        assert j["bed"] == {"min": 0.0, "max": 110.0}
 
 
 class TestBabystep:

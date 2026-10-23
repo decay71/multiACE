@@ -2444,26 +2444,8 @@ BABYSTEP_MAX_STEP_MM = 0.05
 BABYSTEP_MAX_TOTAL_MM = 0.5
 
 #: Fallback heater ceilings, used only when Moonraker's config cannot be
-#: read. Klipper's own max_temp catches the extreme; the MATERIAL limit is
-#: tighter and Klipper knows nothing about it.
+#: read. Klipper's own max_temp is the real limit and is read from the config.
 DEFAULT_HEATER_LIMITS = {"nozzle": (0.0, 300.0), "bed": (0.0, 120.0)}
-
-MATERIAL_TEMP_LIMITS = {
-    "PLA":  (170.0, 230.0), "PLA+": (180.0, 240.0), "SILK": (190.0, 240.0),
-    "PETG": (210.0, 260.0), "ABS":  (220.0, 270.0), "ASA": (230.0, 270.0),
-    "TPU":  (200.0, 245.0), "PC":   (240.0, 300.0), "PVA": (170.0, 225.0),
-    "PA":   (240.0, 300.0), "HIPS": (220.0, 250.0),
-}
-
-def _material_max(name: str):
-    """Highest nozzle temperature for a material, or None when unknown.
-
-    Variants share their base material's ceiling: PLA-CF, PETG-HF, ABS-GF.
-    A name with no entry (PA12, a vendor string) gets no material ceiling,
-    only Klipper's max_temp."""
-    key = str(name or "").strip().upper()
-    mat = MATERIAL_TEMP_LIMITS.get(key) or MATERIAL_TEMP_LIMITS.get(key.split("-")[0])
-    return mat[1] if mat else None
 
 _EXTRUDERS = ["extruder"] + ["extruder%d" % i for i in range(1, 4)]
 
@@ -2599,15 +2581,13 @@ async def _klipper_settings() -> dict:
     return settings
 
 async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float, float]:
-    """(min, max) for a heater: Klipper's configured limits, with the
-    nozzle ceiling lowered to the material maximum of the ACTIVE head. Read
-    from Moonraker's config, never hardcoded: a different hotend has
-    different limits.
+    """(min, max) for a heater, from Klipper's own config (min_temp and
+    max_temp), never hardcoded: a different hotend has different limits.
 
-    Only the top is capped. A target below the material's printing range is
-    a standby temperature someone typed on purpose, and lifting it to the
-    floor would heat the nozzle more than asked, the same way 0 passes as
-    "off"."""
+    There is no per-material ceiling. Stock loads and unloads above a
+    material's printing range (PLA loads at 250), so a tighter cap here would
+    stop someone heating up to clear a clog. A target below the range is a
+    standby temperature set on purpose and is not raised, and 0 is off."""
     lo, hi = DEFAULT_HEATER_LIMITS.get(which, (0.0, 250.0))
     section = extruder if which == "nozzle" else "heater_bed"
     try:
@@ -2619,22 +2599,6 @@ async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float,
             hi = min(hi, float(block["max_temp"]))
     except Exception:
         pass
-    if which == "nozzle":
-        # Only the head that owns this extruder: another head's spool says
-        # nothing about what is in this nozzle, and ranges of different
-        # materials can even cancel out (PLA + PC would invert the range).
-        suffix = extruder[len("extruder"):]
-        head = int(suffix) if suffix.isdigit() else 0
-        try:
-            parsed = _parse_state(await _query_state_gated())
-            for th in parsed.get("toolheads") or []:
-                if th.get("idx") != head or not th.get("filament_detected"):
-                    continue
-                ceiling = _material_max(th.get("material"))
-                if ceiling is not None:
-                    hi = min(hi, ceiling)
-        except Exception:
-            pass
     return lo, hi
 
 async def _babystep_allowance(delta: float) -> tuple[float, str]:
