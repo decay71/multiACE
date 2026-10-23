@@ -1252,6 +1252,11 @@ class AceBgSwap:
                       % self._dh(head))
 
     cmd_ACE_BG_STATUS_help = '[EXPERIMENTAL] Show background unload states.'
+    PHASE_ORDER = [
+        'IDLE', 'QUEUED', 'FA_STOP', 'HEAT', 'PULL',
+        'RETRACT', 'BOOKKEEP', 'LD_FEED', 'LD_GRIP', 'LD_PRIME', 'DONE'
+    ]
+
     cmd_ACE_BG_AWAIT_PHASE_help = (
         '[multiACE] Wait for a background swap on HEAD to reach a target PHASE '
         '(e.g. HEAT, PULL, RETRACT, BOOKKEEP, LD_FEED, LD_GRIP, LD_PRIME, DONE). '
@@ -1263,14 +1268,26 @@ class AceBgSwap:
         timeout = gcmd.get_float('TIMEOUT', 60., above=0.)
         deadline = self.reactor.monotonic() + timeout
 
+        target_idx = -1
+        if target_phase in self.PHASE_ORDER:
+            target_idx = self.PHASE_ORDER.index(target_phase)
+
         gcmd.respond_info('[bg-test] Waiting for head %d to reach phase %s (timeout %.0fs)...'
                           % (self._dh(head), target_phase, timeout))
 
         while self.reactor.monotonic() < deadline:
             cur_phase = self.phase(head).upper()
-            if cur_phase == target_phase or cur_phase.startswith(target_phase):
-                gcmd.respond_info('[bg-test] Head %d reached target phase %s!'
-                                  % (self._dh(head), cur_phase))
+            base_phase = cur_phase.split(':')[0]
+            # Match directly, or if current phase is ranked >= target phase in monotonic progression
+            matched = (cur_phase == target_phase or cur_phase.startswith(target_phase))
+            if not matched and target_idx != -1 and base_phase in self.PHASE_ORDER:
+                cur_idx = self.PHASE_ORDER.index(base_phase)
+                if cur_idx >= target_idx:
+                    matched = True
+
+            if matched:
+                gcmd.respond_info('[bg-test] Head %d reached target phase %s (current: %s)!'
+                                  % (self._dh(head), target_phase, cur_phase))
                 return
             if cur_phase.startswith('FAILED'):
                 gcmd.respond_info('[bg-test] Head %d aborted early with %s'

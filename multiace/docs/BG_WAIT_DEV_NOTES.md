@@ -70,6 +70,14 @@ The background swap engine in `multiace/klipper/extras/ace_bg_swap.py` executes 
 - **Solution for Next Session**: Implement monotonic phase ladder comparison (`PHASE_ORDER`). Awaiting a phase succeeds if that phase **or any later phase** in the sequence is reached.
 
 
+### Trap 4: Combiner / Splitter Clearance & Retraction Math
+- **Symptom**: New filament feed jams at the combiner junction (`feed start: code=2 msg=error_2 - retry`).
+- **Cause**: During background unload, `ace_bg_swap.py` calculates the ACE rollback as:
+  `rest = max(0, full - int(reclaimed))`. With `COLD_PULL_NORMAL`, `reclaimed = 71mm`. When `swap_retract_length` was 900mm, the ACE only rolled back $900 - 71 = 829\text{mm}$, which left the filament tip sitting ~10mm short of clearing the physical combiner junction.
+- **Solution**: Setting `swap_retract_length = 1050mm` gives $1050 - 71 = 979\text{mm}$ of ACE rollback, pulling the strand completely past the combiner and into its dedicated tube.
+- **Hardware Verified**: Subsequent feeds succeeded in 15 seconds flat with zero resistance, clean sensor stops, and normal forward assist.
+
+
 ---
 
 ## 3. Test Harnesses Implemented
