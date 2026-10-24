@@ -196,18 +196,14 @@ class AceBgSwap:
         # of logging only. False = the pre-gate LOG-ONLY behaviour. Read
         # unconditionally.
         self.pick_gate = config.getboolean('pick_gate', True)
-        # Unload-only switch / mode: False/0/off disables the
+        # Unload-only switch: False disables the
         # bg LOAD half - ACE_BG_SWAP stamps run only the HW-proven unload
         # half, the arrival swap then loads INLINE with full phase3
-        # verification. True/1/on/transport enables the full background load.
-        # Accepts 'transport' as well as standard boolean representations.
-        # Read unconditionally.
-        raw_load_enabled = str(config.get('load_enabled', 'true')).strip().lower()
-        if raw_load_enabled in ('false', '0', 'no', 'off'):
-            self.load_enabled = False
-        else:
-            # Accepts 'true', '1', 'yes', 'on', 'transport', etc.
-            self.load_enabled = True
+        # verification (the exact path every bg-load abort already falls
+        # back to, HW-proven). Use case: docks with a small chute (e.g.
+        # Panda Breath) that swallows the ~60-70mm cold-pull tip but not
+        # the full bg prime purge. Read unconditionally.
+        self.load_enabled = config.getboolean('load_enabled', True)
         self.enabled_heads = set()
         for tok in heads_raw.replace(',', ' ').split():
             try:
@@ -348,12 +344,12 @@ class AceBgSwap:
 
     def _set_state(self, head, new_state):
         """Centralized state setter (Milestone 3): updates self.state[head] and
-        automatically prints state transitions to console for live monitoring."""
+        logs state transitions to klippy.log."""
         old_state = self.phase(head)
         self.state[head] = new_state
         if old_state != new_state:
-            self._say('head %d: state transition [%s -> %s]'
-                      % (self._dh(head), old_state, new_state))
+            logging.info('[multiACE] [bg-unload] head %d: state transition [%s -> %s]'
+                         % (self._dh(head), old_state, new_state))
 
 
     def _ext_name(self, head):
