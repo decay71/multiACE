@@ -1439,9 +1439,9 @@ class AceBgSwap:
             gcmd.respond_info('[bg-wait] ACE_BG_WAIT HEAD=%d: %s (%s)'
                               % (self._dh(head), verdict, details.get('reason', '')))
 
-        # Milestone 4: Option A self-contained park & restore
+        # Milestone 4 & 5: Option A self-contained park, wait loop, and restore
         # If eligible (or FORCE_PARK=1 for bench testing), snapshot coordinates,
-        # park over discard chute, and restore coordinates cleanly upon exit.
+        # park over discard chute, wait out the cold-pull until RETRACT, and restore coordinates cleanly.
         force_park = gcmd.get_int('FORCE_PARK', 0)
         if eligible or force_park:
             snapshot = self._snapshot_active_position()
@@ -1450,10 +1450,59 @@ class AceBgSwap:
                 if parked:
                     if debug:
                         gcmd.respond_info('[bg-wait] HEAD=%d parked at discard position' % self._dh(head))
-                    # Milestone 4 validation dwell / wait placeholder (Milestone 5 adds reactor wait loop)
-                    dwell = gcmd.get_float('DWELL', 0.0)
-                    if dwell > 0.0:
+
+                    # Milestone 5: Dynamic Timeout Sizing
+                    # Covers remaining PULL work (including passive cooldown waittemp) without premature abort
+                    # Target timeout parameter or dynamic calculation based on current phase and temperature
+                    user_timeout = gcmd.get_float('TIMEOUT', None, above=0.)
+                    if user_timeout is not None:
+                        wait_budget = user_timeout
+                    else:
+                        cur_phase = self.phase(head).upper()
+                        if cur_phase == 'PULL' or cur_phase.startswith('PULL'):
+                            # During PULL: generous budget to cover slow stretch moves + passive cooling waittemp
+                            wait_budget = 90.0
+                        else:
+                            # During late HEAT: remaining heat seconds (delta / ~5C/s) + full PULL budget
+                            delta = details.get('delta_temp') or 15.0
+                            heat_rem = max(3.0, (delta / 4.0))
+                            wait_budget = heat_rem + 90.0
+
+                    dwell = gcmd.get_float('DWELL', None)
+                    wait_start = self.reactor.monotonic()
+                    deadline = wait_start + wait_budget
+                    retract_idx = self.PHASE_ORDER.index('RETRACT')
+                    released_reason = 'timeout'
+
+                    if debug:
+                        gcmd.respond_info('[bg-wait] HEAD=%d entering wait loop (budget %.1fs, target: RETRACT)...'
+                                          % (self._dh(head), wait_budget))
+
+                    if dwell is not None and dwell > 0.0:
+                        # Validation override dwell
                         self.reactor.pause(self.reactor.monotonic() + dwell)
+                        released_reason = 'dwell'
+                    else:
+                        while self.reactor.monotonic() < deadline:
+                            now_phase = self.phase(head).upper()
+                            base_p = now_phase.split(':')[0]
+                            # Release condition: reached RETRACT or any subsequent phase (nozzle clear)
+                            if base_p in self.PHASE_ORDER:
+                                if self.PHASE_ORDER.index(base_p) >= retract_idx:
+                                    released_reason = 'reached %s' % now_phase
+                                    break
+                            if now_phase.startswith('FAILED') or now_phase in ('IDLE', 'DONE'):
+                                released_reason = now_phase
+                                break
+                            self.reactor.pause(self.reactor.monotonic() + 0.20)
+
+                    elapsed_wait = round(self.reactor.monotonic() - wait_start, 1)
+                    logging.info('[multiACE] [bg-wait] HEAD=%d released hold after %.1fs (reason: %s)'
+                                 % (self._dh(head), elapsed_wait, released_reason))
+                    if debug:
+                        gcmd.respond_info('[bg-wait] HEAD=%d released hold after %.1fs (reason: %s)'
+                                          % (self._dh(head), elapsed_wait, released_reason))
+
                     self._restore_active_position(snapshot)
                     if debug:
                         gcmd.respond_info('[bg-wait] HEAD=%d restored to original coordinates' % self._dh(head))

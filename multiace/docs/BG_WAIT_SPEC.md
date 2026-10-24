@@ -37,9 +37,9 @@
 - [x] 4.4: Verify arrival `T` macro receives expected toolhead state.
 
 ### Milestone 5: Wait Loop & Timeout Handling
-- [ ] 5.1: Implement reactor polling loop checking for phase transition to `RETRACT`.
-- [ ] 5.2: Add timeout guard sized to cover remaining PULL work (including waittemp/passive cooldown) to prevent premature aborts or indefinite print stalls.
-- [ ] 5.3: Implement graceful fallback exit on timeout or pass-through.
+- [x] 5.1: Implement reactor polling loop checking for phase transition to `RETRACT`.
+- [x] 5.2: Add timeout guard sized to cover remaining PULL work (including waittemp/passive cooldown) to prevent premature aborts or indefinite print stalls.
+- [x] 5.3: Implement graceful fallback exit on timeout or pass-through.
 
 ### Milestone 6: Post-Processor Integration & Verification
 - [ ] 6.1: Update `post_process_virtual_toolheads.py` to stamp `ACE_BG_WAIT HEAD=n` prior to arrival `T`.
