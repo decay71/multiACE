@@ -7499,9 +7499,10 @@ createApp({
       resume: printCtl.state === "paused",
       cancel: printCtl.state === "printing" || printCtl.state === "paused",
     }));
-    // The enclosure fans may be driven directly only when stock is not: not
-    // during a print (the mode comes from the sliced file) and not while a
-    // mode runs. The server enforces both; this only explains it.
+    // Outside a print the fans may be driven directly only while no mode
+    // runs; the server enforces it, this only explains it. During a print
+    // they are always allowed (stock accepts it too); a running mode may
+    // override the exhaust value, which is only a hint.
     // Stock's defect detection watches the print with the camera, which needs
     // the chamber light: while it is on during a print the light stays on.
     // The server refuses it too; this only disables the switch and explains.
@@ -7510,11 +7511,14 @@ createApp({
       && (printCtl.state === "printing" || printCtl.state === "paused"));
     const enclosureLock = computed(() => {
       const e = printCtl.enclosure;
-      if (printCtl.state === "printing" || printCtl.state === "paused") {
-        return t("ui.control.enc_locked_print");
-      }
+      if (printCtl.state === "printing" || printCtl.state === "paused") return "";
       if (e && e.mode) return t("ui.control.enc_locked_mode");
       return "";
+    });
+    const enclosureHint = computed(() => {
+      const e = printCtl.enclosure;
+      return (printCtl.state === "printing" || printCtl.state === "paused")
+        && e && e.mode ? t("ui.control.enc_hint_print") : "";
     });
     const enclosureModeText = computed(() => {
       const e = printCtl.enclosure;
@@ -7611,6 +7615,16 @@ createApp({
     function printCtlReset(verb) {
       printCtlRelease(verb, verb === "fan" ? 0 : 100);
     }
+    // The target boxes show the current target, so a spinner arrow steps from
+    // the real value instead of from an empty box. While the user is in a
+    // box the typed value wins over the readback; leaving the box (blur)
+    // goes back to showing the target.
+    const printCtlTempDraft = reactive({nozzle: null, bed: null});
+    function printCtlTempShown(verb) {
+      if (printCtlTempDraft[verb] !== null) return printCtlTempDraft[verb];
+      const target = printCtl[verb].target;
+      return target === null ? "" : Math.round(target);
+    }
     // An empty box is "nothing typed", not 0: sending 0 would switch the
     // heater off.
     function printCtlHeat(verb, ev) {
@@ -7618,7 +7632,6 @@ createApp({
       if (raw === "") return;
       const v = Number(raw);
       if (Number.isFinite(v)) sendPrintControl(verb, v);
-      ev.target.value = "";
     }
     // Restart Firmware / Restart Printer. Refused by the server while a
     // print runs and under a managed install; the buttons mirror that. After
@@ -7989,7 +8002,8 @@ createApp({
       webcam, webcamSrc, webcamVideo, reloadWebcam,
       printCtl, printCtlLimits, printCtlDraft, printCtlBusy, printCtlError, printCtlCan,
       printCtlNotice, printCtlQueued, printCtlRestart, printCtlRestartBlocked,
-      enclosureLock, enclosureModeText, lightLocked,
+      printCtlTempDraft, printCtlTempShown,
+      enclosureLock, enclosureHint, enclosureModeText, lightLocked,
       printCtlSlide, printCtlRelease, printCtlReset, printCtlHeat, printCtlCancel,
       sendPrintControl,
       consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,

@@ -54,7 +54,7 @@
       "mode_1": "Cooling chamber",
       "mode_2": "Preheating chamber",
       "mode_3": "Hot chamber",
-      "enc_locked_print": "Not during a print: the enclosure mode comes from the sliced file.",
+      "enc_hint_print": "A running mode may override the exhaust value while the print runs.",
       "enc_locked_mode": "The enclosure is running a mode and drives its fans itself. Use Fans off first.",
       "restart_blocked": "Blocked while a print is running",
       "light": "Light",

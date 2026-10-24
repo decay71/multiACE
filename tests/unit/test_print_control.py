@@ -416,7 +416,8 @@ class TestEnclosure:
 
 
 class TestEnclosureFans:
-    """Direct fan speed: only with an enclosure attached, idle, and no print."""
+    """Direct fan speed: only with an enclosure attached; outside a print also
+    only while no mode runs."""
     IDLE = {"purifier": PURIFIER_OBJ, "print_stats": {"state": "standby"}}
 
     @pytest.mark.parametrize("fan,value,script,applied", [
@@ -440,8 +441,6 @@ class TestEnclosureFans:
         ({"print_stats": {"state": "standby"}}, "no enclosure"),
         ({"purifier": {**PURIFIER_OBJ, "power_detected": False},
           "print_stats": {"state": "standby"}}, "not attached"),
-        ({"purifier": PURIFIER_OBJ, "print_stats": {"state": "printing"}}, "printing"),
-        ({"purifier": PURIFIER_OBJ, "print_stats": {"state": "paused"}}, "paused"),
         ({"purifier": {**PURIFIER_OBJ, "mode": 1}, "print_stats": {"state": "standby"}}, "cool"),
         ({"purifier": {**PURIFIER_OBJ, "mode": 2}, "print_stats": {"state": "standby"}}, "preheat"),
         ({"purifier": {**PURIFIER_OBJ, "mode": 3}, "print_stats": {"state": "standby"}}, "hot"),
@@ -452,6 +451,21 @@ class TestEnclosureFans:
     def test_refused_and_nothing_sent(self, client, printer, status, why, fan):
         printer.status = status
         assert post(client, fan, 50).status_code == 409, why
+        assert printer.sent == []
+
+    @pytest.mark.parametrize("state", ["printing", "paused"])
+    @pytest.mark.parametrize("mode", [0, 1, 3])
+    @pytest.mark.parametrize("fan", ["exhaust", "inner"])
+    def test_allowed_during_a_print_whatever_the_mode(
+            self, client, printer, state, mode, fan):
+        printer.status = {"purifier": {**PURIFIER_OBJ, "mode": mode},
+                          "print_stats": {"state": state}}
+        assert post(client, fan, 50).status_code == 200
+        assert printer.sent == [f"SET_PURIFIER FAN={fan} SPEED=0.50"]
+
+    def test_a_missing_enclosure_is_still_refused_during_a_print(self, client, printer):
+        printer.status = {"print_stats": {"state": "printing"}}
+        assert post(client, "exhaust", 50).status_code == 409
         assert printer.sent == []
 
     def test_an_unreachable_moonraker_blocks_it(self, main, client, printer, monkeypatch):

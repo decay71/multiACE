@@ -2656,12 +2656,13 @@ async def _require_object(name: str, what: str) -> dict:
         raise HTTPException(409, f"this printer has no {what}")
     return status
 
-async def _require_enclosure_idle() -> None:
+async def _require_enclosure_drivable() -> None:
     """409 unless the enclosure fans may be driven directly: an enclosure is
-    attached, no print is running, and stock is not running a mode. In modes
-    1 to 3 stock drives the fans itself (dynamically in cool mode), so a
-    direct speed would compete with it, and during a print the mode usually
-    comes from the sliced file."""
+    attached and, outside a print, stock is not running a mode. During a
+    print the fans are allowed whatever the mode (stock itself accepts
+    SET_PURIFIER at any time); a running mode may override the exhaust value
+    again, which the UI says. Outside a print, modes 1 to 3 drive the fans
+    themselves (dynamically in cool mode), so a direct speed would compete."""
     try:
         status = await _print_status()
     except httpx.HTTPError as e:
@@ -2672,8 +2673,7 @@ async def _require_enclosure_idle() -> None:
     if not purifier.get("power_detected"):
         raise HTTPException(409, "no enclosure is attached")
     if (status.get("print_stats") or {}).get("state") in ("printing", "paused"):
-        raise HTTPException(409, "not during a print: the enclosure mode comes "
-                                 "from the sliced file")
+        return
     if purifier.get("mode") != 0:
         raise HTTPException(409, "the enclosure is running a mode and drives "
                                  "its fans itself; stop it first")
@@ -2716,7 +2716,7 @@ async def print_control(request: Request, req: PrintControl) -> dict:
             # One enclosure fan directly (stock SET_PURIFIER). SPEED=0 starts
             # stock's delayed turn-off rather than stopping at once.
             if not mocked:
-                await _require_enclosure_idle()
+                await _require_enclosure_drivable()
             script = f"SET_PURIFIER FAN={verb} SPEED={applied / 100:.2f}"
         else:
             if not mocked:

@@ -1429,6 +1429,9 @@
             <input type="number" class="pc-temp-in"
                    min="0" :max="printCtlLimits.nozzle.max"
                    :placeholder="t('ui.control.target')"
+                   :value="printCtlTempShown('nozzle')"
+                   @input="printCtlTempDraft.nozzle = $event.target.value"
+                   @blur="printCtlTempDraft.nozzle = null"
                    @change="printCtlHeat('nozzle', $event)">
           </div>
           <div class="pc-row pc-temps">
@@ -1438,6 +1441,9 @@
             <input type="number" class="pc-temp-in"
                    min="0" :max="printCtlLimits.bed.max"
                    :placeholder="t('ui.control.target')"
+                   :value="printCtlTempShown('bed')"
+                   @input="printCtlTempDraft.bed = $event.target.value"
+                   @blur="printCtlTempDraft.bed = null"
                    @change="printCtlHeat('bed', $event)">
           </div>
 
@@ -1463,9 +1469,10 @@
           <p v-if="lightLocked" class="muted small">{{ t('ui.control.light_locked') }}</p>
 
           <!-- Only with an enclosure attached (the printer's own attach detection).
-               Fans can be set directly only when stock is not driving them: the
-               server refuses it during a print and while a mode runs, and the
-               sliders say why. "Fans off" returns to idle and stops both at once. -->
+               Outside a print the fans can be set directly only while no mode
+               runs (the sliders say why). During a print they always can; a
+               running mode may override the exhaust value, which the hint
+               says. "Fans off" returns to idle and stops both at once. -->
           <div class="pc-enc" v-if="printCtl.enclosure && printCtl.enclosure.attached">
             <div class="pc-row pc-enclosure">
               <span>{{ t('ui.control.enclosure_fans') }}</span>
@@ -1483,6 +1490,7 @@
               <b>{{ Math.round(printCtl.enclosure[f]) }} %</b>
             </label>
             <p v-if="enclosureLock" class="muted small">{{ enclosureLock }}</p>
+            <p v-else-if="enclosureHint" class="muted small">{{ enclosureHint }}</p>
           </div>
 
           <!-- Z offset is BUTTONS, never a slider: a slider makes it easy to
