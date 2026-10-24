@@ -15,6 +15,9 @@ from .test_mock_mode import _load_main, mock_client  # noqa: F401
 
 @pytest.fixture
 def main(monkeypatch, tmp_path):
+    # Never root by default, so a run as root next to a local Moonraker can not
+    # reach the local reboot fallback. The rebooter fixture opts in.
+    monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
     return _load_main(monkeypatch, tmp_path, mock=False)
 
 
