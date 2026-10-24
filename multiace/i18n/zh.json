@@ -300,7 +300,13 @@
       "neighbor_retracts": "相邻槽位清空（每槽 mm）",
       "no_multiace_record": "该任务没有 multiACE 记录 — 可能未经过预检，或在历史记录启用之前打印。",
       "ambiguous": "匹配不明确",
-      "ambiguous_hint": "同一文件的两次打印在 90 秒内启动，multiACE 无法确定归属。宁可不关联，也不猜测。"
+      "ambiguous_hint": "同一文件的两次打印在 90 秒内启动，multiACE 无法确定归属。宁可不关联，也不猜测。",
+      "reprint": "重新打印",
+      "reprint_hint": "按打印机上现有的文件原样再次打印 - 不进行预检或重写。",
+      "reprint_title": "重新打印该文件？",
+      "reprint_msg": "再次打印“{name}”？将直接使用打印机上现有的文件 - 不会重新检查装载或重新预检。",
+      "reprint_ok": "重新打印",
+      "reprint_started": "已开始重新打印：{name}"
     }
   },
   "msg": {

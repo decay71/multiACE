@@ -7805,6 +7805,7 @@ createApp({
     // =================================================================
     const history = reactive({
       loaded: false, busy: false, error: "", jobs: [], detail: null,
+      reprinting: "",
     });
     async function loadHistory() {
       history.busy = true;
@@ -7842,6 +7843,36 @@ createApp({
       return m < 60 ? `${m} min`
                     : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
     }
+    // Reprint: start the file exactly as it already sits on the printer, with
+    // no preflight and no rewrite. The swaps baked in from its first run
+    // still apply; a loadout that has moved on since is the user's call.
+    function reprintJob(row) {
+      if (!row || !row.filename || history.reprinting) return;
+      confirm({
+        title: t("ui.history.reprint_title"),
+        message: t("ui.history.reprint_msg", {name: row.filename}),
+        okLabel: t("ui.history.reprint_ok"),
+        onOk: () => doReprint(row),
+      });
+    }
+    async function doReprint(row) {
+      history.reprinting = historyRowKey(row);
+      history.error = "";
+      try {
+        const r = await fetch(`${API}/history/reprint`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({filename: row.filename}),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `${r.status}`);
+        setMacroLog(t("ui.history.reprint_started", {name: row.filename}));
+      } catch (e) {
+        history.error = e.message || String(e);
+      } finally {
+        history.reprinting = "";
+      }
+    }
     watch(tab, (v) => { if (v === "history" && !history.loaded) loadHistory(); });
     if (tab.value === "history") loadHistory();
 
@@ -7855,7 +7886,7 @@ createApp({
     });
     return {
       history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
-      fmtDuration,
+      fmtDuration, reprintJob,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,

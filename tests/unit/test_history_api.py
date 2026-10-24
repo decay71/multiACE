@@ -100,3 +100,36 @@ class TestLive:
         monkeypatch.setattr(main, "_job_history_mod", None)
         monkeypatch.setattr(Path, "is_file", lambda self: False)
         assert c.get("/api/history").status_code == 503
+
+
+class TestReprint:
+    def test_mock_mode_acknowledges(self, mock_client):
+        r = mock_client.post("/api/history/reprint", json={"filename": "a.gcode"})
+        assert r.json() == {"ok": True, "filename": "a.gcode", "mock": True}
+
+    def test_a_blank_filename_is_rejected(self, mock_client):
+        assert mock_client.post("/api/history/reprint",
+                                json={"filename": "  "}).status_code == 400
+
+    def test_it_starts_the_file_through_moonraker(self, live, monkeypatch):
+        main, c, _ = live
+        sent = []
+
+        async def fake(path, body=None, timeout=30.0):
+            sent.append((path, body))
+            return {}
+        monkeypatch.setattr(main, "_mr_post", fake)
+        assert c.post("/api/history/reprint",
+                      json={"filename": "a.gcode"}).json()["ok"] is True
+        assert sent == [("/printer/print/start", {"filename": "a.gcode"})]
+
+    def test_a_moonraker_error_is_passed_on(self, live, monkeypatch):
+        import httpx
+        main, c, _ = live
+
+        async def boom(path, body=None, timeout=30.0):
+            raise httpx.ConnectError("down")
+        monkeypatch.setattr(main, "_mr_post", boom)
+        r = c.post("/api/history/reprint", json={"filename": "a.gcode"})
+        assert r.status_code == 502
+

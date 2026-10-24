@@ -6241,6 +6241,31 @@ async def history_list(request: Request, limit: int = 50) -> dict:
     return {"jobs": jobs[:limit]}
 
 
+class _ReprintRequest(BaseModel):
+    filename: str
+
+
+@app.post("/api/history/reprint")
+async def history_reprint(request: Request, req: _ReprintRequest) -> dict:
+    """Print a history job's file again, exactly as it already sits on the
+    printer: no preflight, no rewrite. The swap macros baked in from its
+    first run still apply; a loadout that has moved on since is on the
+    user, the same as a reprint from Fluidd."""
+    filename = (req.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename required")
+    if _mock_enabled(request):
+        return {"ok": True, "filename": filename, "mock": True}
+    try:
+        await _mr_post("/printer/print/start", {"filename": filename})
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code,
+                            detail=f"moonraker: {e.response.text}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"moonraker: {e}")
+    return {"ok": True, "filename": filename}
+
+
 @app.get("/api/history/{job_id}")
 async def history_detail(job_id: str, request: Request) -> dict:
     if _mock_enabled(request):

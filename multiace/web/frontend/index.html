@@ -1554,10 +1554,10 @@
         </button>
       </div>
       <p v-if="history.error" class="error">{{ history.error }}</p>
-      <p v-else-if="history.loaded && !history.jobs.length" class="muted">
+      <p v-if="history.loaded && !history.error && !history.jobs.length" class="muted">
         {{ t('ui.history.empty') }}
       </p>
-      <div v-else class="history-scroll">
+      <div v-if="history.jobs.length" class="history-scroll">
         <table class="history-table">
           <thead>
             <tr>
@@ -1568,6 +1568,7 @@
               <th>{{ t('ui.history.swaps') }}</th>
               <th>{{ t('ui.history.filament') }}</th>
               <th>{{ t('ui.history.result') }}</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -1587,9 +1588,18 @@
                 <td>{{ row.multiace ? row.multiace.toolchanges : '–' }}</td>
                 <td>{{ row.filament_used ? Math.round(row.filament_used / 1000) + ' m' : '–' }}</td>
                 <td><span class="pill">{{ row.status || '–' }}</span></td>
+                <td>
+                  <button v-if="row.filename" class="reprint-btn"
+                          :disabled="isPrinting || history.reprinting !== ''"
+                          :title="t('ui.history.reprint_hint')"
+                          @click.stop="reprintJob(row)">
+                    {{ history.reprinting === historyRowKey(row)
+                       ? t('ui.preflight.sending') : t('ui.history.reprint') }}
+                  </button>
+                </td>
               </tr>
               <tr v-if="history.detail === historyRowKey(row)" class="history-detail">
-                <td colspan="7">
+                <td colspan="8">
                   <div v-if="row.multiace">
                     <p><b>{{ t('ui.history.plan') }}:</b> {{ row.multiace.plan || '–' }}
                        · <b>{{ t('ui.history.retries') }}:</b> {{ row.multiace.load_retries }}</p>

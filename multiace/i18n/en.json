@@ -853,7 +853,13 @@
       "neighbor_retracts": "Neighbour clearance (mm per slot)",
       "no_multiace_record": "No multiACE record for this job - it was printed without a preflight, or before history was recording.",
       "ambiguous": "ambiguous match",
-      "ambiguous_hint": "Two prints of this file started within 90 s of each other, so multiACE cannot tell which record belongs to it. Shown unjoined rather than guessed."
+      "ambiguous_hint": "Two prints of this file started within 90 s of each other, so multiACE cannot tell which record belongs to it. Shown unjoined rather than guessed.",
+      "reprint": "Reprint",
+      "reprint_hint": "Print this file again, exactly as it already is on the printer - no preflight or rewrite runs.",
+      "reprint_title": "Reprint this file?",
+      "reprint_msg": "Start printing \"{name}\" again? This uses the file as it already is on the printer - it will not re-check the loadout or re-run preflight.",
+      "reprint_ok": "Reprint",
+      "reprint_started": "Reprint started: {name}"
     }
   },
   "msg": {

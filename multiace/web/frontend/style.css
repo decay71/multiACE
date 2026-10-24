@@ -2033,3 +2033,4 @@ body:has(.panel) .overlay .dialog {
 .history-swaps td { padding: .1rem .6rem .1rem 0; }
 .history-table .swatch { display: inline-block; width: .9rem; height: .9rem;
   margin-right: 2px; vertical-align: middle; }
+.history-table .reprint-btn { white-space: nowrap; }
