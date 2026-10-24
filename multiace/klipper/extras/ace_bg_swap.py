@@ -41,7 +41,7 @@ import logging
 import chelper
 from . import force_move
 
-BG_SWAP_VERSION = 'v0.9.1' # Oct 22 2026 | Author: DocX-Tech
+BG_SWAP_VERSION = 'v0.9'
 
 # --- background LOAD (the BG-Load v1 feature) ---
 # The bowden feed runs the full padded get_load_length and is stopped by the

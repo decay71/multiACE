@@ -1,7 +1,7 @@
 # ACE_BG_WAIT Architectural Specification & Roadmap
 
 ## 1. Intent
-`ACE_BG_WAIT` is a non-blocking Klipper G-code command that pauses an incoming toolhead's arrival until a background swap on a docked toolhead reaches the `PULL` phase or a late `HEAT` thermal threshold, preventing print head collisions and minimizing cycle time.
+`ACE_BG_WAIT` is a non-blocking Klipper G-code command that pauses an incoming toolhead's arrival until a background swap on a docked toolhead reaches the `PULL` phase or a late `HEAT` thermal threshold, keeping the docked head's cold pull from being aborted and minimizing cycle time.
 
 ## 2. Strict Constraints & Architectural Guardrails
 * **Zero Edits to `ace.py`:** All new logic, command registrations, and phase accessors must live exclusively in `ace_bg_swap.py`. Access ACE state via `self.printer.lookup_object('ace', None)` using safe `getattr` fallbacks.
@@ -38,7 +38,7 @@
 
 ### Milestone 5: Wait Loop & Timeout Handling
 - [ ] 5.1: Implement reactor polling loop checking for phase transition to `RETRACT`.
-- [ ] 5.2: Add conservative timeout guard (15–20s) to prevent indefinite print stalls.
+- [ ] 5.2: Add timeout guard sized to cover remaining PULL work (including waittemp/passive cooldown) to prevent premature aborts or indefinite print stalls.
 - [ ] 5.3: Implement graceful fallback exit on timeout or pass-through.
 
 ### Milestone 6: Post-Processor Integration & Verification
