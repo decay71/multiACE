@@ -31,10 +31,10 @@
 - [x] 3.4: Verify live phase transitions output correctly via test harness.
 
 ### Milestone 4: Self-Contained Park & Restore (Option A)
-- [ ] 4.1: Snapshot current toolhead coordinates prior to park move.
-- [ ] 4.2: Move active toolhead to designated discard position upon wait eligibility.
-- [ ] 4.3: Restore previous coordinates cleanly upon wait completion or exit.
-- [ ] 4.4: Verify arrival `T` macro receives expected toolhead state.
+- [x] 4.1: Snapshot current toolhead coordinates prior to park move.
+- [x] 4.2: Move active toolhead to designated discard position upon wait eligibility.
+- [x] 4.3: Restore previous coordinates cleanly upon wait completion or exit.
+- [x] 4.4: Verify arrival `T` macro receives expected toolhead state.
 
 ### Milestone 5: Wait Loop & Timeout Handling
 - [ ] 5.1: Implement reactor polling loop checking for phase transition to `RETRACT`.

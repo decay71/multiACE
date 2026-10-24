@@ -432,6 +432,80 @@ class AceBgSwap:
         self._last_gating_decision[head] = details
         return False, details
 
+    def _snapshot_active_position(self):
+        """Milestone 4.1: Capture the active toolhead coordinates, speed, and coordinate modes."""
+        try:
+            toolhead = self.printer.lookup_object('toolhead')
+            gcode_move = self.printer.lookup_object('gcode_move')
+            homed = toolhead.get_status(self.reactor.monotonic()).get('homed_axes', '')
+            if 'x' not in homed or 'y' not in homed or 'z' not in homed:
+                return None  # Axes not homed; cannot safely park or restore
+            saved_pos = toolhead.get_position()[:3]
+            saved_speed = gcode_move.speed
+            saved_absolute = gcode_move.absolute_coord
+            saved_e_base = gcode_move.base_position[3]
+            saved_e_last = gcode_move.last_position[3]
+            return {
+                'pos': saved_pos,
+                'speed': saved_speed,
+                'absolute': saved_absolute,
+                'e_base': saved_e_base,
+                'e_last': saved_e_last,
+            }
+        except Exception as e:
+            logging.info('[multiACE] [bg-wait] snapshot failed: %s' % e)
+            return None
+
+    def _park_at_discard(self, snapshot):
+        """Milestone 4.2: Perform a small Z-hop and move to the discard position."""
+        if snapshot is None:
+            return False
+        try:
+            toolhead = self.printer.lookup_object('toolhead')
+            self.gcode.run_script_from_command('G91')
+            self.gcode.run_script_from_command('G1 Z2.0 F600')
+            self.gcode.run_script_from_command('G90')
+            self.gcode.run_script_from_command('MOVE_TO_DISCARD_FILAMENT_POSITION')
+            toolhead.wait_moves()
+            logging.info('[multiACE] [bg-wait] active toolhead parked at discard position')
+            return True
+        except Exception as e:
+            logging.info('[multiACE] [bg-wait] park at discard failed: %s' % e)
+            return False
+
+    def _restore_active_position(self, snapshot):
+        """Milestone 4.3: Restore toolhead to the snapshotted coordinates with Z clearance hop."""
+        if snapshot is None:
+            return
+        try:
+            toolhead = self.printer.lookup_object('toolhead')
+            gcode_move = self.printer.lookup_object('gcode_move')
+            saved_pos = snapshot['pos']
+            saved_speed = snapshot['speed']
+            saved_absolute = snapshot['absolute']
+            saved_e_base = snapshot['e_base']
+            saved_e_last = snapshot['e_last']
+
+            # Slicer E coordinate view unchanged
+            e_diff = gcode_move.last_position[3] - saved_e_last
+            gcode_move.base_position[3] = saved_e_base + e_diff
+
+            # Approach pattern matching inline swap tail: XY approach +2mm above print pos
+            self.gcode.run_script_from_command('G90')
+            self.gcode.run_script_from_command('G0 Z%.3f F600' % (saved_pos[2] + 3.0))
+            self.gcode.run_script_from_command('G0 Y%.3f F12000' % saved_pos[1])
+            self.gcode.run_script_from_command('G0 X%.3f F12000' % saved_pos[0])
+            self.gcode.run_script_from_command('G0 Z%.3f F600' % (saved_pos[2] + 2.0))
+            toolhead.wait_moves()
+
+            if saved_absolute:
+                self.gcode.run_script_from_command('G90')
+            self.gcode.run_script_from_command('G1 F%d' % int(saved_speed * 60))
+            logging.info('[multiACE] [bg-wait] restored active position X=%.2f Y=%.2f Z=%.2f'
+                         % (saved_pos[0], saved_pos[1], saved_pos[2]))
+        except Exception as e:
+            logging.info('[multiACE] [bg-wait] position restore failed: %s' % e)
+
 
     def _set_state(self, head, new_state):
         """Centralized state setter (Milestone 3): updates self.state[head] and
@@ -1365,7 +1439,24 @@ class AceBgSwap:
             gcmd.respond_info('[bg-wait] ACE_BG_WAIT HEAD=%d: %s (%s)'
                               % (self._dh(head), verdict, details.get('reason', '')))
 
-        # Milestone 3 gating only: returns cleanly so far (parking & wait loop in M4/M5)
+        # Milestone 4: Option A self-contained park & restore
+        # If eligible (or FORCE_PARK=1 for bench testing), snapshot coordinates,
+        # park over discard chute, and restore coordinates cleanly upon exit.
+        force_park = gcmd.get_int('FORCE_PARK', 0)
+        if eligible or force_park:
+            snapshot = self._snapshot_active_position()
+            if snapshot is not None:
+                parked = self._park_at_discard(snapshot)
+                if parked:
+                    if debug:
+                        gcmd.respond_info('[bg-wait] HEAD=%d parked at discard position' % self._dh(head))
+                    # Milestone 4 validation dwell / wait placeholder (Milestone 5 adds reactor wait loop)
+                    dwell = gcmd.get_float('DWELL', 0.0)
+                    if dwell > 0.0:
+                        self.reactor.pause(self.reactor.monotonic() + dwell)
+                    self._restore_active_position(snapshot)
+                    if debug:
+                        gcmd.respond_info('[bg-wait] HEAD=%d restored to original coordinates' % self._dh(head))
 
     cmd_ACE_BG_STATUS_help = '[EXPERIMENTAL] Show background unload states.'
     PHASE_ORDER = [
