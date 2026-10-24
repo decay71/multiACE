@@ -54,7 +54,7 @@
       "mode_1": "Kammer kühlen",
       "mode_2": "Kammer vorheizen",
       "mode_3": "Heiße Kammer",
-      "enc_locked_print": "Nicht während eines Drucks: der Gehäusemodus kommt aus der Slicer-Datei.",
+      "enc_hint_print": "Ein laufender Modus kann den Abluftwert während des Drucks wieder überschreiben.",
       "enc_locked_mode": "Das Gehäuse läuft in einem Modus und steuert seine Lüfter selbst. Zuerst Lüfter aus.",
       "restart_blocked": "Gesperrt, solange ein Druck läuft",
       "light": "Licht",
