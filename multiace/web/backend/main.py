@@ -131,6 +131,10 @@ def _resolve_cfg_path() -> str:
     return _first_existing(candidates)
 
 MULTIACE_CFG_PATH = _resolve_cfg_path()
+# multiACE's own runtime data (print history, swap calibration), written by
+# ace.py and read here.
+MULTIACE_DATA_DIR = os.environ.get(
+    "MULTIACE_DATA_DIR", os.path.join(MULTIACE_PRINTER_DATA, "multiace"))
 SNAPSHOT_DIR = os.environ.get(
     "MULTIACE_SNAPSHOT_DIR",
     os.path.join(_CFG_EXT_DIR, "multiace", "filament_snapshots"),
@@ -6177,6 +6181,100 @@ async def ws(websocket: WebSocket) -> None:
         return
     except Exception:
         return
+
+# ---------------------------------------------------------------------------
+# Print history
+# ---------------------------------------------------------------------------
+
+_job_history_mod = None
+
+
+def _require_history():
+    """job_history.py, loaded by path: installed on the printer the tools
+    live flat in <config>/tools, from a checkout they sit in multiace/tools.
+    A missing module answers 503 rather than taking the backend down."""
+    global _job_history_mod
+    if _job_history_mod is None:
+        import importlib.util
+        for cand in (Path(_CFG_DIR) / "tools" / "job_history.py",
+                     Path(__file__).resolve().parent.parent.parent
+                     / "tools" / "job_history.py"):
+            if not cand.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(
+                "multiace_job_history", cand)
+            _job_history_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_job_history_mod)
+            break
+    if _job_history_mod is None:
+        raise HTTPException(
+            status_code=503,
+            detail="job_history.py is not installed - re-run "
+                   "install_multiace.sh")
+    return _job_history_mod
+
+
+async def _moonraker_history(limit: int) -> list[dict]:
+    try:
+        data = await _mr_get(f"/server/history/list?limit={int(limit)}"
+                             f"&order=desc")
+    except Exception:
+        return []
+    jobs = (data.get("result") or {}).get("jobs") or []
+    return jobs if isinstance(jobs, list) else []
+
+
+@app.get("/api/history")
+async def history_list(request: Request, limit: int = 50) -> dict:
+    """Moonraker's job history joined with multiACE's own records.
+
+    A join, not a copy: Moonraker stays authoritative for duration and
+    result, multiACE's record for the plan, the assignment and the swaps,
+    which Moonraker cannot know."""
+    limit = max(1, min(int(limit or 50), 200))
+    if _mock_enabled(request):
+        mock = _mock_load("mock_history.json") or {}
+        return {"jobs": (mock.get("jobs") or [])[:limit], "mock": True}
+    hist = _require_history()
+    records = hist.load_records(MULTIACE_DATA_DIR, limit=limit)
+    jobs = hist.join_history(await _moonraker_history(limit), records)
+    return {"jobs": jobs[:limit]}
+
+
+@app.get("/api/history/{job_id}")
+async def history_detail(job_id: str, request: Request) -> dict:
+    if _mock_enabled(request):
+        mock = _mock_load("mock_history.json") or {}
+        for row in mock.get("jobs") or []:
+            if row.get("id") == job_id:
+                return row
+        raise HTTPException(status_code=404, detail="job not found")
+    hist = _require_history()
+    for rec in hist.load_records(MULTIACE_DATA_DIR):
+        if rec.get("id") == job_id:
+            return {"multiace": rec, "accuracy": hist.estimate_accuracy(rec)}
+    raise HTTPException(status_code=404, detail="job not found")
+
+
+@app.delete("/api/history/{job_id}")
+async def history_delete(job_id: str) -> dict:
+    if not _DEBUG_FLAG_PATH.exists():
+        raise HTTPException(status_code=403,
+                            detail="enable persistent updates (debug mode) "
+                                   "to edit the history")
+    if not _require_history().delete_record(MULTIACE_DATA_DIR, job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"ok": True, "deleted": job_id}
+
+
+@app.post("/api/history/clear")
+async def history_clear() -> dict:
+    if not _DEBUG_FLAG_PATH.exists():
+        raise HTTPException(status_code=403,
+                            detail="enable persistent updates (debug mode) "
+                                   "to clear the history")
+    return {"ok": _require_history().clear_records(MULTIACE_DATA_DIR)}
+
 
 # The app shell carries no Cache-Control of its own - StaticFiles sends only
 # ETag/Last-Modified - so browsers fall back to HEURISTIC freshness and may
