@@ -6,7 +6,7 @@
 ## 2. Strict Constraints & Architectural Guardrails
 * **Zero Edits to `ace.py`:** All new logic, command registrations, and phase accessors must live exclusively in `ace_bg_swap.py`. Access ACE state via `self.printer.lookup_object('ace', None)` using safe `getattr` fallbacks.
 * **Option A Coordinate Restoration:** `ACE_BG_WAIT` must be self-contained. Snapshot active print coordinates (`gcode_move`), move to the discard position while waiting, and restore coordinates cleanly before returning. Do not mutate arrival `T` macros.
-* **Dynamic Tip-Forming Delta:** Do NOT hardcode target temperatures. Query the active heater's live temperature and compare it against the heater's current target (derived from slot/toolhead tip-forming configuration). Eligibility is gated strictly to `(target - temp) <= 15.0°C` when heating up, or when in the `PULL` phase.
+* **Dynamic Tip-Forming Delta:** Do NOT hardcode target temperatures. Query the active heater's live temperature and compare it against the heater's current target (derived from slot/toolhead tip-forming configuration). Eligibility is gated strictly to `(target - temp) <= 25.0°C` when heating up, or when in the `PULL` phase.
 * **Graceful Fallback:** Never raise a Python exception or call `M112`/pause the print on timeout or abort. If an eligibility condition is not met or a timeout expires, log a debug message and return cleanly to allow the standard inline swap logic to proceed.
 * **Non-Blocking Execution:** Any waiting must use safe Klipper reactor polling delays, never synchronous `time.sleep()`.
 

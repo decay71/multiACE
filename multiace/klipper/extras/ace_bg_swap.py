@@ -246,6 +246,8 @@ class AceBgSwap:
         self._heat_start_time = {}
         self._pull_start_time = {}
         self._last_gating_decision = {}
+        self._abort_requested = set()
+
 
         # stall-free move mechanic (former ace_bg_move module)
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -352,7 +354,7 @@ class AceBgSwap:
         """Milestone 3 gating helper: returns (eligible: bool, details: dict).
         A docked head is eligible to hold the arriving toolhead if:
           1. It is in the PULL phase (cold pull active), OR
-          2. It is in late HEAT where (target - current_temp) <= 15.0°C.
+          2. It is in late HEAT where (target - current_temp) <= 25.0°C.
         All other phases return eligible=False to let inline paths take over cleanly."""
         cur_phase = self.phase(head).upper()
         now = self.reactor.monotonic()
@@ -410,15 +412,15 @@ class AceBgSwap:
                 if details['tgt_temp'] is not None and details['tgt_temp'] > 0.:
                     delta = details['tgt_temp'] - details['cur_temp']
                     details['delta_temp'] = round(delta, 1)
-                    if delta <= 15.0:
+                    if delta <= 25.0:
                         details['eligible'] = True
-                        details['reason'] = ('late heat-up stage (cur=%.1fC, tgt=%.1fC, delta=%.1fC <= 15.0C, heat elapsed: %ss)'
+                        details['reason'] = ('late heat-up stage (cur=%.1fC, tgt=%.1fC, delta=%.1fC <= 25.0C, heat elapsed: %ss)'
                                              % (details['cur_temp'], details['tgt_temp'], delta, details['heat_elapsed_s'] or 0))
                         self._last_gating_decision[head] = details
                         return True, details
                     else:
                         details['eligible'] = False
-                        details['reason'] = ('early heat-up stage (cur=%.1fC, tgt=%.1fC, delta=%.1fC > 15.0C, heat elapsed: %ss)'
+                        details['reason'] = ('early heat-up stage (cur=%.1fC, tgt=%.1fC, delta=%.1fC > 25.0C, heat elapsed: %ss)'
                                              % (details['cur_temp'], details['tgt_temp'], delta, details['heat_elapsed_s'] or 0))
                         self._last_gating_decision[head] = details
                         return False, details
@@ -655,14 +657,14 @@ class AceBgSwap:
         return False
 
     def _check_docked(self, toolhead, ext, head):
-        # Toolchange interlock, engine-side: if a T picked this head while
-        # the bg op runs, ABORT immediately - the choreography must never
-        # purge/pull on a head that is now printing. The abort keeps
-        # head_source intact, so the inline swap that follows simply does a
-        # normal full unload (a re-unload of a partially pulled filament is
-        # the regular retry case).
-        if toolhead.get_extruder() is ext:
-            raise RuntimeError('head %d was PICKED mid-sequence - aborted, '
+        # Toolchange & wait interlock, engine-side: if a T picked this head while
+        # the bg op runs, OR if ACE_BG_WAIT requested an active abort, ABORT immediately -
+        # the choreography must never purge/pull on a head that is active or aborted.
+        # The abort keeps head_source intact, so the inline swap that follows simply does a
+        # normal full unload.
+        if head in self._abort_requested or toolhead.get_extruder() is ext:
+            self._abort_requested.discard(head)
+            raise RuntimeError('head %d was ABORTED by arrival wait - '
                                'inline paths take over' % self._dh(head))
 
     def _bg_fan_obj(self, head):
@@ -1424,7 +1426,7 @@ class AceBgSwap:
             gcmd.respond_info('[bg-wait] HEAD=%d DECISION: %s' % (self._dh(head), verdict))
             gcmd.respond_info('[bg-wait]   Phase: %s' % details.get('phase', 'UNKNOWN'))
             if details.get('cur_temp') is not None and details.get('tgt_temp') is not None:
-                gcmd.respond_info('[bg-wait]   Temp: %.1fC / Target: %.1fC (Delta: %.1fC, Threshold: <=15.0C)'
+                gcmd.respond_info('[bg-wait]   Temp: %.1fC / Target: %.1fC (Delta: %.1fC, Threshold: <=25.0C)'
                                   % (details['cur_temp'], details['tgt_temp'], details.get('delta_temp') or 0.0))
             if details.get('heat_elapsed_s') is not None:
                 gcmd.respond_info('[bg-wait]   Heat Elapsed: %.1fs (Total Op Elapsed: %ss)'
@@ -1464,7 +1466,7 @@ class AceBgSwap:
                             wait_budget = 90.0
                         else:
                             # During late HEAT: remaining heat seconds (delta / ~5C/s) + full PULL budget
-                            delta = details.get('delta_temp') or 15.0
+                            delta = details.get('delta_temp') or 25.0
                             heat_rem = max(3.0, (delta / 4.0))
                             wait_budget = heat_rem + 90.0
 
@@ -1506,6 +1508,26 @@ class AceBgSwap:
                     self._restore_active_position(snapshot)
                     if debug:
                         gcmd.respond_info('[bg-wait] HEAD=%d restored to original coordinates' % self._dh(head))
+        else:
+            # Active Abort on Ineligibility:
+            # If the head is busy with an early background swap (early HEAT), actively kill the
+            # background operation and zero the heater immediately, ensuring the motor never queues a purge!
+            if head in self._busy:
+                self._abort_requested.add(head)
+                ext = self.printer.lookup_object(self._ext_name(head), None)
+                if ext is not None:
+                    try:
+                        self.printer.lookup_object('heaters').set_temperature(ext.get_heater(), 0.)
+                    except Exception:
+                        pass
+                # Await clean greenlet exit before returning so arrival T picks up a stationary, cool head
+                abort_deadline = self.reactor.monotonic() + 5.0
+                while head in self._busy and self.reactor.monotonic() < abort_deadline:
+                    self.reactor.pause(self.reactor.monotonic() + 0.10)
+                if debug:
+                    gcmd.respond_info('[bg-wait] HEAD=%d background op cleanly aborted before arrival pick'
+                                      % self._dh(head))
+
 
     cmd_ACE_BG_STATUS_help = '[EXPERIMENTAL] Show background unload states.'
     PHASE_ORDER = [
