@@ -859,7 +859,17 @@
       "reprint_title": "Diese Datei erneut drucken?",
       "reprint_msg": "\"{name}\" erneut drucken? Es wird die Datei verwendet, wie sie bereits auf dem Drucker liegt - Beladung und Preflight werden nicht erneut geprüft.",
       "reprint_ok": "Erneut drucken",
-      "reprint_started": "Erneuter Druck gestartet: {name}"
+      "reprint_started": "Erneuter Druck gestartet: {name}",
+      "stats_title": "Gemessene Wechselzeit",
+      "stats_hint": "Median über aufgezeichnete Drucke. Eine Art gilt ab {n} Messwerten als kalibriert.",
+      "stats_line": "{median} · {n} Messwerte",
+      "stats_calibrated": "kalibriert",
+      "stats_collecting": "sammelt",
+      "swap_kind": {
+        "first_load": "Erstes Laden",
+        "same_ace": "Gleiche ACE",
+        "cross_ace_inline": "ACE-übergreifend"
+      }
     }
   },
   "msg": {

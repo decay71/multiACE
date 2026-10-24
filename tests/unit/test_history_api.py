@@ -133,3 +133,20 @@ class TestReprint:
         r = c.post("/api/history/reprint", json={"filename": "a.gcode"})
         assert r.status_code == 502
 
+
+class TestSwapStats:
+    def test_the_mock_fixture_has_stats(self, mock_client):
+        j = mock_client.get("/api/history/stats/swaps").json()
+        assert j["stats"]["first_load"]["n"] == 3
+        assert j["min_samples"] >= 1
+
+    def test_live_stats_come_from_the_records(self, live):
+        main, c, data = live
+        hist = main._require_history()
+        for i in range(2):
+            hist.append_record(str(data), {
+                "id": f"j{i}", "filename": "a.gcode", "start_time": float(i),
+                "swaps": [{"kind": "same_ace", "seconds": 100 + i * 20}]})
+        s = c.get("/api/history/stats/swaps").json()["stats"]["same_ace"]
+        assert s["n"] == 2 and s["median_s"] == 110
+        assert s["calibrated"] is False

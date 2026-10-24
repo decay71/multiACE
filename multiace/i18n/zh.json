@@ -306,7 +306,17 @@
       "reprint_title": "重新打印该文件？",
       "reprint_msg": "再次打印“{name}”？将直接使用打印机上现有的文件 - 不会重新检查装载或重新预检。",
       "reprint_ok": "重新打印",
-      "reprint_started": "已开始重新打印：{name}"
+      "reprint_started": "已开始重新打印：{name}",
+      "stats_title": "实测换料时间",
+      "stats_hint": "已记录打印的中位数。某类换料达到 {n} 个样本后视为已校准。",
+      "stats_line": "{median} · {n} 个样本",
+      "stats_calibrated": "已校准",
+      "stats_collecting": "采集中",
+      "swap_kind": {
+        "first_load": "首次装载",
+        "same_ace": "同一 ACE",
+        "cross_ace_inline": "跨 ACE"
+      }
     }
   },
   "msg": {

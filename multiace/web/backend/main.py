@@ -6266,6 +6266,20 @@ async def history_reprint(request: Request, req: _ReprintRequest) -> dict:
     return {"ok": True, "filename": filename}
 
 
+@app.get("/api/history/stats/swaps")
+async def history_swap_stats(request: Request) -> dict:
+    """Measured swap time per kind (median, min, max, sample count)."""
+    hist = _require_history()
+    if _mock_enabled(request):
+        mock = _mock_load("mock_history.json") or {}
+        records = [r["multiace"] for r in mock.get("jobs") or []
+                   if r.get("multiace")]
+    else:
+        records = hist.load_records(MULTIACE_DATA_DIR)
+    return {"stats": hist.aggregate_swap_stats(records),
+            "min_samples": hist.MIN_CALIBRATION_SAMPLES}
+
+
 @app.get("/api/history/{job_id}")
 async def history_detail(job_id: str, request: Request) -> dict:
     if _mock_enabled(request):

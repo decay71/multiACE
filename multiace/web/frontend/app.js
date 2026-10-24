@@ -7805,7 +7805,7 @@ createApp({
     // =================================================================
     const history = reactive({
       loaded: false, busy: false, error: "", jobs: [], detail: null,
-      reprinting: "",
+      reprinting: "", stats: [], minSamples: 5,
     });
     async function loadHistory() {
       history.busy = true;
@@ -7816,11 +7816,29 @@ createApp({
         if (!r.ok) throw new Error(j.detail || `${r.status}`);
         history.jobs = j.jobs || [];
         history.loaded = true;
+        loadHistoryStats();
       } catch (e) {
         history.error = e.message || String(e);
       } finally {
         history.busy = false;
       }
+    }
+    // Measured swap time per kind. Secondary to the table: a failure here
+    // just leaves the row out.
+    async function loadHistoryStats() {
+      try {
+        const r = await fetch(`${API}/history/stats/swaps`);
+        if (!r.ok) return;
+        const j = await r.json();
+        history.minSamples = j.min_samples || history.minSamples;
+        history.stats = Object.entries(j.stats || {}).map(
+          ([kind, s]) => ({kind, ...s}));
+      } catch (e) {}
+    }
+    function swapKindLabel(kind) {
+      const key = "ui.history.swap_kind." + kind;
+      const v = t(key);
+      return v === key ? kind : v;
     }
     function historyRowKey(row) {
       return (row && (row.id || row.job_id || row.filename)) || "";
@@ -7839,6 +7857,7 @@ createApp({
     }
     function fmtDuration(sec) {
       if (!sec || sec < 0) return "–";
+      if (sec < 120) return `${Math.round(sec)} s`;
       const m = Math.round(sec / 60);
       return m < 60 ? `${m} min`
                     : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
@@ -7886,7 +7905,7 @@ createApp({
     });
     return {
       history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
-      fmtDuration, reprintJob,
+      fmtDuration, reprintJob, swapKindLabel,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,

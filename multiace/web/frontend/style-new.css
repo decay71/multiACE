@@ -1521,3 +1521,5 @@ html[data-theme="new"] .history-table th { padding: 10px 12px; font-size: 11px; 
 html[data-theme="new"] .history-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
 html[data-theme="new"] .history-row:hover { background: var(--nt-sel); }
 html[data-theme="new"] .history-detail td { background: var(--nt-sel); }
+html[data-theme="new"] .history-stat { padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+html[data-theme="new"] .history-stat .ok { color: var(--nt-ok); }

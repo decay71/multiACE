@@ -2034,3 +2034,6 @@ body:has(.panel) .overlay .dialog {
 .history-table .swatch { display: inline-block; width: .9rem; height: .9rem;
   margin-right: 2px; vertical-align: middle; }
 .history-table .reprint-btn { white-space: nowrap; }
+.history-stats { display: flex; flex-wrap: wrap; gap: .4rem .9rem; align-items: baseline; margin: .4rem 0 .8rem; }
+.history-stat { font-size: .85rem; }
+.history-stat .ok { color: var(--ok); }

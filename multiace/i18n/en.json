@@ -859,7 +859,17 @@
       "reprint_title": "Reprint this file?",
       "reprint_msg": "Start printing \"{name}\" again? This uses the file as it already is on the printer - it will not re-check the loadout or re-run preflight.",
       "reprint_ok": "Reprint",
-      "reprint_started": "Reprint started: {name}"
+      "reprint_started": "Reprint started: {name}",
+      "stats_title": "Measured swap time",
+      "stats_hint": "Median over recorded prints. A kind counts as calibrated once it has {n} samples.",
+      "stats_line": "{median} · {n} samples",
+      "stats_calibrated": "calibrated",
+      "stats_collecting": "collecting",
+      "swap_kind": {
+        "first_load": "First load",
+        "same_ace": "Same ACE",
+        "cross_ace_inline": "Cross-ACE"
+      }
     }
   },
   "msg": {

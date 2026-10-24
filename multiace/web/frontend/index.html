@@ -1554,6 +1554,17 @@
         </button>
       </div>
       <p v-if="history.error" class="error">{{ history.error }}</p>
+      <div v-if="history.stats.length" class="history-stats"
+           :title="t('ui.history.stats_hint', {n: history.minSamples})">
+        <span class="muted small">{{ t('ui.history.stats_title') }}</span>
+        <span v-for="s in history.stats" :key="'st-'+s.kind" class="history-stat">
+          <b>{{ swapKindLabel(s.kind) }}</b>
+          {{ t('ui.history.stats_line', {median: fmtDuration(s.median_s), n: s.n}) }}
+          <span class="small" :class="s.calibrated ? 'ok' : 'muted'">
+            {{ s.calibrated ? t('ui.history.stats_calibrated')
+                            : t('ui.history.stats_collecting') }}</span>
+        </span>
+      </div>
       <p v-if="history.loaded && !history.error && !history.jobs.length" class="muted">
         {{ t('ui.history.empty') }}
       </p>
