@@ -241,6 +241,12 @@ class AceBgSwap:
         # (_dwell_fan) - per head, the engine is serialized but the OFF
         # must survive any exit path.
         self._dwell_fan_prev = {}
+        # Milestone 3 timing & telemetry tracking for eligibility gating
+        self._op_start_time = {}
+        self._heat_start_time = {}
+        self._pull_start_time = {}
+        self._last_gating_decision = {}
+
         # stall-free move mechanic (former ace_bg_move module)
         ffi_main, ffi_lib = chelper.get_ffi()
         self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
@@ -341,6 +347,91 @@ class AceBgSwap:
         """Phase accessor helper (Milestone 3.1): returns the active phase/state
         string for a given toolhead index, defaulting to 'IDLE' when unmapped."""
         return self.state.get(head, 'IDLE')
+
+    def is_wait_eligible(self, head):
+        """Milestone 3 gating helper: returns (eligible: bool, details: dict).
+        A docked head is eligible to hold the arriving toolhead if:
+          1. It is in the PULL phase (cold pull active), OR
+          2. It is in late HEAT where (target - current_temp) <= 15.0°C.
+        All other phases return eligible=False to let inline paths take over cleanly."""
+        cur_phase = self.phase(head).upper()
+        now = self.reactor.monotonic()
+        details = {
+            'head': head,
+            'phase': cur_phase,
+            'busy': head in self._busy,
+            'eligible': False,
+            'cur_temp': None,
+            'tgt_temp': None,
+            'delta_temp': None,
+            'op_elapsed_s': None,
+            'heat_elapsed_s': None,
+            'pull_elapsed_s': None,
+            'reason': ''
+        }
+
+        if head in self._op_start_time:
+            details['op_elapsed_s'] = round(now - self._op_start_time[head], 1)
+        if head in self._heat_start_time:
+            details['heat_elapsed_s'] = round(now - self._heat_start_time[head], 1)
+        if head in self._pull_start_time:
+            details['pull_elapsed_s'] = round(now - self._pull_start_time[head], 1)
+
+        if head not in self._busy or cur_phase in ('IDLE', 'DONE') or cur_phase.startswith('FAILED'):
+            details['reason'] = 'head not busy with background operation (%s)' % cur_phase
+            self._last_gating_decision[head] = details
+            return False, details
+
+        # Check PULL eligibility
+        if cur_phase == 'PULL' or cur_phase.startswith('PULL'):
+            details['eligible'] = True
+            details['reason'] = 'cold pull choreography actively in progress (pull elapsed: %ss)' % (details['pull_elapsed_s'] or 0)
+            self._last_gating_decision[head] = details
+            return True, details
+
+        # Check late HEAT eligibility with dynamic heater query
+        if cur_phase == 'HEAT' or cur_phase.startswith('HEAT'):
+            ext = self.printer.lookup_object(self._ext_name(head), None)
+            heater = ext.get_heater() if ext is not None else None
+            if heater is not None:
+                cur_temp, tgt_temp = heater.get_temp(now)
+                details['cur_temp'] = round(cur_temp, 1)
+                details['tgt_temp'] = round(tgt_temp, 1)
+                # If heater target is 0 or unasserted, resolve tipform unload setpoint dynamically
+                if tgt_temp <= 0.:
+                    ace = self.printer.lookup_object('ace', None)
+                    if ace is not None and hasattr(ace, 'tipform_unload_temp_for'):
+                        try:
+                            _tf_temp = ace.tipform_unload_temp_for(head)
+                            if _tf_temp and _tf_temp > 0:
+                                details['tgt_temp'] = round(_tf_temp, 1)
+                        except Exception:
+                            pass
+                if details['tgt_temp'] is not None and details['tgt_temp'] > 0.:
+                    delta = details['tgt_temp'] - details['cur_temp']
+                    details['delta_temp'] = round(delta, 1)
+                    if delta <= 15.0:
+                        details['eligible'] = True
+                        details['reason'] = ('late heat-up stage (cur=%.1fC, tgt=%.1fC, delta=%.1fC <= 15.0C, heat elapsed: %ss)'
+                                             % (details['cur_temp'], details['tgt_temp'], delta, details['heat_elapsed_s'] or 0))
+                        self._last_gating_decision[head] = details
+                        return True, details
+                    else:
+                        details['eligible'] = False
+                        details['reason'] = ('early heat-up stage (cur=%.1fC, tgt=%.1fC, delta=%.1fC > 15.0C, heat elapsed: %ss)'
+                                             % (details['cur_temp'], details['tgt_temp'], delta, details['heat_elapsed_s'] or 0))
+                        self._last_gating_decision[head] = details
+                        return False, details
+
+            details['reason'] = 'heater unreadable in HEAT phase'
+            self._last_gating_decision[head] = details
+            return False, details
+
+        # Ineligible for any post-pull phase (RETRACT, BOOKKEEP, LD_FEED, etc.)
+        details['reason'] = 'phase %s is past PULL stage; arrival hold not applicable' % cur_phase
+        self._last_gating_decision[head] = details
+        return False, details
+
 
     def _set_state(self, head, new_state):
         """Centralized state setter (Milestone 3): updates self.state[head] and
@@ -1062,6 +1153,10 @@ class AceBgSwap:
         except Exception:
             pass
 
+        self._op_start_time[head] = self.reactor.monotonic()
+        self._heat_start_time.pop(head, None)
+        self._pull_start_time.pop(head, None)
+
         self._busy.add(head)
         self._set_state(head, 'QUEUED')
         self._say('head %d: bg unload queued [%s] (ACE %d slot %d, '
@@ -1211,6 +1306,10 @@ class AceBgSwap:
         if anti_ooze < 0.:
             anti_ooze = float(getattr(ace, 'swap_anti_ooze_retract', 10))
 
+        self._op_start_time[head] = self.reactor.monotonic()
+        self._heat_start_time.pop(head, None)
+        self._pull_start_time.pop(head, None)
+
         self._busy.add(head)
         self._set_state(head, 'QUEUED')
         self._say('head %d: bg SWAP queued [%s] (%s -> ACE %d slot %d, '
@@ -1235,17 +1334,38 @@ class AceBgSwap:
 
     def cmd_ACE_BG_WAIT(self, gcmd):
         # HEAD is required and must be a valid toolhead index (0-3), same
-        # contract as the other ACE_BG_* commands. gcode.get_int raises a
-        # command error (not a printer shutdown) if it is missing or
-        # out of range.
+        # contract as the other ACE_BG_* commands.
         head = gcmd.get_int('HEAD', minval=0, maxval=3)
-        # Milestone 1 skeleton: parse/validate only. Wait loop, park/restore,
-        # and eligibility live in later milestones; returning here is the
-        # graceful pass-through so an early stamp cannot stall a print.
-        gcmd.respond_info('[bg-wait] ACE_BG_WAIT HEAD=%d (skeleton)'
-                          % self._dh(head))
-        logging.debug('[multiACE] [bg-wait] ACE_BG_WAIT HEAD=%d (skeleton)'
-                      % self._dh(head))
+        debug = gcmd.get_int('DEBUG', 0)
+
+        eligible, details = self.is_wait_eligible(head)
+        verdict = 'WAIT (ELIGIBLE)' if eligible else 'ABORT_INLINE (INELIGIBLE)'
+
+        # Production log (always to klippy.log)
+        logging.info('[multiACE] [bg-wait] HEAD=%d verdict=%s reason=%s'
+                     % (self._dh(head), verdict, details.get('reason', '')))
+
+        # Console response: brief default response, full diagnostic breakdown on DEBUG=1
+        if debug:
+            gcmd.respond_info('[bg-wait] HEAD=%d DECISION: %s' % (self._dh(head), verdict))
+            gcmd.respond_info('[bg-wait]   Phase: %s' % details.get('phase', 'UNKNOWN'))
+            if details.get('cur_temp') is not None and details.get('tgt_temp') is not None:
+                gcmd.respond_info('[bg-wait]   Temp: %.1fC / Target: %.1fC (Delta: %.1fC, Threshold: <=15.0C)'
+                                  % (details['cur_temp'], details['tgt_temp'], details.get('delta_temp') or 0.0))
+            if details.get('heat_elapsed_s') is not None:
+                gcmd.respond_info('[bg-wait]   Heat Elapsed: %.1fs (Total Op Elapsed: %ss)'
+                                  % (details['heat_elapsed_s'], details.get('op_elapsed_s') or '-'))
+            elif details.get('op_elapsed_s') is not None:
+                gcmd.respond_info('[bg-wait]   Total Op Elapsed: %.1fs' % details['op_elapsed_s'])
+            gcmd.respond_info('[bg-wait]   Reason: %s' % details.get('reason', ''))
+            gcmd.respond_info('[bg-wait]   Action: %s'
+                              % ('Holding arrival head at discard position' if eligible
+                                 else 'Passing through to inline swap'))
+        else:
+            gcmd.respond_info('[bg-wait] ACE_BG_WAIT HEAD=%d: %s (%s)'
+                              % (self._dh(head), verdict, details.get('reason', '')))
+
+        # Milestone 3 gating only: returns cleanly so far (parking & wait loop in M4/M5)
 
     cmd_ACE_BG_STATUS_help = '[EXPERIMENTAL] Show background unload states.'
     PHASE_ORDER = [
@@ -1405,6 +1525,8 @@ class AceBgSwap:
 
             # 2. Heat (async target set, greenlet-poll - never blocks gcode).
             self._set_state(head, 'HEAT')
+            self._heat_start_time[head] = self.reactor.monotonic()
+
             pheaters.set_temperature(heater, temp)
             self._say('head %d: heating to %.0f' % (self._dh(head), temp))
             deadline = self.reactor.monotonic() + HEAT_TIMEOUT
@@ -1431,6 +1553,8 @@ class AceBgSwap:
             # RETRACT segment reclaim the same length at the ACE so a V2
             # (no freewheel) never accumulates bowden slack.
             self._set_state(head, 'PULL')
+            self._pull_start_time[head] = self.reactor.monotonic()
+
             # Per-material table from [ace_tipform] (same tables as the
             # inline path); the built-in constants stay the fallback. The
             # config parser guarantees a NET pull, so the per-segment

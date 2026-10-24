@@ -25,10 +25,10 @@
 - [x] 2.4: Verify state inspection workflow without running live prints.
 
 ### Milestone 3: Phase Accessor & Dynamic Gating Logic
-- [ ] 3.1: Implement `phase(head)` helper exposing `self.state[head]` (returning `'IDLE'` fallback).
-- [ ] 3.2: Implement `is_wait_eligible(head)` helper gating on `PULL` or late `HEAT`.
-- [ ] 3.3: Add dynamic extruder heater query comparing live temp to configured tip-forming setpoint.
-- [ ] 3.4: Verify live phase transitions output correctly via test harness.
+- [x] 3.1: Implement `phase(head)` helper exposing `self.state[head]` (returning `'IDLE'` fallback).
+- [x] 3.2: Implement `is_wait_eligible(head)` helper gating on `PULL` or late `HEAT`.
+- [x] 3.3: Add dynamic extruder heater query comparing live temp to configured tip-forming setpoint.
+- [x] 3.4: Verify live phase transitions output correctly via test harness.
 
 ### Milestone 4: Self-Contained Park & Restore (Option A)
 - [ ] 4.1: Snapshot current toolhead coordinates prior to park move.
