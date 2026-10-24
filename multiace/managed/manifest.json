@@ -31,6 +31,7 @@
     "config/extended/ace.cfg",
     "config/extended/multiace/ace_vars.cfg",
     "tools/post_process_virtual_toolheads.py",
+    "tools/job_history.py",
     "i18n/",
     "web/backend/",
     "web/frontend/"
