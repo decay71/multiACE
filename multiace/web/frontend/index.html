@@ -1543,6 +1543,78 @@
       </div>
     </section>
 
+    <!-- HISTORY: Moonraker's job list joined with multiACE's own record.
+         Moonraker owns duration and result; multiACE owns the plan, the
+         assignment and the swaps. -->
+    <section v-show="tab==='history'" class="history-tab">
+      <div class="row">
+        <h3>{{ t('ui.history.title') }}</h3>
+        <button @click="loadHistory" :disabled="history.busy">
+          {{ history.busy ? t('ui.common.saving') : t('ui.common.reload') }}
+        </button>
+      </div>
+      <p v-if="history.error" class="error">{{ history.error }}</p>
+      <p v-else-if="history.loaded && !history.jobs.length" class="muted">
+        {{ t('ui.history.empty') }}
+      </p>
+      <div v-else class="history-scroll">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>{{ t('ui.history.date') }}</th>
+              <th>{{ t('ui.history.file') }}</th>
+              <th>{{ t('ui.history.duration') }}</th>
+              <th>{{ t('ui.history.colors') }}</th>
+              <th>{{ t('ui.history.swaps') }}</th>
+              <th>{{ t('ui.history.filament') }}</th>
+              <th>{{ t('ui.history.result') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="row in history.jobs" :key="historyRowKey(row)">
+              <tr class="history-row" @click="openHistoryDetail(row)">
+                <td>{{ new Date((row.start_time || 0) * 1000).toLocaleString() }}</td>
+                <td>{{ row.filename }}
+                  <span v-if="row.ambiguous" class="muted small"
+                        :title="t('ui.history.ambiguous_hint')">· {{ t('ui.history.ambiguous') }}</span>
+                </td>
+                <td>{{ fmtDuration(row.duration) }}</td>
+                <td>
+                  <span v-for="c in historyColors(row)" :key="'hc-'+c.head"
+                        class="swatch" :style="{background: c.color}"
+                        :title="'T' + c.head + ' · ACE ' + c.ace + ' / slot ' + c.slot"></span>
+                </td>
+                <td>{{ row.multiace ? row.multiace.toolchanges : '–' }}</td>
+                <td>{{ row.filament_used ? Math.round(row.filament_used / 1000) + ' m' : '–' }}</td>
+                <td><span class="pill">{{ row.status || '–' }}</span></td>
+              </tr>
+              <tr v-if="history.detail === historyRowKey(row)" class="history-detail">
+                <td colspan="7">
+                  <div v-if="row.multiace">
+                    <p><b>{{ t('ui.history.plan') }}:</b> {{ row.multiace.plan || '–' }}
+                       · <b>{{ t('ui.history.retries') }}:</b> {{ row.multiace.load_retries }}</p>
+                    <table class="history-swaps" v-if="(row.multiace.swaps || []).length">
+                      <tr v-for="(sw, i) in row.multiace.swaps" :key="'sw-'+i">
+                        <td>{{ sw.kind }}</td>
+                        <td>T{{ sw.head }} · ACE {{ sw.ace }} / {{ sw.slot }}</td>
+                        <td>{{ Math.round(sw.seconds) }} s</td>
+                      </tr>
+                    </table>
+                    <p v-if="row.multiace.neighbor_retracts
+                             && Object.keys(row.multiace.neighbor_retracts).length"
+                       class="muted small">
+                      {{ t('ui.history.neighbor_retracts') }}:
+                      {{ JSON.stringify(row.multiace.neighbor_retracts) }}
+                    </p>
+                  </div>
+                  <p v-else class="muted small">{{ t('ui.history.no_multiace_record') }}</p>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </section>
     <section v-show="tab==='spools'" class="nt-spools-tab">
       <h2>{{ t('ui.spools.title') }}
         <span v-if="state.spool_mode !== 'local'" class="src-badge"

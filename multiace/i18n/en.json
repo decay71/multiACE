@@ -66,6 +66,7 @@
     "tabs": {
       "control": "Control",
       "print_hub": "Print Hub",
+      "history": "History",
       "dashboard": "Dashboard",
       "dry": "Dry",
       "config": "Config",
@@ -836,6 +837,23 @@
       "offline": "(offline)",
       "sending": "sending request…",
       "starting": "starting"
+    },
+    "history": {
+      "title": "Print history",
+      "empty": "No prints recorded yet.",
+      "date": "Date",
+      "file": "File",
+      "duration": "Duration",
+      "colors": "Colours",
+      "swaps": "Swaps",
+      "filament": "Filament",
+      "result": "Result",
+      "plan": "Plan",
+      "retries": "Load retries",
+      "neighbor_retracts": "Neighbour clearance (mm per slot)",
+      "no_multiace_record": "No multiACE record for this job - it was printed without a preflight, or before history was recording.",
+      "ambiguous": "ambiguous match",
+      "ambiguous_hint": "Two prints of this file started within 90 s of each other, so multiACE cannot tell which record belongs to it. Shown unjoined rather than guessed."
     }
   },
   "msg": {

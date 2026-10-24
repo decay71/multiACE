@@ -66,6 +66,7 @@
     "tabs": {
       "control": "Steuerung",
       "print_hub": "Print Hub",
+      "history": "Verlauf",
       "dashboard": "Übersicht",
       "dry": "Trocknen",
       "config": "Konfiguration",
@@ -836,6 +837,23 @@
       "offline": "(offline)",
       "sending": "Anfrage wird gesendet…",
       "starting": "startet"
+    },
+    "history": {
+      "title": "Druckverlauf",
+      "empty": "Noch keine Drucke aufgezeichnet.",
+      "date": "Datum",
+      "file": "Datei",
+      "duration": "Dauer",
+      "colors": "Farben",
+      "swaps": "Wechsel",
+      "filament": "Filament",
+      "result": "Ergebnis",
+      "plan": "Plan",
+      "retries": "Load-Retries",
+      "neighbor_retracts": "Nachbar-Freiräumung (mm pro Slot)",
+      "no_multiace_record": "Kein multiACE-Datensatz für diesen Job - er wurde ohne Preflight gedruckt, oder bevor der Verlauf aufgezeichnet wurde.",
+      "ambiguous": "mehrdeutige Zuordnung",
+      "ambiguous_hint": "Zwei Drucke dieser Datei starteten innerhalb von 90 s, multiACE kann den Datensatz nicht sicher zuordnen. Wird ungejoint gezeigt statt geraten."
     }
   },
   "msg": {

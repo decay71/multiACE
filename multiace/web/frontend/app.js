@@ -11,7 +11,7 @@ createApp({
     // Bowden-path calibration tab (physicsG port): hidden for now, also on
     // dev (Dirk 2026-09-25). The code stays; flip to true to show it.
     const CALIBRATION_TAB = false;
-    const _validTabs = new Set(["dashboard", "control", "spools", "config"]);
+    const _validTabs = new Set(["dashboard", "control", "history", "spools", "config"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
     const _storedTab = localStorage.getItem("multiace.tab");
     const _isPluginTab = (s) => typeof s === "string" && s.startsWith("plugin:");
@@ -62,6 +62,8 @@ createApp({
       // Print Hub children, in their fixed order: Control, History, Queue,
       // Favorites. Each feature adds its own entry here.
       items.push({key: "control", group: "printhub", label: t("ui.tabs.control")});
+      items.push({key: "history", group: "printhub",
+                  label: t("ui.tabs.history")});
       items.push({key: "spools", label: t("ui.tabs.spools")});
       items.push({key: "config", label: t("ui.tabs.config")});
       // Calibration hangs off Config: shown only while one of the two is
@@ -7795,6 +7797,54 @@ createApp({
       ev.returnValue = '';
       return '';
     }
+    // =================================================================
+    // Print history
+    //
+    // Moonraker owns duration and result; multiACE owns the plan, the
+    // assignment and the swaps. The table shows the join, not a copy.
+    // =================================================================
+    const history = reactive({
+      loaded: false, busy: false, error: "", jobs: [], detail: null,
+    });
+    async function loadHistory() {
+      history.busy = true;
+      history.error = "";
+      try {
+        const r = await fetch(`${API}/history?limit=50`);
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || `${r.status}`);
+        history.jobs = j.jobs || [];
+        history.loaded = true;
+      } catch (e) {
+        history.error = e.message || String(e);
+      } finally {
+        history.busy = false;
+      }
+    }
+    function historyRowKey(row) {
+      return (row && (row.id || row.job_id || row.filename)) || "";
+    }
+    function openHistoryDetail(row) {
+      const key = historyRowKey(row);
+      history.detail = history.detail === key ? null : key;
+    }
+    function historyColors(row) {
+      const asn = (row && row.multiace && row.multiace.assignment) || {};
+      return Object.keys(asn).map(h => ({
+        head: h, ace: asn[h].ace_index, slot: asn[h].slot,
+        color: asn[h].color ? ("#" + String(asn[h].color).replace(/^#/, ""))
+                            : "#666",
+      }));
+    }
+    function fmtDuration(sec) {
+      if (!sec || sec < 0) return "–";
+      const m = Math.round(sec / 60);
+      return m < 60 ? `${m} min`
+                    : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
+    }
+    watch(tab, (v) => { if (v === "history" && !history.loaded) loadHistory(); });
+    if (tab.value === "history") loadHistory();
+
     onUnmounted(() => {
       clearTimeout(wsReconnectTimer);
       clearInterval(screenTimer);
@@ -7804,6 +7854,8 @@ createApp({
       window.removeEventListener("beforeunload", _onBeforeUnload);
     });
     return {
+      history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
+      fmtDuration,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,

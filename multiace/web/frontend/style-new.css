@@ -1515,3 +1515,9 @@ html[data-theme="new"] .control-print h3,
 html[data-theme="new"] .control-console h3 {
   font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--nt-label); }
 html[data-theme="new"] .console-log { background: var(--nt-well); border-color: var(--nt-well-edge); border-radius: 0; }
+/* Print history */
+html[data-theme="new"] .history-table { border: 1px solid var(--border); }
+html[data-theme="new"] .history-table th { padding: 10px 12px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--nt-label); }
+html[data-theme="new"] .history-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+html[data-theme="new"] .history-row:hover { background: var(--nt-sel); }
+html[data-theme="new"] .history-detail td { background: var(--nt-sel); }

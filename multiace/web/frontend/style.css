@@ -2019,3 +2019,17 @@ body:has(.panel) .overlay .dialog {
   .pc-row > span:first-child { min-width: 100%; }
   .control-print button, .control-webcam button { min-height: 44px; }
 }
+/* --- Print history ---------------------------------------------------- */
+.history-scroll { overflow-x: auto; }
+.history-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.history-table th { text-align: left; padding: .3rem .4rem; white-space: nowrap;
+  border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 600; }
+.history-table td { padding: .3rem .4rem; vertical-align: middle; }
+.history-row { cursor: pointer; }
+.history-row:hover { background: rgba(127, 127, 127, .08); }
+.history-detail td { background: rgba(127, 127, 127, .06);
+  border-bottom: 1px solid var(--border); }
+.history-swaps { border-collapse: collapse; font-size: .85rem; margin: .3rem 0; }
+.history-swaps td { padding: .1rem .6rem .1rem 0; }
+.history-table .swatch { display: inline-block; width: .9rem; height: .9rem;
+  margin-right: 2px; vertical-align: middle; }
