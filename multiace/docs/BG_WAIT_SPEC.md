@@ -42,6 +42,6 @@
 - [x] 5.3: Implement graceful fallback exit on timeout or pass-through.
 
 ### Milestone 6: Post-Processor Integration & Verification
-- [ ] 6.1: Update `post_process_virtual_toolheads.py` to stamp `ACE_BG_WAIT HEAD=n` prior to arrival `T`.
-- [ ] 6.2: Mirror identical injection condition inside `head_mode_bg_stats` for consistent statistics.
-- [ ] 6.3: Test sliced multi-material G-code to verify command injection and accurate stats.
+- [x] 6.1: Update `post_process_virtual_toolheads.py` to stamp `ACE_BG_WAIT HEAD=n` prior to arrival `T`.
+- [x] 6.2: Mirror identical injection condition inside `head_mode_bg_stats` for consistent statistics.
+- [x] 6.3: Test sliced multi-material G-code to verify command injection and accurate stats.
