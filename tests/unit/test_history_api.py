@@ -150,3 +150,14 @@ class TestSwapStats:
         s = c.get("/api/history/stats/swaps").json()["stats"]["same_ace"]
         assert s["n"] == 2 and s["median_s"] == 110
         assert s["calibrated"] is False
+
+
+class TestLibraryLookup:
+    def test_the_copy_next_to_main_py_wins(self, live, tmp_path, monkeypatch):
+        import shutil
+        main, _, _ = live
+        shutil.copy(Path(main.__file__).resolve().parents[2] / "tools"
+                    / "job_history.py", tmp_path / "job_history.py")
+        monkeypatch.setattr(main, "__file__", str(tmp_path / "main.py"))
+        monkeypatch.setattr(main, "_job_history_mod", None)
+        assert Path(main._require_history().__file__) == tmp_path / "job_history.py"

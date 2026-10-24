@@ -6190,14 +6190,17 @@ _job_history_mod = None
 
 
 def _require_history():
-    """job_history.py, loaded by path: installed on the printer the tools
-    live flat in <config>/tools, from a checkout they sit in multiace/tools.
-    A missing module answers 503 rather than taking the backend down."""
+    """job_history.py, loaded by path. Next to main.py first (where the
+    installer puts it on the printer, like the post-processor), then
+    <config>/tools, then the checkout's multiace/tools. A missing module
+    answers 503 rather than taking the backend down."""
     global _job_history_mod
     if _job_history_mod is None:
         import importlib.util
-        for cand in (Path(_CFG_DIR) / "tools" / "job_history.py",
-                     Path(__file__).resolve().parent.parent.parent
+        here = Path(__file__).resolve().parent
+        for cand in (here / "job_history.py",
+                     Path(_CFG_DIR) / "tools" / "job_history.py",
+                     here.parent.parent
                      / "tools" / "job_history.py"):
             if not cand.is_file():
                 continue
