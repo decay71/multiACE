@@ -1429,6 +1429,9 @@
             <input type="number" class="pc-temp-in"
                    min="0" :max="printCtlLimits.nozzle.max"
                    :placeholder="t('ui.control.target')"
+                   :value="printCtlTempShown('nozzle')"
+                   @input="printCtlTempDraft.nozzle = $event.target.value"
+                   @blur="printCtlTempDraft.nozzle = null"
                    @change="printCtlHeat('nozzle', $event)">
           </div>
           <div class="pc-row pc-temps">
@@ -1438,6 +1441,9 @@
             <input type="number" class="pc-temp-in"
                    min="0" :max="printCtlLimits.bed.max"
                    :placeholder="t('ui.control.target')"
+                   :value="printCtlTempShown('bed')"
+                   @input="printCtlTempDraft.bed = $event.target.value"
+                   @blur="printCtlTempDraft.bed = null"
                    @change="printCtlHeat('bed', $event)">
           </div>
 
