@@ -36,9 +36,11 @@ import re
 # that, with the shipped ace.cfg defaults (feed_speed/retract_speed 80,
 # load_length 2100, swap_retract_length 900, seat_overshoot_length 20,
 # swap_anti_ooze_retract 10), the modelled cost of an inline swap lands on
-# the 210 s that post_process_virtual_toolheads.BG_SWAP_COST_INLINE_S has
-# always used, and a background swap on its 30 s. Day one therefore behaves
-# exactly as before and every later change is a deliberate constant edit.
+# about 210 s and a background swap on 30 s - the whole-swap figures of
+# post_process_virtual_toolheads.BG_SWAP_COST_INLINE_S / _BG_S. The purge
+# is NOT in these seeds: build_estimate bills it on top, so an estimate with
+# the default 80 mm flush reads about 28 s above the old inline figure.
+# Every later change is a deliberate constant edit.
 #
 # Anything derived from a length and a speed is NOT in this table - it is
 # computed from the config, because that is the part we actually know.
@@ -88,10 +90,15 @@ DEFAULT_DIAMETER_MM = 1.75
 PURGE_S_PER_MM = 0.166
 PURGE_FIXED_S = 15.0
 
-#: The engine clamps every purge length it stamps to this range
-#: (post_process_virtual_toolheads.PURGE_MATRIX_MIN_MM / _MAX_MM).
+#: The post-processor clamps the flush-matrix stamp to this range
+#: (post_process_virtual_toolheads.PURGE_MATRIX_MIN_MM / _MAX_MM). Only the
+#: stamp: swap_purge_length and the stock default are used as set.
 PURGE_MIN_MM = 40.0
 PURGE_MAX_MM = 150.0
+
+#: A background swap primes the head with the purge length plus this much
+#: (ace_bg_swap.BG_LOAD_PRIME_EXTRA), so it uses that much more filament.
+BG_LOAD_PRIME_EXTRA_MM = 40.0
 
 #: What the stock INNER_FLUSH_FILAMENT macro (fluidd.cfg) purges when
 #: nothing tells it otherwise - `ACE_SWAP_HEAD`/`get_purge_length()` omit
@@ -581,20 +588,19 @@ class SwapCostModel(object):
         First match wins: the flush-matrix stamp the preflight writes for
         this pair (ignored when `purge_matrix` is off), else
         `swap_purge_length` when above its 0 default, else the stock
-        80 mm. The result is clamped to `swap_purge_min`/`swap_purge_max`.
-        Purge itself stays the slicer's business: the stamp comes from its
-        flush matrix.
+        80 mm. Only the stamp is clamped (to `swap_purge_min` /
+        `swap_purge_max`, as the post-processor does); the other two are
+        used as set. Purge itself stays the slicer's business: the stamp
+        comes from its flush matrix.
         """
         if stamp_mm and self.purge_matrix:
-            mm = float(stamp_mm)
-        elif self.swap_purge_length > 0:
-            mm = self.swap_purge_length
-        else:
-            mm = STOCK_FLUSH_DEFAULT_MM
-        return self.clamp_purge_mm(mm)
+            return self.clamp_purge_mm(stamp_mm)
+        if self.swap_purge_length > 0:
+            return self.swap_purge_length
+        return STOCK_FLUSH_DEFAULT_MM
 
     def clamp_purge_mm(self, requested_mm):
-        """Clamp a purge length to the range the engine allows."""
+        """Clamp a flush-matrix stamp to the range the post-processor uses."""
         try:
             value = max(0.0, float(requested_mm or 0.0))
         except (TypeError, ValueError):
@@ -628,7 +634,7 @@ def build_estimate(model, header, timeline, *, materials=None,
     """Assemble the `estimate` block the report attaches to each plan.
 
     `timeline` is §3.2's per-event trace: a list of dicts with at least
-    `kind`, and optionally `t`, `seconds`, `purge_mm`. Everything else -
+    `kind`, and optionally `t`, `seconds`, `purge_mm`, `purge_inline`. Everything else -
     grams, per-colour breakdown, the purge total - is derived here so
     backend and browser produce identical numbers.
     """
@@ -658,15 +664,23 @@ def build_estimate(model, header, timeline, *, materials=None,
             # same way the rewrite would, just without a flush-matrix
             # stamp to prefer (see resolve_swap_purge_mm).
             purge = model.resolve_swap_purge_mm()
+        purge = float(purge or 0.0)
+        # A finished background swap purges on the parked head, off the
+        # critical path; its prime is the purge plus BG_LOAD_PRIME_EXTRA_MM.
+        # The flush is inline for every other kind, and for a background
+        # swap in transport mode or one that was aborted (`purge_inline`).
+        bg_parked = kind == "cross_ace_bg" and not ev.get("purge_inline")
+        if bg_parked and purge > 0:
+            purge += BG_LOAD_PRIME_EXTRA_MM
         added_s += float(seconds or 0.0)
-        purge_mm_total += float(purge or 0.0)
-        added_purge_s += model.purge_seconds(purge)
-        if float(purge or 0.0) > 0:
+        purge_mm_total += purge
+        if not bg_parked:
+            added_purge_s += model.purge_seconds(purge)
+        if purge > 0:
             purging_swaps += 1
         t = ev.get("t")
         if t is not None:
-            per_tool_purge_mm[t] = per_tool_purge_mm.get(t, 0.0) + float(
-                purge or 0.0)
+            per_tool_purge_mm[t] = per_tool_purge_mm.get(t, 0.0) + purge
         if kind == "cross_ace_bg":
             counts["bg"] += 1
         elif kind == "first_load":

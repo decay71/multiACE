@@ -50,8 +50,9 @@ class TestSwapArithmetic:
         assert model.swap_seconds("same_ace") == pytest.approx(mech + const)
 
     def test_day_one_matches_the_old_hardcoded_costs(self, model):
-        """The constants were seeded so the shipped defaults reproduce
-        BG_SWAP_COST_INLINE_S=210 / BG_SWAP_COST_BG_S=30. If this drifts,
+        """The constants were seeded so the shipped defaults land on the
+        old whole-swap figures (BG_SWAP_COST_INLINE_S=210 / _BG_S=30),
+        before the purge, which the estimate bills on top. If this drifts,
         every existing plan silently changes shape."""
         assert model.swap_seconds("cross_ace_inline") == pytest.approx(210,
                                                                        abs=2)
@@ -135,8 +136,8 @@ class TestCalibration:
 
 class TestResolveSwapPurgeMm:
     """What a swap purges follows what the engine does today: the
-    flush-matrix stamp, else swap_purge_length, else the stock 80 mm,
-    clamped to the 40..150 mm range."""
+    flush-matrix stamp, else swap_purge_length, else the stock 80 mm. Only
+    the stamp is clamped, to 40..150 mm."""
 
     def test_the_stock_default_applies_when_nothing_else_does(self, model):
         assert model.resolve_swap_purge_mm() == sc.STOCK_FLUSH_DEFAULT_MM
@@ -154,12 +155,15 @@ class TestResolveSwapPurgeMm:
             dict(CFG, swap_purge_length=100, purge_matrix=False))
         assert m.resolve_swap_purge_mm(stamp_mm=60) == 100
 
-    def test_the_result_is_clamped_to_the_engine_range(self):
+    def test_only_the_stamp_is_clamped(self):
         m = sc.SwapCostModel.from_params(dict(CFG, swap_purge_length=200))
-        assert m.resolve_swap_purge_mm() == 150
+        assert m.resolve_swap_purge_mm() == 200
         assert m.resolve_swap_purge_mm(stamp_mm=10) == 40
+        assert m.resolve_swap_purge_mm(stamp_mm=500) == 150
+        short = sc.SwapCostModel.from_params(dict(CFG, swap_purge_length=10))
+        assert short.resolve_swap_purge_mm() == 10
 
-    def test_the_range_is_configurable(self):
+    def test_the_stamp_range_is_configurable(self):
         m = sc.SwapCostModel.from_params(
             dict(CFG, swap_purge_min=20, swap_purge_max=100))
         assert m.resolve_swap_purge_mm(stamp_mm=10) == 20
@@ -367,7 +371,7 @@ class TestEstimateBlock:
                                        self._timeline(purge_mm=120))
         without = sc.build_estimate(model, header, self._timeline(purge_mm=0))
         assert with_purge["added_s"] > without["added_s"]
-        assert with_purge["purge"]["mm"] == 360
+        assert with_purge["purge"]["mm"] == 2 * 120 + 120 + sc.BG_LOAD_PRIME_EXTRA_MM
         assert with_purge["totals"]["g"] > without["totals"]["g"]
         assert any("prime tower" in a for a in with_purge["assumptions"])
 
@@ -412,6 +416,26 @@ class TestEstimateBlock:
         assert one["added_s"] == pytest.approx(per_swap, abs=1)
         assert two["added_s"] == pytest.approx(2 * per_swap, abs=1)
 
+    def test_a_parked_background_purge_is_off_the_critical_path(self, model):
+        header = self._header("; enable_prime_tower = 0\n")
+        bg = [{"t": 0, "kind": "cross_ace_bg", "window_min": 9.0,
+               "purge_mm": 100}]
+        parked = sc.build_estimate(model, header, bg)
+        assert parked["added_s"] == pytest.approx(
+            model.swap_seconds("cross_ace_bg"), abs=1)
+        # the grams still count, with the bg prime on top of the purge
+        assert parked["purge"]["mm"] == 100 + sc.BG_LOAD_PRIME_EXTRA_MM
+
+    def test_an_inline_background_purge_is_billed(self, model):
+        header = self._header("; enable_prime_tower = 0\n")
+        bg = [{"t": 0, "kind": "cross_ace_bg", "window_min": 9.0,
+               "purge_mm": 100, "purge_inline": True}]
+        est = sc.build_estimate(model, header, bg)
+        assert est["added_s"] == pytest.approx(
+            model.swap_seconds("cross_ace_bg") + model.purge_seconds(100),
+            abs=1)
+        assert est["purge"]["mm"] == 100
+
     def test_per_colour_breakdown_carries_print_and_purge(self, model):
         est = sc.build_estimate(
             model, self._header("; enable_prime_tower = 0\n"),
@@ -420,7 +444,7 @@ class TestEstimateBlock:
         assert by_t[0]["print_mm"] == 1000.0
         assert by_t[1]["print_mm"] == 2000.0
         assert by_t[1]["purge_mm"] == 200      # both inline swaps target T1
-        assert by_t[0]["purge_mm"] == 100      # the bg swap targets T0
+        assert by_t[0]["purge_mm"] == 140      # the bg swap targets T0 (+40 prime)
 
     def test_the_estimate_is_never_presented_as_measured(self, model):
         est = sc.build_estimate(model, self._header(), self._timeline())
