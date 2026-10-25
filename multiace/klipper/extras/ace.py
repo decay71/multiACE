@@ -496,6 +496,9 @@ SPOOL_DENSITY_BY_MATERIAL = {
 # clean macro before restoring the print position - no extra travel.
 BG_PICK_WIPE = True
 
+# min_extrude_temp of the U1; a swap-head target below it is no print temp.
+SWAP_MIN_EXTRUDE_TEMP = 170
+
 # V2 only: cause-agnostic back-off for the FA re-arm churn. When a
 # slot's re-arm never STICKS (the device keeps disarming because nothing
 # actually feeds - filament cut UPSTREAM of the toolhead while a remnant still
@@ -773,6 +776,10 @@ class MultiAce:
         self._protocols = {}
         self._ace_path_protocol = {}
         self._ace_models = {}
+        # Heater intent observer (see _install_heat_observer).
+        self._ext_heat_req = {}
+        self._own_heat_depth = 0
+        self._orig_set_temperature = None
         self.baud = config.getint('baud', 0, minval=0)
         self._ace_devices = []
         self._active_device_index = 0
@@ -1587,6 +1594,9 @@ class MultiAce:
         # reference for the cool forward-probe temp (see filament_feed_ace
         # _swap_probe_temp). 0 = no live print (idle/test) -> probe floor.
         self._swap_probe_ref_temp = 0
+        # Last print target (>= min extrude) a swap found on each head; the
+        # fallback when a swap starts on a head a pause left at target 0.
+        self._swap_print_temp = {}
 
         # Engine event/observability state (see docs/ENGINE_API.md section 5).
         # swap_phase gives finer resolution than swap_in_progress; event_seq
@@ -3183,6 +3193,58 @@ class MultiAce:
         self._watchdog_next = eventtime + REACTOR_WATCHDOG_INTERVAL
         return self._watchdog_next
 
+    # Heater intent observer. Every pheaters.set_temperature that does not
+    # come through heat_set_own() is a foreign request (slicer M104/M109,
+    # INNER macros, the display webhook) and is remembered per heater as
+    # (temp, time). The background swap engine restores the newest foreign
+    # request when it hands a head's heater back instead of cooling to 0:
+    # a slicer M109 that arrives while a bg op holds the heater would
+    # otherwise wait forever on a target of 0 (PID check_busy never
+    # settles), and a value-equal request (M109 S220 against our own 220)
+    # is invisible to any comparison of targets - only the call tells.
+    def _install_heat_observer(self):
+        if self._orig_set_temperature is not None:
+            return
+        pheaters = self.printer.lookup_object('heaters', None)
+        orig = getattr(pheaters, 'set_temperature', None)
+        if orig is None:
+            return
+        self._orig_set_temperature = orig
+        pheaters.set_temperature = self._observed_set_temperature
+        logging.info('[multiACE] heater intent observer installed')
+
+    def _observed_set_temperature(self, heater, temp, wait=False):
+        if not self._own_heat_depth:
+            try:
+                self._ext_heat_req[heater.get_name()] = (
+                    float(temp), self.reactor.monotonic())
+            except Exception:
+                pass
+        return self._orig_set_temperature(heater, temp, wait)
+
+    def heat_set_own(self, pheaters, heater, temp):
+        """set_temperature by multiACE's own background engine: recorded as
+        ours, not as a foreign request. Never waits: _own_heat_depth is one
+        counter for the whole process, not per greenlet, so a blocking
+        set_temperature(wait=True) would yield the reactor and book a
+        slicer M109 arriving during that wait as ours."""
+        self._own_heat_depth += 1
+        try:
+            return pheaters.set_temperature(heater, temp, False)
+        finally:
+            self._own_heat_depth -= 1
+
+    def heat_foreign_since(self, heater, since):
+        """(temp, time) of the newest foreign request for this heater at or
+        after `since` (reactor clock), else None."""
+        try:
+            req = self._ext_heat_req.get(heater.get_name())
+        except Exception:
+            return None
+        if req is None or req[1] < since:
+            return None
+        return req
+
     def _handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
 
@@ -3197,6 +3259,9 @@ class MultiAce:
         # flow routine stores its result on the bound spool (S PA notes).
         self._install_flow_calibrator_hook()
         self._install_flow_calibrate_cmd_hook()
+
+        # Heater intent observer for the background swap engine.
+        self._install_heat_observer()
 
         # [diag] reactor-stall watchdog (0003-0522 Timer-too-close hunt).
         if self.stall_watchdog and getattr(self, '_watchdog_timer', None) is None:
@@ -4828,6 +4893,7 @@ class MultiAce:
         self._auto_feed_enabled = False
         self._fa_context = 'idle'
         self._runout_suppress_heads = set()
+        self._swap_print_temp = {}
         logging.info('[multiACE] Print ended - auto-feed disabled')
         # Booking audit summary: what each spool consumed since its first
         # booking of this print (baseline set in book_spool_use). fires once
@@ -20899,6 +20965,23 @@ class MultiAce:
             except Exception:
                 pass
             logging.info('[multiACE] Swap: saved heater=%d (swap head)' % saved_heater_target)
+            # A pause can leave the swap head at target 0, and its RESUME
+            # replays this swap line before any slicer M104/M109. Restoring
+            # that 0 at the swap tail lets the print run on with a cooling
+            # nozzle. While printing, a target below min extrude is replaced
+            # by the last print target a swap saw on this head, else by the
+            # swap temp. The INITIAL block keeps the found target: the start
+            # gcode heats the head itself.
+            if saved_heater_target >= SWAP_MIN_EXTRUDE_TEMP:
+                self._swap_print_temp[head] = saved_heater_target
+            elif not initial_swap and self._is_actively_printing():
+                fallback = self._swap_print_temp.get(head) or swap_temp
+                logging.info('[multiACE] Swap: saved heater %d is below min '
+                             'extrude while printing - restoring %d (%s)'
+                             % (saved_heater_target, fallback,
+                                'last print target' if head in
+                                self._swap_print_temp else 'swap temp'))
+                saved_heater_target = fallback
             # Reference for the cool forward-probe temp (material-agnostic):
             # the live print target of this head, before INNER zeroes it.
             self._swap_probe_ref_temp = saved_heater_target
@@ -21127,7 +21210,9 @@ class MultiAce:
             except Exception as fa_e:
                 logging.info('[multiACE] post-load FA re-enable failed: %s' % fa_e)
 
-            wipe_temp = saved_heater_target if saved_heater_target >= 170 else swap_temp
+            wipe_temp = (saved_heater_target
+                         if saved_heater_target >= SWAP_MIN_EXTRUDE_TEMP
+                         else swap_temp)
             self.gcode.run_script_from_command('M109 S%d' % wipe_temp)
             self.gcode.run_script_from_command('ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD')
             self.toolhead.wait_moves()
