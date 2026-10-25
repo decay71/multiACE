@@ -665,9 +665,12 @@ class AceBgSwap:
         # the choreography must never purge/pull on a head that is active or aborted.
         # The abort keeps head_source intact, so the inline swap that follows simply does a
         # normal full unload.
-        if head in self._abort_requested or toolhead.get_extruder() is ext:
+        if head in self._abort_requested:
             self._abort_requested.discard(head)
             raise RuntimeError('head %d was ABORTED by arrival wait - '
+                               'inline paths take over' % self._dh(head))
+        if toolhead.get_extruder() is ext:
+            raise RuntimeError('head %d was PICKED mid-sequence - aborted, '
                                'inline paths take over' % self._dh(head))
 
     def _bg_fan_obj(self, head):
@@ -1426,7 +1429,8 @@ class AceBgSwap:
         logging.info('[multiACE] [bg-wait] HEAD=%d verdict=%s reason=%s'
                      % (self._dh(head), verdict, details.get('reason', '')))
 
-        # Console response: brief default response, full diagnostic breakdown on DEBUG=1
+        # Console response: full diagnostic breakdown on DEBUG=1 only
+        # (suppressed on normal prints to keep console quiet during toolchange bursts)
         if debug:
             gcmd.respond_info('[bg-wait] HEAD=%d DECISION: %s' % (self._dh(head), verdict))
             gcmd.respond_info('[bg-wait]   Phase: %s' % details.get('phase', 'UNKNOWN'))
@@ -1442,9 +1446,6 @@ class AceBgSwap:
             gcmd.respond_info('[bg-wait]   Action: %s'
                               % ('Holding arrival head at discard position' if eligible
                                  else 'Passing through to inline swap'))
-        else:
-            gcmd.respond_info('[bg-wait] ACE_BG_WAIT HEAD=%d: %s (%s)'
-                              % (self._dh(head), verdict, details.get('reason', '')))
 
         # Milestone 4 & 5: Option A self-contained park, wait loop, and restore
         # If eligible (or FORCE_PARK=1 for bench testing), snapshot coordinates,
