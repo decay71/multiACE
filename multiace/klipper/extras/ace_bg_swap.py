@@ -272,6 +272,9 @@ class AceBgSwap:
                                     desc=self.cmd_ACE_BG_MOVE_help)
         self.gcode.register_command('ACE_BG_SET_HEAD', self.cmd_ACE_BG_SET_HEAD,
                                     desc=self.cmd_ACE_BG_SET_HEAD_help)
+        self.gcode.register_command('ACE_BG_DEBUG', self.cmd_ACE_BG_DEBUG,
+                                    desc=self.cmd_ACE_BG_DEBUG_help)
+
         self.gcode.register_command('ACE_BG_SWAP', self.cmd_ACE_BG_SWAP,
                                     desc=self.cmd_ACE_BG_SWAP_help)
         self.gcode.register_command('ACE_BG_WAIT', self.cmd_ACE_BG_WAIT,
@@ -336,6 +339,26 @@ class AceBgSwap:
                      else 'disabled',
                      [self._dh(h) for h in sorted(self.enabled_heads)]
                      or 'NONE', sfx))
+
+    cmd_ACE_BG_DEBUG_help = (
+        '[multiACE] Toggle background swap and arrival hold console debug messages. '
+        'Usage: ACE_BG_DEBUG [ENABLE=0|1] [PERSIST=0]')
+    def cmd_ACE_BG_DEBUG(self, gcmd):
+        enable = gcmd.get_int('ENABLE', -1)
+        if enable == -1:
+            state = 'enabled' if self.debug else 'disabled'
+            gcmd.respond_info('[bg-swap] debug console output is %s' % state)
+            return
+        self.debug = bool(enable)
+        state = 'enabled' if self.debug else 'disabled'
+        _ace = self.printer.lookup_object('ace', None)
+        _wt = getattr(_ace, '_wt_persist', None)
+        sfx = ''
+        if _wt is not None:
+            sfx = _wt(gcmd, 'debug', 'True' if self.debug else 'False',
+                      None, section='ace_bg_swap')
+        gcmd.respond_info('[bg-swap] debug console output %s%s' % (state, sfx))
+
 
     def is_busy(self, head):
         # ace.py wait-hook (cmd_ACE_SWAP_HEAD/UNLOAD/LOAD entries): a
