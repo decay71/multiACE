@@ -495,6 +495,13 @@ SPOOL_DENSITY_BY_MATERIAL = {
 # position (the flow push runs there), so scrape the nozzle with the stock
 # clean macro before restoring the print position - no extra travel.
 BG_PICK_WIPE = True
+# Toolchange notice to the bg engine (T0-T3 wrapper, _notify_bg_pick):
+# how long the T waits for the engine to hand the head over after the
+# announcement. The engine stops at its next move boundary - a prime
+# chunk or a cold-pull move, a few seconds at most; when it does not
+# answer in time the toolchange runs anyway and the engine aborts at
+# extruder activation as before.
+BG_PICK_NOTICE_WAIT = 8.0
 
 # min_extrude_temp of the U1; a swap-head target below it is no print temp.
 SWAP_MIN_EXTRUDE_TEMP = 170
@@ -1711,6 +1718,8 @@ class MultiAce:
         # pushes the remainder at the discard position), cleared on a
         # verified unload.
         self._bg_prime_deficit = {}
+        # T0-T3 stock handlers behind the bg toolchange notice (_wrap_native_tool).
+        self._orig_native_t = {}
 
         self._serial_failed = False
         self._serial_failed_at = 0.0
@@ -2016,6 +2025,22 @@ class MultiAce:
             'homing:homing_move_begin', self._on_homing_move_begin)
         self.printer.register_event_handler(
             'homing:homing_move_end', self._on_homing_move_end)
+
+        # T0-T3: announce the toolchange to the bg engine BEFORE the stock
+        # macro parks and picks (see _notify_bg_pick), then run stock.
+        for _i in range(4):
+            try:
+                _orig = self.gcode.register_command('T%d' % _i, None)
+                if _orig is None:
+                    continue
+                self._orig_native_t[_i] = _orig
+                self.gcode.register_command(
+                    'T%d' % _i,
+                    (lambda gcmd, _t=_i: self._wrap_native_tool(gcmd, _t)),
+                    desc='[multiACE] T%d (announces the toolchange to a '
+                         'running background swap)' % _i)
+            except Exception as e:
+                logging.info('[multiACE] failed to wrap T%d: %s' % (_i, e))
 
         self.gcode.register_command(
             'ACE_START_DRYING', self.cmd_ACE_START_DRYING,
@@ -18544,6 +18569,48 @@ class MultiAce:
             'print_active': self._fa_context == 'print',
             'ace_changed': prev_active != target_ace,
         })
+
+    def _wrap_native_tool(self, gcmd, tool):
+        """T0-T3: tell a running background swap on this head that the
+        pick is coming, wait for its handover, then run the stock
+        handler unchanged."""
+        orig = self._orig_native_t.get(tool)
+        try:
+            self._notify_bg_pick(tool)
+        except Exception as e:
+            logging.info('[multiACE] T%d: bg toolchange notice failed: %s'
+                         % (tool, e))
+        if orig is None:
+            raise gcmd.error('T%d unavailable' % tool)
+        return orig(gcmd)
+
+    def _notify_bg_pick(self, head):
+        # The stock T macro parks the old head, lifts this one out of the
+        # dock and activates its extruder ~2.4 s after the pick; the bg
+        # engine's own interlock (_check_docked) only sees the activation.
+        # A prime still running in that window extrudes while the head is
+        # carried to the print. Announce the pick here, before the macro,
+        # and give the engine one move boundary to hand over while the
+        # head is still docked. Older engine without the hook: no-op.
+        bg = self.printer.lookup_object('ace_bg_swap', None)
+        if bg is None:
+            return
+        fn = getattr(bg, 'request_pick_abort', None)
+        if fn is None:
+            return
+        if not fn(head):
+            return
+        deadline = self.reactor.monotonic() + BG_PICK_NOTICE_WAIT
+        while self.reactor.monotonic() < deadline:
+            if not bg.is_busy(head):
+                logging.info('[multiACE] head %d: background op handed '
+                             'over before the toolchange' % self._disp(head))
+                return
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        self.log_always('[multiACE] head %d: background op did not hand '
+                        'over within %.0fs - toolchange proceeds, the '
+                        'engine aborts on pick as before'
+                        % (self._disp(head), BG_PICK_NOTICE_WAIT))
 
     def _wait_bg_op(self, head, gcmd=None, rearm_target=None):
         # Background-swap interlock (experimental [ace_bg_swap] module,

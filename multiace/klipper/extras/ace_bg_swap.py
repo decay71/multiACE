@@ -88,6 +88,11 @@ BG_LOAD_PRIME_SPEED = 4.     # mm/s (prime falls through the open dock)
 # in the background window; raise to 10 to halve that if the longer prime
 # measurably increases pick-aborts.
 BG_LOAD_PRIME_CHUNK = 5.
+# Phases that poll _check_docked between moves, i.e. where a toolchange
+# announced by ace.py (request_pick_abort) stops the op at the next move
+# boundary while the head is STILL DOCKED. RETRACT is deliberately absent
+# (the bulk rollback never aborts) and so are the bookkeeping phases.
+PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_GRIP', 'LD_PRIME')
 # Extra prime on TOP of the inline purge knob (get_purge_length, default 80).
 # The inline swap purges MORE than its nominal 80: phase3 probe-extrudes
 # (>=20mm) fill the melt zone BEFORE the flush, so the full 80 is real purge
@@ -239,6 +244,9 @@ class AceBgSwap:
         # {head: state string} - IDLE/HEAT/PULL/RETRACT/DONE/FAILED:<reason>
         self.state = {}
         self._busy = set()
+        # Heads whose toolchange was announced (request_pick_abort) and
+        # whose op has not handed over yet; cleared with _busy.
+        self._pick_pending = set()
         # {head: previous fan value 0..1} while the bg dwell fan runs
         # (_dwell_fan) - per head, the engine is serialized but the OFF
         # must survive any exit path.
@@ -316,6 +324,31 @@ class AceBgSwap:
                      else 'disabled',
                      [self._dh(h) for h in sorted(self.enabled_heads)]
                      or 'NONE', sfx))
+
+    def request_pick_abort(self, head):
+        """Toolchange notice from ace.py's T0-T3 wrapper, sent BEFORE the
+        stock macro parks the old head and picks this one. Without it the
+        engine only notices a pick at extruder ACTIVATION, 2-4 s after the
+        nozzle left the dock, and a prime still running in that window
+        extrudes while the head is carried (the blob in front of the
+        wipe tower). With it the op stops at its next move boundary while
+        the head is still docked: the prime sets its anti-ooze cushion
+        and hands over, every other phase takes its existing pick-abort
+        path. Returns True when the caller may wait for the handover
+        (a phase that polls _check_docked), False when nothing runs on
+        this head or the phase never aborts (bulk retract)."""
+        if head not in self._busy:
+            self._pick_pending.discard(head)
+            return False
+        phase = str(self.state.get(head, ''))
+        if phase not in PICK_NOTICE_PHASES:
+            return False
+        if head not in self._pick_pending:
+            self._pick_pending.add(head)
+            self._say('head %d: toolchange announced during %s - stopping '
+                      'at the next move boundary, handing over before the '
+                      'pick' % (self._dh(head), phase))
+        return True
 
     def is_busy(self, head):
         # ace.py wait-hook (cmd_ACE_SWAP_HEAD/UNLOAD/LOAD entries): a
@@ -481,6 +514,10 @@ class AceBgSwap:
         if toolhead.get_extruder() is ext:
             raise RuntimeError('head %d was PICKED mid-sequence - aborted, '
                                'inline paths take over' % self._dh(head))
+        if head in self._pick_pending:
+            raise RuntimeError('head %d is about to be PICKED - stopped '
+                               'before the toolchange, inline paths take '
+                               'over' % self._dh(head))
 
     def _bg_fan_obj(self, head):
         # The PARKED head's own part fan as a directly drivable object.
@@ -1315,6 +1352,7 @@ class AceBgSwap:
         finally:
             self._dwell_fan(ace, head, False)
             self._busy.discard(head)
+            self._pick_pending.discard(head)
 
     def _fail_unload(self, head, heater, pheaters, e, retract_done):
         reason = str(e) or e.__class__.__name__
@@ -1720,6 +1758,7 @@ class AceBgSwap:
             self._ace_quiesce(ace, un[0], un[1], 'bg swap unload abort')
             self._fail_unload(head, heater, pheaters, e, retract_done['v'])
             self._busy.discard(head)
+            self._pick_pending.discard(head)
             return
         if not self.load_enabled:
             # Unload-only mode: stop after the unload half. The head is
@@ -1733,6 +1772,7 @@ class AceBgSwap:
                          'BACKGROUND UNLOAD COMPLETE' if un is not None
                          else 'already empty, nothing to do'))
             self._busy.discard(head)
+            self._pick_pending.discard(head)
             return
         try:
             self._load_core(head, ace, toolhead, ext, heater, pheaters,
@@ -1771,6 +1811,7 @@ class AceBgSwap:
         finally:
             self._dwell_fan(ace, head, False)
             self._busy.discard(head)
+            self._pick_pending.discard(head)
 
     def _load_bookkeeping(self, head, ace, ace_idx, slot):
         """Mark the head loaded through the same fields the inline load
@@ -2125,7 +2166,14 @@ class AceBgSwap:
             # FINE-chunked (BG_LOAD_PRIME_CHUNK, was 4x ~30mm): caps the
             # blind purge a mid-chunk pick keeps extruding while the stock
             # T carries the head - see the const block.
+            cut_short = False
             while primed < prime_target - 1e-6:
+                if head in self._pick_pending:
+                    # Toolchange announced (request_pick_abort): the head
+                    # is still docked, so finish cleanly - cushion now,
+                    # the arrival pick-check tops up the missing purge.
+                    cut_short = True
+                    break
                 self._check_docked(toolhead, ext, head)
                 seg = min(BG_LOAD_PRIME_CHUNK, prime_target - primed)
                 _s, end, _en = self.queue_move(ext, seg,
@@ -2147,12 +2195,25 @@ class AceBgSwap:
             # already-loaded head, so OUR end state must match the value
             # the preflight stamped - the ANTI_OOZE contract).
             if anti_ooze > 0.:
-                self._check_docked(toolhead, ext, head)
+                if not cut_short:
+                    self._check_docked(toolhead, ext, head)
                 _s, end, _en = self.queue_move(ext, -float(anti_ooze),
                                                BG_LOAD_RETRACT_SPEED,
                                                CHOREO_ACCEL)
                 self._wait_move(toolhead, end)
             ooze_done = True
+            if cut_short:
+                deficit = max(0., prime_target - primed)
+                if deficit > 0.:
+                    try:
+                        getattr(ace, '_bg_prime_deficit', {})[head] = deficit
+                    except Exception:
+                        pass
+                self._say('head %d: prime stopped at %d/%d mm for the '
+                          'announced toolchange - cushion set%s'
+                          % (self._dh(head), int(primed), int(prime_target),
+                             ', the arrival pick tops up the missing %d mm'
+                             % int(deficit) if deficit > 0. else ''))
         except Exception as e:
             self._ace_send(ace, ace_idx, {
                 'method': 'stop_feed_assist', 'params': {'index': slot}})
