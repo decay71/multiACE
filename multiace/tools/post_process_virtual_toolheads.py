@@ -1449,7 +1449,8 @@ BG_INITIAL_LOAD = True
 # 2: standby temperatures that would cool the printing head are dropped
 # instead of remapped (see scan_cooling_standbys). 3: purge stamps sized
 # from the RAW flush matrix. 4: flush_multiplier inherited upward only.
-PP_FORMAT_VERSION = 4
+# 5: stamped ACE_BG_WAIT arrival holds before toolchanges.
+PP_FORMAT_VERSION = 5
 
 def detect_processed(text):
     """(processed: bool, fmt: int|None) for a gcode HEAD chunk or plan

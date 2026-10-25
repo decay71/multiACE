@@ -1232,6 +1232,7 @@ class AceBgSwap:
         self._op_start_time[head] = self.reactor.monotonic()
         self._heat_start_time.pop(head, None)
         self._pull_start_time.pop(head, None)
+        self._abort_requested.discard(head)
 
         self._busy.add(head)
         self._set_state(head, 'QUEUED')
@@ -1385,6 +1386,7 @@ class AceBgSwap:
         self._op_start_time[head] = self.reactor.monotonic()
         self._heat_start_time.pop(head, None)
         self._pull_start_time.pop(head, None)
+        self._abort_requested.discard(head)
 
         self._busy.add(head)
         self._set_state(head, 'QUEUED')
@@ -1510,23 +1512,24 @@ class AceBgSwap:
                         gcmd.respond_info('[bg-wait] HEAD=%d restored to original coordinates' % self._dh(head))
         else:
             # Active Abort on Ineligibility:
-            # If the head is busy with an early background swap (early HEAT), actively kill the
-            # background operation and zero the heater immediately, ensuring the motor never queues a purge!
-            if head in self._busy:
+            # Only abort if the head is in early HEAT (to prevent scheduled cold-pull extrusion).
+            # From RETRACT on, let it pass through without aborting (the arrival swap already
+            # waits for the bulk, stages filament cleanly, or takes over inline).
+            # Do NOT zero the heater here: preserve any preheat progress for the arrival swap.
+            cur_p = self.phase(head).upper()
+            base_p = cur_p.split(':')[0]
+            if head in self._busy and base_p in ('QUEUED', 'FA_STOP', 'HEAT'):
                 self._abort_requested.add(head)
-                ext = self.printer.lookup_object(self._ext_name(head), None)
-                if ext is not None:
-                    try:
-                        self.printer.lookup_object('heaters').set_temperature(ext.get_heater(), 0.)
-                    except Exception:
-                        pass
-                # Await clean greenlet exit before returning so arrival T picks up a stationary, cool head
+                # Await clean greenlet exit before returning so arrival T picks up a stationary head
                 abort_deadline = self.reactor.monotonic() + 5.0
                 while head in self._busy and self.reactor.monotonic() < abort_deadline:
                     self.reactor.pause(self.reactor.monotonic() + 0.10)
                 if debug:
-                    gcmd.respond_info('[bg-wait] HEAD=%d background op cleanly aborted before arrival pick'
+                    gcmd.respond_info('[bg-wait] HEAD=%d early heat op cleanly aborted before arrival pick (preheat preserved)'
                                       % self._dh(head))
+            elif debug:
+                gcmd.respond_info('[bg-wait] HEAD=%d passing through (%s)'
+                                  % (self._dh(head), cur_p))
 
 
     cmd_ACE_BG_STATUS_help = '[EXPERIMENTAL] Show background unload states.'
