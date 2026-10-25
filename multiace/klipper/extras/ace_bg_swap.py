@@ -199,6 +199,10 @@ class AceBgSwap:
         # of logging only. False = the pre-gate LOG-ONLY behaviour. Read
         # unconditionally.
         self.pick_gate = config.getboolean('pick_gate', True)
+        # Debug console logging: when True, arrival hold decisions and breakdowns
+        # are echoed to the console on every arrival (same as passing DEBUG=1).
+        # False = quiet console, decisions logged to klippy.log only. Read unconditionally.
+        self.debug = config.getboolean('debug', False)
         # Unload-only switch: False disables the
         # bg LOAD half - ACE_BG_SWAP stamps run only the HW-proven unload
         # half, the arrival swap then loads INLINE with full phase3
@@ -291,6 +295,7 @@ class AceBgSwap:
             'enabled_heads': sorted(self.enabled_heads),
             'busy': sorted(self._busy),
             'state': {str(h): str(v) for h, v in self.state.items()},
+            'debug': bool(self.debug),
         }
 
     cmd_ACE_BG_SET_HEAD_help = (
@@ -1420,7 +1425,8 @@ class AceBgSwap:
         # HEAD is required and must be a valid toolhead index (0-3), same
         # contract as the other ACE_BG_* commands.
         head = gcmd.get_int('HEAD', minval=0, maxval=3)
-        debug = gcmd.get_int('DEBUG', 0)
+        # Defaults to [ace_bg_swap] debug config (False by default = quiet console)
+        debug = gcmd.get_int('DEBUG', 1 if self.debug else 0)
 
         eligible, details = self.is_wait_eligible(head)
         verdict = 'WAIT (ELIGIBLE)' if eligible else 'ABORT_INLINE (INELIGIBLE)'
