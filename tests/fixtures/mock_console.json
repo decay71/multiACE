@@ -1,0 +1,13 @@
+{
+  "_comment": "Mock /api/console-logs payload for the dev UI console pane.",
+  "lines": [
+    {"id": 1, "ts": 1786000000.0, "kind": "command", "msg": "SET_ACE_MODE MODE=multi"},
+    {"id": 2, "ts": 1786000000.4, "kind": "response", "msg": "// [multiACE] Switched to MULTI mode."},
+    {"id": 3, "ts": 1786000012.0, "kind": "command", "msg": "ACE_LOAD_HEAD HEAD=0 ACE=0 SLOT=0"},
+    {"id": 4, "ts": 1786000012.2, "kind": "response", "msg": "// [multiACE] head 0: loading from ACE 0 / slot 0"},
+    {"id": 5, "ts": 1786000031.8, "kind": "response", "msg": "// [multiACE] head 0 loaded (ACE 0 / slot 0)"},
+    {"id": 6, "ts": 1786000090.0, "kind": "command", "msg": "SDCARD_PRINT_FILE FILENAME=benchy.gcode"},
+    {"id": 7, "ts": 1786000091.1, "kind": "response", "msg": "// Klipper state: Ready"},
+    {"id": 8, "ts": 1786000210.5, "kind": "error", "msg": "!! Move out of range: 0.000 250.000 0.000 [0.000]"}
+  ]
+}

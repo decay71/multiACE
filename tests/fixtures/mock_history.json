@@ -1,0 +1,301 @@
+{
+  "_comment": "Mock /api/history payload (MULTIACE_MOCK_MODE=1). Shape mirrors job_history.join_history(): a Moonraker job row with multiACE's own record joined under 'multiace'.",
+  "_generated": "2026-08-11",
+  "jobs": [
+    {
+      "source": "moonraker",
+      "job_id": "000000",
+      "filename": "lantern_4c.gcode",
+      "start_time": 1786492800.0,
+      "end_time": 1786511160.0,
+      "duration": 18360,
+      "print_duration": 18240,
+      "status": "completed",
+      "filament_used": 12000,
+      "ambiguous": false,
+      "id": "mock-job-0",
+      "meta": {
+        "estimated_time": 18270,
+        "layer_count": 412,
+        "filament_used_mm": 92500,
+        "slicer": "OrcaSlicer",
+        "slicer_version": "2.1.0",
+        "thumbnails": [
+          {"width": 32, "height": 32, "size": 1200,
+           "relative_path": ".thumbs/lantern_4c-32x32.png"},
+          {"width": 300, "height": 300, "size": 18000,
+           "relative_path": ".thumbs/lantern_4c-300x300.png"}
+        ]
+      },
+      "multiace": {
+        "id": "mock-job-0",
+        "filename": "lantern_4c.gcode",
+        "start_time": 1786492800.0,
+        "end_time": 1786511160.0,
+        "result": "completed",
+        "plan": "optimize",
+        "events": [
+          {"t": 1786492820.0, "kind": "warmup_end"},
+          {"t": 1786492900.0, "kind": "swap", "head": 0, "ace": 0, "slot": 0,
+           "s": 78.2, "swap_kind": "first_load"},
+          {"t": 1786498400.0, "kind": "swap", "head": 1, "ace": 1, "slot": 0,
+           "s": 214.0, "swap_kind": "cross_ace_inline"},
+          {"t": 1786499500.0, "kind": "error", "code": 45, "head": 2,
+           "coded": "0002-0523-0002-0045", "action": "pause",
+           "msg": "Extruder extruder2 pickup failed, detected that extruder2 pogopin not connected."},
+          {"t": 1786499500.0, "kind": "pause"},
+          {"t": 1786499800.0, "kind": "resume"},
+          {"t": 1786502600.0, "kind": "pause", "cause": "user"},
+          {"t": 1786502780.0, "kind": "resume"},
+          {"t": 1786505400.0, "kind": "swap", "head": 0, "ace": 0, "slot": 1,
+           "s": 226.5, "swap_kind": "same_ace"},
+          {"t": 1786509800.0, "kind": "swap", "head": 1, "ace": 1, "slot": 3,
+           "s": 208.9, "swap_kind": "cross_ace_inline"}
+        ],
+        "toolchanges": 4,
+        "load_retries": 0,
+        "neighbor_retracts": {},
+        "purge_bin_used_mm": 240,
+        "assignment": {
+          "0": {
+            "ace_index": 0,
+            "slot": 0
+          },
+          "1": {
+            "ace_index": 0,
+            "slot": 1
+          },
+          "2": {
+            "ace_index": 1,
+            "slot": 0
+          },
+          "3": {
+            "ace_index": 1,
+            "slot": 3
+          }
+        },
+        "estimate": {
+          "base_s": 15830,
+          "added_s": 2530,
+          "total_s": 18270,
+          "inline_swaps": 11,
+          "bg_swaps": 7,
+          "purge": {
+            "mm": 320,
+            "g": 0.96,
+            "destination": "tower",
+            "counted_in_total": false
+          },
+          "totals": {
+            "mm": 92500,
+            "m": 92.5,
+            "g": 276.4
+          },
+          "confidence": "modelled",
+          "assumptions": [
+            "prime tower detected - purge is already in the slicer total, reported but not added"
+          ]
+        },
+        "swaps": [
+          {
+            "kind": "first_load",
+            "head": 0,
+            "ace": 0,
+            "slot": 0,
+            "seconds": 78.2
+          },
+          {
+            "kind": "cross_ace_inline",
+            "head": 1,
+            "ace": 1,
+            "slot": 0,
+            "seconds": 214.0
+          },
+          {
+            "kind": "same_ace",
+            "head": 0,
+            "ace": 0,
+            "slot": 1,
+            "seconds": 226.5
+          },
+          {
+            "kind": "cross_ace_inline",
+            "head": 1,
+            "ace": 1,
+            "slot": 3,
+            "seconds": 208.9
+          }
+        ]
+      }
+    },
+    {
+      "source": "moonraker",
+      "job_id": "000001",
+      "filename": "bracket_2c.gcode",
+      "start_time": 1786485600.0,
+      "end_time": 1786491000.0,
+      "duration": 5400,
+      "print_duration": 5280,
+      "status": "completed",
+      "filament_used": 12900,
+      "ambiguous": false,
+      "id": "mock-job-1",
+      "meta": {
+        "estimated_time": 5460,
+        "layer_count": 180,
+        "slicer": "OrcaSlicer",
+        "slicer_version": "2.1.0"
+      },
+      "multiace": {
+        "id": "mock-job-1",
+        "filename": "bracket_2c.gcode",
+        "start_time": 1786485600.0,
+        "end_time": 1786491000.0,
+        "result": "completed",
+        "plan": "loadout",
+        "toolchanges": 2,
+        "load_retries": 1,
+        "neighbor_retracts": {
+          "0": {
+            "2": 150
+          }
+        },
+        "purge_bin_used_mm": 480,
+        "assignment": {
+          "0": {
+            "ace_index": 0,
+            "slot": 0
+          },
+          "1": {
+            "ace_index": 0,
+            "slot": 1
+          },
+          "2": {
+            "ace_index": 1,
+            "slot": 0
+          },
+          "3": {
+            "ace_index": 1,
+            "slot": 3
+          }
+        },
+        "estimate": {
+          "base_s": 4500,
+          "added_s": 900,
+          "total_s": 5460,
+          "inline_swaps": 4,
+          "bg_swaps": 0,
+          "purge": {
+            "mm": 320,
+            "g": 0.96,
+            "destination": "tower",
+            "counted_in_total": false
+          },
+          "totals": {
+            "mm": 92500,
+            "m": 92.5,
+            "g": 276.4
+          },
+          "confidence": "modelled",
+          "assumptions": [
+            "prime tower detected - purge is already in the slicer total, reported but not added"
+          ]
+        },
+        "swaps": [
+          {
+            "kind": "first_load",
+            "head": 0,
+            "ace": 0,
+            "slot": 0,
+            "seconds": 81.0
+          },
+          {
+            "kind": "same_ace",
+            "head": 0,
+            "ace": 0,
+            "slot": 1,
+            "seconds": 241.3
+          }
+        ]
+      }
+    },
+    {
+      "source": "moonraker",
+      "job_id": "000002",
+      "filename": "vase_1c.gcode",
+      "start_time": 1786478400.0,
+      "end_time": 1786481600.0,
+      "duration": 3200,
+      "print_duration": 3080,
+      "status": "cancelled",
+      "filament_used": 13800,
+      "ambiguous": false,
+      "id": "mock-job-2",
+      "meta": {
+        "estimated_time": 3110,
+        "layer_count": 96
+      },
+      "multiace": {
+        "id": "mock-job-2",
+        "filename": "vase_1c.gcode",
+        "start_time": 1786478400.0,
+        "end_time": 1786481600.0,
+        "result": "cancelled",
+        "plan": "slicer",
+        "toolchanges": 1,
+        "load_retries": 0,
+        "neighbor_retracts": {},
+        "purge_bin_used_mm": 720,
+        "assignment": {
+          "0": {
+            "ace_index": 0,
+            "slot": 0
+          },
+          "1": {
+            "ace_index": 0,
+            "slot": 1
+          },
+          "2": {
+            "ace_index": 1,
+            "slot": 0
+          },
+          "3": {
+            "ace_index": 1,
+            "slot": 3
+          }
+        },
+        "estimate": {
+          "base_s": 3080,
+          "added_s": 120,
+          "total_s": 3110,
+          "inline_swaps": 0,
+          "bg_swaps": 0,
+          "purge": {
+            "mm": 320,
+            "g": 0.96,
+            "destination": "tower",
+            "counted_in_total": false
+          },
+          "totals": {
+            "mm": 92500,
+            "m": 92.5,
+            "g": 276.4
+          },
+          "confidence": "modelled",
+          "assumptions": [
+            "prime tower detected - purge is already in the slicer total, reported but not added"
+          ]
+        },
+        "swaps": [
+          {
+            "kind": "first_load",
+            "head": 2,
+            "ace": 1,
+            "slot": 0,
+            "seconds": 76.4
+          }
+        ]
+      }
+    }
+  ]
+}

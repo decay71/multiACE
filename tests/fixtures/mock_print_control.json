@@ -1,0 +1,8 @@
+{
+  "_comment": "Mock GET /api/print-control payload: an idle printer at default factors.",
+  "speed_factor": 100.0, "extrude_factor": 100.0, "fan": 0.0, "z_offset": 0.0, "light": 0.0, "detection": false,
+  "enclosure": {"temp": 24.0, "attached": true, "exhaust": 0.0, "inner": 0.0, "mode": 0, "desired_temp": 0.0},
+  "nozzle": {"temp": 24.1, "target": 0.0},
+  "bed": {"temp": 23.6, "target": 0.0},
+  "progress": 0.0, "message": "", "state": "standby", "filename": ""
+}

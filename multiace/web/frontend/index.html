@@ -1351,6 +1351,299 @@
         </div>
       </div>
     </section>
+    <!-- Control (Print Hub): the printer's camera, routed in from the
+         Fluidd/Moonraker side so it is on the same page as the ACEs. -->
+    <section v-show="tab==='control'" class="control-tab">
+      <div class="control-top">
+        <div class="control-webcam">
+          <video v-if="webcam.available && webcam.webrtc" ref="webcamVideo" class="webcam-img"
+                 :style="{aspectRatio: webcam.aspect}" autoplay muted playsinline
+                 :aria-label="webcam.name || t('ui.control.webcam')"></video>
+          <img v-else-if="webcam.available && webcamSrc" :src="webcamSrc" class="webcam-img"
+               :style="{aspectRatio: webcam.aspect}"
+               :alt="webcam.name || t('ui.control.webcam')">
+          <div v-else-if="!webcam.available" class="webcam-none">
+            <p>{{ webcam.loaded ? t('ui.control.webcam_unavailable')
+                                : t('ui.control.webcam_loading') }}</p>
+            <p class="muted small" v-if="webcam.reason">{{ webcam.reason }}</p>
+            <p class="muted small">{{ t('ui.control.webcam_hint') }}</p>
+          </div>
+          <div class="webcam-foot">
+            <span class="muted small">
+              {{ webcam.name || t('ui.control.webcam') }}
+              <template v-if="webcam.connFailed">
+                &middot; {{ t('ui.control.webcam_unavailable') }}<span v-if="webcam.reason"> ({{ webcam.reason }})</span>
+              </template>
+            </span>
+            <button @click="reloadWebcam">{{ t('ui.common.reload') }}</button>
+          </div>
+        </div>
+
+        <div class="control-print">
+          <h3>{{ t('ui.control.print') }}</h3>
+          <p v-if="printCtlError" class="error small">{{ printCtlError }}</p>
+          <p v-if="printCtlNotice" class="muted small">{{ printCtlNotice }}</p>
+          <div class="pc-status">
+            <span class="pill">{{ printCtl.state || '–' }}</span>
+            <span v-if="printCtl.progress" class="pill">{{ printCtl.progress }} %</span>
+            <span v-if="printCtl.filename" class="muted small pc-file">{{ printCtl.filename }}</span>
+            <span v-if="printCtl.message" class="muted small">{{ printCtl.message }}</span>
+          </div>
+
+          <label class="pc-row">
+            <span>{{ t('ui.control.speed') }}</span>
+            <input type="range" :min="printCtlLimits.ranges.speed.min"
+                   :max="printCtlLimits.ranges.speed.max" step="5"
+                   v-model.number="printCtlDraft.speed"
+                   @input="printCtlSlide('speed', printCtlDraft.speed)"
+                   @change="printCtlRelease('speed', printCtlDraft.speed)">
+            <b>{{ printCtl.speed_factor }} %</b>
+            <button class="pc-reset" @click.prevent="printCtlReset('speed')"
+                    :title="t('ui.control.reset_hint')">100 %</button>
+          </label>
+          <label class="pc-row">
+            <span>{{ t('ui.control.flow') }}</span>
+            <input type="range" :min="printCtlLimits.ranges.flow.min"
+                   :max="printCtlLimits.ranges.flow.max" step="1"
+                   v-model.number="printCtlDraft.flow"
+                   @input="printCtlSlide('flow', printCtlDraft.flow)"
+                   @change="printCtlRelease('flow', printCtlDraft.flow)">
+            <b>{{ printCtl.extrude_factor }} %</b>
+            <button class="pc-reset" @click.prevent="printCtlReset('flow')"
+                    :title="t('ui.control.reset_hint')">100 %</button>
+          </label>
+          <label class="pc-row">
+            <span>{{ t('ui.control.fan') }}</span>
+            <input type="range" min="0" max="100" step="5"
+                   v-model.number="printCtlDraft.fan"
+                   @input="printCtlSlide('fan', printCtlDraft.fan)"
+                   @change="printCtlRelease('fan', printCtlDraft.fan)">
+            <b>{{ printCtl.fan }} %</b>
+            <button class="pc-reset" @click.prevent="printCtlReset('fan')">0 %</button>
+          </label>
+
+          <div class="pc-row pc-temps">
+            <span>{{ t('ui.control.nozzle') }}</span>
+            <b>{{ printCtl.nozzle.temp !== null ? Math.round(printCtl.nozzle.temp) : '–' }}
+               / {{ printCtl.nozzle.target !== null ? Math.round(printCtl.nozzle.target) : '–' }} °C</b>
+            <input type="number" class="pc-temp-in"
+                   min="0" :max="printCtlLimits.nozzle.max"
+                   :placeholder="t('ui.control.target')"
+                   :value="printCtlTempShown('nozzle')"
+                   @input="printCtlTempDraft.nozzle = $event.target.value"
+                   @blur="printCtlTempDraft.nozzle = null"
+                   @change="printCtlHeat('nozzle', $event)">
+          </div>
+          <div class="pc-row pc-temps">
+            <span>{{ t('ui.control.bed') }}</span>
+            <b>{{ printCtl.bed.temp !== null ? Math.round(printCtl.bed.temp) : '–' }}
+               / {{ printCtl.bed.target !== null ? Math.round(printCtl.bed.target) : '–' }} °C</b>
+            <input type="number" class="pc-temp-in"
+                   min="0" :max="printCtlLimits.bed.max"
+                   :placeholder="t('ui.control.target')"
+                   :value="printCtlTempShown('bed')"
+                   @input="printCtlTempDraft.bed = $event.target.value"
+                   @blur="printCtlTempDraft.bed = null"
+                   @change="printCtlHeat('bed', $event)">
+          </div>
+
+          <div class="pc-row pc-temps" v-if="printCtl.enclosure">
+            <span>{{ t('ui.control.chamber') }}</span>
+            <b>{{ printCtl.enclosure.temp !== null ? Math.round(printCtl.enclosure.temp) : '–' }} °C</b>
+          </div>
+
+          <div class="pc-row pc-light" :class="{on: printCtl.light > 0}" v-if="printCtl.light !== null">
+            <svg class="pc-bulb" viewBox="0 0 24 24" width="22" height="22" fill="none"
+                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                 stroke-linejoin="round" aria-hidden="true">
+              <path class="pc-bulb-glass" d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>
+            </svg>
+            <span class="pc-light-label">{{ t('ui.control.light') }}</span>
+            <button type="button" role="switch" class="pc-switch"
+                    :aria-checked="printCtl.light > 0 ? 'true' : 'false'"
+                    :aria-label="t('ui.control.light')" :disabled="printCtlBusy !== '' || lightLocked"
+                    @click="sendPrintControl('light', printCtl.light > 0 ? 0 : 100)">
+              <span class="pc-knob">{{ printCtl.light > 0 ? t('ui.control.on') : t('ui.control.off') }}</span>
+            </button>
+          </div>
+          <p v-if="lightLocked" class="muted small">{{ t('ui.control.light_locked') }}</p>
+
+          <!-- Only with an enclosure attached (the printer's own attach detection).
+               Outside a print the fans can be set directly only while no mode
+               runs (the sliders say why). During a print they always can; a
+               running mode may override the exhaust value, which the hint
+               says. "Fans off" returns to idle and stops both at once. -->
+          <div class="pc-enc" v-if="printCtl.enclosure && printCtl.enclosure.attached">
+            <div class="pc-row pc-enclosure">
+              <span>{{ t('ui.control.enclosure_fans') }}</span>
+              <b>{{ enclosureModeText }}</b>
+              <button :disabled="printCtlBusy !== '' || (!printCtl.enclosure.exhaust && !printCtl.enclosure.inner && !printCtl.enclosure.mode)"
+                      @click="sendPrintControl('enclosure_off')">{{ t('ui.control.fans_off') }}</button>
+            </div>
+            <label class="pc-row" v-for="f in ['exhaust', 'inner']" :key="f">
+              <span>{{ t('ui.control.' + f) }}</span>
+              <input type="range" min="0" max="100" step="5"
+                     :disabled="!!enclosureLock || printCtlBusy !== ''"
+                     v-model.number="printCtlDraft[f]"
+                     @input="printCtlSlide(f, printCtlDraft[f])"
+                     @change="printCtlRelease(f, printCtlDraft[f])">
+              <b>{{ Math.round(printCtl.enclosure[f]) }} %</b>
+            </label>
+            <p v-if="enclosureLock" class="muted small">{{ enclosureLock }}</p>
+            <p v-else-if="enclosureHint" class="muted small">{{ enclosureHint }}</p>
+          </div>
+
+          <!-- Z offset is BUTTONS, never a slider: a slider makes it easy to
+               send a large negative step in one gesture, which drives the
+               nozzle into the plate. -->
+          <div class="pc-row pc-baby">
+            <span>{{ t('ui.control.babystep') }}</span>
+            <button :disabled="printCtlQueued.babystep" @click="sendPrintControl('babystep', -0.05)">−0.05</button>
+            <button :disabled="printCtlQueued.babystep" @click="sendPrintControl('babystep', -0.01)">−0.01</button>
+            <b>{{ printCtl.z_offset.toFixed(3) }} mm</b>
+            <button :disabled="printCtlQueued.babystep" @click="sendPrintControl('babystep', 0.01)">+0.01</button>
+            <button :disabled="printCtlQueued.babystep" @click="sendPrintControl('babystep', 0.05)">+0.05</button>
+          </div>
+          <p class="muted small">
+            {{ t('ui.control.babystep_used', {
+                 used: printCtlLimits.babystep.used,
+                 max: printCtlLimits.babystep.total }) }}
+          </p>
+
+          <div class="pc-row pc-actions">
+            <button @click="sendPrintControl('pause')"
+                    :disabled="!printCtlCan.pause || printCtlBusy !== '' || printCtlQueued.pause">{{ t('ui.control.pause') }}</button>
+            <button @click="sendPrintControl('resume')"
+                    :disabled="!printCtlCan.resume || printCtlBusy !== '' || printCtlQueued.resume">{{ t('ui.control.resume') }}</button>
+            <button class="warn" @click="printCtlCancel"
+                    :disabled="!printCtlCan.cancel || printCtlBusy !== '' || printCtlQueued.cancel">{{ t('ui.control.cancel') }}</button>
+          </div>
+          <!-- The server refuses these while a print runs, and under a managed
+               install the platform owns restarts, so the buttons are not shown. -->
+          <div class="pc-row pc-restart" v-if="!updateState.managed">
+            <button class="warn" :disabled="printCtlRestartBlocked"
+                    :title="printCtlRestartBlocked ? t('ui.control.restart_blocked') : t('ui.restart.firmware_msg')"
+                    @click="printCtlRestart('firmware')">{{ t('ui.restart.firmware_btn') }}</button>
+            <button class="warn" :disabled="printCtlRestartBlocked"
+                    :title="printCtlRestartBlocked ? t('ui.control.restart_blocked') : t('ui.restart.printer_msg')"
+                    @click="printCtlRestart('printer')">{{ t('ui.restart.printer_btn') }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-console">
+        <h3>{{ t('ui.control.console') }}</h3>
+        <div ref="consoleEl" class="console-log">
+          <div v-for="ln in consoleLines" :key="ln.id"
+               class="console-line" :class="'console-' + ln.kind">
+            <span class="console-ts">{{ consoleTime(ln.ts) }}</span>
+            <span class="console-msg">{{ ln.msg }}</span>
+          </div>
+          <p v-if="!consoleLines.length" class="muted small">{{ t('ui.control.console_empty') }}</p>
+        </div>
+        <div class="console-controls">
+          <label class="console-follow">
+            <input type="checkbox" v-model="consoleFollow">
+            {{ t('ui.control.console_follow') }}
+          </label>
+          <button @click="loadConsole">{{ t('ui.common.reload') }}</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- HISTORY: Moonraker's job list joined with multiACE's own record.
+         Moonraker owns duration and result; multiACE owns the plan, the
+         assignment and the swaps. -->
+    <section v-show="tab==='history'" class="history-tab">
+      <div class="row">
+        <h3>{{ t('ui.history.title') }}</h3>
+        <button @click="loadHistory" :disabled="history.busy">
+          {{ history.busy ? t('ui.common.saving') : t('ui.common.reload') }}
+        </button>
+      </div>
+      <p v-if="history.error" class="error">{{ history.error }}</p>
+      <div v-if="history.stats.length" class="history-stats"
+           :title="t('ui.history.stats_hint', {n: history.minSamples})">
+        <span class="muted small">{{ t('ui.history.stats_title') }}</span>
+        <span v-for="s in history.stats" :key="'st-'+s.kind" class="history-stat">
+          <b>{{ swapKindLabel(s.kind) }}</b>
+          {{ t('ui.history.stats_line', {median: fmtDuration(s.median_s), n: s.n}) }}
+          <span class="small" :class="s.calibrated ? 'ok' : 'muted'">
+            {{ s.calibrated ? t('ui.history.stats_calibrated')
+                            : t('ui.history.stats_collecting') }}</span>
+        </span>
+      </div>
+      <p v-if="history.loaded && !history.error && !history.jobs.length" class="muted">
+        {{ t('ui.history.empty') }}
+      </p>
+      <div v-if="history.jobs.length" class="history-scroll">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>{{ t('ui.history.date') }}</th>
+              <th>{{ t('ui.history.file') }}</th>
+              <th>{{ t('ui.history.duration') }}</th>
+              <th>{{ t('ui.history.colors') }}</th>
+              <th>{{ t('ui.history.swaps') }}</th>
+              <th>{{ t('ui.history.filament') }}</th>
+              <th>{{ t('ui.history.result') }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="row in history.jobs" :key="historyRowKey(row)">
+              <tr class="history-row" @click="openHistoryDetail(row)">
+                <td>{{ new Date((row.start_time || 0) * 1000).toLocaleString() }}</td>
+                <td>{{ row.filename }}
+                  <span v-if="row.ambiguous" class="muted small"
+                        :title="t('ui.history.ambiguous_hint')">· {{ t('ui.history.ambiguous') }}</span>
+                </td>
+                <td>{{ fmtDuration(row.duration) }}</td>
+                <td>
+                  <span v-for="c in historyColors(row)" :key="'hc-'+c.head"
+                        class="swatch" :style="{background: c.color}"
+                        :title="'T' + c.head + ' · ACE ' + c.ace + ' / slot ' + c.slot"></span>
+                </td>
+                <td>{{ row.multiace ? row.multiace.toolchanges : '–' }}</td>
+                <td>{{ row.filament_used ? Math.round(row.filament_used / 1000) + ' m' : '–' }}</td>
+                <td><span class="pill">{{ row.status || '–' }}</span></td>
+                <td>
+                  <button v-if="row.filename" class="reprint-btn"
+                          :disabled="isPrinting || history.reprinting !== ''"
+                          :title="t('ui.history.reprint_hint')"
+                          @click.stop="reprintJob(row)">
+                    {{ history.reprinting === historyRowKey(row)
+                       ? t('ui.preflight.sending') : t('ui.history.reprint') }}
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="history.detail === historyRowKey(row)" class="history-detail">
+                <td colspan="8">
+                  <div v-if="row.multiace">
+                    <p><b>{{ t('ui.history.plan') }}:</b> {{ row.multiace.plan || '–' }}
+                       · <b>{{ t('ui.history.retries') }}:</b> {{ row.multiace.load_retries }}</p>
+                    <table class="history-swaps" v-if="(row.multiace.swaps || []).length">
+                      <tr v-for="(sw, i) in row.multiace.swaps" :key="'sw-'+i">
+                        <td>{{ sw.kind }}</td>
+                        <td>T{{ sw.head }} · ACE {{ sw.ace }} / {{ sw.slot }}</td>
+                        <td>{{ Math.round(sw.seconds) }} s</td>
+                      </tr>
+                    </table>
+                    <p v-if="row.multiace.neighbor_retracts
+                             && Object.keys(row.multiace.neighbor_retracts).length"
+                       class="muted small">
+                      {{ t('ui.history.neighbor_retracts') }}:
+                      {{ JSON.stringify(row.multiace.neighbor_retracts) }}
+                    </p>
+                  </div>
+                  <p v-else class="muted small">{{ t('ui.history.no_multiace_record') }}</p>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </section>
     <section v-show="tab==='spools'" class="nt-spools-tab">
       <h2>{{ t('ui.spools.title') }}
         <span v-if="state.spool_mode !== 'local'" class="src-badge"

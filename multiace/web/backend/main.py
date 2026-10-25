@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import html
 import asyncio
 import json
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 from collections import deque
@@ -129,6 +131,10 @@ def _resolve_cfg_path() -> str:
     return _first_existing(candidates)
 
 MULTIACE_CFG_PATH = _resolve_cfg_path()
+# multiACE's own runtime data (print history, swap calibration), written by
+# ace.py and read here.
+MULTIACE_DATA_DIR = os.environ.get(
+    "MULTIACE_DATA_DIR", os.path.join(MULTIACE_PRINTER_DATA, "multiace"))
 SNAPSHOT_DIR = os.environ.get(
     "MULTIACE_SNAPSHOT_DIR",
     os.path.join(_CFG_EXT_DIR, "multiace", "filament_snapshots"),
@@ -2142,6 +2148,767 @@ async def fluidd_camera() -> dict:
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502,
                             detail=f"moonraker: {e}")
+
+WEBCAM_BASE = os.environ.get("MULTIACE_WEBCAM_BASE", "")
+
+def _webcam_base() -> str:
+    """Where a relative camera URL ('/webcam/?action=stream') points.
+
+    Moonraker stores those relative to the printer's own web root, not to
+    Moonraker's port, so strip the port off MOONRAKER_URL rather than
+    reusing it whole."""
+    if WEBCAM_BASE:
+        return WEBCAM_BASE.rstrip("/")
+    m = re.match(r"^(https?)://([^/:]+)", MOONRAKER_URL)
+    if not m:
+        return "http://127.0.0.1"
+    return f"{m.group(1)}://{m.group(2)}"
+
+def _abs_webcam_url(url: str) -> str:
+    if not url:
+        return ""
+    if url.startswith(("http://", "https://")):
+        return url
+    return f"{_webcam_base()}/{url.lstrip('/')}"
+
+async def _resolve_webcam() -> dict:
+    """First real camera Moonraker knows about.
+
+    Skips our own Fluidd panel entry: it is an iframe pointing back at
+    this UI, and embedding it in the UI's own page would be a mirror
+    tunnel rather than a webcam.
+    """
+    try:
+        listing = await _mr_get("/server/webcams/list")
+    except Exception as e:
+        # httpx timeouts have an empty message: name the error then.
+        return {"available": False, "reason": f"moonraker: {str(e) or type(e).__name__}"}
+    cams = (listing.get("result") or {}).get("webcams") or []
+    for cam in cams:
+        name = str(cam.get("name", ""))
+        if name.strip().lower() == FLUIDD_CAMERA_NAME.lower():
+            continue
+        if str(cam.get("service", "")).lower() == "iframe":
+            continue
+        if cam.get("enabled") is False:
+            continue
+        stream = str(cam.get("stream_url") or "")
+        if not stream:
+            continue
+        service = str(cam.get("service") or "mjpegstreamer")
+        return {
+            "available": True,
+            "name": name,
+            "service": service,
+            "webrtc": "webrtc" in service.lower(),
+            "stream_url": _abs_webcam_url(stream),
+            "snapshot_url": _abs_webcam_url(str(cam.get("snapshot_url") or "")),
+            "aspect_ratio": cam.get("aspect_ratio") or "16:9",
+        }
+    return {"available": False,
+            "reason": "no camera configured in Moonraker"}
+
+@app.get("/api/webcam/info")
+async def webcam_info(request: Request) -> dict:
+    if _mock_enabled(request):
+        return {**(_mock_load("mock_webcam.json") or {"available": False,
+                                                      "reason": "no fixture"}),
+                "mock": True}
+    info = await _resolve_webcam()
+    if info.get("available"):
+        # The browser always goes through our proxy: the camera may live
+        # on a host/port the UI's origin cannot reach, and https pages
+        # refuse plain-http streams. The path is relative to the client's
+        # own API base (the UI is mounted at /multiace behind nginx but
+        # at / on the dev server).
+        # A WebRTC camera (camera-streamer) has no MJPEG stream: the media
+        # travels browser-to-camera over ICE, and only the signalling goes
+        # through us.
+        if info["webrtc"]:
+            info["signal_path"] = "/api/webcam/webrtc-signal"
+        else:
+            info["proxy_path"] = "/api/webcam/stream"
+        info["snapshot_path"] = "/api/webcam/snapshot"
+        info.pop("stream_url", None)
+        info.pop("snapshot_url", None)
+    return info
+
+@app.get("/api/webcam/stream")
+async def webcam_stream(request: Request):
+    """Pipe the camera's MJPEG stream through this service."""
+    from fastapi.responses import StreamingResponse
+
+    if _mock_enabled(request):
+        raise HTTPException(503, "webcam stream unavailable in mock mode")
+    info = await _resolve_webcam()
+    if not info.get("available") or info.get("webrtc"):
+        raise HTTPException(503, info.get("reason") or "no MJPEG webcam")
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None))
+    try:
+        upstream = await client.send(
+            client.build_request("GET", info["stream_url"]), stream=True)
+        upstream.raise_for_status()
+    except httpx.HTTPError as e:
+        await client.aclose()
+        raise HTTPException(502, f"webcam: {e}")
+
+    async def _pump():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        except httpx.HTTPError:
+            return
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    ctype = upstream.headers.get(
+        "content-type", "multipart/x-mixed-replace; boundary=boundarydonotcross")
+    return StreamingResponse(_pump(), media_type=ctype,
+                             headers={"Cache-Control": "no-store"})
+
+@app.post("/api/webcam/webrtc-signal")
+async def webcam_webrtc_signal(request: Request) -> dict:
+    """Relay one leg of the browser<->camera SDP handshake.
+
+    camera-streamer sends no CORS headers and answers OPTIONS with 501, so
+    a browser POST straight to it is blocked at the preflight. From the
+    browser's side this is same-origin; httpx talks to the camera directly,
+    where CORS does not apply."""
+    if _mock_enabled(request):
+        raise HTTPException(503, "webrtc signalling unavailable in mock mode")
+    info = await _resolve_webcam()
+    if not info.get("available") or not info.get("webrtc"):
+        raise HTTPException(503, info.get("reason") or "no WebRTC camera")
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "invalid JSON")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(info["stream_url"], json=body)
+            r.raise_for_status()
+            return r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        raise HTTPException(502, f"webrtc signal: {e}")
+
+@app.get("/api/webcam/snapshot")
+async def webcam_snapshot(request: Request):
+    if _mock_enabled(request):
+        raise HTTPException(503, "webcam snapshot unavailable in mock mode")
+    info = await _resolve_webcam()
+    url = info.get("snapshot_url") or ""
+    if not info.get("available") or not url:
+        raise HTTPException(503, info.get("reason") or "no webcam snapshot")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"webcam: {e}")
+    return Response(content=r.content,
+                    media_type=r.headers.get("content-type", "image/jpeg"),
+                    headers={"Cache-Control": "no-store"})
+
+CONSOLE_BUFFER_MAX = int(os.environ.get("MULTIACE_CONSOLE_BUFFER", "300"))
+_console_lines: deque = deque(maxlen=CONSOLE_BUFFER_MAX)
+_next_console_id = 0
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+def _console_text(text: str) -> str:
+    """Klipper messages from some modules carry colour markup (Fluidd
+    renders it); the console shows plain text."""
+    return html.unescape(_HTML_TAG_RE.sub("", text))
+
+def _console_kind(text: str) -> str:
+    s = (text or "").strip()
+    body = s[3:].strip() if s.startswith("// ") else s
+    if body.startswith("!!") or "Error:" in body:
+        return "error"
+    if s.startswith("//"):
+        return "response"
+    return "command"
+
+def _record_console_line(text: str) -> dict | None:
+    """Append one Klipper console line to the ring buffer.
+
+    Fed by the Moonraker websocket that already powers the error
+    notifications, so the console costs no extra printer polling."""
+    global _next_console_id
+    if not isinstance(text, str) or not text.strip():
+        return None
+    text = _console_text(text)
+    if not text.strip():
+        return None
+    _next_console_id += 1
+    line = {"id": _next_console_id, "ts": time.time(),
+            "msg": text.rstrip(), "kind": _console_kind(text)}
+    _console_lines.append(line)
+    return line
+
+_console_seeded = False
+_console_seed_lock = asyncio.Lock()
+
+async def _seed_console_from_gcode_store() -> None:
+    """Backfill the buffer from Moonraker's own history, once, so a freshly
+    started backend does not show an empty console.
+
+    Live lines that arrived before the first view are part of that history
+    too, so the history replaces them; only lines newer than the request
+    are kept, because the history cannot contain those yet."""
+    global _next_console_id, _console_seeded
+    async with _console_seed_lock:
+        if _console_seeded:
+            return
+        started = time.time()
+        try:
+            data = await _mr_get(f"/server/gcode_store?count={CONSOLE_BUFFER_MAX}")
+        except Exception:
+            return
+        entries = (data.get("result") or {}).get("gcode_store") or []
+        newer = [ln for ln in _console_lines if ln["ts"] >= started]
+        _console_lines.clear()
+        for e in entries:
+            msg = e.get("message")
+            if not msg:
+                continue
+            msg = _console_text(str(msg))
+            if not msg.strip():
+                continue
+            _next_console_id += 1
+            _console_lines.append({
+                "id": _next_console_id,
+                "ts": float(e.get("time") or time.time()),
+                "msg": msg.rstrip(),
+                "kind": ("command" if e.get("type") == "command"
+                         else _console_kind(msg)),
+            })
+        for ln in newer:
+            _next_console_id += 1
+            ln["id"] = _next_console_id
+            _console_lines.append(ln)
+        _console_seeded = True
+
+@app.get("/api/console-logs")
+async def console_logs(request: Request, lines: int = 100,
+                       since_id: int = 0) -> dict:
+    """Recent console lines, read only. `since_id` returns only what is
+    newer, so a poller stays incremental."""
+    n = max(1, min(int(lines or 100), CONSOLE_BUFFER_MAX))
+    if _mock_enabled(request):
+        mock = _mock_load("mock_console.json") or {"lines": []}
+        out = [ln for ln in mock.get("lines", []) if ln.get("id", 0) > since_id]
+        return {"lines": out[-n:], "mock": True}
+    if not _console_seeded:
+        await _seed_console_from_gcode_store()
+    out = [ln for ln in _console_lines if ln["id"] > since_id]
+    return {"lines": out[-n:], "buffer_max": CONSOLE_BUFFER_MAX}
+
+# ---------------------------------------------------------------------------
+# Live print control: verbs, not G-code
+# ---------------------------------------------------------------------------
+#
+# The Control tab does what tapping the printer's own screen does mid-print.
+# Nothing here forwards a string from the browser: each request is a verb
+# from a fixed list plus a number, and the number is clamped SERVER-side, so
+# a stale page, a curl or a slider that fires an out-of-range value on touch
+# all land on the same ceiling.
+
+#: Verb -> (min, max). Speed, fan, pause/resume/cancel are not hardware
+#: risks (worst case: a ruined print). Flow and the heaters are: M221 at a
+#: high value is sustained over-extrusion, and a temperature above the
+#: material's range carbonises filament in the melt zone.
+PRINT_CONTROL_RANGES = {
+    "speed": (25.0, 300.0),
+    "flow":  (75.0, 125.0),
+    "fan":   (0.0, 100.0),
+    "light": (0.0, 100.0),
+    "exhaust": (0.0, 100.0),
+    "inner":   (0.0, 100.0),
+}
+
+#: The printer's own chamber light: a single white channel, driven with
+#: SET_LED. Not every Klipper printer has one, so the verb checks for it.
+CHAMBER_LED = "led cavity_led"
+
+#: Snapmaker's enclosure: the `purifier` object drives the exhaust and inner
+#: fans and has its own attach detection (power_detected). The cavity
+#: temperature sensor is part of the printer itself and reads without an
+#: enclosure too.
+PURIFIER = "purifier"
+CAVITY_SENSOR = "temperature_sensor cavity"
+
+#: Stock's AI camera check. It needs the chamber light, which stock turns on
+#: itself at DEFECT_DETECTION_START, so the light must not be switched off
+#: while it is watching a print.
+DEFECT_DETECTION = "defect_detection"
+
+#: Z babystep is the damaging control: it moves the nozzle relative to the
+#: bed while printing, and repeated negative steps drive it into the plate.
+#: Discrete steps only (the UI has buttons, never a slider), and a
+#: cumulative floor, because the situation where a user keeps pressing
+#: "down" is the one where the next press does damage.
+BABYSTEP_MAX_STEP_MM = 0.05
+BABYSTEP_MAX_TOTAL_MM = 0.5
+
+#: Fallback heater ceilings, used only when Moonraker's config cannot be
+#: read. Klipper's own max_temp is the real limit and is read from the config.
+DEFAULT_HEATER_LIMITS = {"nozzle": (0.0, 300.0), "bed": (0.0, 120.0)}
+
+_EXTRUDERS = ["extruder"] + ["extruder%d" % i for i in range(1, 4)]
+
+class PrintControl(BaseModel):
+    verb: str
+    value: float | None = None
+
+#: Cumulative babystep for the current print. Reset when a print starts (see
+#: _on_status_update), not on page reload: a reload must not hand back the
+#: other half of the allowance, and printing the same file again is a new
+#: print.
+_babystep_state: dict = {"total": 0.0}
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(value)))
+
+def _moonraker_error(resp: "httpx.Response") -> str:
+    """Moonraker's own message for a failed request. Its JSON error carries a
+    full Python traceback, which is no use in the panel; the message is."""
+    try:
+        err = resp.json().get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])
+    except (ValueError, AttributeError):
+        pass
+    return resp.text
+
+_LAST_PRINT_STATUS: dict = {}
+_LAST_PRINT_STATUS_TS: float = 0.0
+
+async def _print_status() -> dict:
+    """Raw Moonraker status for the Control tab. A query of its own, so the
+    shared state poll does not grow for a tab most people have closed.
+
+    Homing-gated like _query_state_gated: while ace.py's homing flag is
+    fresh, the last result is served instead of polling Moonraker, because
+    that I/O competes with the homing probe and bed mesh."""
+    global _LAST_PRINT_STATUS, _LAST_PRINT_STATUS_TS
+    now = time.time()
+    if _homing_active():
+        if _LAST_PRINT_STATUS and (now - _LAST_PRINT_STATUS_TS) <= _STATUS_CACHE_TTL:
+            return _LAST_PRINT_STATUS
+        # No usable cache: wait briefly for the homing window to close.
+        deadline = now + _GATE_WAIT_MAX
+        while _homing_active() and time.time() < deadline:
+            await asyncio.sleep(0.05)
+    objs = ["toolhead", "print_stats", "display_status", "virtual_sdcard",
+            "gcode_move", "fan", "heater_bed", CHAMBER_LED, PURIFIER,
+            CAVITY_SENSOR, DEFECT_DETECTION] + _EXTRUDERS
+    data = await _mr_get("/printer/objects/query?"
+                         + "&".join(o.replace(" ", "%20") for o in objs))
+    status = data.get("result", {}).get("status", {}) or {}
+    _LAST_PRINT_STATUS = status
+    _LAST_PRINT_STATUS_TS = time.time()
+    return status
+
+def _active_extruder(status: dict) -> str:
+    name = str((status.get("toolhead") or {}).get("extruder") or "extruder")
+    return name if name in _EXTRUDERS else "extruder"
+
+def _pct(v, default=100.0):
+    try:
+        return round(float(v) * 100.0, 1)
+    except (TypeError, ValueError):
+        return default
+
+def _chamber_light_pct(status: dict):
+    """Chamber light brightness in percent, or None when the printer has
+    no such LED. color_data is [[r, g, b, w]]; the light is the white
+    channel."""
+    led = status.get(CHAMBER_LED)
+    if not isinstance(led, dict):
+        return None
+    try:
+        return round(float(led["color_data"][0][3]) * 100.0, 1)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+def _defect_detection_on(status: dict):
+    """Whether stock's defect detection is enabled: its master switch and at
+    least one of its checks. None when the printer has no such object."""
+    dd = status.get(DEFECT_DETECTION)
+    if not isinstance(dd, dict):
+        return None
+    checks = [dd.get(k) for k in ("clean_bed", "noodle", "residue", "nozzle")]
+    return bool(dd.get("main_enable")) and any(
+        isinstance(c, dict) and c.get("enable") for c in checks)
+
+def _enclosure_state(status: dict):
+    """Chamber temperature and, with an enclosure attached, its fans.
+
+    None when the printer has neither the cavity sensor nor the purifier
+    object, so the UI shows nothing instead of a row of dashes."""
+    sensor = status.get(CAVITY_SENSOR)
+    purifier = status.get(PURIFIER)
+    if not isinstance(sensor, dict) and not isinstance(purifier, dict):
+        return None
+    out = {"temp": sensor.get("temperature") if isinstance(sensor, dict) else None,
+           "attached": None, "exhaust": None, "inner": None,
+           "mode": None, "desired_temp": None}
+    if isinstance(purifier, dict):
+        out["attached"] = bool(purifier.get("power_detected"))
+        mode = purifier.get("mode")
+        out["mode"] = mode if isinstance(mode, int) and not isinstance(mode, bool) else None
+        out["desired_temp"] = purifier.get("desired_chamber_temp")
+        for key, fan in (("exhaust", "exhaust_fan"), ("inner", "inner_fan")):
+            obj = purifier.get(fan)
+            out[key] = _pct(obj.get("speed") if isinstance(obj, dict) else None, 0.0)
+    return out
+
+def _print_control_state(status: dict) -> dict:
+    """Speed, flow, fan, temperatures and progress, READ BACK from
+    Moonraker so a change made on the printer's display shows up here."""
+    gm = status.get("gcode_move") or {}
+    ext = status.get(_active_extruder(status)) or {}
+    bed = status.get("heater_bed") or {}
+    homing = gm.get("homing_origin") or [0, 0, 0, 0]
+    try:
+        z_offset = round(float(homing[2]), 3)
+    except (TypeError, ValueError, IndexError):
+        z_offset = 0.0
+    return {
+        "speed_factor":   _pct(gm.get("speed_factor")),
+        "extrude_factor": _pct(gm.get("extrude_factor")),
+        "fan":            _pct((status.get("fan") or {}).get("speed"), 0.0),
+        "z_offset":       z_offset,
+        "light":          _chamber_light_pct(status),
+        "detection":      _defect_detection_on(status),
+        "enclosure":      _enclosure_state(status),
+        "nozzle": {"temp": ext.get("temperature"), "target": ext.get("target")},
+        "bed":    {"temp": bed.get("temperature"), "target": bed.get("target")},
+        "progress": round(float(
+            (status.get("virtual_sdcard") or {}).get("progress") or 0.0) * 100.0, 1),
+        "message":  (status.get("display_status") or {}).get("message") or "",
+        "state":    (status.get("print_stats") or {}).get("state") or "",
+        "filename": (status.get("print_stats") or {}).get("filename") or "",
+    }
+
+_KLIPPER_CFG_TTL = 300.0
+_klipper_cfg_cache: dict = {"ts": 0.0, "settings": None}
+
+async def _klipper_settings() -> dict:
+    """Klipper's parsed config, cached: it only changes on a Klipper
+    restart, and the query must not add Moonraker load during homing."""
+    c = _klipper_cfg_cache
+    if c["settings"] is not None and (
+            time.time() - c["ts"] < _KLIPPER_CFG_TTL or _homing_active()):
+        return c["settings"]
+    if _homing_active():
+        return {}
+    cfg = await _mr_get("/printer/objects/query?configfile")
+    settings = ((cfg.get("result") or {}).get("status") or {}) \
+        .get("configfile", {}).get("settings", {}) or {}
+    c["settings"], c["ts"] = settings, time.time()
+    return settings
+
+async def _heater_limits(which: str, extruder: str = "extruder") -> tuple[float, float]:
+    """(min, max) for a heater, from Klipper's own config (min_temp and
+    max_temp), never hardcoded: a different hotend has different limits.
+
+    There is no per-material ceiling. Stock loads and unloads above a
+    material's printing range (PLA loads at 250), so a tighter cap here would
+    stop someone heating up to clear a clog. A target below the range is a
+    standby temperature set on purpose and is not raised, and 0 is off."""
+    lo, hi = DEFAULT_HEATER_LIMITS.get(which, (0.0, 250.0))
+    section = extruder if which == "nozzle" else "heater_bed"
+    try:
+        settings = await _klipper_settings()
+        block = settings.get(section) or {}
+        if block.get("min_temp") is not None:
+            lo = max(lo, float(block["min_temp"]))
+        if block.get("max_temp") is not None:
+            hi = min(hi, float(block["max_temp"]))
+    except Exception:
+        pass
+    return lo, hi
+
+async def _babystep_allowance(delta: float) -> tuple[float, str]:
+    """Clamp one babystep against the per-press and per-job limits."""
+    step = _clamp(delta, -BABYSTEP_MAX_STEP_MM, BABYSTEP_MAX_STEP_MM)
+    total = _babystep_state["total"] + step
+    if total < -BABYSTEP_MAX_TOTAL_MM:
+        return 0.0, (f"-{BABYSTEP_MAX_TOTAL_MM:.2f} mm reached - "
+                     "re-level instead of stepping further down")
+    if total > BABYSTEP_MAX_TOTAL_MM:
+        return 0.0, f"+{BABYSTEP_MAX_TOTAL_MM:.2f} mm reached"
+    _babystep_state["total"] = total
+    return step, ""
+
+async def _require_object(name: str, what: str) -> dict:
+    """409 unless the printer has this Klipper object: not every Klipper
+    printer has a chamber light or an enclosure. Returns the status it read."""
+    try:
+        status = await _print_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+    if name not in status:
+        raise HTTPException(409, f"this printer has no {what}")
+    return status
+
+async def _require_enclosure_drivable() -> None:
+    """409 unless the enclosure fans may be driven directly: an enclosure is
+    attached and, outside a print, stock is not running a mode. During a
+    print the fans are allowed whatever the mode (stock itself accepts
+    SET_PURIFIER at any time); a running mode may override the exhaust value
+    again, which the UI says. Outside a print, modes 1 to 3 drive the fans
+    themselves (dynamically in cool mode), so a direct speed would compete."""
+    try:
+        status = await _print_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+    purifier = status.get(PURIFIER)
+    if not isinstance(purifier, dict):
+        raise HTTPException(409, "this printer has no enclosure")
+    if not purifier.get("power_detected"):
+        raise HTTPException(409, "no enclosure is attached")
+    if (status.get("print_stats") or {}).get("state") in ("printing", "paused"):
+        return
+    if purifier.get("mode") != 0:
+        raise HTTPException(409, "the enclosure is running a mode and drives "
+                                 "its fans itself; stop it first")
+
+@app.get("/api/print-control")
+async def print_control_state(request: Request) -> dict:
+    if _mock_enabled(request):
+        return {**(_mock_load("mock_print_control.json") or {}), "mock": True}
+    try:
+        return _print_control_state(await _print_status())
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+
+@app.post("/api/print-control")
+async def print_control(request: Request, req: PrintControl) -> dict:
+    """A whitelisted verb + value, never a raw string from the UI.
+
+    Returns the APPLIED value so the UI can snap back to the truth: an
+    out-of-range request is clamped, not silently rejected, because a
+    slider that keeps showing 400 % after the printer refused it is a
+    slider that lies about the machine."""
+    verb = (req.verb or "").strip().lower()
+    value = req.value
+    mocked = _mock_enabled(request)
+
+    if verb in PRINT_CONTROL_RANGES:
+        if value is None:
+            raise HTTPException(status_code=400, detail=f"{verb} needs a value")
+        lo, hi = PRINT_CONTROL_RANGES[verb]
+        applied = _clamp(value, lo, hi)
+        if verb == "speed":
+            script = f"M220 S{applied:.0f}"
+        elif verb == "flow":
+            script = f"M221 S{applied:.0f}"
+        elif verb == "fan":
+            # Percent in, 0-255 out: the UI thinks in percent and M106
+            # does not.
+            script = f"M106 S{round(applied * 255 / 100):d}"
+        elif verb in ("exhaust", "inner"):
+            # One enclosure fan directly (stock SET_PURIFIER). SPEED=0 starts
+            # stock's delayed turn-off rather than stopping at once.
+            if not mocked:
+                await _require_enclosure_drivable()
+            script = f"SET_PURIFIER FAN={verb} SPEED={applied / 100:.2f}"
+        else:
+            if not mocked:
+                status = await _require_object(CHAMBER_LED, "chamber light")
+                printing = (status.get("print_stats") or {}).get("state") in (
+                    "printing", "paused")
+                if applied < 100 and printing and _defect_detection_on(status):
+                    raise HTTPException(
+                        409, "the light stays on during a print while defect "
+                             "detection is enabled: its camera check needs it")
+            script = f"SET_LED LED=cavity_led WHITE={applied / 100:.2f} TRANSMIT=1"
+    elif verb in ("nozzle", "bed"):
+        if value is None:
+            raise HTTPException(status_code=400, detail=f"{verb} needs a value")
+        heater = "heater_bed"
+        if verb == "nozzle":
+            try:
+                heater = _active_extruder(await _print_status())
+            except Exception:
+                heater = "extruder"
+        lo, hi = await _heater_limits(verb, heater)
+        # 0 is "off" and is always allowed: the material range is a floor
+        # for printing, not for switching the heater off.
+        applied = 0.0 if value <= 0 else _clamp(value, lo, hi)
+        script = f"SET_HEATER_TEMPERATURE HEATER={heater} TARGET={applied:.0f}"
+    elif verb == "babystep":
+        if value is None:
+            raise HTTPException(status_code=400, detail="babystep needs a value")
+        applied, refused = await _babystep_allowance(value)
+        if refused:
+            return {"ok": False, "verb": verb, "applied": 0.0,
+                    "total_mm": _babystep_state["total"], "detail": refused}
+        script = f"SET_GCODE_OFFSET Z_ADJUST={applied:.3f} MOVE=1"
+    elif verb == "enclosure_off":
+        # Back to idle and both fans off NOW. Plain MODE=0 only starts stock's
+        # delayed turn-off (180 s by default); the two DELAY_OFF=0 parameters
+        # stop them at once. The other modes (cool, preheat, hot chamber) are
+        # not driven from here: they take extra parameters, and during a print
+        # stock sets them from the sliced file.
+        applied = None
+        if not mocked:
+            await _require_object(PURIFIER, "enclosure")
+        script = ("SET_PURIFIER_MODE MODE=0 EXHAUST_FAN_DELAY_OFF=0 "
+                  "INNER_FAN_DELAY_OFF=0")
+    elif verb in ("pause", "resume", "cancel"):
+        applied = None
+        script = {"pause": "PAUSE", "resume": "RESUME",
+                  "cancel": "CANCEL_PRINT"}[verb]
+    else:
+        raise HTTPException(status_code=400, detail=f"unknown verb: {verb}")
+
+    if mocked:
+        # Mock mode never contacts Moonraker: it has to work with no
+        # printer attached.
+        return {"ok": True, "verb": verb, "applied": applied,
+                "script": script, "mock": True}
+    queued = False
+    try:
+        await _mr_post("/printer/gcode/script", {"script": script}, timeout=30.0)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code,
+                            detail=f"moonraker: {_moonraker_error(e.response)}")
+    except httpx.ReadTimeout:
+        # The request reached Moonraker but the command has not finished:
+        # /printer/gcode/script only returns once it has run, and a
+        # multiACE swap holds Klipper's queue for minutes. The command is
+        # queued and WILL run, so report that instead of an error, or a
+        # second press sends it twice.
+        queued = True
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"moonraker: {e}")
+    out = {"ok": True, "verb": verb, "applied": applied, "script": script}
+    if queued:
+        out["queued"] = True
+    if verb == "babystep":
+        out["total_mm"] = round(_babystep_state["total"], 3)
+    return out
+
+@app.get("/api/print-control/limits")
+async def print_control_limits() -> dict:
+    """The clamps the UI should render, so a slider cannot even offer a
+    value the server will refuse. The server check stays regardless: this
+    is convenience, not the guard."""
+    try:
+        extruder = _active_extruder(await _print_status())
+    except Exception:
+        extruder = "extruder"
+    nozzle = await _heater_limits("nozzle", extruder)
+    bed = await _heater_limits("bed")
+    return {
+        "ranges": {k: {"min": v[0], "max": v[1]}
+                   for k, v in PRINT_CONTROL_RANGES.items()},
+        "nozzle": {"min": nozzle[0], "max": nozzle[1]},
+        "bed":    {"min": bed[0], "max": bed[1]},
+        "babystep": {"step": BABYSTEP_MAX_STEP_MM,
+                     "total": BABYSTEP_MAX_TOTAL_MM,
+                     "used": round(_babystep_state["total"], 3)},
+    }
+
+#: Restarts the Control tab can ask for: a fixed list, each one a single
+#: Moonraker call. Klipper's firmware restart reloads its config and
+#: reconnects the MCUs; the printer restart reboots the onboard computer.
+RESTART_ACTIONS = {"firmware": "/printer/firmware_restart",
+                   "printer": "/machine/reboot"}
+
+class RestartRequest(BaseModel):
+    behavior: str
+
+async def _is_printing() -> bool:
+    """True while a print is running or paused. Fresh from Moonraker, never
+    the homing cache: a stale "idle" is how a restart kills a print.
+
+    503 means Klipper is down. That is exactly when a firmware restart is
+    needed, and nothing is printing then, so it must not block it."""
+    try:
+        data = await _mr_get("/printer/objects/query?print_stats")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 503:
+            return False
+        raise HTTPException(502, f"moonraker: {e}")
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+    state = (((data.get("result") or {}).get("status") or {})
+             .get("print_stats") or {}).get("state")
+    return state in ("printing", "paused")
+
+def _moonraker_is_local() -> bool:
+    from urllib.parse import urlparse
+    host = (urlparse(MOONRAKER_URL).hostname or "").lower()
+    return host in ("127.0.0.1", "localhost", "::1")
+
+def _local_reboot_command():
+    """The reboot binary, when this process may and should reboot the machine
+    itself: it runs as root on the same machine as Moonraker, so rebooting this
+    machine is rebooting the printer. A backend on a dev box talking to a remote
+    printer, or one that is not root, never qualifies."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0 or not _moonraker_is_local():
+        return None
+    # reboot lives in /usr/sbin, which the service's own PATH (set by the init
+    # script: .local/bin:/usr/bin:/bin) does not include.
+    return shutil.which("reboot") or shutil.which("reboot", path="/usr/sbin:/sbin")
+
+async def _reboot_here(cmd: str) -> None:
+    """Run reboot without waiting for the machine to go down."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+    except asyncio.TimeoutError:
+        return   # still going down: that is what a reboot looks like from here
+    except OSError as e:
+        raise HTTPException(500, f"reboot: {e}")
+    if proc.returncode:
+        raise HTTPException(500, f"reboot failed (rc={proc.returncode}): "
+                                 f"{(out or b'').decode('utf-8', 'replace').strip()}")
+
+@app.post("/api/restart")
+async def restart(request: Request, req: RestartRequest) -> dict:
+    """Restart the firmware or the printer: a fixed behaviour, refused while
+    a print is running and when the platform manages the install."""
+    behavior = (req.behavior or "").strip().lower()
+    if behavior not in RESTART_ACTIONS:
+        raise HTTPException(400, f"unknown restart behavior: {behavior}")
+    if MULTIACE_MANAGED:
+        raise HTTPException(409, "restarts are managed by the platform.")
+    if _mock_enabled(request):
+        return {"ok": True, "behavior": behavior, "mock": True}
+    if await _is_printing():
+        raise HTTPException(409, "blocked while a print is running")
+    via = "moonraker"
+    try:
+        await _mr_post(RESTART_ACTIONS[behavior], {}, timeout=15.0)
+    except httpx.HTTPStatusError as e:
+        # Moonraker's reboot runs `sudo systemctl reboot`. The Snapmaker U1
+        # has neither sudo nor systemd (busybox init), so it always fails
+        # there. Where this process runs as root on the printer itself, reboot
+        # directly; anywhere else the failure is reported as it is.
+        cmd = _local_reboot_command() if behavior == "printer" else None
+        if cmd is None:
+            raise HTTPException(e.response.status_code,
+                                f"moonraker: {_moonraker_error(e.response)}")
+        await _reboot_here(cmd)
+        via = "local"
+    except (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError):
+        # The request reached Moonraker, and the machine going down under
+        # it is what a restart looks like from here.
+        pass
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"moonraker: {e}")
+    return {"ok": True, "behavior": behavior, "via": via}
 
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:
@@ -4638,6 +5405,10 @@ async def _on_status_update(params: list) -> None:
     if not st or st == _print_state_last:
         return
     prev, _print_state_last = _print_state_last, st
+    if st == "printing" and prev != "paused":
+        # A print starts (resuming from a pause is the same print): the Z
+        # babystep allowance starts over.
+        _babystep_state["total"] = 0.0
     if st == "paused" and prev == "printing":
         # A spool is only ever swapped with the print paused, and pausing is
         # also when Klipper releases the binding of a slot whose gate ran
@@ -4904,6 +5675,7 @@ async def _moonraker_log_listener() -> None:
                     if not params:
                         continue
                     text = params[0]
+                    _record_console_line(text)
                     if (isinstance(text, str)
                             and _SPOOL_UNMATCHED_RE.search(text)):
                         # Klipper just read a tag with no table entry -
@@ -5409,6 +6181,142 @@ async def ws(websocket: WebSocket) -> None:
         return
     except Exception:
         return
+
+# ---------------------------------------------------------------------------
+# Print history
+# ---------------------------------------------------------------------------
+
+_job_history_mod = None
+
+
+def _require_history():
+    """job_history.py, loaded by path. Next to main.py first (where the
+    installer puts it on the printer, like the post-processor), then
+    <config>/tools, then the checkout's multiace/tools. A missing module
+    answers 503 rather than taking the backend down."""
+    global _job_history_mod
+    if _job_history_mod is None:
+        import importlib.util
+        here = Path(__file__).resolve().parent
+        for cand in (here / "job_history.py",
+                     Path(_CFG_DIR) / "tools" / "job_history.py",
+                     here.parent.parent
+                     / "tools" / "job_history.py"):
+            if not cand.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(
+                "multiace_job_history", cand)
+            _job_history_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_job_history_mod)
+            break
+    if _job_history_mod is None:
+        raise HTTPException(
+            status_code=503,
+            detail="job_history.py is not installed - re-run "
+                   "install_multiace.sh")
+    return _job_history_mod
+
+
+async def _moonraker_history(limit: int) -> list[dict]:
+    try:
+        data = await _mr_get(f"/server/history/list?limit={int(limit)}"
+                             f"&order=desc")
+    except Exception:
+        return []
+    jobs = (data.get("result") or {}).get("jobs") or []
+    return jobs if isinstance(jobs, list) else []
+
+
+@app.get("/api/history")
+async def history_list(request: Request, limit: int = 50) -> dict:
+    """Moonraker's job history joined with multiACE's own records.
+
+    A join, not a copy: Moonraker stays authoritative for duration and
+    result, multiACE's record for the plan, the assignment and the swaps,
+    which Moonraker cannot know."""
+    limit = max(1, min(int(limit or 50), 200))
+    if _mock_enabled(request):
+        mock = _mock_load("mock_history.json") or {}
+        return {"jobs": (mock.get("jobs") or [])[:limit], "mock": True}
+    hist = _require_history()
+    records = hist.load_records(MULTIACE_DATA_DIR, limit=limit)
+    jobs = hist.join_history(await _moonraker_history(limit), records)
+    return {"jobs": jobs[:limit]}
+
+
+class _ReprintRequest(BaseModel):
+    filename: str
+
+
+@app.post("/api/history/reprint")
+async def history_reprint(request: Request, req: _ReprintRequest) -> dict:
+    """Print a history job's file again, exactly as it already sits on the
+    printer: no preflight, no rewrite. The swap macros baked in from its
+    first run still apply; a loadout that has moved on since is on the
+    user, the same as a reprint from Fluidd."""
+    filename = (req.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename required")
+    if _mock_enabled(request):
+        return {"ok": True, "filename": filename, "mock": True}
+    try:
+        await _mr_post("/printer/print/start", {"filename": filename})
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code,
+                            detail=f"moonraker: {e.response.text}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"moonraker: {e}")
+    return {"ok": True, "filename": filename}
+
+
+@app.get("/api/history/stats/swaps")
+async def history_swap_stats(request: Request) -> dict:
+    """Measured swap time per kind (median, min, max, sample count)."""
+    hist = _require_history()
+    if _mock_enabled(request):
+        mock = _mock_load("mock_history.json") or {}
+        records = [r["multiace"] for r in mock.get("jobs") or []
+                   if r.get("multiace")]
+    else:
+        records = hist.load_records(MULTIACE_DATA_DIR)
+    return {"stats": hist.aggregate_swap_stats(records),
+            "min_samples": hist.MIN_CALIBRATION_SAMPLES}
+
+
+@app.get("/api/history/{job_id}")
+async def history_detail(job_id: str, request: Request) -> dict:
+    if _mock_enabled(request):
+        mock = _mock_load("mock_history.json") or {}
+        for row in mock.get("jobs") or []:
+            if row.get("id") == job_id:
+                return row
+        raise HTTPException(status_code=404, detail="job not found")
+    hist = _require_history()
+    for rec in hist.load_records(MULTIACE_DATA_DIR):
+        if rec.get("id") == job_id:
+            return {"multiace": rec, "accuracy": hist.estimate_accuracy(rec)}
+    raise HTTPException(status_code=404, detail="job not found")
+
+
+@app.delete("/api/history/{job_id}")
+async def history_delete(job_id: str) -> dict:
+    if not _DEBUG_FLAG_PATH.exists():
+        raise HTTPException(status_code=403,
+                            detail="enable persistent updates (debug mode) "
+                                   "to edit the history")
+    if not _require_history().delete_record(MULTIACE_DATA_DIR, job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"ok": True, "deleted": job_id}
+
+
+@app.post("/api/history/clear")
+async def history_clear() -> dict:
+    if not _DEBUG_FLAG_PATH.exists():
+        raise HTTPException(status_code=403,
+                            detail="enable persistent updates (debug mode) "
+                                   "to clear the history")
+    return {"ok": _require_history().clear_records(MULTIACE_DATA_DIR)}
+
 
 # The app shell carries no Cache-Control of its own - StaticFiles sends only
 # ETag/Last-Modified - so browsers fall back to HEURISTIC freshness and may

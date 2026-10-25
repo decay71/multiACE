@@ -1,0 +1,5 @@
+{
+  "_comment": "Mock /api/webcam/info payload. available:false exercises the 'Camera unavailable' state, which is the one a dev box without crowsnest will really see.",
+  "available": false,
+  "reason": "mock mode: no camera stream to serve"
+}
