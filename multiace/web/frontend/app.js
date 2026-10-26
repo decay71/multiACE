@@ -7877,14 +7877,49 @@ createApp({
     }
     // Reprint: start the file exactly as it already sits on the printer, with
     // no preflight and no rewrite. The swaps baked in from its first run
-    // still apply; a loadout that has moved on since is the user's call.
+    // still apply, so the user gets to compare the loadout of that run with
+    // what sits on the machine now before confirming.
+    function reprintLoadoutHtml(row) {
+      const asn = (row && row.multiace && row.multiace.assignment) || {};
+      const heads = Object.keys(asn).sort((a, b) => Number(a) - Number(b));
+      if (!heads.length) {
+        return `<p class="muted small">${escapeHtml(t("ui.history.reprint_no_record"))}</p>`;
+      }
+      const items = heads.map(h => {
+        const e = asn[h] || {};
+        const hasAce = e.ace_index != null && e.slot != null;
+        const where = hasAce
+          ? `ACE ${dispIdx(e.ace_index)} / ${dispIdx(e.slot)}`
+          : t("ui.history.reprint_feeder");
+        const sp = hasAce ? spoolForSlot(e.ace_index, e.slot) : spoolForHead(Number(h));
+        const now = sp ? t("ui.history.reprint_now", {spool: spoolTitle(sp)})
+                       : t("ui.history.reprint_now_empty");
+        const color = e.color ? "#" + String(e.color).replace(/^#/, "") : "#666";
+        return `<li><span class="swatch" style="background:${escapeHtml(color)}"></span> ` +
+               `<b>T${escapeHtml(dispIdx(Number(h)))}</b> · ${escapeHtml(where)} ` +
+               `<span class="muted small">(${escapeHtml(now)})</span></li>`;
+      });
+      return `<ul class="reprint-loadout">${items.join("")}</ul>`;
+    }
     function reprintJob(row) {
       if (!row || !row.filename || history.reprinting) return;
       confirm({
         title: t("ui.history.reprint_title"),
-        message: t("ui.history.reprint_msg", {name: row.filename}),
+        message: `<p><b>${escapeHtml(row.filename)}</b></p>` +
+                 `<p>${escapeHtml(t("ui.history.reprint_msg"))}</p>` +
+                 reprintLoadoutHtml(row) +
+                 `<p>${escapeHtml(t("ui.history.reprint_confirm_q"))}</p>`,
         okLabel: t("ui.history.reprint_ok"),
         onOk: () => doReprint(row),
+      });
+    }
+    // Column header "i" button: a plain dialog, since hover tooltips do not
+    // exist on touch screens.
+    function historyColumnInfo(col) {
+      confirm({
+        title: t("ui.history." + col),
+        message: escapeHtml(t("ui.history." + col + "_info")),
+        dismissOnly: true, okLabel: t("ui.common.ok"), onOk: () => {},
       });
     }
     async function doReprint(row) {
@@ -7918,7 +7953,7 @@ createApp({
     });
     return {
       history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
-      fmtDuration, reprintJob, swapKindLabel,
+      fmtDuration, reprintJob, historyColumnInfo, swapKindLabel,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,

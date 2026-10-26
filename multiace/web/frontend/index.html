@@ -1580,13 +1580,13 @@
         <table class="history-table">
           <thead>
             <tr>
-              <th>{{ t('ui.history.date') }}</th>
-              <th>{{ t('ui.history.file') }}</th>
-              <th>{{ t('ui.history.duration') }}</th>
-              <th>{{ t('ui.history.colors') }}</th>
-              <th>{{ t('ui.history.swaps') }}</th>
-              <th>{{ t('ui.history.filament') }}</th>
-              <th>{{ t('ui.history.result') }}</th>
+              <th>{{ t('ui.history.date') }}<button type="button" class="info-btn" :title="t('ui.history.date_info')" :aria-label="t('ui.history.info_label')" @click.stop="historyColumnInfo('date')">i</button></th>
+              <th>{{ t('ui.history.file') }}<button type="button" class="info-btn" :title="t('ui.history.file_info')" :aria-label="t('ui.history.info_label')" @click.stop="historyColumnInfo('file')">i</button></th>
+              <th>{{ t('ui.history.duration') }}<button type="button" class="info-btn" :title="t('ui.history.duration_info')" :aria-label="t('ui.history.info_label')" @click.stop="historyColumnInfo('duration')">i</button></th>
+              <th>{{ t('ui.history.colors') }}<button type="button" class="info-btn" :title="t('ui.history.colors_info')" :aria-label="t('ui.history.info_label')" @click.stop="historyColumnInfo('colors')">i</button></th>
+              <th>{{ t('ui.history.swaps') }}<button type="button" class="info-btn" :title="t('ui.history.swaps_info')" :aria-label="t('ui.history.info_label')" @click.stop="historyColumnInfo('swaps')">i</button></th>
+              <th>{{ t('ui.history.filament') }}<button type="button" class="info-btn" :title="t('ui.history.filament_info')" :aria-label="t('ui.history.info_label')" @click.stop="historyColumnInfo('filament')">i</button></th>
+              <th>{{ t('ui.history.result') }}<button type="button" class="info-btn" :title="t('ui.history.result_info')" :aria-label="t('ui.history.info_label')" @click.stop="historyColumnInfo('result')">i</button></th>
               <th></th>
             </tr>
           </thead>
