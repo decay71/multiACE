@@ -1592,11 +1592,17 @@ class AceBgSwap:
                             gcmd.respond_info('[bg-wait] HEAD=%d parked at discard position (RESTORE_POS=0, ready for direct dock)'
                                               % self._dh(head))
         else:
-            # Active Abort on Ineligibility:
-            # Only abort if the head is in early HEAT (to prevent scheduled cold-pull extrusion).
-            # From RETRACT on, let it pass through without aborting (the arrival swap already
-            # waits for the bulk, stages filament cleanly, or takes over inline).
-            # Do NOT zero the heater here: preserve any preheat progress for the arrival swap.
+            # Ineligibility Handling:
+            # 1. Early phases ('QUEUED', 'FA_STOP', 'HEAT'):
+            #    Active Abort: Abort if the head is in early HEAT (to prevent scheduled cold-pull extrusion).
+            #    Do NOT zero the heater here: preserve any preheat progress for the arrival swap.
+            # 2. Late loading phases ('LD_GRIP', 'LD_PRIME'):
+            #    Graceful Handover Notice: Send request_pick_abort(head) so the engine cuts short
+            #    its prime loop at the next move boundary, sets its anti-ooze cushion, and releases
+            #    the head before arrival T executes. This prevents mid-air extrusion/drool blobs.
+            # 3. Post-pull / bulk phases ('RETRACT', 'BOOKKEEP', 'LD_FEED'):
+            #    Pass through: the arrival swap already waits for bulk retract, stages filament cleanly,
+            #    or takes over inline.
             cur_p = self.phase(head).upper()
             base_p = cur_p.split(':')[0]
             if head in self._busy and base_p in ('QUEUED', 'FA_STOP', 'HEAT'):
@@ -1608,6 +1614,14 @@ class AceBgSwap:
                 if debug:
                     gcmd.respond_info('[bg-wait] HEAD=%d early heat op cleanly aborted before arrival pick (preheat preserved)'
                                       % self._dh(head))
+            elif head in self._busy and base_p in ('LD_GRIP', 'LD_PRIME'):
+                if self.request_pick_abort(head):
+                    handover_deadline = self.reactor.monotonic() + 8.0
+                    while head in self._busy and self.reactor.monotonic() < handover_deadline:
+                        self.reactor.pause(self.reactor.monotonic() + 0.10)
+                    if debug:
+                        gcmd.respond_info('[bg-wait] HEAD=%d late loading op (%s) handed over with anti-ooze cushion before arrival pick'
+                                          % (self._dh(head), cur_p))
             elif debug:
                 gcmd.respond_info('[bg-wait] HEAD=%d passing through (%s)'
                                   % (self._dh(head), cur_p))
