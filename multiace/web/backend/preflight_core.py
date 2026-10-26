@@ -30,6 +30,18 @@ from __future__ import annotations
 import re
 from collections import deque
 
+# The preflight estimate. Imported softly on purpose: preflight_core runs in
+# the backend (package import), on the printer (flat files in tools/) and in
+# the browser's Pyodide worker (flat files in MEMFS). A missing swap_cost
+# degrades to "no estimate", never fails a preflight.
+try:                                    # backend / dev checkout
+    from multiace.tools import swap_cost as _swap_cost
+except ImportError:                     # pragma: no cover - install layouts
+    try:
+        import swap_cost as _swap_cost
+    except ImportError:
+        _swap_cost = None
+
 # Default fuzzy colour-match distance (main.py's _PREFLIGHT_FUZZY). Callers pass
 # their own; this is only the fallback so the module is usable standalone.
 DEFAULT_FUZZY = 30
@@ -67,13 +79,17 @@ class PreflightRejected(ValueError):
 # meta extraction                                                             #
 # --------------------------------------------------------------------------- #
 
-def parse_meta(pp, line_iter):
+def parse_meta(pp, line_iter, with_header=False):
     """One streaming pass over the gcode lines → everything the report/rewrite
     need from the file metadata. Works on any iterable of lines, so the backend
     can pass an open file handle (memory-friendly for huge files) and the
     browser worker can pass text.splitlines(keepends=True).
 
-    Returns (slicer_colors, slicer_types, num_aces, used, plan_proxy, meta).
+    Returns (slicer_colors, slicer_types, num_aces, used, plan_proxy, meta),
+    or the same tuple plus the raw head+tail metadata buffer as a 7th element
+    when `with_header` is set (the estimate needs the filament/time header
+    lines, and re-reading a multi-MB file just to find them would be
+    wasteful).
 
     `meta` is a DICT on purpose (it carries the FOrca mixed-nozzle
     gate): parse_meta has four call sites - two here in the backend and two
@@ -123,6 +139,9 @@ def parse_meta(pp, line_iter):
                    if hasattr(pp, 'is_forca_slicer') else False,
         'nozzles': nozzles,
     }
+    if with_header:
+        return (slicer_colors, slicer_types, num_aces, used, plan_proxy,
+                meta, meta_buf)
     return slicer_colors, slicer_types, num_aces, used, plan_proxy, meta
 
 
@@ -180,6 +199,115 @@ def used_tool_indices(pp, gcode: str) -> set:
 # --------------------------------------------------------------------------- #
 # mapping / plan helpers (pure)                                               #
 # --------------------------------------------------------------------------- #
+
+def _stamp_matrix(pp, plan_proxy):
+    """The flush matrix on the rewrite's basis (what the engine stamps);
+    None on an older post-processor without the text parser, in which case
+    the timeline falls back to the optimizer's matrix."""
+    fn = getattr(pp, "parse_flush_matrix_raw", None)
+    if fn is None:
+        return None
+    try:
+        return fn(plan_proxy)
+    except Exception:
+        return None
+
+
+def make_estimate_ctx(pp, header_text, *, cost_params=None, calibration=None,
+                      event_times=None, bg_heads=None, flush_matrix=None,
+                      stamp_matrix=None):
+    """Everything the per-plan estimate needs, built once per preflight.
+
+    Returns None when the estimate cannot be produced (no header text, no
+    swap_cost module, or a post-processor too old to build a timeline).
+    Every caller treats None as "no estimate", so a preflight never fails
+    over a number that is informational by definition.
+
+    `stamp_matrix` is the flush matrix on the REWRITE's basis
+    (parse_flush_matrix_raw): the timeline sizes purge from it when given,
+    so the estimate cannot disagree with the stamps; `flush_matrix` stays
+    the optimizer's (tower-model) matrix.
+    """
+    if (header_text is None or _swap_cost is None
+            or not hasattr(pp, "build_swap_timeline")):
+        return None
+    try:
+        params = cost_params or {}
+        # Accept both the flat {key: value} shape and the backend's
+        # {"main": ..., "per_ace": ...} split.
+        if "main" in params or "per_ace" in params:
+            main, per_ace = params.get("main") or {}, params.get("per_ace") or {}
+        else:
+            main, per_ace = params, {}
+        model = _swap_cost.SwapCostModel.from_params(main, per_ace)
+        if calibration:
+            model = model.with_calibration(calibration)
+        header = _swap_cost.parse_header(header_text)
+    except Exception:
+        return None
+    return {
+        "_pp":          pp,
+        "model":        model,
+        "header":       header,
+        "materials":    {},
+        "event_times":  event_times,
+        "bg_heads":     list(bg_heads or []),
+        # The background load is off ([ace_bg_swap] load_enabled: False):
+        # the arrival loads inline, so a bg swap's flush is on the
+        # critical path.
+        "bg_purge_inline": not bool(main.get("bg_load_enabled", True)),
+        "flush_matrix": flush_matrix,
+        "stamp_matrix": stamp_matrix,
+    }
+
+
+def ctx_timeline(ctx, events, assignment):
+    matrix = ctx.get("stamp_matrix")
+    if matrix is None:
+        matrix = ctx.get("flush_matrix")
+    return ctx["_pp"].build_swap_timeline(
+        events, assignment, event_times=ctx["event_times"],
+        bg_heads=ctx["bg_heads"], cost_model=ctx["model"],
+        flush_matrix=matrix, bg_purge_inline=ctx["bg_purge_inline"])
+
+
+def attach_estimate(ctx, plan, events, assignment):
+    """Add `timeline` and `estimate` to one plan, in place.
+
+    Plans are compared in minutes and grams rather than swap counts, which
+    is the point: a plan with more swaps but all of them backgrounded can be
+    the faster one.
+    """
+    if not ctx or assignment is None or not plan.get("feasible", True):
+        return plan
+    try:
+        timeline = ctx_timeline(ctx, events, assignment)
+        plan["timeline"] = timeline
+        plan["estimate"] = _swap_cost.build_estimate(
+            ctx["model"], ctx["header"], timeline,
+            materials=ctx["materials"])
+    except Exception:
+        # An estimate is informational; a plan without one is still a plan.
+        plan.pop("timeline", None)
+        plan.pop("estimate", None)
+    return plan
+
+
+def assignment_from_mapping(mapping):
+    """Multi-mode `mapping` rows -> the {t: entry} shape the timeline wants.
+
+    In multi mode a colour's head IS its slot index (that is what the remap
+    encodes), so head and slot are the same number here by construction.
+    """
+    out = {}
+    for row in mapping or []:
+        slot = row.get("slot")
+        if not slot or slot.get("ace") is None or slot.get("slot") is None:
+            continue
+        out[row["t"]] = {"kind": "ace", "head": slot["slot"],
+                         "ace": slot["ace"], "slot": slot["slot"]}
+    return out
+
 
 def _slot_to_dict(s):
     if s is None:
@@ -263,7 +391,7 @@ def _swap_aware(pp, events, *, num_aces, layer_color_sets=None,
 
 def build_one_plan(pp, plan_name, result, mapping,
                    slicer_colors=None, slicer_types=None, num_aces=4,
-                   nozzle_groups=None):
+                   nozzle_groups=None, estimate_ctx=None):
     """One of the three multi-mode plans (slicer / optimize / layer).
 
     nozzle_groups ({T: allowed heads}) is the mixed-nozzle gate. The slicer
@@ -277,12 +405,15 @@ def build_one_plan(pp, plan_name, result, mapping,
     tool_changes = int(result.get("total_changes") or 0)
 
     if plan_name == "slicer":
-        return {
-            "feasible":     True,
-            "swaps":        _real_swap_count(events, mapping),
-            "tool_changes": tool_changes,
-            "mapping":      mapping,
-        }
+        return attach_estimate(
+            estimate_ctx,
+            {
+                "feasible":     True,
+                "swaps":        _real_swap_count(events, mapping),
+                "tool_changes": tool_changes,
+                "mapping":      mapping,
+            },
+            events, assignment_from_mapping(mapping))
 
     if plan_name == "optimize":
         try:
@@ -298,13 +429,17 @@ def build_one_plan(pp, plan_name, result, mapping,
                 "mapping":      [],
                 "reason":       "no feasible head assignment",
             }
-        return {
-            "feasible":     True,
-            "swaps":        swaps,
-            "tool_changes": tool_changes,
-            "mapping":      _layout_from_head_assignment(
-                c2h, slicer_colors, slicer_types),
-        }
+        opt_mapping = _layout_from_head_assignment(
+            c2h, slicer_colors, slicer_types)
+        return attach_estimate(
+            estimate_ctx,
+            {
+                "feasible":     True,
+                "swaps":        swaps,
+                "tool_changes": tool_changes,
+                "mapping":      opt_mapping,
+            },
+            events, assignment_from_mapping(opt_mapping))
 
     # plan_name == "layer"
     layer_info = result.get("layer_info") or {}
@@ -329,14 +464,18 @@ def build_one_plan(pp, plan_name, result, mapping,
             "mapping":      [],
             "reason":       reason,
         }
-    return {
-        "feasible":     True,
-        "swaps":        swaps,
-        "tool_changes": tool_changes,
-        "mapping":      _layout_from_head_assignment(
-            c2h, slicer_colors, slicer_types),
-        "reason":       "",
-    }
+    layer_mapping = _layout_from_head_assignment(
+        c2h, slicer_colors, slicer_types)
+    return attach_estimate(
+        estimate_ctx,
+        {
+            "feasible":     True,
+            "swaps":        swaps,
+            "tool_changes": tool_changes,
+            "mapping":      layer_mapping,
+            "reason":       "",
+        },
+        events, assignment_from_mapping(layer_mapping))
 
 
 # --------------------------------------------------------------------------- #
@@ -706,7 +845,7 @@ def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
                         event_times=None, bg_heads=None,
                         flush_matrix=None, objective="time",
                         head_ctx=None, ace_head_of_ace=None,
-                        nozzle_groups=None) -> dict:
+                        nozzle_groups=None, estimate_ctx=None) -> dict:
     """A head-mode PROPOSED-loadout plan (optimize / layer-Belady): the
     swap-minimal FREE assignment that ignores the current physical load. The
     user arranges spools to match before printing → read-only table. With
@@ -780,12 +919,15 @@ def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
                 out["flush_g"] = round(fc * 1.24 / 1000.0, 1)
         except Exception:
             pass
+    if not copies:
+        attach_estimate(estimate_ctx, out, events, assignment)
     return out
 
 
 def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
                       slicer_types, head_ctx, ace_slots, plan_proxy,
-                      fuzzy=DEFAULT_FUZZY, meta=None) -> dict:
+                      fuzzy=DEFAULT_FUZZY, meta=None, header_text=None,
+                      cost_params=None, calibration=None) -> dict:
     """The head-mode preflight preview: THREE plans, mirroring multi:
       loadout  - match against the currently-loaded feeders + ACE slots (editable)
       optimize - swap-minimal proposed loadout (free, Belady per ACE head)
@@ -817,6 +959,22 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
     event_times, bg_heads, bg_available = _bg_context(
         pp, head_ctx, plan_proxy, events)
 
+    # The slicer's flush matrix (kept on the plan proxy): the colour objective
+    # reads it, and the estimate's timeline sizes purge from the stamp basis.
+    flush_matrix = None
+    _pfm = getattr(pp, "parse_flush_matrix", None)
+    if _pfm is not None:
+        try:
+            flush_matrix = _pfm(plan_proxy)
+        except Exception:
+            flush_matrix = None
+    estimate_ctx = make_estimate_ctx(
+        pp, header_text, cost_params=cost_params, calibration=calibration,
+        event_times=event_times, bg_heads=bg_heads, flush_matrix=flush_matrix,
+        stamp_matrix=_stamp_matrix(pp, plan_proxy))
+    if estimate_ctx:
+        estimate_ctx["materials"] = dict(slicer_types or {})
+
     # Plan 1 - loadout (as currently loaded), the editable table.
     nz_groups, nz_mixed = nozzle_context(pp, meta, head_ctx)
     layout = pp.compute_head_mode_layout(
@@ -844,21 +1002,16 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
                                copies)
     if bg_loadout is not None:
         plans["loadout"]["bg"] = bg_loadout
+    if not copies:
+        attach_estimate(estimate_ctx, plans["loadout"], events, assignment)
 
     # Plans 2+3 - proposed loadout (ignore current load). Per ACE head:
     # 4 slots of its own ACE (head mode), or one slot per ACE (multi).
     num_slots = (getattr(ace_head_of_ace, "num_aces", 4) if multi else 4)
-    # Colour objective context: the slicer's flush matrix (kept on the plan
-    # proxy). None -> no "color" plan, old preview shape.
-    flush_matrix = None
-    _pfm = getattr(pp, "parse_flush_matrix", None)
-    if _pfm is not None:
-        try:
-            flush_matrix = _pfm(plan_proxy)
-        except Exception:
-            flush_matrix = None
+    # Colour objective context: flush_matrix (None -> no "color" plan, old
+    # preview shape).
     _cp = dict(head_ctx=head_ctx, ace_head_of_ace=ace_head_of_ace,
-               nozzle_groups=nz_groups)
+               nozzle_groups=nz_groups, estimate_ctx=estimate_ctx)
     plans["optimize"] = _head_proposal_plan(
         pp, events, slicer_colors, feeder_heads, ace_heads, ace_num_of_head,
         num_slots, None, event_times=event_times, bg_heads=bg_heads,
@@ -946,7 +1099,8 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
 
 def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
                  live_slots, head_ctx, token, filename, size,
-                 fuzzy=DEFAULT_FUZZY, meta=None) -> dict:
+                 fuzzy=DEFAULT_FUZZY, meta=None, header_text=None,
+                 cost_params=None, calibration=None) -> dict:
     """Build the full preflight report dict (the /api/preflight payload).
 
     Refuses an ALREADY-PROCESSED file (the "; multiACE processed:" /
@@ -984,7 +1138,9 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
         ensure_head_mode_support(pp)
         return head_mode_preview(
             pp, token, filename, size, slicer_colors, slicer_types,
-            head_ctx, live_slots, plan_proxy, fuzzy=fuzzy, meta=meta)
+            head_ctx, live_slots, plan_proxy, fuzzy=fuzzy, meta=meta,
+            header_text=header_text, cost_params=cost_params,
+            calibration=calibration)
     if multi_assignment_shape(head_ctx):
         # Multi with colour copies or a hand-fed head: the assignment
         # pipeline on the multi topology. Without either the classic
@@ -993,7 +1149,8 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
         return head_mode_preview(
             pp, token, filename, size, slicer_colors, slicer_types,
             dict(head_ctx or {}, num_aces=num_aces), live_slots, plan_proxy,
-            fuzzy=fuzzy, meta=meta)
+            fuzzy=fuzzy, meta=meta, header_text=header_text,
+            cost_params=cost_params, calibration=calibration)
 
     missing_mats = pp.check_material_availability(slicer_types, live_slots)
 
@@ -1039,11 +1196,31 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
         # space as each plan's mapping[].t). The frontend replays it to recompute
         # the slicer-plan swap count after a manual reassignment with no round-trip.
         out["events"] = list(result.get("events") or [])
+        ev_times, bg_heads, _bg_av = _bg_context(
+            pp, head_ctx, proxy_remapped, out["events"])
+        # events/mapping are keyed by the ORIGINAL slicer T (the "; Change
+        # Tool" comments survive the remap), which is exactly how
+        # flush_volumes_matrix is indexed too, so it is safe to read straight
+        # off plan_proxy here.
+        flush_matrix = None
+        _pfm = getattr(pp, "parse_flush_matrix", None)
+        if _pfm is not None:
+            try:
+                flush_matrix = _pfm(plan_proxy)
+            except Exception:
+                flush_matrix = None
+        estimate_ctx = make_estimate_ctx(
+            pp, header_text, cost_params=cost_params, calibration=calibration,
+            event_times=ev_times, bg_heads=bg_heads, flush_matrix=flush_matrix,
+            stamp_matrix=_stamp_matrix(pp, plan_proxy))
+        if estimate_ctx:
+            estimate_ctx["materials"] = dict(slicer_types or {})
         for mode in ("slicer", "optimize", "layer"):
             out["plans"][mode] = build_one_plan(
                 pp, mode, result, mapping,
                 slicer_colors=slicer_colors, slicer_types=slicer_types,
-                num_aces=num_aces, nozzle_groups=nz_groups)
+                num_aces=num_aces, nozzle_groups=nz_groups,
+                estimate_ctx=estimate_ctx)
     return out
 
 
