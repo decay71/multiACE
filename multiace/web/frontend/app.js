@@ -6727,7 +6727,7 @@ createApp({
     function ensurePreflightWorker() {
       if (!window.Worker) throw new Error(t("ui.preflight.local_worker_missing"));
       if (preflightWorker && preflightWorkerReady) return preflightWorkerReady;
-      preflightWorker = new Worker("preflight_pyodide_worker.js?v=pyodide-20260624");
+      preflightWorker = new Worker("preflight_pyodide_worker.js?v=pyodide-20261026");
       preflightWorkerReady = (async () => {
         const r = await fetch(`${API}/preflight/pysrc`);
         if (!r.ok) throw new Error("pysrc " + r.status);
@@ -6748,6 +6748,7 @@ createApp({
             pyodideIndexURL: PYODIDE_INDEX_URL,
             postprocessSrc: src.postprocess,
             coreSrc: src.core,
+            swapCostSrc: src.swap_cost || "",
           });
         });
       })();
@@ -6773,7 +6774,9 @@ createApp({
             return;
           }
           if ((type === "analyze" && msg.type === "analyze-done")
-              || (type === "rewrite" && msg.type === "rewrite-done")) {
+              || (type === "rewrite" && msg.type === "rewrite-done")
+              || (type === "estimate" && msg.type === "estimate-done")
+              || (type === "estimate-all" && msg.type === "estimate-all-done")) {
             worker.removeEventListener("message", onMsg);
             resolve(msg);
           }
@@ -6859,6 +6862,7 @@ createApp({
         const j = await runPreflightWorker("analyze", {
           jobId: preflightJobId, file: f,
           liveSlots: live.live_slots, headCtx: live.head_ctx,
+          costParams: live.cost_params,
         }, msg => {
           preflight.progress = {
             percent: Number(msg.percent || 0),

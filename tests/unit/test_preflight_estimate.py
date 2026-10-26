@@ -496,3 +496,81 @@ class TestReestimateEndpoint:
     def test_an_unknown_token_is_a_404(self, client):
         assert client.post("/api/preflight/reestimate",
                            json={"token": "b" * 32}).status_code == 404
+
+
+class TestBrowserWorker:
+    """What the Pyodide worker runs: flat copies of the three modules in one
+    directory, no `multiace` package. Driven in a clean interpreter with the
+    same calls the worker makes."""
+
+    def test_the_flat_layout_produces_and_recomputes_an_estimate(self, tmp_path):
+        import json
+        import shutil
+        import subprocess
+        for src in (ROOT / "multiace" / "tools" / "post_process_virtual_toolheads.py",
+                    ROOT / "multiace" / "tools" / "swap_cost.py",
+                    BACKEND / "preflight_core.py"):
+            shutil.copy(src, tmp_path / src.name)
+        job = tmp_path / "job.py"
+        job.write_text('''
+import sys, json
+sys.path.insert(0, %(d)r)
+import post_process_virtual_toolheads as _pp
+import preflight_core as _core
+assert _core._swap_cost is not None, "flat swap_cost import failed"
+_captures = {}
+_gtext = %(g)r
+_live = %(l)r
+_colors, _types, _naces, _used, _plan, _meta, _hdr = _core.parse_meta(
+    _pp, _gtext.splitlines(True), with_header=True)
+_capture = {}
+_report = _core.build_report(
+    _pp, slicer_colors=_colors, slicer_types=_types, num_aces=_naces,
+    plan_proxy=_plan, live_slots=_live, head_ctx={"mode": "normal"},
+    token="", filename="a.gcode", size=1, meta=_meta, header_text=_hdr,
+    cost_params={"load_length": 2100}, estimate_capture=_capture)
+_captures["j"] = _capture
+one = _core.recompute_estimate(
+    _captures["j"], mapping=_report["plans"]["slicer"]["mapping"])
+before = _report["plans"]["slicer"]["estimate"]["added_s"]
+every = _core.recompute_all_estimates(_captures["j"], {"load_length": 4200})
+print(json.dumps({
+    "report": before,
+    "one": one["estimate"]["added_s"],
+    "all": every["slicer"]["estimate"]["added_s"]}))
+''' % {"d": str(tmp_path), "g": _gcode(TestBuildReport.SEQ),
+       "l": TestBuildReport.LIVE})
+        out = subprocess.run([sys.executable, "-I", str(job)], cwd=tmp_path,
+                             capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0, out.stderr
+        got = json.loads(out.stdout.strip().splitlines()[-1])
+        assert got["one"] == pytest.approx(got["report"])
+        assert got["all"] > got["report"]
+
+
+class TestWorkerEndpoints:
+    @pytest.fixture
+    def client(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+        main = _load_main(monkeypatch, tmp_path, "[ace]\nload_length: 3000\n")
+
+        async def live():
+            return []
+
+        async def head():
+            return {"mode": "normal"}
+
+        monkeypatch.setattr(main, "_live_slots_async", live)
+        monkeypatch.setattr(main, "_head_mode_context", head)
+        with TestClient(main.app) as c:
+            yield c
+
+    def test_pysrc_serves_swap_cost_for_the_worker(self, client):
+        body = client.get("/api/preflight/pysrc").json()
+        assert body["swap_cost"].lstrip().startswith('"""Config-accurate')
+        assert "build_swap_timeline" in body["postprocess"]
+        assert "recompute_estimate" in body["core"]
+
+    def test_livedata_carries_the_current_cost_params(self, client):
+        body = client.get("/api/preflight/livedata").json()
+        assert body["cost_params"]["main"]["load_length"] == 3000

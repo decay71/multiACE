@@ -1799,11 +1799,18 @@ async def preflight_pysrc() -> dict:
     if not core_src.is_file():
         raise HTTPException(status_code=503,
                             detail="preflight_core not installed")
+    cost_src = Path(__file__).resolve().parents[2] / "tools" / "swap_cost.py"
     try:
-        return {
+        out = {
             "postprocess": pp_src.read_text(encoding="utf-8"),
             "core":        core_src.read_text(encoding="utf-8"),
         }
+        # swap_cost is optional on purpose: an install that predates it still
+        # gets a working preflight, just without the estimate. Adding a
+        # module here means adding it to the worker's init too.
+        if cost_src.is_file():
+            out["swap_cost"] = cost_src.read_text(encoding="utf-8")
+        return out
     except Exception as exc:
         raise HTTPException(status_code=503,
                             detail=f"cannot read sources: {exc}")
@@ -1819,6 +1826,9 @@ async def preflight_livedata() -> dict:
     return {
         "live_slots": live_slots,
         "head_ctx":   head_ctx,
+        # The estimate's inputs, read fresh from ace.cfg on every run: the
+        # worker outlives many preflights in one tab.
+        "cost_params": _swap_cost_params(),
     }
 
 _cfg_scalar_cache: dict = {"mtime": 0.0, "values": {}}
