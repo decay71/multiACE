@@ -1394,6 +1394,74 @@ async def preflight(file: UploadFile = File(...)) -> dict:
         # upgrade): surface a clear, actionable message instead of a bare 500.
         raise HTTPException(status_code=503, detail=str(e))
 
+class ReestimateRequest(BaseModel):
+    token: str
+    #: An edited multi-mode mapping (rows as in the report's plan mapping), or
+    #: the head-mode {t: target_id} with {t: [target_id, ...]} colour copies.
+    #: Without either, every plan is re-estimated as first proposed.
+    mapping: list | None = None
+    target_ids: dict | None = None
+    copy_ids: dict | None = None
+    #: The plan being edited ("slicer", "loadout").
+    plan: str | None = None
+    #: Cost settings that win over ace.cfg, e.g. {"swap_purge_length": 100}.
+    cost_overrides: dict = {}
+
+@app.post("/api/preflight/reestimate")
+async def preflight_reestimate(req: ReestimateRequest) -> dict:
+    """Re-run the estimate of an already-uploaded preflight.
+
+    With an edited mapping it returns {estimate, timeline} for that mapping;
+    without one, {plans: {name: {estimate, timeline}}} for every plan as the
+    current loadout first proposes it. The stored upload is re-analysed, so
+    a mapping edited earlier is not carried over: send the current one."""
+    if not re.fullmatch(r"[0-9a-f]{32}", req.token or ""):
+        raise HTTPException(status_code=400, detail="invalid token")
+    src_path = _PREFLIGHT_DIR / (req.token + ".gcode")
+    if not src_path.is_file():
+        raise HTTPException(status_code=404,
+                            detail="preflight token expired or unknown")
+    pp = _load_post_processor()
+    with open(src_path, "r", encoding="utf-8", errors="replace") as f:
+        (slicer_colors, slicer_types, num_aces, _used, plan_proxy, meta,
+         header_text) = await asyncio.to_thread(
+            preflight_core.parse_meta, pp, f, with_header=True)
+    live_slots = await _live_slots_async()
+    head_ctx = await _head_mode_context()
+    cost_params = _swap_cost_params()
+    main_params = dict(cost_params.get("main") or {})
+    for key in _SWAP_COST_KEYS + ("purge_matrix",):
+        if key in (req.cost_overrides or {}):
+            main_params[key] = req.cost_overrides[key]
+    cost_params = {"main": main_params,
+                   "per_ace": cost_params.get("per_ace") or {}}
+    capture: dict = {}
+    try:
+        await asyncio.to_thread(
+            preflight_core.build_report,
+            pp, slicer_colors=slicer_colors, slicer_types=slicer_types,
+            num_aces=num_aces, plan_proxy=plan_proxy, live_slots=live_slots,
+            head_ctx=head_ctx, token=req.token, filename=src_path.name,
+            size=src_path.stat().st_size, fuzzy=_PREFLIGHT_FUZZY, meta=meta,
+            header_text=header_text, cost_params=cost_params,
+            estimate_capture=capture)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not capture.get("ctx"):
+        raise HTTPException(status_code=503,
+                            detail="no estimate available for this file")
+    if req.mapping is not None or req.target_ids is not None:
+        return preflight_core.recompute_estimate(
+            capture, mapping=req.mapping, target_ids=req.target_ids,
+            copy_ids=req.copy_ids, plan=req.plan)
+    return {"plans": {
+        name: {"estimate": plan.get("estimate"),
+               "timeline": plan.get("timeline")}
+        for name, plan in (capture.get("plans") or {}).items()
+        if plan.get("estimate") is not None}}
+
 _PREFLIGHT_JOBS: dict[str, dict] = {}
 _PREFLIGHT_JOBS_LOCK = asyncio.Lock()
 _PREFLIGHT_JOB_TTL = 600.0

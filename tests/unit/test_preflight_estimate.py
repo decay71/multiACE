@@ -363,3 +363,136 @@ class TestMixedNozzles:
                 assert all(e["head"] == 2 for e in plan["timeline"]
                            if e["t"] == 2), name
                 assert heads <= {0, 1, 2}
+
+
+def _capture(gcode, head_ctx, live, **kw):
+    capture = {}
+    rep = _report(gcode, head_ctx, live, estimate_capture=capture, **kw)
+    return rep, capture
+
+
+class TestRecompute:
+    SEQ = TestBuildReport.SEQ
+    LIVE = TestBuildReport.LIVE
+
+    def test_the_capture_holds_what_a_recompute_needs(self):
+        rep, cap = _capture(_gcode(self.SEQ), {"mode": "normal"}, self.LIVE)
+        assert cap["ctx"] and cap["events"] == rep["events"]
+        assert set(cap["plans"]) == {"slicer", "optimize", "layer"}
+
+    def test_a_swapped_mapping_changes_the_estimate(self):
+        rep, cap = _capture(_gcode(self.SEQ), {"mode": "normal"}, self.LIVE)
+        mapping = rep["plans"]["slicer"]["mapping"]
+        same = pc.recompute_estimate(cap, mapping=mapping, plan="slicer")
+        assert same["estimate"]["added_s"] == pytest.approx(
+            rep["plans"]["slicer"]["estimate"]["added_s"])
+        # put every colour on ACE 1 slot 0: they all fight over one head
+        crowded = [dict(r, slot=dict(r["slot"], ace=i, slot=0))
+                   for i, r in enumerate(mapping)]
+        edited = pc.recompute_estimate(cap, mapping=crowded)
+        assert edited["estimate"]["added_s"] != same["estimate"]["added_s"]
+        assert edited["timeline"]
+
+    def test_no_context_means_none(self):
+        _rep, cap = _capture(_gcode(self.SEQ), {"mode": "normal"}, self.LIVE,
+                             with_header=False)
+        assert pc.recompute_estimate(cap, mapping=[]) is None
+        assert pc.recompute_all_estimates(cap, {}) is None
+
+    def test_new_cost_params_move_every_plan(self):
+        rep, cap = _capture(_gcode(self.SEQ), {"mode": "normal"}, self.LIVE)
+        before = {n: p["estimate"]["added_s"] for n, p in rep["plans"].items()}
+        out = pc.recompute_all_estimates(cap, {"main": {"load_length": 4200}})
+        assert set(out) == set(before)
+        for name, res in out.items():
+            if before[name]:
+                assert res["estimate"]["added_s"] > before[name], name
+            # the plan dict itself is refreshed too
+            assert rep["plans"][name]["estimate"] == res["estimate"]
+
+    def test_an_edit_survives_a_later_cost_change(self):
+        rep, cap = _capture(_gcode(self.SEQ), {"mode": "normal"}, self.LIVE)
+        mapping = rep["plans"]["slicer"]["mapping"]
+        crowded = [dict(r, slot=dict(r["slot"], ace=i, slot=0))
+                   for i, r in enumerate(mapping)]
+        edited = pc.recompute_estimate(cap, mapping=crowded, plan="slicer")
+        out = pc.recompute_all_estimates(cap, {"main": {}})
+        assert (out["slicer"]["estimate"]["added_s"]
+                == pytest.approx(edited["estimate"]["added_s"]))
+
+    def test_head_mode_recompute_follows_the_target_ids(self):
+        head_ctx = {"mode": "head", "ace_head": 3, "ace_heads": [3],
+                    "head_ace": {3: 0}, "feeders": []}
+        live = _live("#FF0000", "#00FF00", "#0000FF", "#FFFF00")
+        rep, cap = _capture(_gcode(self.SEQ), head_ctx, live)
+        loadout = rep["plans"]["loadout"]
+        target_ids = {m["t"]: m["target_id"] for m in loadout["mapping"]}
+        res = pc.recompute_estimate(cap, target_ids=target_ids,
+                                    plan="loadout")
+        assert res["estimate"]["added_s"] == pytest.approx(
+            loadout["estimate"]["added_s"])
+
+
+class TestReestimateEndpoint:
+    SEQ = TestBuildReport.SEQ
+    TOKEN = "a" * 32
+
+    @pytest.fixture
+    def client(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+        main = _load_main(monkeypatch, tmp_path, "[ace]\nload_length: 2100\n")
+        monkeypatch.setattr(main, "_PREFLIGHT_DIR", tmp_path)
+        (tmp_path / (self.TOKEN + ".gcode")).write_text(
+            _gcode(self.SEQ), encoding="utf-8")
+
+        async def live():
+            return _live("#FF0000", "#00FF00", "#0000FF")
+
+        async def head():
+            return {"mode": "normal"}
+
+        monkeypatch.setattr(main, "_live_slots_async", live)
+        monkeypatch.setattr(main, "_head_mode_context", head)
+        with TestClient(main.app) as c:
+            yield c
+
+    def test_every_plan_is_re_estimated(self, client):
+        r = client.post("/api/preflight/reestimate", json={"token": self.TOKEN})
+        assert r.status_code == 200
+        plans = r.json()["plans"]
+        assert set(plans) == {"slicer", "optimize", "layer"}
+        assert plans["slicer"]["estimate"]["total_s"] > 3600
+        assert plans["slicer"]["timeline"]
+
+    def test_cost_overrides_move_the_numbers(self, client):
+        base = client.post("/api/preflight/reestimate",
+                           json={"token": self.TOKEN}).json()
+        longer = client.post("/api/preflight/reestimate", json={
+            "token": self.TOKEN,
+            "cost_overrides": {"load_length": 4200}}).json()
+        assert (longer["plans"]["slicer"]["estimate"]["added_s"]
+                > base["plans"]["slicer"]["estimate"]["added_s"])
+
+    def test_unknown_override_keys_are_ignored(self, client):
+        r = client.post("/api/preflight/reestimate", json={
+            "token": self.TOKEN, "cost_overrides": {"nonsense": 1}})
+        assert r.status_code == 200
+
+    def test_an_edited_mapping_returns_one_estimate(self, client):
+        base = client.post("/api/preflight/reestimate",
+                           json={"token": self.TOKEN}).json()
+        assert "plans" in base
+        mapping = [{"t": t, "slot": {"ace": t, "slot": 0}} for t in range(3)]
+        r = client.post("/api/preflight/reestimate", json={
+            "token": self.TOKEN, "mapping": mapping, "plan": "slicer"})
+        body = r.json()
+        assert r.status_code == 200
+        assert body["estimate"]["total_s"] > 3600 and body["timeline"]
+
+    def test_a_bad_token_is_refused(self, client):
+        assert client.post("/api/preflight/reestimate",
+                           json={"token": "../x"}).status_code == 400
+
+    def test_an_unknown_token_is_a_404(self, client):
+        assert client.post("/api/preflight/reestimate",
+                           json={"token": "b" * 32}).status_code == 404

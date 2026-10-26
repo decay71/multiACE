@@ -258,6 +258,11 @@ def make_estimate_ctx(pp, header_text, *, cost_params=None, calibration=None,
         "bg_purge_inline": not bool(main.get("bg_load_enabled", True)),
         "flush_matrix": flush_matrix,
         "stamp_matrix": stamp_matrix,
+        #: id(plan dict) -> {events, assignment, copies}: what each plan was
+        #: estimated from, so a cost setting change can re-run every plan
+        #: without re-parsing the gcode. Shared (by reference) with every
+        #: ctx derived through ctx_with_params.
+        "plan_inputs":  {},
     }
 
 
@@ -282,6 +287,8 @@ def attach_estimate(ctx, plan, events, assignment, copies=None):
     """
     if not ctx or assignment is None or not plan.get("feasible", True):
         return plan
+    ctx["plan_inputs"][id(plan)] = {
+        "events": events, "assignment": assignment, "copies": copies}
     try:
         timeline = ctx_timeline(ctx, events, assignment, copies)
         plan["timeline"] = timeline
@@ -293,6 +300,86 @@ def attach_estimate(ctx, plan, events, assignment, copies=None):
         plan.pop("timeline", None)
         plan.pop("estimate", None)
     return plan
+
+
+def recompute_estimate(capture, *, mapping=None, target_ids=None,
+                       copy_ids=None, plan=None):
+    """Recompute {estimate, timeline} for a user-edited mapping, reusing the
+    estimate ctx captured at analyze time (`estimate_capture` on
+    build_report): `mapping` is a multi-mode mapping, `target_ids` the
+    head-mode {t: target_id} (with `copy_ids` for colour copies).
+
+    It is the time counterpart of the live swap-count recalc the frontend
+    runs on every mapping change. Returns None when no ctx was captured
+    (an older post-processor, or the file's header did not parse), like
+    attach_estimate's soft-degrade.
+
+    `plan` names the plan being edited ("slicer"/"loadout"): its stored
+    inputs are replaced by the edited ones, so a later cost change
+    (recompute_all_estimates) re-runs the user's mapping, not the original.
+    """
+    ctx = (capture or {}).get("ctx")
+    if not ctx:
+        return None
+    copies = None
+    if target_ids is not None:
+        targets = capture.get("targets") or []
+        assignment = assignment_from_target_ids(target_ids, targets)
+        if copy_ids:
+            copies = copies_from_target_ids(copy_ids, assignment, targets)
+    else:
+        assignment = assignment_from_mapping(mapping or [])
+    scratch = {"feasible": True}
+    events = capture.get("events") or []
+    attach_estimate(ctx, scratch, events, assignment, copies)
+    ctx["plan_inputs"].pop(id(scratch), None)
+    live = (capture.get("plans") or {}).get(plan) if plan else None
+    if live is not None:
+        ctx["plan_inputs"][id(live)] = {
+            "events": events, "assignment": assignment, "copies": copies}
+    return {"estimate": scratch.get("estimate"),
+            "timeline": scratch.get("timeline")}
+
+
+def ctx_with_params(ctx, cost_params):
+    """A copy of `ctx` whose cost model is rebuilt from new cost params -
+    everything parsed from the gcode is reused, and `plan_inputs` stays
+    shared so edits keep landing."""
+    params = cost_params or {}
+    if "main" in params or "per_ace" in params:
+        main, per_ace = params.get("main") or {}, params.get("per_ace") or {}
+    else:
+        main, per_ace = params, {}
+    out = dict(ctx)
+    out["model"] = _swap_cost.SwapCostModel.from_params(main, per_ace)
+    out["bg_purge_inline"] = not bool(main.get("bg_load_enabled", True))
+    return out
+
+
+def recompute_all_estimates(capture, cost_params):
+    """Re-run EVERY plan's estimate and timeline against new cost params, so
+    the plans stay comparable with each other while the numbers move.
+    Returns {plan_name: {estimate, timeline}}; None when no ctx was
+    captured."""
+    ctx = (capture or {}).get("ctx")
+    if not ctx or _swap_cost is None:
+        return None
+    new_ctx = ctx_with_params(ctx, cost_params)
+    capture["ctx"] = new_ctx
+    out = {}
+    for name, plan in (capture.get("plans") or {}).items():
+        inputs = ctx["plan_inputs"].get(id(plan))
+        if not inputs:
+            continue
+        scratch = {"feasible": True}
+        attach_estimate(new_ctx, scratch, inputs["events"],
+                        inputs["assignment"], inputs["copies"])
+        new_ctx["plan_inputs"].pop(id(scratch), None)
+        res = {"estimate": scratch.get("estimate"),
+               "timeline": scratch.get("timeline")}
+        plan.update({k: v for k, v in res.items() if v is not None})
+        out[name] = res
+    return out
 
 
 def assignment_from_mapping(mapping):
@@ -949,7 +1036,8 @@ def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
 def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
                       slicer_types, head_ctx, ace_slots, plan_proxy,
                       fuzzy=DEFAULT_FUZZY, meta=None, header_text=None,
-                      cost_params=None, calibration=None) -> dict:
+                      cost_params=None, calibration=None,
+                      estimate_capture=None) -> dict:
     """The head-mode preflight preview: THREE plans, mirroring multi:
       loadout  - match against the currently-loaded feeders + ACE slots (editable)
       optimize - swap-minimal proposed loadout (free, Belady per ACE head)
@@ -1053,6 +1141,9 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
             event_times=event_times, bg_heads=bg_heads,
             flush_matrix=flush_matrix, objective="color", **_cp)
 
+    if estimate_capture is not None:
+        estimate_capture.update(ctx=estimate_ctx, events=events,
+                                targets=targets, plans=plans)
     return {
         "token": token, "filename": safe_name, "size": upload_size,
         "head_mode": True, "ace_head": (ace_heads[0] if ace_heads else 3),
@@ -1123,7 +1214,8 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
 def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
                  live_slots, head_ctx, token, filename, size,
                  fuzzy=DEFAULT_FUZZY, meta=None, header_text=None,
-                 cost_params=None, calibration=None) -> dict:
+                 cost_params=None, calibration=None,
+                 estimate_capture=None) -> dict:
     """Build the full preflight report dict (the /api/preflight payload).
 
     Refuses an ALREADY-PROCESSED file (the "; multiACE processed:" /
@@ -1163,7 +1255,7 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
             pp, token, filename, size, slicer_colors, slicer_types,
             head_ctx, live_slots, plan_proxy, fuzzy=fuzzy, meta=meta,
             header_text=header_text, cost_params=cost_params,
-            calibration=calibration)
+            calibration=calibration, estimate_capture=estimate_capture)
     if multi_assignment_shape(head_ctx):
         # Multi with colour copies or a hand-fed head: the assignment
         # pipeline on the multi topology. Without either the classic
@@ -1173,7 +1265,8 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
             pp, token, filename, size, slicer_colors, slicer_types,
             dict(head_ctx or {}, num_aces=num_aces), live_slots, plan_proxy,
             fuzzy=fuzzy, meta=meta, header_text=header_text,
-            cost_params=cost_params, calibration=calibration)
+            cost_params=cost_params, calibration=calibration,
+            estimate_capture=estimate_capture)
 
     missing_mats = pp.check_material_availability(slicer_types, live_slots)
 
@@ -1238,6 +1331,9 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
             stamp_matrix=_stamp_matrix(pp, plan_proxy))
         if estimate_ctx:
             estimate_ctx["materials"] = dict(slicer_types or {})
+        if estimate_capture is not None:
+            estimate_capture.update(ctx=estimate_ctx, events=out["events"],
+                                    plans=out["plans"])
         for mode in ("slicer", "optimize", "layer"):
             out["plans"][mode] = build_one_plan(
                 pp, mode, result, mapping,
