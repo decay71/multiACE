@@ -1439,17 +1439,22 @@ class AceBgSwap:
 
     cmd_ACE_BG_WAIT_help = (
         '[multiACE] Hold the arriving toolhead until a background swap on a '
-        'docked HEAD reaches PULL (or late HEAT). ACE_BG_WAIT HEAD=0-3. '
-        'Parks at the discard position and restores print coordinates before '
-        'returning. On timeout or ineligibility, logs and returns so the '
-        'inline swap can proceed.')
+        'docked HEAD reaches PULL (or late HEAT). ACE_BG_WAIT HEAD=0-3 [RESTORE_POS=0|1]. '
+        'Parks at the discard position while waiting. By default (RESTORE_POS=0), '
+        'the active toolhead remains parked over the discard chute so the subsequent '
+        'T macro can dock it directly without redundant bed travel. Set RESTORE_POS=1 '
+        'to restore original print coordinates before returning.')
 
     def cmd_ACE_BG_WAIT(self, gcmd):
         # HEAD is required and must be a valid toolhead index (0-3), same
         # contract as the other ACE_BG_* commands.
         head = gcmd.get_int('HEAD', minval=0, maxval=3)
+        # Clear any residual abort request from previous cycles
+        self._abort_requested.discard(head)
         # Defaults to [ace_bg_swap] debug config (False by default = quiet console)
         debug = gcmd.get_int('DEBUG', 1 if self.debug else 0)
+        # RESTORE_POS: 0 = leave at discard chute for direct arrival dock; 1 = restore coordinates
+        restore_pos = gcmd.get_int('RESTORE_POS', 0)
 
         eligible, details = self.is_wait_eligible(head)
         verdict = 'WAIT (ELIGIBLE)' if eligible else 'ABORT_INLINE (INELIGIBLE)'
@@ -1540,9 +1545,16 @@ class AceBgSwap:
                         gcmd.respond_info('[bg-wait] HEAD=%d released hold after %.1fs (reason: %s)'
                                           % (self._dh(head), elapsed_wait, released_reason))
 
-                    self._restore_active_position(snapshot)
-                    if debug:
-                        gcmd.respond_info('[bg-wait] HEAD=%d restored to original coordinates' % self._dh(head))
+                    if restore_pos:
+                        self._restore_active_position(snapshot)
+                        if debug:
+                            gcmd.respond_info('[bg-wait] HEAD=%d restored to original coordinates' % self._dh(head))
+                    else:
+                        logging.info('[multiACE] [bg-wait] HEAD=%d parked at discard position; skipped pos restore for direct dock'
+                                     % self._dh(head))
+                        if debug:
+                            gcmd.respond_info('[bg-wait] HEAD=%d parked at discard position (RESTORE_POS=0, ready for direct dock)'
+                                              % self._dh(head))
         else:
             # Active Abort on Ineligibility:
             # Only abort if the head is in early HEAT (to prevent scheduled cold-pull extrusion).
