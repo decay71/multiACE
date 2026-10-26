@@ -51,21 +51,37 @@ class TestSwapTimeline:
         assert tl[1]["seconds"] == pytest.approx(
             model.swap_seconds("same_ace"), abs=0.1)
 
-    def test_a_toolchange_onto_an_unchanged_slot_costs_nothing(self, model):
+    def test_a_toolchange_onto_an_unchanged_slot_is_only_a_head_change(
+            self, model):
         assignment = {0: _ace(0), 1: _ace(1)}
         tl = pp.build_swap_timeline([0, 1, 0, 1], assignment,
                                     cost_model=model)
-        assert [e["kind"] for e in tl] == ["first_load", "first_load"]
+        assert [e["kind"] for e in tl] == [
+            "first_load", "first_load", "head_change", "head_change"]
+        change = tl[-1]
+        assert change["seconds"] == pytest.approx(4.2)
+        assert change["purge_mm"] == 0 and change["purge_inline"] is False
 
     def test_a_different_ace_is_a_cross_ace_swap(self, model):
         assignment = {0: _ace(0, ace=0), 1: _ace(0, ace=1)}
         tl = pp.build_swap_timeline([0, 1], assignment, cost_model=model)
         assert tl[1]["kind"] == "cross_ace_inline"
 
-    def test_a_pinned_feeder_adds_nothing(self, model):
+    def test_a_pinned_feeder_costs_a_head_change_per_toolchange(self, model):
         assignment = {0: {"kind": "pin", "head": 0}, 1: _ace(1)}
         tl = pp.build_swap_timeline([0, 1, 0], assignment, cost_model=model)
-        assert [e["t"] for e in tl] == [1]
+        assert [(e["t"], e["kind"]) for e in tl] == [
+            (0, "head_change"), (1, "first_load"), (0, "head_change")]
+        assert tl[0]["ace"] is None and tl[0]["seconds"] == pytest.approx(4.2)
+
+    def test_the_head_change_follows_the_model_constant(self):
+        m = sc.SwapCostModel.default()
+        m.constants["head_change"] = 6.0
+        tl = pp.build_swap_timeline(
+            [0, 0], {0: _ace(0)}, cost_model=m)
+        assert tl[-1]["seconds"] == pytest.approx(6.0)
+        assert pp.build_swap_timeline(
+            [0, 0], {0: _ace(0)})[-1]["seconds"] == pytest.approx(4.2)
 
     def test_a_long_enough_window_makes_the_swap_a_background_one(self, model):
         assignment = {0: _ace(0, ace=0), 1: _ace(0, ace=1), 2: _ace(1)}
@@ -300,10 +316,13 @@ class TestColourCopies:
                                        cost_model=model)
         with_copy = pp.build_swap_timeline(
             self.EVENTS, self.ASSIGN, cost_model=model, copies=self.COPIES)
-        assert len(plain) == 6
-        assert len(with_copy) < len(plain)
+        swaps = lambda tl: [e for e in tl if e["kind"] != "head_change"]
+        assert len(swaps(plain)) == 6
+        assert len(swaps(with_copy)) < len(swaps(plain))
         assert (pp.head_mode_swap_count(self.EVENTS, self.ASSIGN, self.COPIES)
-                == len(with_copy))
+                == len(swaps(with_copy)))
+        # every toolchange is in the timeline, swap or not
+        assert len(with_copy) == len(plain) == len(self.EVENTS)
 
     def test_a_copy_entry_names_the_head_that_took_the_event(self, model):
         tl = pp.build_swap_timeline(self.EVENTS, self.ASSIGN,

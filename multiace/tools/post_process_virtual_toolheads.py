@@ -1431,6 +1431,8 @@ def _model_cost(cost_model, kind, ace=None, slot=None):
             return float(cost_model.swap_seconds(kind, ace=ace, slot=slot))
         except Exception:
             pass
+    if kind == 'head_change':
+        return 4.2
     return float(BG_SWAP_COST_BG_S if kind == 'cross_ace_bg'
                  else BG_SWAP_COST_INLINE_S)
 
@@ -1453,12 +1455,13 @@ def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
                         bg_purge_inline=False, copies=None):
     """Per-toolchange trace of what the plan costs and why.
 
-    One entry per toolchange that needs a filament change:
+    One entry per toolchange:
       {i, t, from_t, head, ace, slot, kind, window_min, seconds, purge_mm,
        purge_inline, note}
-    where `kind` is one of swap_cost.SWAP_KINDS. A toolchange onto a head
-    that already holds the right filament costs nothing, and a pinned
-    feeder does no ACE work, so neither appears. `flush_matrix` is the
+    where `kind` is one of swap_cost.SWAP_KINDS. A toolchange that needs no
+    filament change (onto a pinned feeder, or onto a head that already holds
+    the right filament) is a 'head_change': only the pick and park, no
+    purge. `flush_matrix` is the
     stamp-basis matrix (parse_flush_matrix_raw*): with it `purge_mm` is the
     stamp the engine will write for that (from_t, to_t) pair. With `copies`
     (colour copies on several heads, see detect_color_copies) the head of
@@ -1483,14 +1486,28 @@ def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
         chosen = simulate_dynamic_swaps(
             events, _targets_with_copies(assignment, copies), bg_heads)[1]
 
+    def head_change(i, t, e, note):
+        return {
+            'i': i, 't': t, 'from_t': head_color.get(e.get('head')),
+            'head': e.get('head'), 'ace': e.get('ace'), 'slot': e.get('slot'),
+            'kind': 'head_change', 'window_min': None,
+            'seconds': round(_model_cost(cost_model, 'head_change'), 1),
+            'purge_mm': 0.0, 'purge_inline': False, 'note': note}
+
     for i, t in enumerate(events):
         e = chosen[i] if chosen else (assignment or {}).get(t)
-        if not e or e.get('kind') != 'ace':
+        if not e:
+            continue
+        if e.get('kind') == 'pin':
+            out.append(head_change(i, t, e, 'pinned feeder'))
+            continue
+        if e.get('kind') != 'ace':
             continue
         head = e.get('head')
         key = (e.get('ace'), e.get('slot'))
         prev_key = head_key.get(head)
         if prev_key == key:
+            out.append(head_change(i, t, e, 'head already holds it'))
             last_use[head] = i
             head_color[head] = t
             continue
