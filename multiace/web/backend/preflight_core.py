@@ -261,18 +261,20 @@ def make_estimate_ctx(pp, header_text, *, cost_params=None, calibration=None,
     }
 
 
-def ctx_timeline(ctx, events, assignment):
+def ctx_timeline(ctx, events, assignment, copies=None):
     matrix = ctx.get("stamp_matrix")
     if matrix is None:
         matrix = ctx.get("flush_matrix")
     return ctx["_pp"].build_swap_timeline(
         events, assignment, event_times=ctx["event_times"],
         bg_heads=ctx["bg_heads"], cost_model=ctx["model"],
-        flush_matrix=matrix, bg_purge_inline=ctx["bg_purge_inline"])
+        flush_matrix=matrix, bg_purge_inline=ctx["bg_purge_inline"],
+        copies=copies or None)
 
 
-def attach_estimate(ctx, plan, events, assignment):
-    """Add `timeline` and `estimate` to one plan, in place.
+def attach_estimate(ctx, plan, events, assignment, copies=None):
+    """Add `timeline` and `estimate` to one plan, in place. With `copies`
+    the timeline follows the per-event head choice of the copy plan.
 
     Plans are compared in minutes and grams rather than swap counts, which
     is the point: a plan with more swaps but all of them backgrounded can be
@@ -281,7 +283,7 @@ def attach_estimate(ctx, plan, events, assignment):
     if not ctx or assignment is None or not plan.get("feasible", True):
         return plan
     try:
-        timeline = ctx_timeline(ctx, events, assignment)
+        timeline = ctx_timeline(ctx, events, assignment, copies)
         plan["timeline"] = timeline
         plan["estimate"] = _swap_cost.build_estimate(
             ctx["model"], ctx["header"], timeline,
@@ -728,11 +730,22 @@ def head_swaps_with_copies(pp, events, assignment, copies, bg_heads=None):
     return pp.head_mode_swap_count(events, assignment)
 
 
+def _estimate_summary(ctx, events, assignment, copies):
+    """{added_s, total_s} of one plan, or None without an estimate."""
+    plan = attach_estimate(ctx, {"feasible": True}, events, assignment,
+                           copies)
+    est = plan.get("estimate")
+    if not est:
+        return None
+    return {"added_s": est["added_s"], "total_s": est["total_s"]}
+
+
 def copy_plan(pp, events, assignment, head_ctx, ace_head_of_ace, copies,
-              bg_heads=None, nozzle_groups=None) -> dict:
+              bg_heads=None, nozzle_groups=None, estimate_ctx=None) -> dict:
     """The loadout suggestion for the Multifilament row: which colours to
     load once more, into which EMPTY slot (head_ctx['empty_slots']), and
-    the swap count before/after. max_copies 1 -> no suggestion."""
+    the swap count and, with an estimate context, the time before/after.
+    max_copies 1 -> no suggestion."""
     limit = max_copies(head_ctx)
     out = {"max_copies": limit, "suggestions": [],
            "swaps_before": None, "swaps_after": None}
@@ -752,6 +765,16 @@ def copy_plan(pp, events, assignment, head_ctx, ace_head_of_ace, copies,
         {"t": int(s["t"]), "ace": int(s["ace"]), "slot": int(s["slot"]),
          "head": int(s["head"]), "swaps": int(s["swaps"])}
         for s in (res.get("suggestions") or [])]
+    if estimate_ctx and out["suggestions"]:
+        # The same plan with the suggested copies loaded: what they buy in
+        # minutes, not only in swaps.
+        suggested = {t: [dict(x) for x in lst[1:]]
+                     for t, lst in (res.get("targets") or {}).items()
+                     if len(lst) > 1}
+        out["estimate_before"] = _estimate_summary(
+            estimate_ctx, events, assignment, copies)
+        out["estimate_after"] = _estimate_summary(
+            estimate_ctx, events, assignment, suggested)
     return out
 
 
@@ -919,8 +942,7 @@ def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
                 out["flush_g"] = round(fc * 1.24 / 1000.0, 1)
         except Exception:
             pass
-    if not copies:
-        attach_estimate(estimate_ctx, out, events, assignment)
+    attach_estimate(estimate_ctx, out, events, assignment, copies)
     return out
 
 
@@ -1002,8 +1024,8 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
                                copies)
     if bg_loadout is not None:
         plans["loadout"]["bg"] = bg_loadout
-    if not copies:
-        attach_estimate(estimate_ctx, plans["loadout"], events, assignment)
+    attach_estimate(estimate_ctx, plans["loadout"], events, assignment,
+                    copies)
 
     # Plans 2+3 - proposed loadout (ignore current load). Per ACE head:
     # 4 slots of its own ACE (head mode), or one slot per ACE (multi).
@@ -1085,7 +1107,8 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
                    for t, lst in copies.items()},
         "copy_plan": copy_plan(pp, events, assignment, head_ctx,
                                ace_head_of_ace, copies, bg_heads=bg_heads,
-                               nozzle_groups=nz_groups),
+                               nozzle_groups=nz_groups,
+                               estimate_ctx=estimate_ctx),
         "empty_slots": [{"ace": int(e["ace"]), "slot": int(e["slot"])}
                         for e in ((head_ctx or {}).get("empty_slots") or [])
                         if e.get("ace") is not None

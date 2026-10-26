@@ -1450,7 +1450,7 @@ def _model_purge_mm(cost_model, flush_matrix, from_t, to_t):
 
 def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
                         cost_model=None, flush_matrix=None,
-                        bg_purge_inline=False):
+                        bg_purge_inline=False, copies=None):
     """Per-toolchange trace of what the plan costs and why.
 
     One entry per toolchange that needs a filament change:
@@ -1460,7 +1460,10 @@ def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
     that already holds the right filament costs nothing, and a pinned
     feeder does no ACE work, so neither appears. `flush_matrix` is the
     stamp-basis matrix (parse_flush_matrix_raw*): with it `purge_mm` is the
-    stamp the engine will write for that (from_t, to_t) pair.
+    stamp the engine will write for that (from_t, to_t) pair. With `copies`
+    (colour copies on several heads, see detect_color_copies) the head of
+    each event is the per-event choice of simulate_dynamic_swaps, the same
+    one the rewriter makes.
 
     `bg_purge_inline` marks background swaps whose flush happens inline
     anyway (the background load is disabled, so the arrival loads inline).
@@ -1475,9 +1478,13 @@ def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
     head_color = {}      # head -> the T last loaded there
     last_use = {}        # head -> index of its last event
     out = []
+    chosen = None
+    if copies:
+        chosen = simulate_dynamic_swaps(
+            events, _targets_with_copies(assignment, copies), bg_heads)[1]
 
     for i, t in enumerate(events):
-        e = (assignment or {}).get(t)
+        e = chosen[i] if chosen else (assignment or {}).get(t)
         if not e or e.get('kind') != 'ace':
             continue
         head = e.get('head')
