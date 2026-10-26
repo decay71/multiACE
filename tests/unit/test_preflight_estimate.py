@@ -143,10 +143,16 @@ class TestEstimateContext:
             pp, HEADER, cost_params={"main": {"load_length": 4200}})
         assert flat["model"].load_length == split["model"].load_length == 4200
 
-    def test_bg_load_disabled_marks_the_bg_purge_inline(self):
+    @pytest.mark.parametrize("mode,inline", [
+        ("true", False), ("True", False), ("false", True),
+        ("transport", True), ("Transport", True)])
+    def test_only_a_full_bg_load_keeps_the_purge_off_the_critical_path(
+            self, mode, inline):
         ctx = pc.make_estimate_ctx(
-            pp, HEADER, cost_params={"main": {"bg_load_enabled": False}})
-        assert ctx["bg_purge_inline"] is True
+            pp, HEADER, cost_params={"main": {"bg_load": mode}})
+        assert ctx["bg_purge_inline"] is inline
+
+    def test_without_a_bg_load_setting_the_bg_swap_is_a_full_one(self):
         assert pc.make_estimate_ctx(pp, HEADER)["bg_purge_inline"] is False
 
     def test_a_failing_timeline_leaves_the_plan_without_an_estimate(self):
@@ -260,15 +266,19 @@ class TestSwapCostParams:
         assert params["per_ace"][1] == {"load_length": 2500,
                                         "load_length_2": 1800}
 
-    def test_bg_load_defaults_to_enabled(self, monkeypatch, tmp_path):
+    def test_bg_load_defaults_to_a_full_bg_swap(self, monkeypatch, tmp_path):
         main = _load_main(monkeypatch, tmp_path, self.CFG)
-        assert main._swap_cost_params()["main"]["bg_load_enabled"] is True
+        assert main._swap_cost_params()["main"]["bg_load"] == "true"
 
-    def test_bg_load_can_be_switched_off(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("value,mode", [
+        ("True", "true"), ("False", "false"), ("transport", "transport"),
+        ("Transport", "transport"), ("0", "false")])
+    def test_bg_load_is_read_as_a_string(self, monkeypatch, tmp_path,
+                                         value, mode):
         main = _load_main(
             monkeypatch, tmp_path,
-            self.CFG + "[ace_bg_swap]\nheads: 3\nload_enabled: False\n")
-        assert main._swap_cost_params()["main"]["bg_load_enabled"] is False
+            self.CFG + "[ace_bg_swap]\nheads: 3\nload_enabled: %s\n" % value)
+        assert main._swap_cost_params()["main"]["bg_load"] == mode
 
     def test_a_missing_config_yields_empty_params(self, monkeypatch, tmp_path):
         main = _load_main(monkeypatch, tmp_path, "[ace]\n")

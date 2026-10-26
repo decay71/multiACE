@@ -213,6 +213,11 @@ def _stamp_matrix(pp, plan_proxy):
         return None
 
 
+def _bg_purge_inline(main):
+    """True unless the background swap is a full one (load_enabled true)."""
+    return str(main.get("bg_load", "true")).strip().lower() != "true"
+
+
 def make_estimate_ctx(pp, header_text, *, cost_params=None, calibration=None,
                       event_times=None, bg_heads=None, flush_matrix=None,
                       stamp_matrix=None):
@@ -252,10 +257,10 @@ def make_estimate_ctx(pp, header_text, *, cost_params=None, calibration=None,
         "materials":    {},
         "event_times":  event_times,
         "bg_heads":     list(bg_heads or []),
-        # The background load is off ([ace_bg_swap] load_enabled: False):
-        # the arrival loads inline, so a bg swap's flush is on the
-        # critical path.
-        "bg_purge_inline": not bool(main.get("bg_load_enabled", True)),
+        # Anything but a full background swap ([ace_bg_swap] load_enabled
+        # False or transport): the arrival loads inline with the full
+        # flush, so a bg swap's purge is on the critical path.
+        "bg_purge_inline": _bg_purge_inline(main),
         "flush_matrix": flush_matrix,
         "stamp_matrix": stamp_matrix,
         #: id(plan dict) -> {events, assignment, copies}: what each plan was
@@ -352,7 +357,7 @@ def ctx_with_params(ctx, cost_params):
         main, per_ace = params, {}
     out = dict(ctx)
     out["model"] = _swap_cost.SwapCostModel.from_params(main, per_ace)
-    out["bg_purge_inline"] = not bool(main.get("bg_load_enabled", True))
+    out["bg_purge_inline"] = _bg_purge_inline(main)
     return out
 
 

@@ -4655,9 +4655,11 @@ def _as_float(value):
     except (TypeError, ValueError):
         return None
 
-def _read_bg_load_enabled(text: str) -> bool:
-    """[ace_bg_swap] load_enabled (default True): False means the background
-    swap only unloads and the arrival loads inline."""
+def _read_bg_load_mode(text: str) -> str:
+    """[ace_bg_swap] load_enabled as "true" (full background swap, the
+    default), "transport" (the load stages at the toolhead sensor) or
+    "false" (background unload only). In the last two the arrival loads
+    inline with the full flush."""
     in_section = False
     for raw in text.splitlines():
         s = raw.strip()
@@ -4667,8 +4669,11 @@ def _read_bg_load_enabled(text: str) -> bool:
         if in_section:
             m = _BG_LOAD_ENABLED_RE.match(raw)
             if m:
-                return m.group(1).strip().lower() in ("1", "true", "yes", "on")
-    return True
+                v = m.group(1).strip().lower()
+                if v in ("1", "true", "yes", "on"):
+                    return "true"
+                return "transport" if v == "transport" else "false"
+    return "true"
 
 def _swap_cost_params() -> dict:
     """The cost model's inputs, straight out of [ace] / [ace N].
@@ -4690,7 +4695,7 @@ def _swap_cost_params() -> dict:
     raw = str(main.get("purge_matrix", "")).strip().lower()
     if raw:
         out["purge_matrix"] = raw in ("1", "true", "yes", "on")
-    out["bg_load_enabled"] = _read_bg_load_enabled(text)
+    out["bg_load"] = _read_bg_load_mode(text)
     per: dict = {}
     for ace_idx, section in (per_ace or {}).items():
         vals = {}
