@@ -7818,7 +7818,7 @@ createApp({
     // =================================================================
     const history = reactive({
       loaded: false, busy: false, error: "", jobs: [], detail: null,
-      reprinting: "", stats: [], minSamples: 5,
+      reprinting: "", stats: [], minSamples: 5, info: null,
     });
     async function loadHistory() {
       history.busy = true;
@@ -7913,15 +7913,24 @@ createApp({
         onOk: () => doReprint(row),
       });
     }
-    // Column header "i" button: a plain dialog, since hover tooltips do not
-    // exist on touch screens.
-    function historyColumnInfo(col) {
-      confirm({
-        title: t("ui.history." + col),
-        message: escapeHtml(t("ui.history." + col + "_info")),
-        dismissOnly: true, okLabel: t("ui.common.ok"), onOk: () => {},
-      });
+    // Column header "i" button: a banner next to the header. Click toggles
+    // it (hover tooltips do not exist on touch); a click elsewhere, Escape or
+    // scrolling closes it. Fixed-position so the table's scroll box cannot
+    // clip it.
+    function historyColumnInfo(col, ev) {
+      if (history.info && history.info.col === col) { history.info = null; return; }
+      const r = ev.currentTarget.getBoundingClientRect();
+      const w = 260;
+      history.info = {
+        col,
+        left: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)),
+        top: r.bottom + 6,
+      };
     }
+    const closeHistoryInfo = () => { history.info = null; };
+    document.addEventListener("click", closeHistoryInfo);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeHistoryInfo(); });
+    window.addEventListener("scroll", closeHistoryInfo, true);
     async function doReprint(row) {
       history.reprinting = historyRowKey(row);
       history.error = "";
@@ -7944,6 +7953,8 @@ createApp({
     if (tab.value === "history") loadHistory();
 
     onUnmounted(() => {
+      document.removeEventListener("click", closeHistoryInfo);
+      window.removeEventListener("scroll", closeHistoryInfo, true);
       clearTimeout(wsReconnectTimer);
       clearInterval(screenTimer);
       try { ws?.close(); } catch (_) {}

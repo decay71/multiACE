@@ -2038,6 +2038,10 @@ body:has(.panel) .overlay .dialog {
   font-size: .7rem; font-style: italic; font-weight: 600; line-height: 1; vertical-align: middle;
   text-transform: none; letter-spacing: 0; cursor: pointer; opacity: .7; }
 .info-btn:hover { opacity: 1; }
+.info-banner { position: fixed; z-index: 50; width: 260px; padding: .5rem .7rem; font-size: .85rem;
+  background: var(--bg, #222); color: var(--fg, #eee); border: 1px solid var(--border, #666);
+  border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, .35); white-space: normal; }
+.info-banner b { display: block; margin-bottom: .2rem; }
 .reprint-loadout { list-style: none; margin: .5rem 0; padding: 0; }
 .reprint-loadout li { padding: .15rem 0; }
 .reprint-loadout .swatch { display: inline-block; width: .9rem; height: .9rem; border-radius: 3px; vertical-align: middle; }
