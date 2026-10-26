@@ -291,3 +291,50 @@ From printer klippy logs (`/oem/klippylogs/klippy.log.2` through `.log.10`):
   - To respect maintainer boundaries and keep PRs single-responsibility, changes to `ace.py` tip-forming dispatch and `app.js` UI builders for 1.30 tokens are omitted from `draft-bg-swap-priority`.
   - The 11 custom pull moves and custom `unloadtemp:` / `loadtemp:` parameters continue to execute reliably under custom tip-forming mode. Full 1.30 pre-prime execution will integrate upstream under decay71's planned 1.30 release roadmap.
 
+
+---
+
+## 9. Tomorrow's Testing & Verification Checklist (Hardware Run)
+
+When the overnight print finishes, follow this step-by-step procedure to deploy the updated files and verify both new behaviors live on hardware:
+
+### Step 1: Deploy Updated Files to Printer
+Copy the two updated Klipper module files to the printer (`/home/sovol/klipper/klippy/extras/` or the corresponding multiace path on your machine):
+- `multiace/klipper/extras/ace.py` (includes `_notify_bg_pick` wrapper around `T0-T3`)
+- `multiace/klipper/extras/ace_bg_swap.py` (includes `request_pick_abort` + `RESTORE_POS=0` direct dock)
+- Restart Klipper: `FIRMWARE_RESTART` (or via Fluidd/Mainsail restart button).
+
+### Step 2: Test Direct Dock Optimization (`RESTORE_POS=0`)
+1. **Verification Command**:
+   Run a bench test holding active head:
+   ```gcode
+   TEST_BG_WAIT_HOLD ACTIVE_HEAD=1 TARGET_HEAD=0 TARGET_SLOT=0 WAIT_POINT_S=24 DEBUG=1
+   ```
+2. **What to Observe**:
+   - The active toolhead (`T1`) moves to the discard chute to hold.
+   - When the hold releases (when `HEAD=0` reaches `RETRACT`), `T1` **must NOT travel forward to the print bed**.
+   - Instead, the carriage should move **directly from the discard chute straight back to the dock rail ($Y=332.2$)** to dock `T1`.
+   - Time saved: confirms the elimination of the 3.5s round-trip travel move!
+
+### Step 3: Test Full Background Swap with Toolchange Arrival (`LD_PRIME` Interlock)
+1. **Test Scenario**:
+   Trigger a full background swap while an active head is resting or printing, and command the arrival toolchange while the docked head is in `LD_PRIME` (dock purge).
+   ```gcode
+   T1
+   MOVE_TO_DISCARD_FILAMENT_POSITION
+   ACE_BG_SWAP HEAD=0 SLOT=0 FORCE=1
+   # Wait until console logs indicate phase: LD_PRIME
+   ACE_BG_WAIT HEAD=0 DEBUG=1
+   T0
+   ```
+2. **What to Observe**:
+   - `ACE_BG_WAIT` logs: `[bg-wait] HEAD=0 late loading op (LD_PRIME) handed over with anti-ooze cushion before arrival pick`.
+   - The console/klippy.log shows: `head 1: toolchange announced during LD_PRIME - stopping at the next move boundary... prime stopped at N/153 mm for the announced toolchange - cushion set`.
+   - **No drool / blob**: The nozzle stops extruding *before* the carriage picks it up. The anti-ooze retraction cushion is applied inside the dock.
+   - When `T0` picks up the toolhead and carries it to the wipe tower, **no molten strand or blob drops on the bed/path**.
+   - Arrival pick-check tops up the remaining deficit at the discard chute smoothly.
+
+### Step 4: Verify Coordinate & Extruder Accuracy
+- Check that the subsequent extrusion on the prime tower or print coordinates is exact with zero layer-shift or extrusion under-fill.
+- Confirm console reports clean status with no unhandled exceptions.
+
