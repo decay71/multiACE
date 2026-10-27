@@ -4893,7 +4893,29 @@ def _write_cfg_atomic(path, text: str) -> None:
     p = Path(path)
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
+    _klipper_readable(tmp)
     os.replace(str(tmp), str(p))
+
+
+def _klipper_readable(path) -> None:
+    """Make a file this service wrote readable by Klipper before it replaces
+    the real one. The service runs as root: with a strict umask (e.g. 0077,
+    inherited from an SSH shell that restarted it) the new file came out
+    root-owned 0600 and Klipper, running as the printer user, failed with
+    "Unable to open config file". Readable by all, owned like its directory
+    when running as root. Best-effort."""
+    p = Path(path)
+    try:
+        os.chmod(str(p), 0o644)
+    except OSError:
+        pass
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() == 0:
+        try:
+            owner = p.parent.stat()
+            os.chown(str(p), owner.st_uid, owner.st_gid)
+        except OSError:
+            pass
 
 @app.get("/api/config")
 async def get_config() -> dict:
@@ -5342,6 +5364,7 @@ def _save_overrides_to_disk() -> None:
     try:
         tmp = p.with_suffix(p.suffix + ".tmp")
         tmp.write_text(json.dumps(_slot_overrides, indent=2), encoding="utf-8")
+        _klipper_readable(tmp)
         os.replace(str(tmp), str(p))
         try:
             _overrides_mtime = p.stat().st_mtime
