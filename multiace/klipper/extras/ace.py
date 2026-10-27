@@ -10997,6 +10997,12 @@ class MultiAce:
                     int(c.get('load_length_mm') or 0)
                     - int(c.get('commanded_retract_mm') or 0)
                     - partial)))
+            elif state == 'feed_jogging':
+                # forward correction: the page shows how far it has to go
+                c['tip_position_mm'] = max(0, int(round(
+                    int(c.get('load_length_mm') or 0)
+                    - int(c.get('commanded_retract_mm') or 0)
+                    + self._calibration_move_travel(move, eventtime))))
             if move.get('error'):
                 self._calibration_fail(move['error'])
                 self._calibration_timer = None

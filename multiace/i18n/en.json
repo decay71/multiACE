@@ -730,6 +730,7 @@
       "done_ready": "Measurement finished",
       "done_ready_hint": "Review the values in Results, or verify the route.",
       "drag_hint": "Drag the handle to where the tip should be, then let go. Nothing moves while you drag.",
+      "drag_moving": "Moving {mm} mm toward the {dir} · {left} mm to go",
       "drag_release": "Release to move {mm} mm toward the {dir}",
       "drag_small": "Too small to move",
       "err_incomplete": "Complete all calibration checkpoints first.",

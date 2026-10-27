@@ -678,3 +678,14 @@ def test_check_tolerance_two_percent():
     c['load_length_mm'] = c['retract_length_mm'] = 1400
     _verify_to_hub(a, c)
     assert c['verify_remeasured_mm'] is not None
+
+
+def test_forward_jog_reports_tip_live():
+    a, c = new_session(1400, 'v2')
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=600))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    start = c['tip_position_mm']
+    a.cmd_ACE_CALIBRATION_FEED_JOG(GCmd(LENGTH=300))
+    run_until(a, lambda: c['state'] == 'feed_jogging'
+              and phys(a) > start + 120)
+    assert c['tip_position_mm'] > start + 60

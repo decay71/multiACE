@@ -1350,14 +1350,24 @@ createApp({
     // pull-back never past the park position, a forward move never past the
     // toolhead-sensor start). Below 5 mm nothing is sent.
     const CALIBRATION_MIN_MOVE_MM = 5;
-    const calibrationDrag = reactive({active: false, targetMm: null});
+    // `moving` is the move a release or a step button started: its target,
+    // length and direction, shown until the ACE has stopped.
+    const calibrationDrag = reactive({active: false, targetMm: null, moving: null});
+    const CAL_TRACK_MOVES = ['retracting', 'feed_jogging'];
     const calibrationTipNowMm = computed(() => {
       const c = state.calibration || {};
+      // while a move runs the session reports the tip live
+      if (CAL_TRACK_MOVES.includes(c.state) && c.tip_position_mm != null) {
+        return Math.max(0, Number(c.tip_position_mm));
+      }
       return Math.max(0, Number(c.load_length_mm || 0)
         - Number(c.commanded_retract_mm || 0));
     });
     // The saved hub clearance point as a reference mark, if there is one.
+    // Only a hub clearance really saved for this route is drawn; the global
+    // default says nothing about where this route's hub is.
     const calibrationTrackHubMm = computed(() => {
+      if (!calibrationRouteCalibrated.value) return null;
       const load = Number(state.calibration?.load_length_mm || 0);
       const swap = calibrationConfiguredRoute.value.swap;
       return load > 0 && swap > 0 && swap < load ? load - swap : null;
@@ -1367,6 +1377,13 @@ createApp({
       return load > 0 ? Math.max(0, Math.min(100, 100 * Number(mm) / load)) : 0;
     }
     const calibrationDragLabel = computed(() => {
+      const moving = calibrationDrag.moving;
+      if (moving && calibrationDrag.targetMm == null) {
+        return t('ui.calibration.drag_moving', {
+          mm: moving.mm, dir: t(moving.dir),
+          left: Math.round(Math.abs(moving.target - calibrationTipNowMm.value)),
+        });
+      }
       if (calibrationDrag.targetMm == null) return '';
       const diff = calibrationDrag.targetMm - calibrationTipNowMm.value;
       if (Math.abs(diff) < CALIBRATION_MIN_MOVE_MM) return t('ui.calibration.drag_small');
@@ -1412,9 +1429,27 @@ createApp({
       const target = Math.max(0, Math.min(load, Math.round(targetMm)));
       const diff = target - (load - retract);
       if (Math.abs(diff) < CALIBRATION_MIN_MOVE_MM) return false;
-      if (diff < 0) return calibrationAction('retract', -diff);
-      return calibrationAction('feed_jog', Math.min(diff, retract));
+      const mm = diff < 0 ? -diff : Math.min(diff, retract);
+      calibrationDrag.moving = {
+        target: (load - retract) + Math.sign(diff) * mm, mm,
+        dir: diff < 0 ? 'ui.calibration.dir_ace' : 'ui.calibration.dir_head',
+      };
+      const ok = await calibrationAction(diff < 0 ? 'retract' : 'feed_jog', mm);
+      if (!ok || !CAL_TRACK_MOVES.includes(state.calibration?.state)) {
+        calibrationDrag.moving = null;
+      }
+      return ok;
     }
+    // The step buttons go through the same path, so they get the same
+    // "moving" label.
+    function calibrationJog(mm) {
+      return calibrationMoveTo(calibrationTipNowMm.value + mm);
+    }
+    watch(() => state.calibration?.state, (s) => {
+      if (calibrationDrag.moving && !CAL_TRACK_MOVES.includes(s)) {
+        calibrationDrag.moving = null;
+      }
+    });
     async function calibrationApply() {
       const c = state.calibration || {};
       const v = calibrationProposed.value;
@@ -8349,7 +8384,7 @@ createApp({
       calibrationStart, calibrationMarkAndReturn, calibrationUndoMark,
       calibrationDrag, calibrationTipNowMm, calibrationTrackHubMm,
       calibrationTrackPercent, calibrationDragLabel, calibrationDragStart,
-      calibrationDragMove, calibrationDragEnd, calibrationDragCancel,
+      calibrationDragMove, calibrationDragEnd, calibrationDragCancel, calibrationJog,
       calibrationNextRoute,
       calibrationClear, calibrationSavedKind, calibrationSavedLevels,
       calibrationClearPlan, calibrationClearBlocked, calibrationClearSession,

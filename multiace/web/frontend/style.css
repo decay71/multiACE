@@ -2044,7 +2044,8 @@ body:has(.panel) .overlay .dialog {
   color: var(--muted); font-size: .68rem;
 }
 .calibration-drag-label {
-  min-height: 1.2rem; margin-top: .35rem; text-align: center;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: .5rem; min-height: 1.2rem; margin-top: .35rem; text-align: center;
   color: var(--accent); font-size: .76rem;
 }
 .calibration-review td small {

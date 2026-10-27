@@ -730,6 +730,7 @@
       "done_ready": "Messung abgeschlossen",
       "done_ready_hint": "Sieh dir die Werte unter Ergebnis an oder prüfe den Weg.",
       "drag_hint": "Zieh den Griff dorthin, wo die Spitze stehen soll, und lass los. Beim Ziehen bewegt sich nichts.",
+      "drag_moving": "Fährt {mm} mm Richtung {dir} · noch {left} mm",
       "drag_release": "Loslassen fährt {mm} mm Richtung {dir}",
       "drag_small": "Zu klein für eine Bewegung",
       "err_incomplete": "Zuerst alle Messpunkte der Kalibrierung abschließen.",
