@@ -1462,13 +1462,12 @@
                     <template v-else>
                       <p class='calibration-success'>
                         <strong>{{ t('ui.calibration.saved_title') }}</strong>
-                        {{ rebootNeeded ? t('ui.calibration.saved_note') : t('ui.calibration.saved_live') }}</p>
+                        {{ t('ui.calibration.saved_note') }}</p>
                       <div class='row calibration-primary-actions'>
-                        <button v-if='rebootNeeded' class='primary'
-                                :disabled='calibrationUi.restarting'
-                                @click='calibrationReboot'>
-                          {{ calibrationUi.restarting ? t('ui.calibration.rebooting') : t('ui.calibration.reboot_now') }}</button>
-                        <button v-else class='primary' @click='calibrationSetPanel(`verify`)'>{{ t('ui.calibration.verify_saved') }}</button>
+                        <button class='primary' :disabled='!!calibrationUi.busy'
+                                @click='calibrationNextRoute'>{{ t('ui.calibration.next_route') }}</button>
+                        <button :disabled='!calibrationCanVerifyConfigured || !!calibrationUi.busy'
+                                @click='calibrationVerifyConfigured'>{{ t('ui.calibration.verify_saved') }}</button>
                       </div>
                     </template>
                   </template>

@@ -705,7 +705,7 @@ createApp({
       loadAllowance: 150, swapAllowance: 100,
       panel: 'setup', panelTouched: false, recalibrate: false,
       busy: '', cancelRequested: false, error: '', saved: false,
-      hubAdjust: false, restarting: false,
+      hubAdjust: false,
     });
     const calibrationSelectionTouched = reactive({
       ace: false, slot: false, head: false,
@@ -804,7 +804,6 @@ createApp({
     const calibrationVerifyBlockedReason = computed(() => {
       if (!calibrationRouteKnown.value) return t('ui.calibration.blk_no_values');
       // Klipper still runs the values from before the save.
-      if (rebootNeeded.value) return t('ui.calibration.blk_reboot');
       return calibrationStartBlockedReason.value;
     });
     const calibrationCanVerifyConfigured = computed(() =>
@@ -1463,23 +1462,16 @@ createApp({
         calibrationUi.error = configLog.value || t('ui.calibration.err_save');
       }
     }
-    // A config save needs a full printer restart (see rebootNeeded).
-    function calibrationReboot() {
-      confirm({
-        title: t('ui.calibration.reboot_title'),
-        message: t('ui.calibration.reboot_msg'),
-        okLabel: t('ui.calibration.reboot_now'),
-        onOk: async () => {
-          calibrationUi.restarting = true;
-          try {
-            const r = await fetch(`${API}/reboot`, {method: 'POST'});
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          } catch (e) {
-            calibrationUi.restarting = false;
-            calibrationUi.error = String(e?.message || e);
-          }
-        },
-      });
+
+    // After saving: on to the next slot or ACE. The saved values reach
+    // loads and swaps with the next printer restart, which can wait until
+    // everything is calibrated; verification already uses them (it sends
+    // the values from the page).
+    async function calibrationNextRoute() {
+      await calibrationAction('reset');
+      calibrationUi.saved = false;
+      calibrationUi.recalibrate = false;
+      calibrationSetPanel('setup');
     }
 
     function clearAllErrors() {
@@ -5209,7 +5201,6 @@ createApp({
     // actually starts (klippy down). Mode changes do NOT use this - crossing
     // 'normal' raises a backend reboot error that reaches the display too.
     const rebootNeeded = ref(false);
-    watch(rebootNeeded, (needed) => { if (!needed) calibrationUi.restarting = false; });
     function paramsToForm(params, perAceParams) {
       if (!params) return;
       const num  = (k) => params[k] != null ? Number(params[k]) : configForm[k];
@@ -8154,7 +8145,7 @@ createApp({
       calibrationDrag, calibrationTipNowMm, calibrationTrackHubMm,
       calibrationTrackPercent, calibrationDragLabel, calibrationDragStart,
       calibrationDragMove, calibrationDragEnd, calibrationDragCancel,
-      calibrationReboot,
+      calibrationNextRoute,
       calibrationVerifyConfigured, calibrationAction, calibrationApply,
       calibrationVerifyValues,
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
