@@ -258,6 +258,10 @@ CAL_SETTLE_S = 0.4
 # from before the command).
 CAL_V1_STOP_CONFIRM_S = 1.5
 CAL_STATUS_SETTLED_S = 1.0
+# A calibration move never waits long for a busy ACE: wait_ace_ready_on
+# blocks the G-code command for up to a minute (and then reconnects), which
+# outlasts the web request and leaves the page out of step with the printer.
+CAL_READY_WAIT_S = 2.0
 # Every state in which the ACE is being driven by the calibration.
 CAL_MOVING_STATES = (
     'feeding', 'retracting', 'returning', 'feed_jogging', 'homing',
@@ -10234,6 +10238,17 @@ class MultiAce:
             except Exception:
                 pass
 
+    def _calibration_require_ready(self, gcmd, idx):
+        deadline = self.reactor.monotonic() + CAL_READY_WAIT_S
+        while ((self._info_per_ace.get(idx, {}) or {}).get('status')
+               != 'ready'):
+            now = self.reactor.monotonic()
+            if now >= deadline:
+                raise gcmd.error(
+                    '[multiACE] the ACE is still moving - wait until it has '
+                    'stopped, then try again')
+            self.reactor.pause(now + 0.1)
+
     def _calibration_stop_method(self, move):
         # V2 stops either direction with one command. V1 has a separate
         # stop for each: stop_feed_filament leaves an unwind running.
@@ -11142,7 +11157,7 @@ class MultiAce:
             raise gcmd.error(
                 '[multiACE] calibration retract would pass the ACE preload '
                 'reference')
-        self.wait_ace_ready_on(c['ace'])
+        self._calibration_require_ready(gcmd, c['ace'])
         move_id = int(c.get('commanded_retract_mm', 0)) + 1
         now = self.reactor.monotonic()
         move = {
@@ -11188,7 +11203,7 @@ class MultiAce:
         if int(c.get('commanded_retract_mm', 0)) - length < 0:
             raise gcmd.error(
                 '[multiACE] forward jog would pass the toolhead sensor start')
-        self.wait_ace_ready_on(c['ace'])
+        self._calibration_require_ready(gcmd, c['ace'])
         move_id = int(c.get('commanded_retract_mm', 0)) + 1
         now = self.reactor.monotonic()
         move = {
@@ -11228,8 +11243,9 @@ class MultiAce:
                 raise gcmd.error('[multiACE] swap checkpoint must be positive')
             if value >= int(c.get('load_length_mm') or 0):
                 raise gcmd.error(
-                    '[multiACE] splitter checkpoint must be before the ACE '
-                    'preload reference')
+                    '[multiACE] the filament is pulled all the way back to '
+                    'the park position - move it toward the toolhead until '
+                    'the tip is just past the hub, then mark')
             c['swap_retract_length_mm'] = value
             c['state'] = 'swap_marked'
             return
@@ -11381,7 +11397,7 @@ class MultiAce:
                     raise gcmd.error(
                         '[multiACE] failed to activate selected ACE')
                 self._disable_feed_assist_all()
-                self.wait_ace_ready_on(c['ace'])
+                self._calibration_require_ready(gcmd, c['ace'])
             c.update({
                 'state': 'verifying_feed',
                 'verify_phase': 'feed',
@@ -11433,7 +11449,7 @@ class MultiAce:
                 raise gcmd.error(
                     '[multiACE] verification jog would exceed the '
                     '+/-%d mm fine-position limit' % limit)
-            self.wait_ace_ready_on(c['ace'])
+            self._calibration_require_ready(gcmd, c['ace'])
             c['verify_move_seq'] = int(c.get('verify_move_seq') or 0) + 1
             move_id = c['verify_move_seq']
             direction = 1 if delta > 0 else -1
@@ -11496,7 +11512,7 @@ class MultiAce:
                 raise gcmd.error(
                     '[multiACE] that would pull the filament back to the '
                     'park position')
-            self.wait_ace_ready_on(c['ace'])
+            self._calibration_require_ready(gcmd, c['ace'])
             c['verify_move_seq'] = int(c.get('verify_move_seq') or 0) + 1
             move_id = c['verify_move_seq']
             speed = min(30, self.get_retract_speed(c['ace']))
@@ -11688,7 +11704,7 @@ class MultiAce:
         if not self._switch_ace_for_head_target(ace):
             raise gcmd.error('[multiACE] failed to activate selected ACE')
         self._disable_feed_assist_all()
-        self.wait_ace_ready_on(ace)
+        self._calibration_require_ready(gcmd, ace)
         c['state'] = 'homing'
         c['error'] = None
         self._calibration_move = None

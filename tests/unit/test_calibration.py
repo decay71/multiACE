@@ -64,6 +64,11 @@ class Reactor:
     def register_callback(self, callback, when=0.0):
         self.callbacks.append((when, callback))
 
+    def pause(self, waketime):
+        while self.t < waketime:
+            self.stepper(0.01)
+        return self.t
+
     def run_due(self):
         due = sorted((c for c in self.callbacks if c[0] <= self.t),
                      key=lambda c: c[0])
@@ -183,6 +188,18 @@ def make_ace(true_mm, proto, stop_mode='honest'):
             callback(a, {'result': {'feed_info': [row]}})
         a.reactor.run_due()
     a.step = step
+    a.reactor.stepper = step
+    # what ACE_CALIBRATION_START reads besides the session
+    a._ace_devices = [object()]
+    a._ace_mode = 'head'
+    a._gate_status_per_ace = {0: [load_ace().GATE_AVAILABLE] * 4}
+    a._protocols = {}
+    a.head_is_manual = lambda head: False
+    a.head_uses_ace = lambda head: True
+    a.head_ace_for = lambda head: 0
+    a.get_load_length = lambda idx, slot: true_mm + 150
+    a.get_swap_retract_length = lambda idx, slot: 400
+    a.get_retract_length = lambda idx, slot: true_mm
     return a
 
 
@@ -241,7 +258,11 @@ def at_sensor(a):
 def new_session(true_mm, proto, stop_mode='honest'):
     a = make_ace(true_mm, proto, stop_mode)
     a.proto = proto
-    return a, at_sensor(a)
+    c = at_sensor(a)
+    # a unit that ignores stops keeps feeding past the sensor; the next
+    # calibration move is only accepted once it has finished
+    run_until(a, lambda: a._info_per_ace[0]['status'] == 'ready')
+    return a, c
 
 
 # ---- V1 unwinds (review point 2) ------------------------------------------
@@ -338,3 +359,68 @@ def test_v1_verify_pause_ignored_stop_books_full_move():
     assert pump(a, ('verify_paused',)) == 'verify_paused'
     run_for(a, 60)
     assert abs(c['verify_position_mm'] - phys(a)) <= 60
+
+
+# ---- clean reset, no blocking, plain errors (review point 3) ---------------
+
+def test_retract_refused_while_ace_busy():
+    a, c = new_session(1543, 'v1')
+    a._info_per_ace[0]['status'] = 'busy'      # still running a lost move
+    a.fake['ready_at'] = None
+    started = a.reactor.t
+    with pytest.raises(Exception, match='still moving'):
+        a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=100))
+    assert a.reactor.t - started <= 3, 'the command blocked on a busy ACE'
+    assert c['state'] == 'at_sensor'
+
+
+def test_home_refused_while_ace_busy():
+    a, c = new_session(1543, 'v2')
+    c['state'] = 'cancelled'
+    a._info_per_ace[0]['status'] = 'busy'
+    with pytest.raises(Exception, match='still moving'):
+        a.cmd_ACE_CALIBRATION_HOME(GCmd())
+    assert c['state'] == 'cancelled'
+
+
+def test_mark_at_park_position_explains():
+    a, c = new_session(1543, 'v2')
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=c['load_length_mm']))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    assert c['commanded_retract_mm'] == c['load_length_mm']
+    with pytest.raises(Exception, match='all the way back'):
+        a.cmd_ACE_CALIBRATION_MARK(GCmd(MARK='swap'))
+
+
+def test_start_after_failed_run_is_clean():
+    a, c = new_session(1543, 'v2')
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=c['load_length_mm']))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    a._calibration_fail('test failure')          # tip is back at 0 mm
+    a.cmd_ACE_CALIBRATION_START(GCmd(ACE=0, SLOT=0, HEAD=0))
+    fresh = a._calibration
+    assert fresh['state'] == 'prepared'
+    assert fresh['commanded_retract_mm'] == 0
+    assert fresh['load_length_mm'] is None
+    assert fresh['swap_retract_length_mm'] is None
+
+
+def test_moonraker_error_text():
+    import ast
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
+                        'multiace', 'web', 'backend', 'main.py')
+    tree = ast.parse(open(path, encoding='utf-8').read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == '_moonraker_error_text')
+    ns = {'json': __import__('json')}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), path, 'exec'), ns)
+    text = ns['_moonraker_error_text']
+    raw = ns['json'].dumps({'error': {
+        'code': 400,
+        'message': '[multiACE] splitter checkpoint must be before the ACE '
+                   'preload reference',
+        'traceback': 'Traceback (most recent call last):\n  File ...'}})
+    assert text(raw) == ('[multiACE] splitter checkpoint must be before the '
+                         'ACE preload reference')
+    assert text('plain text') == 'plain text'
+    assert text('{"error": "boom"}') == 'boom'

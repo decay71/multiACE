@@ -1035,6 +1035,11 @@
                               @click='calibrationCancelPrepare'>
                         {{ calibrationUi.cancelRequested ? t('ui.calibration.stopping') : t('ui.calibration.stop_unload') }}
                       </button>
+                      <button v-if='[`cancelled`, `failed`].includes(state.calibration.state)
+                                && !calibrationRouteOccupied && !calibrationUi.busy'
+                              @click='calibrationAction(`reset`)'>
+                        {{ t('ui.calibration.discard_run') }}
+                      </button>
                       <button v-if='calibrationRouteKnown && !calibrationUi.busy'
                               @click='calibrationKeepSaved'>
                         {{ t('ui.calibration.keep_saved') }}
@@ -1121,8 +1126,14 @@
                       <button class='primary'
                               :disabled='calibrationMoving || !!calibrationUi.busy
                                 || state.calibration.state !== `retract_ready`
-                                || Number(state.calibration.commanded_retract_mm || 0) <= 0'
+                                || Number(state.calibration.commanded_retract_mm || 0) <= 0
+                                || Number(state.calibration.commanded_retract_mm || 0)
+                                  >= Number(state.calibration.load_length_mm || 0)'
                               @click='calibrationMarkAndReturn'>{{ t('ui.calibration.mark_splitter') }}</button>
+                      <span v-if='state.calibration.state === `retract_ready`
+                                  && Number(state.calibration.commanded_retract_mm || 0)
+                                    >= Number(state.calibration.load_length_mm || 0)'
+                            class='muted'>{{ t('ui.calibration.at_park_hint') }}</span>
                       <button v-if='[`retracting`, `feed_jogging`].includes(state.calibration.state)
                                 && !calibrationUi.holding'
                               class='warn' :disabled='!!calibrationUi.busy'

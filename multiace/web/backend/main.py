@@ -4424,12 +4424,28 @@ def _raw_calibration(status: dict) -> dict:
     ace = status.get('ace', {}) or {}
     return ace.get('calibration') or {'state': 'idle', 'session_id': 0}
 
+def _moonraker_error_text(detail: str) -> str:
+    """Moonraker answers a failed G-code script with a JSON body that
+    carries the message next to a full traceback; the page only needs the
+    message. Anything that is not that JSON is returned unchanged."""
+    try:
+        body = json.loads(detail)
+    except (TypeError, ValueError):
+        return detail
+    error = body.get('error') if isinstance(body, dict) else None
+    if isinstance(error, dict) and error.get('message'):
+        return str(error['message'])
+    if isinstance(error, str) and error:
+        return error
+    return detail
+
 async def _dispatch_calibration(script: str) -> dict:
     try:
         return await _mr_post('/printer/gcode/script', {'script': script},
                               timeout=30.0)
     except httpx.HTTPStatusError as e:
-        detail = e.response.text if e.response is not None else str(e)
+        detail = _moonraker_error_text(
+            e.response.text if e.response is not None else str(e))
         raise HTTPException(
             status_code=e.response.status_code if e.response is not None else 502,
             detail=detail)
