@@ -1483,6 +1483,8 @@ body.panel-embedded .sm-right { font-size: .68rem; }
 }
 .calibration-derived-route > div small { color: var(--muted); }
 .calibration-primary-actions { margin-top: 1rem; }
+.calibration-mark-hint { margin: 1rem 0 0; font-size: .76rem; }
+.calibration-mark-hint + .calibration-primary-actions { margin-top: .5rem; }
 .calibration-primary-actions .primary { padding: .6rem 1rem; }
 .calibration-saved-summary { min-height: 280px; }
 .calibration-notice {
