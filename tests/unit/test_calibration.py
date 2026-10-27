@@ -104,7 +104,7 @@ HEARTBEAT_LAG = 0.6     # s between sampling the unit and the report landing
 
 
 def make_ace(true_mm, proto, stop_mode='honest', start_latency=START_LATENCY,
-             ready_before_motion=False, enc_scale=1.0):
+             ready_before_motion=False, enc_scale=1.0, slip=(1.0, 1.0)):
     """A MultiAce wired to one fake ACE (index 0, slot 0, head 0) whose
     toolhead sensor trips once the filament tip reaches `true_mm`.
 
@@ -114,7 +114,10 @@ def make_ace(true_mm, proto, stop_mode='honest', start_latency=START_LATENCY,
     was HEARTBEAT_LAG earlier. `ready_before_motion` makes the unit answer
     'ready' between a motion command and the first motion, as a V1 that has
     not started yet may. `enc_scale` is the V2 lane encoder's counts per mm
-    the unit actually moves (a real unit read 1.03 on 2026-10-27)."""
+    the unit actually moves (a real unit read 1.03 on 2026-10-27). `slip`
+    is the filament moved per commanded mm (feed, pull-back); the encoder
+    counts that filament exactly. A real unit moved 1.02 feeding and 1.035
+    pulling back."""
     MultiAce = load_ace().MultiAce
     a = MultiAce.__new__(MultiAce)
     a.reactor = Reactor()
@@ -195,8 +198,9 @@ def make_ace(true_mm, proto, stop_mode='honest', start_latency=START_LATENCY,
         move = ace['move']
         if move and now >= move['go_at']:
             dist = min(move['left'], move['speed'] * dt)
-            ace['pos'] += move['dir'] * dist
-            ace['dec'] += move['dir'] * dist * enc_scale
+            moved = dist * (slip[0] if move['dir'] > 0 else slip[1])
+            ace['pos'] += move['dir'] * moved
+            ace['dec'] += move['dir'] * moved * enc_scale
             move['left'] -= dist
             if move['left'] <= 1e-9:
                 ace['move'] = None
@@ -357,9 +361,10 @@ def test_v2_stop_unchanged():
     assert abs(c['tip_position_mm'] - phys(a)) <= 10
 
 
-def complete_session(true_mm, proto, stop_mode='honest', swap=400):
+def complete_session(true_mm, proto, stop_mode='honest', swap=400,
+                     **fake):
     """A finished measurement parked at the ACE, ready for verification."""
-    a = make_ace(true_mm, proto, stop_mode)
+    a = make_ace(true_mm, proto, stop_mode, **fake)
     a.proto = proto
     c = a._calibration_idle_state()
     c.update({'state': 'complete', 'session_id': 1, 'ace': 0, 'slot': 0,
@@ -646,3 +651,30 @@ def test_encoder_scale_stop_books_commanded_mm():
     a.cmd_ACE_CALIBRATION_STOP(GCmd())
     assert pump(a, ('retract_ready',)) == 'retract_ready'
     assert abs(c['tip_position_mm'] - phys(a)) <= 15
+
+
+# ---- repeated checks: return to park by encoder, 2% tolerance -------------
+
+def test_repeated_checks_return_to_park():
+    # sensor 1428 mm of filament away = 1400 commanded feed mm
+    a, c = complete_session(1428, 'v2', slip=(1.02, 1.035))
+    c['load_length_mm'] = c['retract_length_mm'] = 1400
+    for _ in range(3):
+        a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='start'))
+        run_until(a, lambda: c['state'] == 'verify_splitter')
+        assert c['verify_remeasured_mm'] is None
+        a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='continue'))
+        run_until(a, lambda: c['state'] == 'verified')
+        assert abs(phys(a)) <= 5, 'the check did not end at park'
+
+
+def test_check_tolerance_two_percent():
+    a, c = complete_session(1420, 'v2')
+    c['load_length_mm'] = c['retract_length_mm'] = 1400
+    _verify_to_hub(a, c)
+    assert c['verify_remeasured_mm'] is None
+    assert abs(c['verify_feed_delta_mm'] - 20) <= 3
+    a, c = complete_session(1440, 'v2')
+    c['load_length_mm'] = c['retract_length_mm'] = 1400
+    _verify_to_hub(a, c)
+    assert c['verify_remeasured_mm'] is not None

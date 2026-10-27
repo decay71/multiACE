@@ -239,6 +239,13 @@ CAL_VERIFY_SEARCH_MM = 200
 CAL_VERIFY_FINE_ZONE_MM = 150
 CAL_VERIFY_CHUNK_MM = 50
 CAL_VERIFY_DEADBAND_MM = 10
+# ...or this share of the distance, whichever is larger: the ACE moves about
+# 1-2% more filament per mm pulling back than feeding, and a V1 position is
+# only timed.
+CAL_VERIFY_TOLERANCE = 0.02
+# A pull-back this long gives the lane's pull-back ratio for the return to
+# park (shorter ones read low from the start of the move).
+CAL_VERIFY_RATIO_MIN_MM = 300
 # V2 lane encoder as the feed-direction position source. The counter restarts
 # with every motion command and reads in ~mm, so |decoder| is the real travel
 # of the current move. A reading requested right behind the motion command
@@ -10593,9 +10600,51 @@ class MultiAce:
         c['verify_position_mm'] = int(round(position))
         c['tip_position_mm'] = c['verify_position_mm']
         if commit:
+            self._calibration_verify_book_encoder(move, complete=False)
             self._calibration_accumulate_decoder(move)
             self._calibration_move = None
         return c['verify_position_mm']
+
+    def _calibration_verify_book_encoder(self, move, complete):
+        # Filament this verify run moved each way, by the lane encoder. The
+        # return to park pulls back what was fed, so the ACE moving more per
+        # mm one way than the other does not shift the park position.
+        c = self._calibration
+        dec = move.get('dec')
+        if dec is None:
+            c['verify_encoder_ok'] = False
+            return
+        if int(move.get('direction', 1)) > 0:
+            c['verify_fed_counts'] = float(
+                c.get('verify_fed_counts') or 0.0) + float(dec)
+            return
+        c['verify_back_counts'] = float(
+            c.get('verify_back_counts') or 0.0) + float(dec)
+        length = float(move.get('length') or 0.0)
+        if complete and length >= CAL_VERIFY_RATIO_MIN_MM:
+            c['verify_ratio_counts'] = float(
+                c.get('verify_ratio_counts') or 0.0) + float(dec)
+            c['verify_ratio_mm'] = float(
+                c.get('verify_ratio_mm') or 0.0) + length
+
+    def _calibration_verify_encoder_return(self, position):
+        # Commanded mm still to pull back to reach park, from the encoder;
+        # None when the encoder did not see the whole run (V1, missed
+        # readings) or the result is implausible next to the booked one.
+        c = self._calibration
+        ratio_mm = float(c.get('verify_ratio_mm') or 0.0)
+        fed = float(c.get('verify_fed_counts') or 0.0)
+        if (c.get('protocol') != 'v2' or not c.get('verify_encoder_ok')
+                or ratio_mm <= 0 or fed <= 0):
+            return None
+        ratio = float(c.get('verify_ratio_counts') or 0.0) / ratio_mm
+        if not (CAL_ENCODER_RATIO_MIN <= ratio <= CAL_ENCODER_RATIO_MAX):
+            return None
+        rest = (fed - float(c.get('verify_back_counts') or 0.0)) / ratio
+        load = int(c.get('load_length_mm') or 0)
+        if abs(rest - position) > max(30.0, 0.05 * load):
+            return None
+        return max(0, int(round(rest)))
 
     def _calibration_verify_swap(self):
         # The hub clearance under test: what the page sent (the value that
@@ -10617,7 +10666,8 @@ class MultiAce:
         target = int(c.get('load_length_mm') or 0)
         delta = actual - target
         position = target
-        if abs(delta) > CAL_VERIFY_DEADBAND_MM:
+        if abs(delta) > max(CAL_VERIFY_DEADBAND_MM,
+                            CAL_VERIFY_TOLERANCE * target):
             swap = self._calibration_verify_swap()
             if actual <= swap:
                 self._calibration_fail(
@@ -10722,6 +10772,9 @@ class MultiAce:
             speed = min(30, self.get_retract_speed(c['ace']))
         else:
             remaining = position
+            by_encoder = self._calibration_verify_encoder_return(position)
+            if by_encoder is not None:
+                remaining = by_encoder if by_encoder >= 5 else 0
             if remaining <= 0:
                 if self._calibration_sensor(c['head']) is True:
                     self._calibration_fail(
@@ -10804,6 +10857,7 @@ class MultiAce:
                     move.get('position_start', 0)
                     + move.get('direction', 1) * covered))
                 c['tip_position_mm'] = c['verify_position_mm']
+                self._calibration_verify_book_encoder(move, complete=True)
                 if not self._calibration_accumulate_decoder(move):
                     self._calibration_move = None
                     self._calibration_timer = None
@@ -11510,6 +11564,11 @@ class MultiAce:
                 # sends SWAP with it included
                 'verify_decoder_span': None,
                 'verify_move_seq': 0,
+                'verify_fed_counts': 0.0,
+                'verify_back_counts': 0.0,
+                'verify_ratio_counts': 0.0,
+                'verify_ratio_mm': 0.0,
+                'verify_encoder_ok': True,
                 'toolhead_sensor': False,
                 'error': None,
             })
