@@ -1211,7 +1211,7 @@
                     <div :class='{active: calibrationVerifyStep === 2, done: calibrationVerifyStep > 2}'>2 · {{ t('ui.calibration.vstep_hub') }}</div>
                     <div :class='{active: calibrationVerifyStep === 3}'>3 · {{ t('ui.calibration.vstep_return') }}</div>
                   </div>
-                  <p v-if='state.calibration.state === `verifying_feed`' class='calibration-notice'>{{ t('ui.calibration.v_feed', {mm: state.calibration.load_length_mm, search: state.calibration.verify_search_mm || 200}) }}</p>
+                  <p v-if='state.calibration.state === `verifying_feed`' class='calibration-notice'>{{ t('ui.calibration.v_feed', {budget: state.calibration.verify_load_budget_mm || state.calibration.load_length_mm}) }}</p>
                   <p v-else-if='state.calibration.state === `verify_toolhead`' class='calibration-notice'>{{ t('ui.calibration.v_at_head') }}</p>
                   <p v-else-if='state.calibration.state === `verify_toolhead_adjust`' class='calibration-warning'>{{ t('ui.calibration.v_adjust') }}</p>
                   <p v-else-if='state.calibration.state === `verify_toolhead_adjusting`' class='calibration-notice'>{{ t('ui.calibration.v_adjusting') }}</p>
@@ -1219,7 +1219,7 @@
                   <p v-else-if='[`verify_splitter`, `verify_splitter_adjusting`].includes(state.calibration.state)' class='calibration-warning'>
                     {{ calibrationUi.hubAdjust
                       ? t('ui.calibration.v_hub_adjust')
-                      : t('ui.calibration.v_at_splitter', {mm: state.calibration.swap_retract_length_mm}) }}</p>
+                      : t('ui.calibration.v_at_splitter', {mm: state.calibration.verify_swap_mm || state.calibration.swap_retract_length_mm}) }}</p>
                   <p v-else-if='state.calibration.state === `verifying_return`' class='calibration-notice'>{{ t('ui.calibration.v_returning') }}</p>
                   <p v-else class='calibration-notice'>{{ t('ui.calibration.v_paused') }}</p>
 
@@ -1316,6 +1316,11 @@
                   </div>
                   <p class='calibration-notice'>
                     <strong>{{ t('ui.calibration.v_what') }}</strong>{{ t('ui.calibration.v_what_hint') }}</p>
+                  <p v-if='calibrationVerifyValues' class='calibration-notice'>
+                    <strong>{{ t('ui.calibration.v_values_title') }}</strong>{{ t('ui.calibration.v_values', {
+                      load: calibrationVerifyValues.load_budget,
+                      swap: calibrationVerifyValues.swap,
+                      retract: calibrationVerifyValues.retract}) }}</p>
                   <p v-if='calibrationVerifyBlockedReason'
                      class='calibration-warning'>
                     {{ calibrationVerifyBlockedReason }}

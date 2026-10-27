@@ -976,6 +976,10 @@ class CalibrationAction(BaseModel):
     slot: int | None = None
     head: int | None = None
     scope: str | None = None
+    # verify_start: the values to test (what Save would write)
+    load_budget: int | None = None
+    swap: int | None = None
+    retract: int | None = None
 
 class SnapshotSave(BaseModel):
     name: str
@@ -4526,6 +4530,10 @@ async def calibration_action(payload: CalibrationAction) -> dict:
                 raise HTTPException(400, 'scope must be ace or slot')
             script += ' ACE=%d SLOT=%d HEAD=%d SCOPE=%s' % (
                 payload.ace, payload.slot, payload.head, scope)
+        values = (payload.load_budget, payload.swap, payload.retract)
+        if all(value is not None for value in values):
+            script += ' LOAD=%d SWAP=%d RETRACT=%d' % tuple(
+                int(value) for value in values)
     elif action == 'verify_continue':
         script = 'ACE_CALIBRATION_VERIFY ACTION=continue'
     elif action == 'verify_pause':

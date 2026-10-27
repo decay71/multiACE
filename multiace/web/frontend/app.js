@@ -819,8 +819,10 @@ createApp({
       let swap = null, capped = false;
       if (c.swap_retract_length_mm != null) {
         const base = Number(c.swap_retract_length_mm);
-        swap = swapFromConfig
-          ? base : base + allowance(calibrationUi.swapAllowance);
+        // plus whatever was pulled back further at the hub stop in verify
+        swap = (swapFromConfig
+          ? base : base + allowance(calibrationUi.swapAllowance))
+          + Math.max(0, Number(c.verify_hub_extra_mm) || 0);
         // The hub clearance must stay short of the full retract.
         if (retract != null) {
           const cap = Math.max(base, retract - 10);
@@ -1285,6 +1287,25 @@ createApp({
       }, 'start');
       if (ok) await calibrationAction('feed');
     }
+    // What a verification tests: the values Save would write (margins
+    // included) when this route has a result in the session, otherwise the
+    // saved ones from the config form - which is also what makes a just
+    // saved route verifiable before the printer has restarted.
+    const calibrationVerifyValues = computed(() => {
+      const c = state.calibration || {};
+      if (['complete', 'verified'].includes(c.state)
+          && calibrationSessionMatchesSelection.value) {
+        const p = calibrationProposed.value;
+        if (p.load != null && p.swap != null && p.retract != null) {
+          return {load_budget: Math.max(p.load, p.retract), swap: p.swap,
+                  retract: p.retract};
+        }
+      }
+      const cfg = calibrationConfiguredRoute.value;
+      if (!(cfg.load > 0 && cfg.swap > 0)) return null;
+      return {load_budget: Math.max(Number(cfg.feedLimit) || 0, cfg.load),
+              swap: cfg.swap, retract: cfg.load};
+    });
     async function calibrationVerifyConfigured() {
       if (!calibrationCanVerifyConfigured.value) return false;
       // A verify run can re-measure the toolhead distance, so its result
@@ -1302,6 +1323,7 @@ createApp({
         slot: Number(calibrationUi.slot),
         head: Number(calibrationUi.head),
         scope: sessionScope,
+        ...(calibrationVerifyValues.value || {}),
       }, 'verify_start');
     }
     async function calibrationAction(action, length=null) {
@@ -8134,6 +8156,7 @@ createApp({
       calibrationDragMove, calibrationDragEnd, calibrationDragCancel,
       calibrationReboot,
       calibrationVerifyConfigured, calibrationAction, calibrationApply,
+      calibrationVerifyValues,
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
       panelMini, fullUiHref, uiTheme, uiThemeChoice, uiLight, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,

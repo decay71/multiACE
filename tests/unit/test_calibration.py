@@ -438,3 +438,56 @@ def test_feed_jog_long_and_bounded():
     assert c['commanded_retract_mm'] == retract - 1200
     with pytest.raises(Exception, match='toolhead sensor start'):
         a.cmd_ACE_CALIBRATION_FEED_JOG(GCmd(LENGTH=c['commanded_retract_mm'] + 50))
+
+
+# ---- verify the values that will be saved (review point 5) ---------------
+
+def _verify_to_hub(a, c, **values):
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='start', **values))
+    run_until(a, lambda: c['state'] == 'verify_splitter')
+
+
+def test_verify_uses_given_values():
+    a, c = complete_session(1543, 'v2', swap=1300)
+    _verify_to_hub(a, c, LOAD=1693, SWAP=1400, RETRACT=1543)
+    assert c['verify_search_mm'] == 150
+    assert abs(c['verify_position_mm'] - 143) <= 2
+    assert abs(phys(a) - 143) <= 10
+    assert c['swap_retract_length_mm'] == 1300
+
+
+def test_verify_rejects_bad_values():
+    a, c = complete_session(1543, 'v2', swap=1300)
+    with pytest.raises(Exception, match='SWAP < RETRACT'):
+        a.cmd_ACE_CALIBRATION_VERIFY(
+            GCmd(ACTION='start', LOAD=1693, SWAP=1600, RETRACT=1543))
+    assert c['state'] == 'complete'
+    with pytest.raises(Exception, match='go together'):
+        a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='start', LOAD=1693))
+    assert c['state'] == 'complete'
+
+
+def test_hub_jog_not_written_into_measurement():
+    a, c = complete_session(1543, 'v2', swap=1300)
+    _verify_to_hub(a, c, LOAD=1693, SWAP=1400, RETRACT=1543)
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='hub_jog', LENGTH=25))
+    run_until(a, lambda: c['state'] == 'verify_splitter'
+              and a._calibration_move is None)
+    assert c['verify_hub_extra_mm'] == 25
+    assert c['verify_swap_mm'] == 1425
+    assert c['swap_retract_length_mm'] == 1300
+
+
+def test_hub_extra_kept_across_verify_runs():
+    a, c = complete_session(1543, 'v2', swap=1300)
+    _verify_to_hub(a, c, LOAD=1693, SWAP=1400, RETRACT=1543)
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='hub_jog', LENGTH=25))
+    run_until(a, lambda: c['state'] == 'verify_splitter'
+              and a._calibration_move is None)
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='continue'))
+    run_until(a, lambda: c['state'] == 'verified')
+    # the page now sends the hub clearance incl. the extra it was shown
+    _verify_to_hub(a, c, LOAD=1693, SWAP=1425, RETRACT=1543)
+    assert c['verify_hub_extra_mm'] == 25
+    assert c['verify_swap_mm'] == 1425
+    assert abs(c['verify_position_mm'] - 118) <= 2

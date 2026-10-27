@@ -10034,6 +10034,8 @@ class MultiAce:
             'verify_search_mm': CAL_VERIFY_SEARCH_MM,
             'verify_remeasured_mm': None,
             'verify_hub_extra_mm': 0,
+            'verify_swap_mm': None,
+            'verify_load_budget_mm': None,
             'values_source': 'measured',
             'verify_decoder_span': None,
             'verify_move_seq': 0,
@@ -10557,6 +10559,13 @@ class MultiAce:
             self._calibration_move = None
         return c['verify_position_mm']
 
+    def _calibration_verify_swap(self):
+        # The hub clearance under test: what the page sent (the value that
+        # will be saved, margin included) or else the session's own.
+        c = self._calibration
+        return int(c.get('verify_swap_mm')
+                   or c.get('swap_retract_length_mm') or 0)
+
     def _calibration_verify_at_toolhead(self, actual):
         # The sensor is the physical reference. Within the deadband the
         # calibrated distance stands; outside it the verify run IS the new
@@ -10571,7 +10580,7 @@ class MultiAce:
         delta = actual - target
         position = target
         if abs(delta) > CAL_VERIFY_DEADBAND_MM:
-            swap = int(c.get('swap_retract_length_mm') or 0)
+            swap = self._calibration_verify_swap()
             if actual <= swap:
                 self._calibration_fail(
                     'toolhead sensor triggered after %d mm, before the '
@@ -10660,7 +10669,7 @@ class MultiAce:
             kind, method, direction = 'verify_feed', 'feed_filament', 1
             speed = c['speed_mm_s']
         elif state == 'verifying_splitter':
-            target = load - int(c.get('swap_retract_length_mm') or 0)
+            target = load - self._calibration_verify_swap()
             remaining = position - target
             if remaining <= 0:
                 c['verify_position_mm'] = target
@@ -10763,10 +10772,11 @@ class MultiAce:
                 self._calibration_move = None
                 if state == 'verify_splitter_adjusting':
                     # Pulled back further at the hub stop: that distance
-                    # belongs to the hub clearance from now on.
+                    # belongs to the hub clearance of this run. It is kept
+                    # apart from the measured value, which the margin is
+                    # added to on saving.
                     extra = int(move['length'])
-                    c['swap_retract_length_mm'] = int(
-                        c.get('swap_retract_length_mm') or 0) + extra
+                    c['verify_swap_mm'] = self._calibration_verify_swap() + extra
                     c['verify_hub_extra_mm'] = int(
                         c.get('verify_hub_extra_mm') or 0) + extra
                     c['state'] = 'verify_splitter'
@@ -11298,6 +11308,22 @@ class MultiAce:
             'verifying_feed', 'verifying_splitter', 'verifying_return')
         if action == 'start':
             configured_start = False
+            # The values to test - what Save would write: LOAD = feed
+            # budget, SWAP = hub clearance (both incl. margin), RETRACT =
+            # toolhead distance. Without them the session's own values.
+            given = [gcmd.get_int(key, None)
+                     for key in ('LOAD', 'SWAP', 'RETRACT')]
+            if any(value is not None for value in given):
+                if not all(value is not None for value in given):
+                    raise gcmd.error(
+                        '[multiACE] verification LOAD, SWAP and RETRACT go '
+                        'together')
+                if not (0 < given[1] < given[2] <= given[0]):
+                    raise gcmd.error(
+                        '[multiACE] verification values must satisfy '
+                        '0 < SWAP < RETRACT <= LOAD')
+            else:
+                given = None
             requested_ace = gcmd.get_int('ACE', None)
             requested_slot = gcmd.get_int('SLOT', None)
             requested_head = gcmd.get_int('HEAD', None)
@@ -11349,10 +11375,15 @@ class MultiAce:
                     raise gcmd.error('[multiACE] verification ACE out of range')
                 if slot < 0 or slot > 3:
                     raise gcmd.error('[multiACE] verification SLOT must be 0-3')
-                configured_retract = int(
-                    self.get_retract_length(ace, slot) or 0)
-                configured_swap = int(
-                    self.get_swap_retract_length(ace, slot) or 0)
+                if given is not None:
+                    # values the page has (e.g. saved, Klipper not
+                    # restarted yet) take precedence over the loaded ones
+                    configured_retract, configured_swap = given[2], given[1]
+                else:
+                    configured_retract = int(
+                        self.get_retract_length(ace, slot) or 0)
+                    configured_swap = int(
+                        self.get_swap_retract_length(ace, slot) or 0)
                 if (configured_retract <= 0 or configured_swap <= 0
                         or configured_swap >= configured_retract):
                     raise gcmd.error(
@@ -11382,6 +11413,11 @@ class MultiAce:
             if load <= 0 or swap <= 0 or swap >= load:
                 raise gcmd.error(
                     '[multiACE] calibrated route anchors are invalid')
+            if given is not None:
+                verify_swap = min(given[1], load - 10)
+                search = max(0, given[0] - load)
+            else:
+                verify_swap, search = swap, CAL_VERIFY_SEARCH_MM
             detected = self._calibration_sensor(c['head'])
             if detected is None:
                 raise gcmd.error(
@@ -11407,10 +11443,14 @@ class MultiAce:
                 'verify_feed_actual_mm': None,
                 'verify_feed_delta_mm': None,
                 'verify_fine_offset_mm': 0,
-                'verify_fine_limit_mm': CAL_VERIFY_SEARCH_MM + 50,
-                'verify_search_mm': CAL_VERIFY_SEARCH_MM,
+                'verify_fine_limit_mm': search + 50,
+                'verify_search_mm': search,
+                'verify_swap_mm': verify_swap,
+                'verify_load_budget_mm': load + search,
                 'verify_remeasured_mm': None,
-                'verify_hub_extra_mm': 0,
+                # verify_hub_extra_mm is NOT reset: it adds up over the runs
+                # of one session (a new session starts from 0), and the page
+                # sends SWAP with it included
                 'verify_decoder_span': None,
                 'verify_move_seq': 0,
                 'toolhead_sensor': False,
