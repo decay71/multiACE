@@ -1364,6 +1364,7 @@ async def preflight(file: UploadFile = File(...)) -> dict:
     del data
 
     pp = _load_post_processor()
+    _ensure_swap_cost()
 
     with open(src_path, "r", encoding="utf-8", errors="replace") as f:
         (slicer_colors, slicer_types, num_aces, _used, plan_proxy, meta,
@@ -1731,7 +1732,7 @@ async def preflight_pysrc() -> dict:
     if not core_src.is_file():
         raise HTTPException(status_code=503,
                             detail="preflight_core not installed")
-    cost_src = Path(__file__).resolve().parents[2] / "tools" / "swap_cost.py"
+    cost_src = _swap_cost_path()
     try:
         out = {
             "postprocess": pp_src.read_text(encoding="utf-8"),
@@ -1740,7 +1741,7 @@ async def preflight_pysrc() -> dict:
         # swap_cost is optional on purpose: an install that predates it still
         # gets a working preflight, just without the estimate. Adding a
         # module here means adding it to the worker's init too.
-        if cost_src.is_file():
+        if cost_src is not None:
             out["swap_cost"] = cost_src.read_text(encoding="utf-8")
         return out
     except Exception as exc:
@@ -4568,6 +4569,26 @@ def _extract_params(text: str) -> tuple[dict[str, str], dict[int, dict[str, str]
         else:
             per_ace.setdefault(section, {})[key] = val
     return main, per_ace
+
+def _swap_cost_path() -> Optional[Path]:
+    """swap_cost.py, looked up like job_history.py: next to main.py first
+    (where the installer puts it on the printer), then <config>/tools, then
+    the checkout's multiace/tools."""
+    here = Path(__file__).resolve().parent
+    for cand in (here / "swap_cost.py",
+                 Path(_CFG_DIR) / "tools" / "swap_cost.py",
+                 here.parent.parent / "tools" / "swap_cost.py"):
+        if cand.is_file():
+            return cand
+    return None
+
+def _ensure_swap_cost() -> None:
+    """Hand preflight_core the cost model when its own imports found none.
+    Without it a preflight still works, it just has no estimate."""
+    if preflight_core._swap_cost is None:
+        path = _swap_cost_path()
+        if path is not None:
+            preflight_core.load_swap_cost(path)
 
 #: ace.cfg scalars the swap cost model reads: the lengths and speeds it can
 #: compute from, plus the purge policy values. The terms it cannot compute

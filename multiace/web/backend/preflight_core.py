@@ -42,6 +42,26 @@ except ImportError:                     # pragma: no cover - install layouts
     except ImportError:
         _swap_cost = None
 
+
+def load_swap_cost(path):
+    """Load swap_cost.py by file path when neither the package nor a flat
+    sibling import found it - the backend on a printer, where the caller
+    resolves the installed copy (see main.py's _swap_cost_path). Returns the
+    module, or None when it cannot be loaded: no estimate, never a failure."""
+    global _swap_cost
+    if _swap_cost is not None:
+        return _swap_cost
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "multiace_swap_cost", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _swap_cost = mod
+    except Exception:
+        return None
+    return _swap_cost
+
 # Default fuzzy colour-match distance (main.py's _PREFLIGHT_FUZZY). Callers pass
 # their own; this is only the fallback so the module is usable standalone.
 DEFAULT_FUZZY = 30

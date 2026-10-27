@@ -571,3 +571,74 @@ class TestWorkerEndpoints:
     def test_livedata_carries_the_current_cost_params(self, client):
         body = client.get("/api/preflight/livedata").json()
         assert body["cost_params"]["main"]["load_length"] == 3000
+
+
+class TestSwapCostLookup:
+    """swap_cost.py is found like job_history.py: next to main.py first, then
+    <config>/tools, then the checkout's multiace/tools."""
+
+    SRC = ROOT / "multiace" / "tools" / "swap_cost.py"
+
+    def _tools(self, tmp_path, marker):
+        tools = tmp_path / "tools"
+        tools.mkdir(exist_ok=True)
+        (tools / "swap_cost.py").write_text(
+            self.SRC.read_text(encoding="utf-8") + "\n# %s\n" % marker,
+            encoding="utf-8")
+
+    def test_next_to_main_wins_over_the_config_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MULTIACE_CONFIG_DIR", str(tmp_path))
+        main = _load_main(monkeypatch, tmp_path, "[ace]\n")
+        self._tools(tmp_path, "config copy")
+        backend = tmp_path / "backend"
+        backend.mkdir()
+        (backend / "swap_cost.py").write_text("# next to main\n")
+        monkeypatch.setattr(main, "__file__", str(backend / "main.py"))
+        assert main._swap_cost_path() == (backend / "swap_cost.py").resolve()
+
+    def test_the_config_dir_wins_over_the_checkout(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MULTIACE_CONFIG_DIR", str(tmp_path))
+        main = _load_main(monkeypatch, tmp_path, "[ace]\n")
+        self._tools(tmp_path, "config copy")
+        assert main._swap_cost_path() == tmp_path / "tools" / "swap_cost.py"
+
+    def test_the_checkout_copy_is_the_last_resort(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MULTIACE_CONFIG_DIR", str(tmp_path))
+        main = _load_main(monkeypatch, tmp_path, "[ace]\n")
+        assert main._swap_cost_path() == self.SRC
+
+    def test_pysrc_serves_the_looked_up_copy(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+        monkeypatch.setenv("MULTIACE_CONFIG_DIR", str(tmp_path))
+        main = _load_main(monkeypatch, tmp_path, "[ace]\n")
+        self._tools(tmp_path, "served from the config dir")
+        with TestClient(main.app) as c:
+            body = c.get("/api/preflight/pysrc").json()
+        assert "served from the config dir" in body["swap_cost"]
+
+    def test_the_backend_loads_it_when_its_own_imports_found_none(
+            self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MULTIACE_CONFIG_DIR", str(tmp_path))
+        main = _load_main(monkeypatch, tmp_path, "[ace]\n")
+        self._tools(tmp_path, "config copy")
+        core = main.preflight_core     # the backend's own import of it
+        monkeypatch.setattr(core, "_swap_cost", None)
+        assert core.make_estimate_ctx(pp, HEADER) is None
+        main._ensure_swap_cost()
+        assert core._swap_cost is not None
+        assert core.make_estimate_ctx(pp, HEADER) is not None
+
+    def test_an_unloadable_copy_means_no_estimate_not_an_error(
+            self, monkeypatch, tmp_path):
+        broken = tmp_path / "swap_cost.py"
+        broken.write_text("raise RuntimeError('boom')\n")
+        monkeypatch.setattr(pc, "_swap_cost", None)
+        assert pc.load_swap_cost(broken) is None
+        assert pc.load_swap_cost(tmp_path / "missing.py") is None
+        assert pc._swap_cost is None
+
+    def test_the_installer_puts_it_next_to_main_py(self):
+        script = (ROOT / "multiace" / "install_multiace.sh").read_text(
+            encoding="utf-8")
+        assert 'cp "$INSTALL_DIR/tools/swap_cost.py" "$WEB_DEST/backend/"' \
+            in script

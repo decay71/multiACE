@@ -478,6 +478,11 @@ if [ "$INSTALL_WEB" = "1" ]; then
     fi
     mkdir -p "$WEB_DEST/backend" "$WEB_DEST/frontend" "$WEB_DEST/i18n"
     cp -a "$WEB_SRC/backend/."  "$WEB_DEST/backend/"
+    # The preflight estimate model lives in tools/ with the other pure
+    # modules; the backend looks for it next to main.py first.
+    if [ -f "$INSTALL_DIR/tools/swap_cost.py" ]; then
+        cp "$INSTALL_DIR/tools/swap_cost.py" "$WEB_DEST/backend/"
+    fi
     cp -a "$WEB_SRC/frontend/." "$WEB_DEST/frontend/"
     if [ -d "$INSTALL_DIR/i18n" ]; then
         cp -a "$INSTALL_DIR/i18n/." "$WEB_DEST/i18n/"

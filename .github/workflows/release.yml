@@ -40,7 +40,9 @@ jobs:
             multiace/klipper/extras/ace_gen1_tunnel.py \
             multiace/web/backend/i18n_path.py \
             multiace/web/backend/main.py \
+            multiace/web/backend/preflight_core.py \
             multiace/tools/post_process_virtual_toolheads.py \
+            multiace/tools/swap_cost.py \
             multiace/managed/build_package.py \
             multiace/managed/tests/test_package.py \
             multiace/managed/tests/test_i18n_path.py
