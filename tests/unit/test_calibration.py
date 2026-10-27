@@ -99,9 +99,21 @@ class FakePrinter:
         return default
 
 
-def make_ace(true_mm, proto, stop_mode='honest'):
+HEARTBEAT_S = 1.0       # the status poll interval of ace.py's heartbeat
+HEARTBEAT_LAG = 0.6     # s between sampling the unit and the report landing
+
+
+def make_ace(true_mm, proto, stop_mode='honest', start_latency=START_LATENCY,
+             ready_before_motion=False):
     """A MultiAce wired to one fake ACE (index 0, slot 0, head 0) whose
-    toolhead sensor trips once the filament tip reaches `true_mm`."""
+    toolhead sensor trips once the filament tip reaches `true_mm`.
+
+    The status the calibration reads behaves like ace.py's: every motor
+    command (stops included) stamps 'busy' on the cached report, and a
+    fresh report replaces it once per HEARTBEAT_S, reflecting the unit as it
+    was HEARTBEAT_LAG earlier. `ready_before_motion` makes the unit answer
+    'ready' between a motion command and the first motion, as a V1 that has
+    not started yet may."""
     MultiAce = load_ace().MultiAce
     a = MultiAce.__new__(MultiAce)
     a.reactor = Reactor()
@@ -122,12 +134,24 @@ def make_ace(true_mm, proto, stop_mode='honest'):
     a.get_feed_speed = lambda idx: SPEED
     a._set_active_idx = lambda idx: None
     a._ensure_ace_available = lambda idx: True
-    a._switch_ace_for_head_target = lambda idx: True
+    a.switched = []
+    a._switch_ace_for_head_target = lambda idx: a.switched.append(idx) or True
     a._disable_feed_assist_all = lambda: None
     a.wait_ace_ready_on = lambda idx: None
     ace = {'pos': 0.0, 'move': None, 'dec': 0.0, 'dec_reset_at': None,
-           'ready_at': None, 'replies': [], 'sent': []}
+           'ready_at': None, 'replies': [], 'sent': [], 'stuck_busy': False,
+           'next_beat': a.reactor.t + 0.37, 'reports': []}
     a.fake = ace
+
+    def truth(now):
+        if ace['stuck_busy']:
+            return 'busy'
+        move = ace['move']
+        if move is not None:
+            if ready_before_motion and now < move['go_at']:
+                return 'ready'
+            return 'busy'
+        return 'busy' if ace['ready_at'] is not None else 'ready'
 
     def obeys(method):
         if stop_mode == 'ignore' or ace['move'] is None:
@@ -147,11 +171,12 @@ def make_ace(true_mm, proto, stop_mode='honest'):
             ace['move'] = {'dir': 1 if method == 'feed_filament' else -1,
                            'left': float(params['length']),
                            'speed': float(params['speed']),
-                           'go_at': now + START_LATENCY}
+                           'go_at': now + start_latency}
             ace['dec_reset_at'] = now + DECODER_RESET_LAG
             ace['ready_at'] = None
             a._info_per_ace[0]['status'] = 'busy'
         elif method in ('stop_feed_filament', 'stop_unwind_filament'):
+            a._info_per_ace[0]['status'] = 'busy'     # ace.py stamps stops too
             if obeys(method):
                 ace['move'] = None
                 ace['ready_at'] = now + STOP_READY_LAG
@@ -176,8 +201,13 @@ def make_ace(true_mm, proto, stop_mode='honest'):
                 ace['move'] = None
                 ace['ready_at'] = now + READY_LAG
         if ace['ready_at'] is not None and now >= ace['ready_at']:
-            a._info_per_ace[0]['status'] = 'ready'
             ace['ready_at'] = None
+        if now >= ace['next_beat']:
+            ace['next_beat'] += HEARTBEAT_S
+            ace['reports'].append((now + HEARTBEAT_LAG, truth(now)))
+        while ace['reports'] and ace['reports'][0][0] <= now:
+            # a fresh report replaces the cached dict wholesale
+            a._info_per_ace[0] = {'status': ace['reports'].pop(0)[1]}
         due = [r for r in ace['replies'] if r[0] <= now]
         ace['replies'] = [r for r in ace['replies'] if r[0] > now]
         for _, callback in due:
@@ -366,7 +396,8 @@ def test_v1_verify_pause_ignored_stop_books_full_move():
 def test_retract_refused_while_ace_busy():
     a, c = new_session(1543, 'v1')
     a._info_per_ace[0]['status'] = 'busy'      # still running a lost move
-    a.fake['ready_at'] = None
+    a.fake['stuck_busy'] = True
+    a.fake['reports'].clear()          # nothing 'ready' still in flight
     started = a.reactor.t
     with pytest.raises(Exception, match='still moving'):
         a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=100))
@@ -378,6 +409,8 @@ def test_home_refused_while_ace_busy():
     a, c = new_session(1543, 'v2')
     c['state'] = 'cancelled'
     a._info_per_ace[0]['status'] = 'busy'
+    a.fake['stuck_busy'] = True
+    a.fake['reports'].clear()          # nothing 'ready' still in flight
     with pytest.raises(Exception, match='still moving'):
         a.cmd_ACE_CALIBRATION_HOME(GCmd())
     assert c['state'] == 'cancelled'
@@ -491,3 +524,79 @@ def test_hub_extra_kept_across_verify_runs():
     assert c['verify_hub_extra_mm'] == 25
     assert c['verify_swap_mm'] == 1425
     assert abs(c['verify_position_mm'] - 118) <= 2
+
+
+# ---- final review: status latency, sensor stop, refusal before switching ---
+
+def _stop_after_heartbeat(a):
+    """STOP right after the unit was sampled for a status report, so the
+    stop shows up only in the report after next: a full heartbeat plus its
+    lag later - the slowest the calibration can learn of it."""
+    sampled = len(a.fake['reports'])
+    beat = a.fake['next_beat']
+    run_until(a, lambda: a.fake['next_beat'] != beat)
+    a.cmd_ACE_CALIBRATION_STOP(GCmd())
+
+
+def test_v1_honest_stop_not_misread_as_ignored():
+    a, c = new_session(1543, 'v1')
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=c['load_length_mm']))
+    run_for(a, 6)
+    _stop_after_heartbeat(a)
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    run_for(a, 60)
+    assert phys(a) > 1000
+    assert abs(c['tip_position_mm'] - phys(a)) <= 60
+
+
+def test_v1_stale_ready_before_motion_not_confirmation():
+    a = make_ace(1543, 'v1', stop_mode='ignore', start_latency=1.4,
+                 ready_before_motion=True)
+    a.proto = 'v1'
+    c = at_sensor(a)
+    run_until(a, lambda: a._info_per_ace[0]['status'] == 'ready')
+    load = c['load_length_mm']
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=load))
+    run_for(a, 0.3)
+    a.cmd_ACE_CALIBRATION_STOP(GCmd())
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    assert c['commanded_retract_mm'] == load
+
+
+def test_feed_jog_stops_at_toolhead_sensor():
+    a, c = new_session(1543, 'v2')
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=300))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    c['commanded_retract_mm'] = 600      # bookkeeping too far back
+    a.cmd_ACE_CALIBRATION_FEED_JOG(GCmd(LENGTH=600))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    assert phys(a) <= 1543 + 20, 'the forward move ran past the sensor'
+    assert c['commanded_retract_mm'] == 0
+    assert c['tip_position_mm'] == c['load_length_mm']
+
+
+def test_refused_verify_does_not_switch_the_ace():
+    a, c = complete_session(1543, 'v2', swap=1300)
+    a._calibration_prev_ace = None
+    a.fake['stuck_busy'] = True
+    a.fake['reports'].clear()          # nothing 'ready' still in flight
+    a._info_per_ace[0]['status'] = 'busy'
+    with pytest.raises(Exception, match='still moving'):
+        a.cmd_ACE_CALIBRATION_VERIFY(
+            GCmd(ACTION='start', LOAD=1693, SWAP=1400, RETRACT=1543))
+    assert a.switched == []
+    assert a._calibration_prev_ace is None
+
+
+def test_refused_home_does_not_switch_the_ace():
+    a, c = new_session(1543, 'v2')
+    c['state'] = 'cancelled'
+    a.switched.clear()
+    a._calibration_prev_ace = None
+    a.fake['stuck_busy'] = True
+    a.fake['reports'].clear()          # nothing 'ready' still in flight
+    a._info_per_ace[0]['status'] = 'busy'
+    with pytest.raises(Exception, match='still moving'):
+        a.cmd_ACE_CALIBRATION_HOME(GCmd())
+    assert a.switched == []
+    assert a._calibration_prev_ace is None

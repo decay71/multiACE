@@ -250,14 +250,17 @@ CAL_DECODER_SLACK_MM = 30.0
 # take one last encoder reading before the distance is booked.
 CAL_SETTLE_S = 0.4
 # V1 (ACE Pro) stops an unwind only with stop_unwind_filament, and a firmware
-# that does not know a stop just keeps going. So a V1 unwind counts as
-# stopped only when the unit reports ready within CONFIRM after the stop;
-# otherwise the stop is taken as ignored and the FULL commanded length is
-# booked once the move has run out. The cached status needs the move to be
-# SETTLED old before 'ready' means anything (it can still be the 'ready'
-# from before the command).
-CAL_V1_STOP_CONFIRM_S = 1.5
-CAL_STATUS_SETTLED_S = 1.0
+# that does not know a stop just keeps going; V1 reports no position. So
+# after a stop the calibration waits for a status report that says ready
+# and then judges by WHEN: ready clearly before the move could have run out
+# means the stop was obeyed (book the distance up to the stop), ready only
+# around its natural end means it was ignored (book the full length). Only
+# a report that ARRIVED at least SETTLED after the command counts: the
+# heartbeat refreshes every second and lags ~1-2 s, so an earlier report
+# can still describe the unit before it started moving. MARGIN keeps a
+# stop near the natural end on the safe side (booked as the full move).
+CAL_STATUS_SETTLED_S = 2.5
+CAL_V1_STOP_MARGIN_S = 1.0
 # A calibration move never waits long for a busy ACE: wait_ace_ready_on
 # blocks the G-code command for up to a minute (and then reconnects), which
 # outlasts the web request and leaves the page out of step with the printer.
@@ -10429,15 +10432,13 @@ class MultiAce:
         self.reactor.register_callback(_finish, now + CAL_SETTLE_S + 1.5)
 
     def _calibration_settle_v1_unwind(self, finalize):
-        # A V1 unwind after its stop: book the covered part only once the
-        # unit has confirmed the stop by going ready, else book the whole
-        # move once it has run out (see CAL_V1_STOP_CONFIRM_S).
+        # A V1 unwind after its stop (see CAL_STATUS_SETTLED_S).
         c = self._calibration
         move = self._calibration_move
         sid, state, mid, idx = c['session_id'], c['state'], move['id'], c['ace']
         started = float(move['started'])
         expected = float(move['length']) / max(float(move['speed']), 1.)
-        stop_at = self.reactor.monotonic()
+        seen = {'report': self._info_per_ace.get(idx), 'at': None}
         def _poll(eventtime):
             cc = self._calibration
             current = self._calibration_move
@@ -10448,23 +10449,26 @@ class MultiAce:
                 self._calibration_move = None
                 self._calibration_fail('selected ACE disconnected')
                 return
-            ready = ((self._info_per_ace.get(idx, {}) or {}).get('status')
-                     == 'ready')
-            settled = eventtime - started >= CAL_STATUS_SETTLED_S
-            if not move.get('stop_ignored'):
-                if ready and settled:
-                    finalize()
-                    return
-                if settled and eventtime - stop_at >= CAL_V1_STOP_CONFIRM_S:
+            report = self._info_per_ace.get(idx) or {}
+            if report is not seen['report']:
+                # the heartbeat replaces the report wholesale
+                seen['report'], seen['at'] = report, eventtime
+            fresh = (seen['at'] is not None
+                     and seen['at'] - started >= CAL_STATUS_SETTLED_S)
+            if fresh and report.get('status') == 'ready':
+                if eventtime >= started + expected - CAL_V1_STOP_MARGIN_S:
                     move['stop_ignored'] = True
                     self.log_error(
-                        '[multiACE] ACE %d did not stop the unwind - booked '
-                        'the full %d mm' % (idx, int(move['length'])))
-            elif ready or eventtime - started > expected + 8.0:
+                        '[multiACE] ACE %d did not stop the unwind - '
+                        'booked the full %d mm' % (idx, int(move['length'])))
+                finalize()
+                return
+            if eventtime - started > expected + 8.0 + CAL_STATUS_SETTLED_S:
+                move['stop_ignored'] = True
                 finalize()
                 return
             self.reactor.register_callback(_poll, eventtime + 0.1)
-        self.reactor.register_callback(_poll, stop_at + 0.1)
+        self.reactor.register_callback(_poll, self.reactor.monotonic() + 0.1)
 
     def _calibration_accumulate_decoder(self, move):
         # Returns False when the standstill guard failed the session, so the
@@ -10812,6 +10816,16 @@ class MultiAce:
             return self.reactor.NEVER
         return eventtime + 0.05
 
+    def _calibration_jog_reached_sensor(self):
+        c = self._calibration
+        self._calibration_move = None
+        c['commanded_retract_mm'] = 0
+        c['tip_position_mm'] = int(c.get('load_length_mm') or 0)
+        c['toolhead_sensor'] = True
+        c['state'] = 'retract_ready'
+        self.log_always('[multiACE] Calibration forward move stopped at the '
+                        'toolhead sensor')
+
     def _calibration_feed_reached(self, eventtime):
         self._calibration_settle(
             lambda: self._calibration_finish_feed(eventtime))
@@ -10869,6 +10883,11 @@ class MultiAce:
 
         if state == 'feeding' and detected is True:
             self._calibration_feed_reached(eventtime)
+            return self.reactor.NEVER
+        if state == 'feed_jogging' and detected is True:
+            # A forward correction is bounded by the booked pull-back, which
+            # can be off; the sensor is the real end of the route.
+            self._calibration_settle(self._calibration_jog_reached_sensor)
             return self.reactor.NEVER
 
         if move is not None:
@@ -11428,12 +11447,13 @@ class MultiAce:
             if not self._ensure_ace_available(c['ace']):
                 raise gcmd.error('[multiACE] selected ACE is not connected')
             if not configured_start:
+                # refuse a busy unit before anything is switched
+                self._calibration_require_ready(gcmd, c['ace'])
                 self._calibration_prev_ace = self._active_device_index
                 if not self._switch_ace_for_head_target(c['ace']):
                     raise gcmd.error(
                         '[multiACE] failed to activate selected ACE')
                 self._disable_feed_assist_all()
-                self._calibration_require_ready(gcmd, c['ace'])
             c.update({
                 'state': 'verifying_feed',
                 'verify_phase': 'feed',
@@ -11737,6 +11757,8 @@ class MultiAce:
             raise gcmd.error('[multiACE] a swap is in progress')
         if not self._ensure_ace_available(ace):
             raise gcmd.error('[multiACE] selected ACE is not connected')
+        # refuse a busy unit before anything is switched
+        self._calibration_require_ready(gcmd, ace)
         # A failed/cancelled session has already handed the active unit
         # back; take it again for the pull-back.
         if self._calibration_prev_ace is None:
@@ -11744,7 +11766,6 @@ class MultiAce:
         if not self._switch_ace_for_head_target(ace):
             raise gcmd.error('[multiACE] failed to activate selected ACE')
         self._disable_feed_assist_all()
-        self._calibration_require_ready(gcmd, ace)
         c['state'] = 'homing'
         c['error'] = None
         self._calibration_move = None
