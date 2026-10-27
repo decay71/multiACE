@@ -700,8 +700,9 @@ def build_estimate(model, header, timeline, *, materials=None,
             counts["head_change"] += 1
         else:
             counts["inline"] += 1
-        if ev.get("window_min") is None and kind in ("cross_ace_bg",
-                                                     "cross_ace_inline"):
+        if kind == "cross_ace_bg" and ev.get("window_min") is None:
+            # Stamped as a background swap without a known window: the
+            # engine aborts it if the head turns out to be needed sooner.
             counts["unknown_window"] += 1
 
     # The ACE-chute purge (INNER_FLUSH_FILAMENT) is a physically SEPARATE

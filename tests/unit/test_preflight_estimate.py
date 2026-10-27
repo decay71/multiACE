@@ -103,6 +103,39 @@ class TestSwapTimeline:
                                     bg_heads=[0], cost_model=model)
         assert tl[-1]["kind"] == "cross_ace_inline"
 
+    def test_the_bg_window_is_the_one_the_rewrite_stamps_from(self, model):
+        """The rewrite stamps a bg swap from BG_UNLOAD_MIN_WINDOW_MIN on, not
+        from the model's longer unload + load time."""
+        assignment = {0: _ace(0, ace=0), 1: _ace(0, ace=1), 2: _ace(1)}
+        window = pp.BG_UNLOAD_MIN_WINDOW_MIN + 0.5
+        assert window < model.bg_window_minutes()
+        tl = pp.build_swap_timeline([0, 2, 1], assignment,
+                                    event_times=[60, 50, 50 - window],
+                                    bg_heads=[0], cost_model=model)
+        assert tl[-1]["kind"] == "cross_ace_bg"
+
+    def test_a_window_without_m73_time_is_stamped_as_bg_anyway(self, model):
+        assignment = {0: _ace(0, ace=0), 1: _ace(0, ace=1), 2: _ace(1)}
+        tl = pp.build_swap_timeline([0, 2, 1], assignment, bg_heads=[0],
+                                    cost_model=model)
+        assert tl[-1]["kind"] == "cross_ace_bg"
+        assert tl[-1]["window_min"] is None
+        # only a bg-enabled head: the others stay inline
+        off = pp.build_swap_timeline([0, 2, 1], assignment, cost_model=model)
+        assert off[-1]["kind"] == "cross_ace_inline"
+
+    def test_unknown_windows_are_counted_in_the_estimate(self, model):
+        assignment = {0: _ace(0, ace=0), 1: _ace(0, ace=1), 2: _ace(1)}
+        ctx = pc.make_estimate_ctx(pp, HEADER, bg_heads=[0])
+        plan = pc.attach_estimate(ctx, {"feasible": True}, [0, 2, 1],
+                                  assignment)
+        assert plan["estimate"]["unknown_window_swaps"] == 1
+        assert plan["estimate"]["bg_swaps"] == 1
+        ctx = pc.make_estimate_ctx(pp, HEADER)
+        plan = pc.attach_estimate(ctx, {"feasible": True}, [0, 2, 1],
+                                  assignment)
+        assert plan["estimate"]["unknown_window_swaps"] == 0
+
     def test_purge_is_the_stamp_the_engine_writes(self, model):
         # 1000 mm3 per pair * 0.45 / 2.405 mm3 per mm = ~187 -> clamped 150
         matrix = [[0, 1000, 1000], [1000, 0, 1000], [1000, 1000, 0]]

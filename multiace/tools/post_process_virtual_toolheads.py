@@ -1414,16 +1414,6 @@ BG_UNLOAD_INLINE_SAVING_S = BG_SWAP_COST_INLINE_S - BG_SWAP_COST_BG_S
 # to the constants above, and an older installed swap_cost.py simply yields
 # a smaller estimate rather than failing a preflight.
 
-def _model_bg_window(cost_model, ace=None, slot=None):
-    """Minutes of idle time a background swap actually needs."""
-    if cost_model is None:
-        return BG_UNLOAD_MIN_WINDOW_MIN
-    try:
-        return float(cost_model.bg_window_minutes(ace, slot))
-    except Exception:
-        return BG_UNLOAD_MIN_WINDOW_MIN
-
-
 def _model_cost(cost_model, kind, ace=None, slot=None):
     """Seconds for one swap of `kind`, model-first, constants otherwise."""
     if cost_model is not None:
@@ -1525,10 +1515,16 @@ def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
             kind = 'first_load'
             note = 'first load of head %s' % head
         else:
-            need = _model_bg_window(cost_model, e.get('ace'), e.get('slot'))
-            if head in bg_set and window is not None and window >= need:
+            # Same rule as the rewrite's bg stamp: a bg-enabled head swaps
+            # in the background when its parked window reaches
+            # BG_UNLOAD_MIN_WINDOW_MIN, or when no M73 time is known (the
+            # engine's abort is the safety net there).
+            if head in bg_set and (window is None
+                                   or window >= BG_UNLOAD_MIN_WINDOW_MIN):
                 kind = 'cross_ace_bg'
-                note = 'preloaded in the background (%.1f min window)' % window
+                note = ('preloaded in the background (%.1f min window)'
+                        % window if window is not None else
+                        'background swap, window unknown (no M73 time)')
             elif prev_key[0] == key[0]:
                 kind = 'same_ace'
                 note = 'same ACE, different slot'
