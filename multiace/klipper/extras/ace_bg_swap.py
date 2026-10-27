@@ -88,6 +88,11 @@ BG_LOAD_PRIME_SPEED = 4.     # mm/s (prime falls through the open dock)
 # in the background window; raise to 10 to halve that if the longer prime
 # measurably increases pick-aborts.
 BG_LOAD_PRIME_CHUNK = 5.
+# Phases that poll _check_docked between moves, i.e. where a toolchange
+# announced by ace.py (request_pick_abort) stops the op at the next move
+# boundary while the head is STILL DOCKED. RETRACT is deliberately absent
+# (the bulk rollback never aborts) and so are the bookkeeping phases.
+PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_GRIP', 'LD_PRIME')
 # Extra prime on TOP of the inline purge knob (get_purge_length, default 80).
 # The inline swap purges MORE than its nominal 80: phase3 probe-extrudes
 # (>=20mm) fill the melt zone BEFORE the flush, so the full 80 is real purge
@@ -183,6 +188,9 @@ class AceBgSwap:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
+        # Per-head heater claim (claim time, target found) while a bg op
+        # holds the heater - see _heat_claim / _release_heat.
+        self._heat_claims = {}
         # Per-head opt-in = the HARDWARE declaration "this head's dock is
         # open below" (the cold-pull purges ~60mm through it). Only listed
         # heads run bg unloads; a QUIET (gcode-stamped) request for another
@@ -236,6 +244,9 @@ class AceBgSwap:
         # {head: state string} - IDLE/HEAT/PULL/RETRACT/DONE/FAILED:<reason>
         self.state = {}
         self._busy = set()
+        # Heads whose toolchange was announced (request_pick_abort) and
+        # whose op has not handed over yet; cleared with _busy.
+        self._pick_pending = set()
         # {head: previous fan value 0..1} while the bg dwell fan runs
         # (_dwell_fan) - per head, the engine is serialized but the OFF
         # must survive any exit path.
@@ -313,6 +324,31 @@ class AceBgSwap:
                      else 'disabled',
                      [self._dh(h) for h in sorted(self.enabled_heads)]
                      or 'NONE', sfx))
+
+    def request_pick_abort(self, head):
+        """Toolchange notice from ace.py's T0-T3 wrapper, sent BEFORE the
+        stock macro parks the old head and picks this one. Without it the
+        engine only notices a pick at extruder ACTIVATION, 2-4 s after the
+        nozzle left the dock, and a prime still running in that window
+        extrudes while the head is carried (the blob in front of the
+        wipe tower). With it the op stops at its next move boundary while
+        the head is still docked: the prime sets its anti-ooze cushion
+        and hands over, every other phase takes its existing pick-abort
+        path. Returns True when the caller may wait for the handover
+        (a phase that polls _check_docked), False when nothing runs on
+        this head or the phase never aborts (bulk retract)."""
+        if head not in self._busy:
+            self._pick_pending.discard(head)
+            return False
+        phase = str(self.state.get(head, ''))
+        if phase not in PICK_NOTICE_PHASES:
+            return False
+        if head not in self._pick_pending:
+            self._pick_pending.add(head)
+            self._say('head %d: toolchange announced during %s - stopping '
+                      'at the next move boundary, handing over before the '
+                      'pick' % (self._dh(head), phase))
+        return True
 
     def is_busy(self, head):
         # ace.py wait-hook (cmd_ACE_SWAP_HEAD/UNLOAD/LOAD entries): a
@@ -478,6 +514,10 @@ class AceBgSwap:
         if toolhead.get_extruder() is ext:
             raise RuntimeError('head %d was PICKED mid-sequence - aborted, '
                                'inline paths take over' % self._dh(head))
+        if head in self._pick_pending:
+            raise RuntimeError('head %d is about to be PICKED - stopped '
+                               'before the toolchange, inline paths take '
+                               'over' % self._dh(head))
 
     def _bg_fan_obj(self, head):
         # The PARKED head's own part fan as a directly drivable object.
@@ -1234,6 +1274,64 @@ class AceBgSwap:
 
     # -- the sequences (run in an async-callback greenlet; reactor.pause is
     #    allowed here and does NOT block the print) -----------------------
+    # Heater ownership. A bg op takes a parked head's heater over; the
+    # slicer may meanwhile ask for that head (standby M104, the M109 before
+    # its T). The engine never cools to 0 blindly: at hand-back it restores
+    # the newest foreign request since the claim (ace's heater intent
+    # observer), else the target it found at the claim, else 0. A second
+    # release without a claim is a no-op, so an abort after a normal
+    # release cannot undo the restore. Older ace.py without the observer:
+    # found target or 0. Print end/cancel turn the heaters off past the
+    # observer (turn_off_all_heaters -> heater.set_temp), so once the
+    # print is neither printing nor paused the intent is 0.
+    def _print_active(self):
+        try:
+            ps = self.printer.lookup_object('print_stats', None)
+            if ps is None:
+                return False
+            st = ps.get_status(self.reactor.monotonic()).get('state', '')
+            return st in ('printing', 'paused')
+        except Exception:
+            return False
+
+    def _heat_claim(self, head, heater):
+        try:
+            found = float(getattr(heater, 'target_temp', 0.) or 0.)
+        except Exception:
+            found = 0.
+        self._heat_claims[head] = (self.reactor.monotonic(), found)
+
+    def _set_heat(self, ace, pheaters, heater, temp):
+        own = getattr(ace, 'heat_set_own', None)
+        if own is not None:
+            return own(pheaters, heater, temp)
+        return pheaters.set_temperature(heater, temp)
+
+    def _release_heat(self, ace, head, heater, pheaters, why):
+        claim = self._heat_claims.pop(head, None)
+        if claim is None:
+            return None
+        since, found = claim
+        target, src = 0., 'off'
+        req = None
+        fn = getattr(ace, 'heat_foreign_since', None)
+        if fn is not None:
+            try:
+                req = fn(heater, since)
+            except Exception:
+                req = None
+        if req is not None:
+            target, src = float(req[0]), 'slicer request'
+        elif found > 0.:
+            target, src = found, 'target found at takeover'
+        if target > 0. and not self._print_active():
+            target, src = 0., 'print ended'
+        self._set_heat(ace, pheaters, heater, target)
+        if target > 0. or src == 'print ended':
+            self._say('head %d: heater back to %.0f (%s) after %s'
+                      % (self._dh(head), target, src, why))
+        return target
+
     def _run_unload(self, head, ace_idx, slot, temp, soft):
         ace = self.printer.lookup_object('ace')
         toolhead = self.printer.lookup_object('toolhead')
@@ -1254,12 +1352,14 @@ class AceBgSwap:
         finally:
             self._dwell_fan(ace, head, False)
             self._busy.discard(head)
+            self._pick_pending.discard(head)
 
     def _fail_unload(self, head, heater, pheaters, e, retract_done):
         reason = str(e) or e.__class__.__name__
         self.state[head] = 'FAILED:%s' % reason
         try:
-            pheaters.set_temperature(heater, 0.)
+            self._release_heat(self.printer.lookup_object('ace', None),
+                               head, heater, pheaters, 'unload abort')
         except Exception:
             pass
         if isinstance(e, ToolheadNotClear):
@@ -1315,7 +1415,8 @@ class AceBgSwap:
 
             # 2. Heat (async target set, greenlet-poll - never blocks gcode).
             self.state[head] = 'HEAT'
-            pheaters.set_temperature(heater, temp)
+            self._heat_claim(head, heater)
+            self._set_heat(ace, pheaters, heater, temp)
             self._say('head %d: heating to %.0f' % (self._dh(head), temp))
             deadline = self.reactor.monotonic() + HEAT_TIMEOUT
             _retgt_said = False
@@ -1331,7 +1432,7 @@ class AceBgSwap:
                                   'externally (%.0f) - re-asserting %.0f'
                                   % (self._dh(head), _tgt, temp))
                         _retgt_said = True
-                    pheaters.set_temperature(heater, temp)
+                    self._set_heat(ace, pheaters, heater, temp)
                 if self.reactor.monotonic() > deadline:
                     raise RuntimeError('heat timeout (%.0f/%.0f)'
                                        % (cur, temp))
@@ -1381,7 +1482,7 @@ class AceBgSwap:
                 if kind == 'temp':
                     # target change only, no wait (mirrors the inline
                     # 'temp:' token semantics = M104).
-                    pheaters.set_temperature(heater, float(tok[1]))
+                    self._set_heat(ace, pheaters, heater, float(tok[1]))
                     continue
                 if kind == 'waittemp':
                     # Set target + wait until reached, both directions. On a
@@ -1391,7 +1492,7 @@ class AceBgSwap:
                     # instead of failing the whole unload for a tuning
                     # nicety. Pick-abort stays live via _check_docked.
                     c = float(tok[1])
-                    pheaters.set_temperature(heater, c)
+                    self._set_heat(ace, pheaters, heater, c)
                     _wt_deadline = self.reactor.monotonic() + 180.
                     while True:
                         self._check_docked(toolhead, ext, head)
@@ -1482,8 +1583,9 @@ class AceBgSwap:
             self._say('head %d: cold-pull done (%d mm confirmed reclaimed '
                       'at ACE)' % (self._dh(head), int(reclaimed)))
 
-            # 4. Heater off (stock does M104 S0 right after the pull).
-            pheaters.set_temperature(heater, 0.)
+            # 4. Heater back to the slicer's intent (stock does M104 S0
+            # right after the pull; 0 only when nobody asked for more).
+            self._release_heat(ace, head, heater, pheaters, 'cold-pull')
 
             # 5. ACE retract to the SWAP length, minus what the interleaved
             # cold-pull unwinds already reclaimed. The bg unload is the unload
@@ -1656,6 +1758,7 @@ class AceBgSwap:
             self._ace_quiesce(ace, un[0], un[1], 'bg swap unload abort')
             self._fail_unload(head, heater, pheaters, e, retract_done['v'])
             self._busy.discard(head)
+            self._pick_pending.discard(head)
             return
         if not self.load_enabled:
             # Unload-only mode: stop after the unload half. The head is
@@ -1669,6 +1772,7 @@ class AceBgSwap:
                          'BACKGROUND UNLOAD COMPLETE' if un is not None
                          else 'already empty, nothing to do'))
             self._busy.discard(head)
+            self._pick_pending.discard(head)
             return
         try:
             self._load_core(head, ace, toolhead, ext, heater, pheaters,
@@ -1698,7 +1802,7 @@ class AceBgSwap:
             self.state[head] = 'FAILED:%s' % reason
             self._ace_quiesce(ace, ld[0], ld[1], 'bg load abort')
             try:
-                pheaters.set_temperature(heater, 0.)
+                self._release_heat(ace, head, heater, pheaters, 'load abort')
             except Exception:
                 pass
             self._say('head %d: LOAD FAILED (%s) - the arrival swap loads '
@@ -1707,6 +1811,7 @@ class AceBgSwap:
         finally:
             self._dwell_fan(ace, head, False)
             self._busy.discard(head)
+            self._pick_pending.discard(head)
 
     def _load_bookkeeping(self, head, ace, ace_idx, slot):
         """Mark the head loaded through the same fields the inline load
@@ -1794,7 +1899,8 @@ class AceBgSwap:
         # get_load_length is the padded upper bound like inline; the sensor
         # cuts it short, so neither hardware rams the gears.
         self.state[head] = 'LD_FEED'
-        pheaters.set_temperature(heater, temp)
+        self._heat_claim(head, heater)
+        self._set_heat(ace, pheaters, heater, temp)
         feed_speed = ACE_UNWIND_SPEED_FALLBACK
         try:
             feed_speed = int(ace.get_feed_speed(ace_idx))
@@ -1849,13 +1955,13 @@ class AceBgSwap:
                 _ever_moved = True
         self._dwell_fan(ace, head, False)
         if feed_res == 'stale':
-            pheaters.set_temperature(heater, 0.)
+            self._release_heat(ace, head, heater, pheaters, 'stale latch')
             raise RuntimeError(
                 'toolhead sensor of head %d reads PRESENT although the head '
                 'is empty (stale latch) - display/web unload it once, then '
                 'retry' % self._dh(head))
         if feed_res != 'ok':
-            pheaters.set_temperature(heater, 0.)
+            self._release_heat(ace, head, heater, pheaters, 'feed failure')
             if feed_res == 'partial' or _ever_moved:
                 # Filament moved but never reached the sensor: LEAVE IT IN
                 # THE PATH (no cleanup retract - a commanded-length pull can
@@ -1908,7 +2014,7 @@ class AceBgSwap:
                                   'externally (%.0f) - re-asserting %.0f'
                                   % (self._dh(head), _tgt, temp))
                         _retgt_said = True
-                    pheaters.set_temperature(heater, temp)
+                    self._set_heat(ace, pheaters, heater, temp)
                 if self.reactor.monotonic() > deadline:
                     raise RuntimeError('heat timeout (%.0f/%.0f)'
                                        % (cur, temp))
@@ -2060,7 +2166,14 @@ class AceBgSwap:
             # FINE-chunked (BG_LOAD_PRIME_CHUNK, was 4x ~30mm): caps the
             # blind purge a mid-chunk pick keeps extruding while the stock
             # T carries the head - see the const block.
+            cut_short = False
             while primed < prime_target - 1e-6:
+                if head in self._pick_pending:
+                    # Toolchange announced (request_pick_abort): the head
+                    # is still docked, so finish cleanly - cushion now,
+                    # the arrival pick-check tops up the missing purge.
+                    cut_short = True
+                    break
                 self._check_docked(toolhead, ext, head)
                 seg = min(BG_LOAD_PRIME_CHUNK, prime_target - primed)
                 _s, end, _en = self.queue_move(ext, seg,
@@ -2082,12 +2195,25 @@ class AceBgSwap:
             # already-loaded head, so OUR end state must match the value
             # the preflight stamped - the ANTI_OOZE contract).
             if anti_ooze > 0.:
-                self._check_docked(toolhead, ext, head)
+                if not cut_short:
+                    self._check_docked(toolhead, ext, head)
                 _s, end, _en = self.queue_move(ext, -float(anti_ooze),
                                                BG_LOAD_RETRACT_SPEED,
                                                CHOREO_ACCEL)
                 self._wait_move(toolhead, end)
             ooze_done = True
+            if cut_short:
+                deficit = max(0., prime_target - primed)
+                if deficit > 0.:
+                    try:
+                        getattr(ace, '_bg_prime_deficit', {})[head] = deficit
+                    except Exception:
+                        pass
+                self._say('head %d: prime stopped at %d/%d mm for the '
+                          'announced toolchange - cushion set%s'
+                          % (self._dh(head), int(primed), int(prime_target),
+                             ', the arrival pick tops up the missing %d mm'
+                             % int(deficit) if deficit > 0. else ''))
         except Exception as e:
             self._ace_send(ace, ace_idx, {
                 'method': 'stop_feed_assist', 'params': {'index': slot}})
@@ -2138,7 +2264,7 @@ class AceBgSwap:
                       'STAGED at the toolhead sensor; the arrival/inline '
                       'load continues from there'
                       % (self._dh(head), str(e) or e.__class__.__name__))
-            pheaters.set_temperature(heater, 0.)
+            self._release_heat(ace, head, heater, pheaters, 'abort before grip')
             self._gpio_diag(head, 'staged after abort (expected present)')
             # Bookkeep the staged state: the arrival swap must SKIP its
             # unload half (no head_source - it would guess a wrong slot from
@@ -2151,17 +2277,12 @@ class AceBgSwap:
                 pass
             raise RuntimeError(str(e) or e.__class__.__name__)
 
-        # 6. Success: assist off; cool ONLY if the target is still ours
-        # (a slicer preheat M104 for the arrival may have overwritten it
-        # mid-load - that target belongs to the print, leave it).
+        # 6. Success: assist off; heater back to the slicer's intent (a
+        # preheat for the arrival issued mid-load belongs to the print).
         self._ace_send(ace, ace_idx, {
             'method': 'stop_feed_assist', 'params': {'index': slot}})
         ace._feed_assist_per_ace[ace_idx] = -1
-        try:
-            if abs(float(getattr(heater, 'target_temp', 0.)) - temp) < 1.:
-                pheaters.set_temperature(heater, 0.)
-        except Exception:
-            pheaters.set_temperature(heater, 0.)
+        self._release_heat(ace, head, heater, pheaters, 'bg load done')
         self._load_bookkeeping(head, ace, ace_idx, slot)
 
 

@@ -1,0 +1,416 @@
+{
+  "_comment": "Mock /api/state payload for multi mode (MULTIACE_MOCK_MODE=1). Regenerate with: curl http://<printer>/multiace/api/state > tests/fixtures/mock_state.json, then blank personal values (spoolman_url, serial paths).",
+  "_generated": "2026-10-19",
+  "calibration": {
+    "state": "idle"
+  },
+  "unload_all_active": false,
+  "ace_status": "ready",
+  "ace_temp": 26,
+  "printer_state": "complete",
+  "active_device": 0,
+  "device_count": 1,
+  "mode": "multi",
+  "pickup_cleaning": true,
+  "confirm_commands": false,
+  "airprint_detection": true,
+  "quad_replenish": true,
+  "purge_matrix": true,
+  "preflight_max_copies": 1,
+  "preflight_copies_strict": false,
+  "pa_sync": true,
+  "rc522": false,
+  "tag_write_format": "openspool",
+  "tag_write_uid_sku": true,
+  "tag_op": {},
+  "nozzle_keys": [],
+  "quad_first": true,
+  "auto_dry_masters": [
+    0
+  ],
+  "spools": {
+    "1": {
+      "id": "1",
+      "material": "PLA",
+      "color": "D21E54",
+      "vendor": "Generic",
+      "subtype": "Basic",
+      "spoolman_id": "",
+      "label": "Magenta",
+      "sku": "",
+      "used_mm": 19044.478959999797
+    },
+    "3": {
+      "id": "3",
+      "material": "PLA",
+      "color": "0F6B2E",
+      "vendor": "Generic",
+      "subtype": "Basic",
+      "spoolman_id": "",
+      "label": "",
+      "sku": "",
+      "used_mm": 2344.2453400000213
+    },
+    "6": {
+      "id": "6",
+      "material": "PLA",
+      "color": "000000",
+      "vendor": "Generic",
+      "subtype": "Basic",
+      "spoolman_id": "",
+      "label": "Black",
+      "sku": "",
+      "used_mm": 45773.13047002052
+    },
+    "7": {
+      "id": "7",
+      "material": "PLA",
+      "color": "0F7EC2",
+      "vendor": "Generic",
+      "subtype": "",
+      "spoolman_id": "",
+      "label": "Marine Blue",
+      "sku": "",
+      "used_mm": 444857.4109807347
+    },
+    "9": {
+      "id": "9",
+      "material": "PETG",
+      "color": "00EEFF",
+      "vendor": "",
+      "subtype": "",
+      "spoolman_id": "",
+      "label": "Support PETG",
+      "sku": "",
+      "used_mm": 1192.3615499999876
+    },
+    "10": {
+      "id": "10",
+      "material": "PLA",
+      "color": "FFFFFF",
+      "vendor": "Generic",
+      "subtype": "Basic",
+      "spoolman_id": "",
+      "label": "",
+      "sku": "",
+      "used_mm": 9163.431179995547
+    }
+  },
+  "spool_binding": {
+    "h2": "7",
+    "0_0": "6",
+    "h3": "10"
+  },
+  "head_tag_seen": {},
+  "spoolman_url": "",
+  "spoolman_auto": false,
+  "spool_mode": "local",
+  "spoollink": false,
+  "spoollink_agent": false,
+  "ace_head": 3,
+  "ace_heads": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "head_feeder": {
+    "0": false,
+    "1": true,
+    "2": true,
+    "3": true
+  },
+  "head_ace": {
+    "0": 0,
+    "1": 1,
+    "2": 2,
+    "3": 3
+  },
+  "language": "en",
+  "display_index_base": 1,
+  "dryer": {
+    "status": "stop",
+    "target_temp": 0,
+    "duration": 0,
+    "remain_time": 0
+  },
+  "swap_in_progress": false,
+  "aces": [
+    {
+      "idx": 0,
+      "connected": true,
+      "connect_error": "",
+      "protocol": "v2",
+      "model": "ACE 2 Pro",
+      "firmware": "V1.1.31",
+      "open_fw": false,
+      "tag_read": false,
+      "community_fw": "",
+      "status": "ready",
+      "temp": 26,
+      "humidity": 61,
+      "external_humidity": null,
+      "external_humidity_age": null,
+      "external_humidity_fresh": false,
+      "external_humidity_cycle": false,
+      "humidity_source": null,
+      "humidity_effective": null,
+      "auto_dry": {
+        "enabled": false,
+        "rh_start": 45.0,
+        "rh_end": 35.0,
+        "temp": 50,
+        "master": -1,
+        "add_time": 60
+      },
+      "auto_dry_running": false,
+      "dryer": {
+        "status": "stop",
+        "target_temp": 0,
+        "duration": 0,
+        "remain_time": 0
+      },
+      "feed_assist": -1,
+      "serial_path": "/dev/serial/by-path/mock-usb-0:1:1.0",
+      "fw_hold": false,
+      "slots": [
+        {
+          "idx": 0,
+          "state": "ready",
+          "raw": 1,
+          "status": "unknown",
+          "rfid": 0,
+          "material": "PLA",
+          "brand": "Generic",
+          "sku": "",
+          "subtype": "Basic",
+          "color": "#000000",
+          "color_rgb": null,
+          "uid": "",
+          "tag_format": "",
+          "ident_src": "",
+          "rfid_data": null,
+          "source": "override"
+        },
+        {
+          "idx": 1,
+          "state": "ready",
+          "raw": 1,
+          "status": "unknown",
+          "rfid": 0,
+          "material": "PLA",
+          "brand": "Generic",
+          "sku": "",
+          "subtype": "Basic",
+          "color": "#d4af37",
+          "color_rgb": null,
+          "uid": "",
+          "tag_format": "",
+          "ident_src": "",
+          "rfid_data": null,
+          "source": "override"
+        },
+        {
+          "idx": 2,
+          "state": "ready",
+          "raw": 1,
+          "status": "ready",
+          "rfid": 2,
+          "material": "PLA",
+          "brand": "",
+          "sku": "AHPLSP-107",
+          "subtype": "",
+          "color": "#ff8da1",
+          "color_rgb": null,
+          "uid": "",
+          "tag_format": "",
+          "ident_src": "",
+          "rfid_data": {
+            "material": "PLA",
+            "brand": "",
+            "sku": "AHPLSP-107",
+            "subtype": "",
+            "color": "#ff8da1"
+          },
+          "source": "rfid"
+        },
+        {
+          "idx": 3,
+          "state": "ready",
+          "raw": 1,
+          "status": "unknown",
+          "rfid": 0,
+          "material": "PLA",
+          "brand": "Generic",
+          "sku": "",
+          "subtype": "Basic",
+          "color": "#300b51",
+          "color_rgb": null,
+          "uid": "",
+          "tag_format": "",
+          "ident_src": "",
+          "rfid_data": null,
+          "source": "override"
+        }
+      ]
+    }
+  ],
+  "toolheads": [
+    {
+      "idx": 0,
+      "name": "T0",
+      "ace": 0,
+      "slot": 0,
+      "filament_detected": true,
+      "filament_in_ace": true,
+      "filament_in_toolhead": false,
+      "filament_at_extruder": true,
+      "channel_state": "wait_insert",
+      "channel_error": "ok",
+      "module_exist": true,
+      "color": "#000000",
+      "material": "PLA",
+      "subtype": "Basic",
+      "sku": "",
+      "brand": "",
+      "head_source_known": true,
+      "load_failed": false,
+      "manual": false,
+      "feeder": false,
+      "reader_spool_id": 0,
+      "source": "override"
+    },
+    {
+      "idx": 1,
+      "name": "T1",
+      "ace": null,
+      "slot": null,
+      "filament_detected": true,
+      "filament_in_ace": true,
+      "filament_in_toolhead": true,
+      "filament_at_extruder": true,
+      "channel_state": "preload_finish",
+      "channel_error": "ok",
+      "module_exist": true,
+      "color": null,
+      "material": "",
+      "subtype": "",
+      "sku": "",
+      "brand": "",
+      "head_source_known": false,
+      "load_failed": false,
+      "manual": false,
+      "feeder": false,
+      "reader_spool_id": 0,
+      "source": null
+    },
+    {
+      "idx": 2,
+      "name": "T2",
+      "ace": null,
+      "slot": null,
+      "filament_detected": true,
+      "filament_in_ace": true,
+      "filament_in_toolhead": true,
+      "filament_at_extruder": true,
+      "channel_state": "preload_finish",
+      "channel_error": "ok",
+      "module_exist": true,
+      "color": null,
+      "material": "",
+      "subtype": "",
+      "sku": "",
+      "brand": "",
+      "head_source_known": false,
+      "load_failed": false,
+      "manual": false,
+      "feeder": false,
+      "reader_spool_id": 0,
+      "source": null
+    },
+    {
+      "idx": 3,
+      "name": "T3",
+      "ace": null,
+      "slot": null,
+      "filament_detected": true,
+      "filament_in_ace": true,
+      "filament_in_toolhead": true,
+      "filament_at_extruder": true,
+      "channel_state": "preload_finish",
+      "channel_error": "ok",
+      "module_exist": true,
+      "color": null,
+      "material": "",
+      "subtype": "",
+      "sku": "",
+      "brand": "",
+      "head_source_known": false,
+      "load_failed": false,
+      "manual": false,
+      "feeder": false,
+      "reader_spool_id": 0,
+      "source": null
+    }
+  ],
+  "wiring": [
+    {
+      "ace": 0,
+      "slot": 0,
+      "toolhead": 0,
+      "color": "#000000",
+      "material": "PLA"
+    }
+  ],
+  "save_variables": {
+    "ace__active_device": "/dev/serial/by-path/mock-usb-0:1:1.0",
+    "ace__head_feeder": {
+      "0": false,
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "ace__head_source": {
+      "0": {
+        "ace_index": 0,
+        "slot": 0,
+        "type": "PLA",
+        "subtype": "Basic",
+        "color": "000000",
+        "brand": "Generic"
+      },
+      "1": null,
+      "2": null,
+      "3": null
+    },
+    "ace__heads_manual_conv": [],
+    "ace__mode": "multi",
+    "ace__purge_bin_used_mm": 32805,
+    "ace__revision": 4285
+  },
+  "bg_swap": {
+    "available": true,
+    "version": "v0.9",
+    "enabled_heads": [
+      0
+    ],
+    "busy": []
+  },
+  "tipform": {
+    "available": true,
+    "mode": "custom",
+    "tables": [
+      "asa",
+      "petg",
+      "petg-cf",
+      "petg-hf",
+      "pla"
+    ]
+  },
+  "preflight_inbox": {
+    "pending": false,
+    "name": null,
+    "size": 0,
+    "ts": 0
+  }
+}

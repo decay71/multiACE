@@ -327,9 +327,19 @@ bash /tmp/multiace/uninstall_multiace.sh
 
 Then reboot. The printer returns to stock operation.
 
-## Fluidd Macros
+## Frontend Macro Groups
 
-All operations are available as macro buttons in Fluidd, sorted alphabetically:
+multiACE organizes its controls into purpose-based groups in Fluidd and Mainsail after Klipper starts and each frontend has initialized its Moonraker database. The startup worker stops retrying a frontend after five checks when its database namespace is unavailable (about two minutes at the default interval). If you open a frontend later, reapply the layout with:
+
+```bash
+python3 /home/lava/klipper/klippy/extras/ace_macro_layout.py apply
+```
+
+Mainsail displays macro groups in Expert Mode. User-created groups and categories remain intact.
+
+Set `macro_layout_enabled: false` in `[ace]` to disable automatic grouping. The setting is preserved across multiACE updates.
+
+The controls include:
 
 | Macro | Description |
 |-------|-------------|
@@ -368,7 +378,7 @@ All operations are available as macro buttons in Fluidd, sorted alphabetically:
 
 Use the Fluidd macros **ACEA__Switch_0..3** to switch between ACE units.
 
-> **Note on macro names:** The macro names use letter prefixes (ACEA, ACEB, ACEC...) to ensure they appear in a logical order in Fluidd's alphabetical macro list. If you prefer different names, you can rename them anytime in `config/extended/ace.cfg`.
+> **Note on macro names:** The letter prefixes (ACEA, ACEB, ACEC...) keep related controls together in Klipper and remain useful in frontend search. The frontend groups are updated from the macro names in `config/extended/ace.cfg`; changing those names means the layout will no longer recognize the renamed controls.
 
 ## How to Do Toolswaps
 

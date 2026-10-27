@@ -40,7 +40,9 @@ jobs:
             multiace/klipper/extras/ace_gen1_tunnel.py \
             multiace/web/backend/i18n_path.py \
             multiace/web/backend/main.py \
+            multiace/web/backend/preflight_core.py \
             multiace/tools/post_process_virtual_toolheads.py \
+            multiace/tools/swap_cost.py \
             multiace/managed/build_package.py \
             multiace/managed/tests/test_package.py \
             multiace/managed/tests/test_i18n_path.py
@@ -54,6 +56,7 @@ jobs:
           bash multiace/managed/tests/test_managed_guards.sh
           bash multiace/managed/tests/test_updater_asset_selection.sh
           python -m unittest discover -s multiace/managed/tests -v
+          python -m unittest discover -s tests -p 'test_ace_protocol_v2_probe.py' -v
 
           python multiace/managed/build_package.py \
             --output "$RUNNER_TEMP/multiace-managed-check.tar.gz"

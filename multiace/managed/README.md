@@ -45,6 +45,14 @@ wrapper macros. Each platform seeds its own persistent save-variable path and
 preserves existing user values. The standalone source config remains
 unchanged.
 
+## Macro layout integration
+
+The provider config loads `ace_macro_layout.py` from Klipper after the printer is ready. The worker waits for Klipper's active macro list and each frontend's Moonraker database namespace, then applies multiACE-owned groups without replacing unrelated settings. It stops retrying a frontend after five checks when its database namespace is unavailable (about two minutes at the default interval). Operators can request another immediate attempt with `python3 /home/lava/klipper/klippy/extras/ace_macro_layout.py apply`; Mainsail must use Expert Mode to display groups.
+
+Set `macro_layout_enabled: false` in `[ace]` to disable automatic grouping. The host should preserve this setting with the rest of the [ace] values.
+
+A platform that activates provider Klipper modules by mounting individual files must also activate `klipper/extras/ace_macro_layout.py` at `/home/lava/klipper/klippy/extras/ace_macro_layout.py`. The host still owns any optional settings action that invokes the provider command.
+
 ## Archive
 
 The allowlisted archive is named `multiace-managed-<version>.tar.gz` and is

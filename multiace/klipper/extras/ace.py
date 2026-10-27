@@ -522,6 +522,16 @@ SPOOL_DENSITY_BY_MATERIAL = {
 # position (the flow push runs there), so scrape the nozzle with the stock
 # clean macro before restoring the print position - no extra travel.
 BG_PICK_WIPE = True
+# Toolchange notice to the bg engine (T0-T3 wrapper, _notify_bg_pick):
+# how long the T waits for the engine to hand the head over after the
+# announcement. The engine stops at its next move boundary - a prime
+# chunk or a cold-pull move, a few seconds at most; when it does not
+# answer in time the toolchange runs anyway and the engine aborts at
+# extruder activation as before.
+BG_PICK_NOTICE_WAIT = 8.0
+
+# min_extrude_temp of the U1; a swap-head target below it is no print temp.
+SWAP_MIN_EXTRUDE_TEMP = 170
 
 # V2 only: cause-agnostic back-off for the FA re-arm churn. When a
 # slot's re-arm never STICKS (the device keeps disarming because nothing
@@ -757,6 +767,9 @@ class MultiAce:
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
         self._name = config.get_name()
+        # Read this here too so [ace] accepts the option if
+        # [ace_macro_layout] is removed from the config.
+        config.getboolean('macro_layout_enabled', True)
         self.send_time = None
         self.ace_dev_fd = None
         self.heartbeat_timer = None
@@ -797,6 +810,10 @@ class MultiAce:
         self._protocols = {}
         self._ace_path_protocol = {}
         self._ace_models = {}
+        # Heater intent observer (see _install_heat_observer).
+        self._ext_heat_req = {}
+        self._own_heat_depth = 0
+        self._orig_set_temperature = None
         self.baud = config.getint('baud', 0, minval=0)
         self._ace_devices = []
         self._active_device_index = 0
@@ -1353,9 +1370,22 @@ class MultiAce:
         self._v2_extra_usb_ids = self._parse_v2_extra_usb_ids(
             config.get('v2_extra_usb_ids', ''))
         AceProtocolV2.EXTRA_USB_IDS = self._v2_extra_usb_ids
+        self._v2_probe_generic_usb = config.getboolean(
+            'v2_probe_generic_usb', False)
+        self._v2_generic_probe_cursor = None
+        self._v2_generic_probe_cache = {}
+        self._v2_generic_probe_in_progress = set()
+        self._configured_serial_paths = set()
+        self._configured_serial_paths_valid = True
+        if self._v2_probe_generic_usb:
+            self._configured_serial_paths = self._read_configured_serial_paths(
+                config)
         if self._v2_extra_usb_ids:
             logging.info('[multiACE] V2 extra USB IDs (opt-in): %s' % (
                 ', '.join('%s:%s' % p for p in self._v2_extra_usb_ids)))
+        if self._v2_probe_generic_usb:
+            logging.info('[multiACE] V2 generic USB probing enabled; '
+                         'only verified ACE 2 devices will be accepted')
 
         # V2 print-time feed-assist mode:
         #   'constant' (default) - on extrusion just keep the ACE feed
@@ -1598,6 +1628,9 @@ class MultiAce:
         # reference for the cool forward-probe temp (see filament_feed_ace
         # _swap_probe_temp). 0 = no live print (idle/test) -> probe floor.
         self._swap_probe_ref_temp = 0
+        # Last print target (>= min extrude) a swap found on each head; the
+        # fallback when a swap starts on a head a pause left at target 0.
+        self._swap_print_temp = {}
 
         # Engine event/observability state (see docs/ENGINE_API.md section 5).
         # swap_phase gives finer resolution than swap_in_progress; event_seq
@@ -1712,6 +1745,8 @@ class MultiAce:
         # pushes the remainder at the discard position), cleared on a
         # verified unload.
         self._bg_prime_deficit = {}
+        # T0-T3 stock handlers behind the bg toolchange notice (_wrap_native_tool).
+        self._orig_native_t = {}
 
         self._serial_failed = False
         self._serial_failed_at = 0.0
@@ -2017,6 +2052,22 @@ class MultiAce:
             'homing:homing_move_begin', self._on_homing_move_begin)
         self.printer.register_event_handler(
             'homing:homing_move_end', self._on_homing_move_end)
+
+        # T0-T3: announce the toolchange to the bg engine BEFORE the stock
+        # macro parks and picks (see _notify_bg_pick), then run stock.
+        for _i in range(4):
+            try:
+                _orig = self.gcode.register_command('T%d' % _i, None)
+                if _orig is None:
+                    continue
+                self._orig_native_t[_i] = _orig
+                self.gcode.register_command(
+                    'T%d' % _i,
+                    (lambda gcmd, _t=_i: self._wrap_native_tool(gcmd, _t)),
+                    desc='[multiACE] T%d (announces the toolchange to a '
+                         'running background swap)' % _i)
+            except Exception as e:
+                logging.info('[multiACE] failed to wrap T%d: %s' % (_i, e))
 
         self.gcode.register_command(
             'ACE_START_DRYING', self.cmd_ACE_START_DRYING,
@@ -2403,6 +2454,152 @@ class MultiAce:
                     % tok)
         return tuple(pairs)
 
+    def _read_configured_serial_paths(self, config):
+        """Capture configured serial devices so generic scans avoid them."""
+        paths = set()
+        self._configured_serial_paths_valid = True
+        try:
+            sections = config.get_prefix_sections('')
+            if not sections:
+                raise ValueError('configuration section inventory is empty')
+        except Exception:
+            self._configured_serial_paths_valid = False
+            logging.warning('[multiACE] Automatic USB probing suspended: '
+                            'cannot enumerate configured serial ports')
+            return paths
+        own_section = getattr(config, 'get_name', lambda: 'ace')()
+        for section in sections:
+            try:
+                if section.get_name().lower() == own_section.lower():
+                    continue
+                path = (section.get('serial', None) or '').strip()
+            except Exception:
+                self._configured_serial_paths_valid = False
+                continue
+            if path.startswith('/dev/'):
+                paths.add(path)
+        return paths
+
+    def _is_printer_idle_for_generic_probe(self):
+        """Allow broad identification exchanges only while idle."""
+        if not self._configured_serial_paths_valid:
+            return False
+        try:
+            stats = self.printer.lookup_object('print_stats', None)
+            if stats is None:
+                return False
+            state = stats.get_status(self.reactor.monotonic()).get('state')
+            return state in ('standby', 'complete', 'cancelled', 'error')
+        except Exception:
+            return False
+
+    def _configured_serial_path_set(self):
+        return {os.path.realpath(path)
+                for path in self._configured_serial_paths}
+
+    def _probe_v2_generic_candidate(self, path, active_paths, probe_budget):
+        if not (self._enable_ace_v2 and self._v2_probe_generic_usb):
+            return False
+        real_path = os.path.realpath(path)
+        if real_path in active_paths:
+            return True
+
+        if real_path in self._configured_serial_path_set():
+            logging.info('[multiACE] V2 probe skipped path=%s '
+                         'category=configured_serial_port', path)
+            return False
+
+        if not self._is_printer_idle_for_generic_probe():
+            return False
+
+        real_dev = os.path.basename(real_path)
+        vendor, product = AceProtocolV2._read_usb_ids(real_dev)
+        cache_key = (real_path, vendor, product)
+        now = time.monotonic()
+        cached = self._v2_generic_probe_cache.get(cache_key)
+        if cached is not None:
+            cached_at, verified, result = cached
+            # Keep positive identity results short-lived so unplug/replug on
+            # the same adapter path is re-identified on the next scan.
+            cache_ttl = (0.25 if verified else
+                         5.0 if result.get('category') in (
+                             'port_in_use', 'permission_denied', 'device_disconnected')
+                         else 30.0)
+            if now - cached_at < cache_ttl:
+                return verified
+
+        if cache_key in self._v2_generic_probe_in_progress:
+            return False
+
+        if AceProtocolV2.serial_port_in_use(path):
+            result = {
+                'ok': False,
+                'category': 'port_in_use',
+                'error': 'path is open by a visible process',
+            }
+            self._v2_generic_probe_cache[cache_key] = (
+                now, False, result)
+            self._usb_log.info(
+                'PROBE skip path=%s reason=already-open', path)
+            logging.info('[multiACE] V2 probe skipped path=%s '
+                         'category=port_in_use', path)
+            return False
+
+        if probe_budget[0] <= 0:
+            return False
+        probe_budget[0] -= 1
+        self._v2_generic_probe_cursor = real_path
+        probe_start = time.monotonic()
+        probe_done = threading.Event()
+        probe_result = {'result': None}
+        self._v2_generic_probe_in_progress.add(cache_key)
+
+        def _probe_worker():
+            try:
+                probe_result['result'] = AceProtocolV2.probe_device(
+                    path, query_timeout=0.35)
+            except Exception as e:
+                probe_result['result'] = {'ok': False, 'error': str(e)}
+            finally:
+                self._v2_generic_probe_in_progress.discard(cache_key)
+                probe_done.set()
+
+        threading.Thread(target=_probe_worker, daemon=True,
+                         name='multiace-v2-probe').start()
+        probe_deadline = self.reactor.monotonic() + 1.5
+        while not probe_done.is_set():
+            now_reactor = self.reactor.monotonic()
+            if now_reactor >= probe_deadline:
+                break
+            self.reactor.pause(min(probe_deadline, now_reactor + 0.025))
+        result = probe_result['result']
+        if result is None:
+            result = {
+                'ok': False,
+                'category': 'probe_timeout',
+                'error': 'probe exceeded 1.5s deadline',
+            }
+        verified = bool(result.get('ok'))
+        self._v2_generic_probe_cache[
+            cache_key] = (time.monotonic(), verified, result)
+        elapsed_ms = (time.monotonic() - probe_start) * 1000.0
+        if verified:
+            uid = '-'.join('%08x' % part for part in result['uid'])
+            self._usb_log.info(
+                'PROBE verified path=%s model=%s firmware=%s uid=%s '
+                'time=%.1fms', path, result['model'], result['firmware'],
+                uid, elapsed_ms)
+        else:
+            self._usb_log.info(
+                'PROBE rejected path=%s category=%s reason=%s time=%.1fms',
+                path, result.get('category', 'no_identity'),
+                result.get('error', 'no identity response'), elapsed_ms)
+            logging.info(
+                '[multiACE] V2 probe rejected path=%s category=%s reason=%s',
+                path, result.get('category', 'no_identity'),
+                result.get('error', 'no identity response'))
+        return verified
+
     def _scan_ace_devices(self, context='unknown'):
         scan_start = time.monotonic()
         self._usb_stats['scans'] += 1
@@ -2411,15 +2608,73 @@ class MultiAce:
 
         active_protocols = KNOWN_PROTOCOLS if self._enable_ace_v2 \
             else tuple(p for p in KNOWN_PROTOCOLS if p is not AceProtocolV2)
+        discovered_by_protocol = {
+            protocol_cls: protocol_cls.discover()
+            for protocol_cls in active_protocols
+        }
+        probe_budget = [1]
+        active_paths = set()
+        for idx, ser in self._serials.items():
+            if (ser is not None and getattr(ser, 'is_open', False)
+                    and idx < len(self._ace_devices)):
+                active_paths.add(os.path.realpath(self._ace_devices[idx]))
+
         for protocol_cls in active_protocols:
-            for path in protocol_cls.discover():
+            for path in discovered_by_protocol[protocol_cls]:
                 if path in ace_devices:
                     continue
+                real_path = os.path.realpath(path)
+                if protocol_cls is AceProtocolV2:
+                    if real_path not in active_paths:
+                        official = AceProtocolV2.is_official_usb_path(path)
+                        real_dev = os.path.basename(real_path)
+                        usb_ids = AceProtocolV2._read_usb_ids(real_dev)
+                        explicitly_configured = (
+                            usb_ids in self._v2_extra_usb_ids)
+                        if not (official or explicitly_configured) and (
+                                not self._v2_probe_generic_usb
+                                or not self._probe_v2_generic_candidate(
+                                    path, active_paths, probe_budget)):
+                            continue
                 self._ace_path_protocol[path] = protocol_cls
                 ace_devices.append(path)
                 real_dev = os.path.basename(os.path.realpath(path))
                 logging.info('[multiACE] Found device %s (%s) protocol=%s' % (
                     path, real_dev, protocol_cls.NAME))
+
+        if (self._enable_ace_v2 and self._v2_probe_generic_usb
+                and self._is_printer_idle_for_generic_probe()):
+            known_paths = set(discovered_by_protocol.get(
+                AceProtocolV1, ()))
+            known_paths.update(discovered_by_protocol.get(
+                AceProtocolV2, ()))
+            known_real_paths = {os.path.realpath(path)
+                                for path in known_paths.union(ace_devices)}
+            candidates = AceProtocolV2.discover_usb_serial_candidates()
+            # Resume after the last attempted port. A non-responsive adapter
+            # must not monopolize the one-probe budget on successive scans.
+            candidate_paths = [os.path.realpath(path) for path in candidates]
+            if self._v2_generic_probe_cursor in candidate_paths:
+                offset = candidate_paths.index(self._v2_generic_probe_cursor) + 1
+                candidates = candidates[offset:] + candidates[:offset]
+            for path in candidates:
+                real_path = os.path.realpath(path)
+                if real_path in known_real_paths:
+                    continue
+                if real_path in self._configured_serial_path_set():
+                    logging.info('[multiACE] Generic V2 probe skipped '
+                                 'configured serial path %s', path)
+                    continue
+                if not self._probe_v2_generic_candidate(
+                        path, active_paths, probe_budget):
+                    continue
+                self._ace_path_protocol[path] = AceProtocolV2
+                ace_devices.append(path)
+                known_real_paths.add(real_path)
+                real_dev = os.path.basename(real_path)
+                logging.info(
+                    '[multiACE] Verified generic ACE 2 candidate %s (%s)' % (
+                        path, real_dev))
 
         ace_devices.sort(key=self._ace_path_sort_key)
 
@@ -2999,6 +3254,58 @@ class MultiAce:
         self._watchdog_next = eventtime + REACTOR_WATCHDOG_INTERVAL
         return self._watchdog_next
 
+    # Heater intent observer. Every pheaters.set_temperature that does not
+    # come through heat_set_own() is a foreign request (slicer M104/M109,
+    # INNER macros, the display webhook) and is remembered per heater as
+    # (temp, time). The background swap engine restores the newest foreign
+    # request when it hands a head's heater back instead of cooling to 0:
+    # a slicer M109 that arrives while a bg op holds the heater would
+    # otherwise wait forever on a target of 0 (PID check_busy never
+    # settles), and a value-equal request (M109 S220 against our own 220)
+    # is invisible to any comparison of targets - only the call tells.
+    def _install_heat_observer(self):
+        if self._orig_set_temperature is not None:
+            return
+        pheaters = self.printer.lookup_object('heaters', None)
+        orig = getattr(pheaters, 'set_temperature', None)
+        if orig is None:
+            return
+        self._orig_set_temperature = orig
+        pheaters.set_temperature = self._observed_set_temperature
+        logging.info('[multiACE] heater intent observer installed')
+
+    def _observed_set_temperature(self, heater, temp, wait=False):
+        if not self._own_heat_depth:
+            try:
+                self._ext_heat_req[heater.get_name()] = (
+                    float(temp), self.reactor.monotonic())
+            except Exception:
+                pass
+        return self._orig_set_temperature(heater, temp, wait)
+
+    def heat_set_own(self, pheaters, heater, temp):
+        """set_temperature by multiACE's own background engine: recorded as
+        ours, not as a foreign request. Never waits: _own_heat_depth is one
+        counter for the whole process, not per greenlet, so a blocking
+        set_temperature(wait=True) would yield the reactor and book a
+        slicer M109 arriving during that wait as ours."""
+        self._own_heat_depth += 1
+        try:
+            return pheaters.set_temperature(heater, temp, False)
+        finally:
+            self._own_heat_depth -= 1
+
+    def heat_foreign_since(self, heater, since):
+        """(temp, time) of the newest foreign request for this heater at or
+        after `since` (reactor clock), else None."""
+        try:
+            req = self._ext_heat_req.get(heater.get_name())
+        except Exception:
+            return None
+        if req is None or req[1] < since:
+            return None
+        return req
+
     def _handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
 
@@ -3013,6 +3320,9 @@ class MultiAce:
         # flow routine stores its result on the bound spool (S PA notes).
         self._install_flow_calibrator_hook()
         self._install_flow_calibrate_cmd_hook()
+
+        # Heater intent observer for the background swap engine.
+        self._install_heat_observer()
 
         # [diag] reactor-stall watchdog (0003-0522 Timer-too-close hunt).
         if self.stall_watchdog and getattr(self, '_watchdog_timer', None) is None:
@@ -4653,6 +4963,7 @@ class MultiAce:
         self._auto_feed_enabled = False
         self._fa_context = 'idle'
         self._runout_suppress_heads = set()
+        self._swap_print_temp = {}
         logging.info('[multiACE] Print ended - auto-feed disabled')
         # Booking audit summary: what each spool consumed since its first
         # booking of this print (baseline set in book_spool_use). fires once
@@ -18666,6 +18977,48 @@ class MultiAce:
             'ace_changed': prev_active != target_ace,
         })
 
+    def _wrap_native_tool(self, gcmd, tool):
+        """T0-T3: tell a running background swap on this head that the
+        pick is coming, wait for its handover, then run the stock
+        handler unchanged."""
+        orig = self._orig_native_t.get(tool)
+        try:
+            self._notify_bg_pick(tool)
+        except Exception as e:
+            logging.info('[multiACE] T%d: bg toolchange notice failed: %s'
+                         % (tool, e))
+        if orig is None:
+            raise gcmd.error('T%d unavailable' % tool)
+        return orig(gcmd)
+
+    def _notify_bg_pick(self, head):
+        # The stock T macro parks the old head, lifts this one out of the
+        # dock and activates its extruder ~2.4 s after the pick; the bg
+        # engine's own interlock (_check_docked) only sees the activation.
+        # A prime still running in that window extrudes while the head is
+        # carried to the print. Announce the pick here, before the macro,
+        # and give the engine one move boundary to hand over while the
+        # head is still docked. Older engine without the hook: no-op.
+        bg = self.printer.lookup_object('ace_bg_swap', None)
+        if bg is None:
+            return
+        fn = getattr(bg, 'request_pick_abort', None)
+        if fn is None:
+            return
+        if not fn(head):
+            return
+        deadline = self.reactor.monotonic() + BG_PICK_NOTICE_WAIT
+        while self.reactor.monotonic() < deadline:
+            if not bg.is_busy(head):
+                logging.info('[multiACE] head %d: background op handed '
+                             'over before the toolchange' % self._disp(head))
+                return
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        self.log_always('[multiACE] head %d: background op did not hand '
+                        'over within %.0fs - toolchange proceeds, the '
+                        'engine aborts on pick as before'
+                        % (self._disp(head), BG_PICK_NOTICE_WAIT))
+
     def _wait_bg_op(self, head, gcmd=None, rearm_target=None):
         # Background-swap interlock (experimental [ace_bg_swap] module,
         # ace_bg_swap.py): a feed op targeting a head whose background
@@ -21164,6 +21517,23 @@ class MultiAce:
             except Exception:
                 pass
             logging.info('[multiACE] Swap: saved heater=%d (swap head)' % saved_heater_target)
+            # A pause can leave the swap head at target 0, and its RESUME
+            # replays this swap line before any slicer M104/M109. Restoring
+            # that 0 at the swap tail lets the print run on with a cooling
+            # nozzle. While printing, a target below min extrude is replaced
+            # by the last print target a swap saw on this head, else by the
+            # swap temp. The INITIAL block keeps the found target: the start
+            # gcode heats the head itself.
+            if saved_heater_target >= SWAP_MIN_EXTRUDE_TEMP:
+                self._swap_print_temp[head] = saved_heater_target
+            elif not initial_swap and self._is_actively_printing():
+                fallback = self._swap_print_temp.get(head) or swap_temp
+                logging.info('[multiACE] Swap: saved heater %d is below min '
+                             'extrude while printing - restoring %d (%s)'
+                             % (saved_heater_target, fallback,
+                                'last print target' if head in
+                                self._swap_print_temp else 'swap temp'))
+                saved_heater_target = fallback
             # Reference for the cool forward-probe temp (material-agnostic):
             # the live print target of this head, before INNER zeroes it.
             self._swap_probe_ref_temp = saved_heater_target
@@ -21392,7 +21762,9 @@ class MultiAce:
             except Exception as fa_e:
                 logging.info('[multiACE] post-load FA re-enable failed: %s' % fa_e)
 
-            wipe_temp = saved_heater_target if saved_heater_target >= 170 else swap_temp
+            wipe_temp = (saved_heater_target
+                         if saved_heater_target >= SWAP_MIN_EXTRUDE_TEMP
+                         else swap_temp)
             self.gcode.run_script_from_command('M109 S%d' % wipe_temp)
             self.gcode.run_script_from_command('ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD')
             self.toolhead.wait_moves()

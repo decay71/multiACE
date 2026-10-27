@@ -1,0 +1,12 @@
+{
+  "_comment": "Mock /api/version payload for the dev UI. Change printer.firmware_version to exercise the compatibility banner (try 1.5.2, 1.4.7, 9.9.9).",
+  "_generated": "2026-08-08",
+  "moonraker_url": "mock://moonraker",
+  "config_path": "tests/fixtures/mock_ace.cfg",
+  "frontend_dir": "multiace/web/frontend",
+  "printer": {
+    "device_name": "Snapmaker U1",
+    "machine_type": "U1",
+    "firmware_version": "1.5.2"
+  }
+}

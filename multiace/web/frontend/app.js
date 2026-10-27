@@ -1,14 +1,17 @@
 const { createApp, ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
-const API = "/multiace/api";
+// Behind nginx the UI lives at /multiace; the dev server serves it from the
+// root. Deriving the base from the path keeps one bundle working in both.
+const BASE = location.pathname.startsWith("/multiace") ? "/multiace" : "";
+const API = BASE + "/api";
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://")
-             + location.host + "/multiace/ws";
+             + location.host + BASE + "/ws";
 const SCREEN = "/screen";
 createApp({
   setup() {
     // Bowden-path calibration tab (physicsG port): hidden upstream (Dirk
     // 2026-09-25), shown on this branch.
     const CALIBRATION_TAB = true;
-    const _validTabs = new Set(["dashboard", "spools", "config"]);
+    const _validTabs = new Set(["dashboard", "control", "history", "spools", "config"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
     const _storedTab = localStorage.getItem("multiace.tab");
     const _isPluginTab = (s) => typeof s === "string" && s.startsWith("plugin:");
@@ -47,6 +50,81 @@ createApp({
           }
         }
       }
+    }
+    // The navigation entries, in order. The top bar renders this list, so
+    // a feature adds a tab by adding one entry here instead of editing the
+    // markup.
+    const navItems = computed(() => {
+      const items = [];
+      if (state.mode !== "normal") {
+        items.push({key: "dashboard", label: t("ui.tabs.dashboard")});
+      }
+      // Print Hub children, in their fixed order: Control, History, Queue,
+      // Favorites. Each feature adds its own entry here.
+      items.push({key: "control", group: "printhub", label: t("ui.tabs.control")});
+      items.push({key: "history", group: "printhub",
+                  label: t("ui.tabs.history")});
+      items.push({key: "spools", label: t("ui.tabs.spools")});
+      items.push({key: "config", label: t("ui.tabs.config")});
+      // Calibration hangs off Config: shown only while one of the two is
+      // open, so it cannot vanish under the user once selected.
+      if (CALIBRATION_TAB && state.mode !== "normal"
+          && (tab.value === "config" || tab.value === "calibration")) {
+        items.push({key: "calibration", label: t("ui.tabs.calibration")});
+      }
+      for (const p of plugins.items) {
+        items.push({key: "plugin:" + p.name, label: p.label});
+      }
+      return items;
+    });
+    // Groups of tabs. An entry with `group: "<key>"` is a child of that group:
+    // the top bar shows ONE entry for the group (placed before the entry named
+    // in `before`) and a second row lists the children while one of them is
+    // open. A group with no children is not shown, so adding a feature's tab
+    // is the only thing that makes its group appear.
+    const NAV_GROUPS = [
+      {key: "printhub", labelKey: "ui.tabs.print_hub", before: "spools"},
+    ];
+    const groupLast = reactive({});
+    for (const g of NAV_GROUPS) {
+      try { groupLast[g.key] = localStorage.getItem("multiace.tabGroup." + g.key) || ""; }
+      catch (e) { groupLast[g.key] = ""; }
+    }
+    const groupOf = (key) => {
+      const it = navItems.value.find(i => i.key === key);
+      return it && it.group ? it.group : null;
+    };
+    const activeGroup = computed(() => groupOf(tab.value));
+    // Remember the last child opened in each group, per browser.
+    watch(tab, (v) => {
+      const g = groupOf(v);
+      if (!g) return;
+      groupLast[g] = v;
+      try { localStorage.setItem("multiace.tabGroup." + g, v); } catch (e) {}
+    });
+    const topItems = computed(() => {
+      const out = [];
+      const addGroup = (g) => {
+        const children = navItems.value.filter(i => i.group === g.key);
+        if (children.length) {
+          out.push({key: "group:" + g.key, group: g.key, children, label: t(g.labelKey)});
+        }
+      };
+      for (const it of navItems.value) {
+        if (it.group) continue;
+        for (const g of NAV_GROUPS) if (g.before === it.key) addGroup(g);
+        out.push(it);
+      }
+      return out;
+    });
+    const subItems = computed(() =>
+      activeGroup.value ? navItems.value.filter(i => i.group === activeGroup.value) : []);
+    const topActive = (it) => it.group ? activeGroup.value === it.group : tab.value === it.key;
+    // A group opens the child that was open last, else its first child.
+    function openNav(it) {
+      if (!it.group) { tab.value = it.key; return; }
+      const last = groupLast[it.group];
+      tab.value = (it.children.find(c => c.key === last) || it.children[0]).key;
     }
     function pluginIframeSrc(p) {
       const u = (p && p.ui_url) || "/";
@@ -6787,7 +6865,7 @@ createApp({
     function ensurePreflightWorker() {
       if (!window.Worker) throw new Error(t("ui.preflight.local_worker_missing"));
       if (preflightWorker && preflightWorkerReady) return preflightWorkerReady;
-      preflightWorker = new Worker("preflight_pyodide_worker.js?v=pyodide-20260624");
+      preflightWorker = new Worker("preflight_pyodide_worker.js?v=pyodide-20261026");
       preflightWorkerReady = (async () => {
         const r = await fetch(`${API}/preflight/pysrc`);
         if (!r.ok) throw new Error("pysrc " + r.status);
@@ -6808,6 +6886,7 @@ createApp({
             pyodideIndexURL: PYODIDE_INDEX_URL,
             postprocessSrc: src.postprocess,
             coreSrc: src.core,
+            swapCostSrc: src.swap_cost || "",
           });
         });
       })();
@@ -6833,7 +6912,9 @@ createApp({
             return;
           }
           if ((type === "analyze" && msg.type === "analyze-done")
-              || (type === "rewrite" && msg.type === "rewrite-done")) {
+              || (type === "rewrite" && msg.type === "rewrite-done")
+              || (type === "estimate" && msg.type === "estimate-done")
+              || (type === "estimate-all" && msg.type === "estimate-all-done")) {
             worker.removeEventListener("message", onMsg);
             resolve(msg);
           }
@@ -6919,6 +7000,7 @@ createApp({
         const j = await runPreflightWorker("analyze", {
           jobId: preflightJobId, file: f,
           liveSlots: live.live_slots, headCtx: live.head_ctx,
+          costParams: live.cost_params,
         }, msg => {
           preflight.progress = {
             percent: Number(msg.percent || 0),
@@ -7390,6 +7472,415 @@ createApp({
         },
       });
     }
+    // Control tab: the printer's camera. MJPEG comes through the backend as
+    // an <img>; a WebRTC camera (camera-streamer) is a <video> whose media
+    // travels browser-to-camera, with only the handshake going through the
+    // backend. The stream is only opened while the tab is showing, so a
+    // hidden tab does not keep a connection to the camera.
+    const webcam = reactive({
+      loaded: false, available: false, reason: "", name: "",
+      webrtc: false, proxy: "", signal: "", aspect: "16 / 9",
+      connFailed: false,
+      // Cache-buster: an MJPEG <img> that was torn down keeps its old
+      // connection cached, so re-opening the tab shows a frozen frame
+      // until the src actually changes.
+      nonce: 0,
+    });
+    const controlShown = computed(() => !panelMode && tab.value === "control");
+    const webcamVideo = ref(null);
+    const webcamSrc = computed(() =>
+      webcam.available && !webcam.webrtc && controlShown.value
+        ? `${BASE}${webcam.proxy}?n=${webcam.nonce}` : "");
+    let webcamPc = null;
+    let webcamRetry = null;
+    function stopWebrtc() {
+      clearTimeout(webcamRetry);
+      if (webcamPc) { webcamPc.close(); webcamPc = null; }
+      if (webcamVideo.value) webcamVideo.value.srcObject = null;
+    }
+    // camera-streamer's handshake is reversed from a typical WHIP/WHEP
+    // flow: the SERVER makes the offer (it knows the video track) and the
+    // browser answers, over two plain POSTs of JSON-wrapped SDP.
+    async function startWebrtc() {
+      stopWebrtc();
+      webcam.connFailed = false;
+      webcam.reason = "";
+      await nextTick();
+      const video = webcamVideo.value;
+      if (!video || !webcam.signal) return;
+      const post = (body) => fetch(`${BASE}${webcam.signal}`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      const pc = new RTCPeerConnection();
+      webcamPc = pc;
+      const fail = (why) => {
+        if (pc !== webcamPc) return;
+        webcam.reason = why;
+        webcam.connFailed = true;
+        // Retry while the tab is open, but not in a tight loop.
+        if (controlShown.value) {
+          webcamRetry = setTimeout(() => { if (pc === webcamPc) startWebrtc(); }, 5000);
+        }
+      };
+      pc.addTransceiver("video", {direction: "recvonly"});
+      pc.addEventListener("track", (evt) => {
+        if (pc === webcamPc && evt.track.kind === "video") video.srcObject = evt.streams[0];
+      });
+      // "track" fires as soon as the transceiver is negotiated, before any
+      // media arrives, so it proves nothing. Some LAN cameras never resolve
+      // Chrome's mDNS-obfuscated host candidates, leaving the connection in
+      // "checking" with no "failed" event: a flat timeout catches that.
+      // The same check covers a connection that comes up but delivers no
+      // video (a stale session on the camera): it fails visibly and retries.
+      const connectTimeout = setTimeout(() => {
+        if (pc !== webcamPc) return;
+        if (pc.connectionState !== "connected") fail("connection timed out");
+        else if (!video.videoWidth) fail("no video received");
+      }, 10000);
+      pc.addEventListener("connectionstatechange", () => {
+        if (pc !== webcamPc) return;
+        if (pc.connectionState === "connected") {
+          webcam.connFailed = false;
+        } else if (["failed", "disconnected"].includes(pc.connectionState)) {
+          clearTimeout(connectTimeout);
+          fail(pc.connectionState);
+        }
+      });
+      try {
+        const offerRes = await post({type: "request"});
+        if (!offerRes.ok) throw new Error(`camera: HTTP ${offerRes.status}`);
+        const offer = await offerRes.json();
+        await pc.setRemoteDescription(offer);
+        await pc.setLocalDescription(await pc.createAnswer());
+        await new Promise((resolve) => {
+          if (pc.iceGatheringState === "complete") { resolve(); return; }
+          const check = () => {
+            if (pc.iceGatheringState === "complete") {
+              pc.removeEventListener("icegatheringstatechange", check);
+              resolve();
+            }
+          };
+          pc.addEventListener("icegatheringstatechange", check);
+        });
+        if (pc !== webcamPc) return;
+        const ans = await post({type: pc.localDescription.type, id: offer.id,
+                                sdp: pc.localDescription.sdp});
+        if (!ans.ok) throw new Error(`camera: HTTP ${ans.status}`);
+      } catch (e) {
+        clearTimeout(connectTimeout);
+        fail(e.message || String(e));
+      }
+    }
+    function reloadWebcam() {
+      if (webcam.available && webcam.webrtc) startWebrtc();
+      else loadWebcam();
+    }
+    let webcamLoading = false;
+    async function loadWebcam() {
+      webcamLoading = true;
+      try {
+        const r = await fetch(`${API}/webcam/info`);
+        const j = r.ok ? await r.json() : {available: false, reason: `HTTP ${r.status}`};
+        webcam.webrtc = !!j.webrtc;
+        webcam.proxy = j.proxy_path || "";
+        webcam.signal = j.signal_path || "";
+        webcam.available = !!(j.available && (webcam.proxy || webcam.signal));
+        webcam.reason = j.reason || "";
+        webcam.name = j.name || "";
+        webcam.aspect = String(j.aspect_ratio || "16:9").replace(":", " / ");
+      } catch (e) {
+        webcam.available = false;
+        webcam.reason = String(e);
+      } finally {
+        webcamLoading = false;
+        webcam.loaded = true;
+        webcam.nonce++;
+        if (controlShown.value && webcam.available && webcam.webrtc) startWebrtc();
+        else stopWebrtc();
+      }
+    }
+    watch(controlShown, (shown) => {
+      if (!shown) { stopWebrtc(); return; }
+      if (!webcam.loaded) loadWebcam();
+      else if (webcam.webrtc) startWebrtc();
+      else webcam.nonce++;
+    }, {immediate: true});
+    onUnmounted(stopWebrtc);
+
+    // Print panel: speed, flow, fan, temperatures, Z offset and the job
+    // verbs. Every value shown is READ BACK from the printer (polled while
+    // the tab is open), never remembered locally: a change made on the
+    // printer's own display has to show up here too.
+    const printCtl = reactive({
+      speed_factor: 100, extrude_factor: 100, fan: 0, z_offset: 0, light: null, detection: null, enclosure: null,
+      nozzle: {temp: null, target: null}, bed: {temp: null, target: null},
+      progress: 0, message: "", state: "", filename: "",
+    });
+    const printCtlLimits = reactive({
+      ranges: {speed: {min: 25, max: 300}, flow: {min: 75, max: 125},
+               fan: {min: 0, max: 100}},
+      nozzle: {min: 0, max: 300}, bed: {min: 0, max: 120},
+      babystep: {step: 0.05, total: 0.5, used: 0},
+    });
+    // Local slider positions. They follow the readback except while the
+    // user is holding one.
+    const printCtlDraft = reactive({speed: 100, flow: 100, fan: 0, exhaust: 0, inner: 0});
+    const printCtlDragging = ref("");
+    const printCtlBusy = ref("");
+    const printCtlError = ref("");
+    // A command that timed out on its way back is QUEUED, not failed: a
+    // multiACE swap holds Klipper's queue for minutes and the command runs
+    // afterwards. Until then the same control stays disabled, so a second
+    // press cannot send it twice.
+    const printCtlNotice = ref("");
+    const printCtlQueued = reactive({});
+    const PRINT_CTL_QUEUED_MS = 180000;
+    const printCtlCan = computed(() => ({
+      pause: printCtl.state === "printing",
+      resume: printCtl.state === "paused",
+      cancel: printCtl.state === "printing" || printCtl.state === "paused",
+    }));
+    // Outside a print the fans may be driven directly only while no mode
+    // runs; the server enforces it, this only explains it. During a print
+    // they are always allowed (stock accepts it too); a running mode may
+    // override the exhaust value, which is only a hint.
+    // Stock's defect detection watches the print with the camera, which needs
+    // the chamber light: while it is on during a print the light stays on.
+    // The server refuses it too; this only disables the switch and explains.
+    const lightLocked = computed(() =>
+      printCtl.light > 0 && !!printCtl.detection
+      && (printCtl.state === "printing" || printCtl.state === "paused"));
+    const enclosureLock = computed(() => {
+      const e = printCtl.enclosure;
+      if (printCtl.state === "printing" || printCtl.state === "paused") return "";
+      if (e && e.mode) return t("ui.control.enc_locked_mode");
+      return "";
+    });
+    const enclosureHint = computed(() => {
+      const e = printCtl.enclosure;
+      return (printCtl.state === "printing" || printCtl.state === "paused")
+        && e && e.mode ? t("ui.control.enc_hint_print") : "";
+    });
+    const enclosureModeText = computed(() => {
+      const e = printCtl.enclosure;
+      if (!e || e.mode === null || e.mode === undefined) return "";
+      const name = t("ui.control.mode_" + e.mode);
+      return e.desired_temp && (e.mode === 1 || e.mode === 2)
+        ? `${name} · ${Math.round(e.desired_temp)} °C` : name;
+    });
+    async function loadPrintControl() {
+      try {
+        const r = await fetch(`${API}/print-control`);
+        if (!r.ok) {
+          if (printCtlRestarting.value) restartSawFail = true;
+          else printCtlError.value = `HTTP ${r.status}`;
+          return;
+        }
+        const pc = await r.json();
+        printCtlError.value = "";
+        if (printCtlRestarting.value && restartSawFail) {
+          // The printer has answered again after the restart.
+          printCtlRestarting.value = false;
+          printCtlNotice.value = "";
+        }
+        Object.assign(printCtl, pc);
+        if (printCtlDragging.value !== "speed") printCtlDraft.speed = pc.speed_factor;
+        if (printCtlDragging.value !== "flow") printCtlDraft.flow = pc.extrude_factor;
+        if (printCtlDragging.value !== "fan") printCtlDraft.fan = pc.fan;
+        for (const f of ["exhaust", "inner"]) {
+          if (pc.enclosure && pc.enclosure[f] !== null && printCtlDragging.value !== f) {
+            printCtlDraft[f] = pc.enclosure[f];
+          }
+        }
+      } catch (e) {
+        if (printCtlRestarting.value) restartSawFail = true;
+        else printCtlError.value = e.message || String(e);
+      }
+    }
+    async function loadPrintControlLimits() {
+      try {
+        const r = await fetch(`${API}/print-control/limits`);
+        if (r.ok) Object.assign(printCtlLimits, await r.json());
+      } catch (_) {}
+    }
+    async function sendPrintControl(verb, value) {
+      printCtlBusy.value = verb;
+      printCtlError.value = "";
+      try {
+        const r = await fetch(`${API}/print-control`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(value === undefined ? {verb} : {verb, value}),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `${r.status}`);
+        // Snap the slider to what the server ACTUALLY applied: it clamps,
+        // and a control showing a value the printer refused lies about the
+        // machine.
+        if (j.applied !== null && j.applied !== undefined) {
+          if (verb === "speed") printCtlDraft.speed = j.applied;
+          if (verb === "flow") printCtlDraft.flow = j.applied;
+          if (verb === "fan") printCtlDraft.fan = j.applied;
+          if (verb === "exhaust" || verb === "inner") printCtlDraft[verb] = j.applied;
+        }
+        if (j.ok === false && j.detail) printCtlError.value = j.detail;
+        if (j.queued) {
+          printCtlNotice.value = t("ui.control.queued");
+          printCtlQueued[verb] = true;
+          setTimeout(() => { delete printCtlQueued[verb]; printCtlNotice.value = ""; },
+                     PRINT_CTL_QUEUED_MS);
+        }
+        if (verb === "babystep" && j.total_mm !== undefined) {
+          printCtlLimits.babystep.used = j.total_mm;
+        }
+        await loadPrintControl();
+      } catch (e) {
+        printCtlError.value = e.message || String(e);
+      } finally {
+        printCtlBusy.value = "";
+      }
+    }
+    // One command per ~250 ms of dragging, and ALWAYS a final one on
+    // release: an undelivered last event is how a slider lies.
+    let _ctlDebounce = null;
+    function printCtlSlide(verb, value) {
+      printCtlDragging.value = verb;
+      if (_ctlDebounce) clearTimeout(_ctlDebounce);
+      _ctlDebounce = setTimeout(() => sendPrintControl(verb, Number(value)), 250);
+    }
+    function printCtlRelease(verb, value) {
+      if (_ctlDebounce) { clearTimeout(_ctlDebounce); _ctlDebounce = null; }
+      printCtlDragging.value = "";
+      sendPrintControl(verb, Number(value));
+    }
+    function printCtlReset(verb) {
+      printCtlRelease(verb, verb === "fan" ? 0 : 100);
+    }
+    // The target boxes show the current target, so a spinner arrow steps from
+    // the real value instead of from an empty box. While the user is in a
+    // box the typed value wins over the readback; leaving the box (blur)
+    // goes back to showing the target.
+    const printCtlTempDraft = reactive({nozzle: null, bed: null});
+    function printCtlTempShown(verb) {
+      if (printCtlTempDraft[verb] !== null) return printCtlTempDraft[verb];
+      const target = printCtl[verb].target;
+      return target === null ? "" : Math.round(target);
+    }
+    // An empty box is "nothing typed", not 0: sending 0 would switch the
+    // heater off.
+    function printCtlHeat(verb, ev) {
+      const raw = String(ev.target.value).trim();
+      if (raw === "") return;
+      const v = Number(raw);
+      if (Number.isFinite(v)) sendPrintControl(verb, v);
+    }
+    // Restart Firmware / Restart Printer. Refused by the server while a
+    // print runs and under a managed install; the buttons mirror that. After
+    // a restart the printer is unreachable for a while, so poll errors are
+    // expected and are not shown until it has answered again.
+    const printCtlRestarting = ref(false);
+    let restartSawFail = false;
+    const printCtlRestartBlocked = computed(() =>
+      printCtl.state === "printing" || printCtl.state === "paused" || printCtlBusy.value !== "");
+    function printCtlRestart(behavior) {
+      confirm({
+        title: t(`ui.restart.${behavior}_title`),
+        message: t(`ui.restart.${behavior}_msg`),
+        okLabel: t(`ui.restart.${behavior}_btn`),
+        onOk: async () => {
+          printCtlBusy.value = "restart";
+          printCtlError.value = "";
+          try {
+            const r = await fetch(`${API}/restart`, {
+              method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({behavior}),
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j.detail || `${r.status}`);
+            printCtlNotice.value = t(`ui.restart.${behavior}_sent`);
+            printCtlRestarting.value = true;
+            restartSawFail = false;
+            setTimeout(() => {
+              printCtlRestarting.value = false;
+              printCtlNotice.value = "";
+            }, 120000);
+          } catch (e) {
+            printCtlError.value = e.message || String(e);
+          } finally {
+            printCtlBusy.value = "";
+          }
+        },
+      });
+    }
+    function printCtlCancel() {
+      confirm({
+        title: t("ui.control.cancel_title"),
+        message: t("ui.control.cancel_msg"),
+        okLabel: t("ui.control.cancel_ok"),
+        onOk: () => sendPrintControl("cancel"),
+      });
+    }
+
+    // Console, read only. Polled incrementally while the tab is open.
+    const CONSOLE_MAX = 400;
+    const consoleLines = ref([]);
+    const consoleFollow = ref(localStorage.getItem("multiace.console.follow") !== "0");
+    const consoleEl = ref(null);
+    let lastConsoleId = 0;
+    watch(consoleFollow,
+          v => localStorage.setItem("multiace.console.follow", v ? "1" : "0"));
+    async function loadConsole() {
+      try {
+        const r = await fetch(`${API}/console-logs?lines=200&since_id=${lastConsoleId}`);
+        if (!r.ok) return;
+        const lines = (await r.json()).lines || [];
+        if (!lines.length) return;
+        for (const ln of lines) {
+          if (ln.id <= lastConsoleId) continue;
+          lastConsoleId = ln.id;
+          consoleLines.value.push(ln);
+        }
+        if (consoleLines.value.length > CONSOLE_MAX) {
+          consoleLines.value.splice(0, consoleLines.value.length - CONSOLE_MAX);
+        }
+        if (consoleFollow.value) {
+          nextTick(() => {
+            const el = consoleEl.value;
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }
+      } catch (_) {}
+    }
+    function consoleTime(ts) {
+      if (!ts) return "";
+      try { return new Date(ts * 1000).toLocaleTimeString(); }
+      catch (_) { return ""; }
+    }
+
+    // Poll the printer only while the Control tab is showing.
+    const CONTROL_POLL_MS = 2000;
+    let controlTimer = null;
+    let webcamRetryTick = 0;
+    function controlPoll() {
+      loadPrintControl();
+      loadConsole();
+      // No camera yet (Moonraker was slow, or it was added later): look again
+      // every ~10 s while the tab is open instead of waiting for a click.
+      if (webcam.loaded && !webcam.available && !webcamLoading && ++webcamRetryTick % 5 === 0) {
+        loadWebcam();
+      }
+    }
+    watch(controlShown, (shown) => {
+      clearInterval(controlTimer);
+      controlTimer = null;
+      if (!shown) return;
+      loadPrintControlLimits();
+      controlPoll();
+      controlTimer = setInterval(controlPoll, CONTROL_POLL_MS);
+    }, {immediate: true});
+    onUnmounted(() => clearInterval(controlTimer));
+
     let resizeObserver = null;
     onMounted(async () => {
       // Page loaded straight into the spools tab (stored tab) - the watcher
@@ -7461,6 +7952,104 @@ createApp({
       ev.returnValue = '';
       return '';
     }
+    // =================================================================
+    // Print history
+    //
+    // Moonraker owns duration and result; multiACE owns the plan, the
+    // assignment and the swaps. The table shows the join, not a copy.
+    // =================================================================
+    const history = reactive({
+      loaded: false, busy: false, error: "", jobs: [], detail: null,
+      reprinting: "", stats: [], minSamples: 5,
+    });
+    async function loadHistory() {
+      history.busy = true;
+      history.error = "";
+      try {
+        const r = await fetch(`${API}/history?limit=50`);
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || `${r.status}`);
+        history.jobs = j.jobs || [];
+        history.loaded = true;
+        loadHistoryStats();
+      } catch (e) {
+        history.error = e.message || String(e);
+      } finally {
+        history.busy = false;
+      }
+    }
+    // Measured swap time per kind. Secondary to the table: a failure here
+    // just leaves the row out.
+    async function loadHistoryStats() {
+      try {
+        const r = await fetch(`${API}/history/stats/swaps`);
+        if (!r.ok) return;
+        const j = await r.json();
+        history.minSamples = j.min_samples || history.minSamples;
+        history.stats = Object.entries(j.stats || {}).map(
+          ([kind, s]) => ({kind, ...s}));
+      } catch (e) {}
+    }
+    function swapKindLabel(kind) {
+      const key = "ui.history.swap_kind." + kind;
+      const v = t(key);
+      return v === key ? kind : v;
+    }
+    function historyRowKey(row) {
+      return (row && (row.id || row.job_id || row.filename)) || "";
+    }
+    function openHistoryDetail(row) {
+      const key = historyRowKey(row);
+      history.detail = history.detail === key ? null : key;
+    }
+    function historyColors(row) {
+      const asn = (row && row.multiace && row.multiace.assignment) || {};
+      return Object.keys(asn).map(h => ({
+        head: h, ace: asn[h].ace_index, slot: asn[h].slot,
+        color: asn[h].color ? ("#" + String(asn[h].color).replace(/^#/, ""))
+                            : "#666",
+      }));
+    }
+    function fmtDuration(sec) {
+      if (!sec || sec < 0) return "–";
+      if (sec < 120) return `${Math.round(sec)} s`;
+      const m = Math.round(sec / 60);
+      return m < 60 ? `${m} min`
+                    : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
+    }
+    // Reprint: start the file exactly as it already sits on the printer, with
+    // no preflight and no rewrite. The swaps baked in from its first run
+    // still apply; a loadout that has moved on since is the user's call.
+    function reprintJob(row) {
+      if (!row || !row.filename || history.reprinting) return;
+      confirm({
+        title: t("ui.history.reprint_title"),
+        message: t("ui.history.reprint_msg", {name: row.filename}),
+        okLabel: t("ui.history.reprint_ok"),
+        onOk: () => doReprint(row),
+      });
+    }
+    async function doReprint(row) {
+      history.reprinting = historyRowKey(row);
+      history.error = "";
+      try {
+        const r = await fetch(`${API}/history/reprint`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({filename: row.filename}),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `${r.status}`);
+        setMacroLog(t("ui.history.reprint_started", {name: row.filename}));
+      } catch (e) {
+        history.error = e.message || String(e);
+      } finally {
+        history.reprinting = "";
+      }
+    }
+    watch(tab, (v) => { if (v === "history" && !history.loaded) loadHistory(); });
+    if (tab.value === "history") loadHistory();
+
     onUnmounted(() => {
       clearTimeout(wsReconnectTimer);
       clearInterval(screenTimer);
@@ -7470,6 +8059,8 @@ createApp({
       window.removeEventListener("beforeunload", _onBeforeUnload);
     });
     return {
+      history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
+      fmtDuration, reprintJob, swapKindLabel,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,
@@ -7556,6 +8147,15 @@ createApp({
       headPlanMapping, multiTopology, slotHead, pinLabel,
       updateState, updateCheck, updateApply,
       debugState, debugEnable, debugDisable,
+      navItems, topItems, subItems, topActive, openNav,
+      webcam, webcamSrc, webcamVideo, reloadWebcam,
+      printCtl, printCtlLimits, printCtlDraft, printCtlBusy, printCtlError, printCtlCan,
+      printCtlNotice, printCtlQueued, printCtlRestart, printCtlRestartBlocked,
+      printCtlTempDraft, printCtlTempShown,
+      enclosureLock, enclosureHint, enclosureModeText, lightLocked,
+      printCtlSlide, printCtlRelease, printCtlReset, printCtlHeat, printCtlCancel,
+      sendPrintControl,
+      consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,
       plugins, refreshPlugins, pluginIframeSrc,
       notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications,
       confirmDialog, okConfirm, altConfirm, cancelConfirm, confirmInputError,

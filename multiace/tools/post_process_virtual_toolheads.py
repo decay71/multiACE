@@ -1407,6 +1407,148 @@ BG_SWAP_COST_INLINE_S = 210
 BG_SWAP_COST_BG_S = 30
 BG_UNLOAD_INLINE_SAVING_S = BG_SWAP_COST_INLINE_S - BG_SWAP_COST_BG_S
 
+# --------------------------------------------------------------------------
+# Swap timeline for the preflight estimate
+# --------------------------------------------------------------------------
+# swap_cost.SwapCostModel is optional: with no model the timeline falls back
+# to the constants above, and an older installed swap_cost.py simply yields
+# a smaller estimate rather than failing a preflight.
+
+def _model_cost(cost_model, kind, ace=None, slot=None):
+    """Seconds for one swap of `kind`, model-first, constants otherwise."""
+    if cost_model is not None:
+        try:
+            return float(cost_model.swap_seconds(kind, ace=ace, slot=slot))
+        except Exception:
+            pass
+    if kind == 'head_change':
+        return 4.2
+    return float(BG_SWAP_COST_BG_S if kind == 'cross_ace_bg'
+                 else BG_SWAP_COST_INLINE_S)
+
+
+def _model_purge_mm(cost_model, flush_matrix, from_t, to_t):
+    """Millimetres to purge for one swap - the same number the rewrite
+    stamps (see _matrix_purge_mm), resolved through the cost model so the
+    estimate never shows a different purge than the engine extrudes."""
+    if cost_model is None:
+        return 0.0
+    try:
+        return float(cost_model.resolve_swap_purge_mm(
+            stamp_mm=_matrix_purge_mm(flush_matrix, from_t, to_t)))
+    except Exception:
+        return 0.0
+
+
+def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
+                        cost_model=None, flush_matrix=None,
+                        bg_purge_inline=False, copies=None):
+    """Per-toolchange trace of what the plan costs and why.
+
+    One entry per toolchange:
+      {i, t, from_t, head, ace, slot, kind, window_min, seconds, purge_mm,
+       purge_inline, note}
+    where `kind` is one of swap_cost.SWAP_KINDS. A toolchange that needs no
+    filament change (onto a pinned feeder, or onto a head that already holds
+    the right filament) is a 'head_change': only the pick and park, no
+    purge. `flush_matrix` is the
+    stamp-basis matrix (parse_flush_matrix_raw*): with it `purge_mm` is the
+    stamp the engine will write for that (from_t, to_t) pair. With `copies`
+    (colour copies on several heads, see detect_color_copies) the head of
+    each event is the per-event choice of simulate_dynamic_swaps, the same
+    one the rewriter makes.
+
+    `bg_purge_inline` marks background swaps whose flush happens inline
+    anyway (the background load is disabled, so the arrival loads inline).
+    Returns [] rather than raising on anything it cannot classify: an
+    estimate is never worth failing a preflight over.
+    """
+    bg_set = set(bg_heads or [])
+    events = list(events or [])
+    have_t = bool(event_times) and len(event_times) == len(events)
+
+    head_key = {}        # head -> (ace, slot) currently loaded
+    head_color = {}      # head -> the T last loaded there
+    last_use = {}        # head -> index of its last event
+    out = []
+    chosen = None
+    if copies:
+        chosen = simulate_dynamic_swaps(
+            events, _targets_with_copies(assignment, copies), bg_heads)[1]
+
+    def head_change(i, t, e, note):
+        return {
+            'i': i, 't': t, 'from_t': head_color.get(e.get('head')),
+            'head': e.get('head'), 'ace': e.get('ace'), 'slot': e.get('slot'),
+            'kind': 'head_change', 'window_min': None,
+            'seconds': round(_model_cost(cost_model, 'head_change'), 1),
+            'purge_mm': 0.0, 'purge_inline': False, 'note': note}
+
+    for i, t in enumerate(events):
+        e = chosen[i] if chosen else (assignment or {}).get(t)
+        if not e:
+            continue
+        if e.get('kind') == 'pin':
+            out.append(head_change(i, t, e, 'pinned feeder'))
+            continue
+        if e.get('kind') != 'ace':
+            continue
+        head = e.get('head')
+        key = (e.get('ace'), e.get('slot'))
+        prev_key = head_key.get(head)
+        if prev_key == key:
+            out.append(head_change(i, t, e, 'head already holds it'))
+            last_use[head] = i
+            head_color[head] = t
+            continue
+
+        from_t = head_color.get(head)
+        window = None
+        if have_t:
+            j = last_use.get(head)
+            a = event_times[0 if j is None else j + 1]
+            b = event_times[i]
+            if a is not None and b is not None:
+                window = a - b
+
+        if prev_key is None:
+            kind = 'first_load'
+            note = 'first load of head %s' % head
+        else:
+            # Same rule as the rewrite's bg stamp: a bg-enabled head swaps
+            # in the background when its parked window reaches
+            # BG_UNLOAD_MIN_WINDOW_MIN, or when no M73 time is known (the
+            # engine's abort is the safety net there).
+            if head in bg_set and (window is None
+                                   or window >= BG_UNLOAD_MIN_WINDOW_MIN):
+                kind = 'cross_ace_bg'
+                note = ('preloaded in the background (%.1f min window)'
+                        % window if window is not None else
+                        'background swap, window unknown (no M73 time)')
+            elif prev_key[0] == key[0]:
+                kind = 'same_ace'
+                note = 'same ACE, different slot'
+            else:
+                kind = 'cross_ace_inline'
+                note = ('no window before use - degrades to inline'
+                        if head in bg_set else 'inline swap')
+
+        out.append({
+            'i': i, 't': t, 'from_t': from_t, 'head': head,
+            'ace': e.get('ace'), 'slot': e.get('slot'), 'kind': kind,
+            'window_min': (round(window, 2) if window is not None else None),
+            'seconds': round(_model_cost(
+                cost_model, kind, e.get('ace'), e.get('slot')), 1),
+            'purge_mm': round(_model_purge_mm(
+                cost_model, flush_matrix, from_t, t), 1),
+            'purge_inline': bool(kind == 'cross_ace_bg' and bg_purge_inline),
+            'note': note})
+
+        head_key[head] = key
+        head_color[head] = t
+        last_use[head] = i
+    return out
+
 # [PROTOTYPE] Background the initial-load phase. The auto-load
 # block loads every initial ACE head sequentially inline (~90s each). With
 # this on, every SECOND initial head (that is bg-enabled) is stamped as a
@@ -1608,6 +1750,25 @@ def parse_flush_matrix_from_file(in_path):
     except OSError:
         return None
     return _flush_matrix_build(raw, mult)
+
+def parse_flush_matrix_raw(gcode):
+    """Text variant of parse_flush_matrix_raw_from_file (the preflight's
+    plan proxy keeps the flush_ lines)."""
+    raw = None
+    mult = 1.0
+    for line in gcode.splitlines():
+        s = line.strip()
+        m = _FLUSH_MATRIX_RE.match(s)
+        if m:
+            raw = m.group(1)
+            continue
+        m = _FLUSH_MULT_RE.match(s)
+        if m:
+            try:
+                mult = float(m.group(1))
+            except ValueError:
+                mult = 1.0
+    return _flush_matrix_build(raw, max(1.0, mult))
 
 def parse_flush_matrix_raw_from_file(in_path):
     """The stamp basis: pair values as authored, with the file's
