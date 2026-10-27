@@ -867,6 +867,25 @@
             </div>
           </div>
 
+          <!-- After a clear: outside the panels, so a Setup/Results switch keeps it. -->
+          <div v-if='calibrationClear.undo' class='calibration-undo row' role='status'>
+            <div>
+              <strong>{{ calibrationClear.undo.level === 'slot'
+                ? t('ui.calibration.clear_done_slot', {slot: dispIdx(calibrationClear.undo.slot)})
+                : t('ui.calibration.clear_done_ace', {ace: dispIdx(calibrationClear.undo.ace)}) }}</strong>
+              {{ t('ui.calibration.clear_undo_hint') }}
+            </div>
+            <button :disabled='!!calibrationUi.busy'
+                    @click='calibrationClearUndo'>{{ calibrationUi.busy === 'undo'
+                      ? t('ui.calibration.saving') : t('ui.calibration.clear_undo') }}</button>
+          </div>
+          <div v-else-if='calibrationClear.restored' class='calibration-undo done' role='status'>
+            <div>
+              <strong>{{ t('ui.calibration.clear_undo_done') }}</strong>
+              {{ t('ui.calibration.clear_undo_done_hint') }}
+            </div>
+          </div>
+
           <div class='calibration-workflow'>
             <div class='calibration-workflow-tabs' role='tablist'
                  :aria-label='t(`ui.calibration.workflow_aria`)'>
@@ -940,6 +959,57 @@
                           : t('ui.calibration.head_ace') }}</small>
                     </button>
                   </div>
+                </div>
+
+                <!-- What is saved for this route, and clearing it. -->
+                <div class='calibration-saved-values'>
+                  <div class='calibration-saved-head'>
+                    <span>{{ t('ui.calibration.values_head') }}</span>
+                    <span class='calibration-badge' :class='calibrationSavedKind'>{{ calibrationSlotBadge(calibrationSelectedSlot) }}</span>
+                  </div>
+                  <table class='calibration-clear-table'>
+                    <thead><tr>
+                      <th></th>
+                      <th>{{ t('ui.calibration.row_load') }}</th>
+                      <th>{{ t('ui.calibration.m_splitter') }}</th>
+                      <th>{{ t('ui.calibration.row_retract') }}</th>
+                    </tr></thead>
+                    <tbody>
+                      <tr v-for='level in calibrationSavedLevels' :key='level.src'
+                          :class='{unset: !level.set, "in-use": level.inUse}'>
+                        <td>{{ level.name }}<span v-if='level.inUse' class='in-use-tag'>{{ t('ui.calibration.values_in_use') }}</span></td>
+                        <td v-for='(value, i) in level.values' :key='i'>{{ value ?? '–' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div class='calibration-selector-block'>
+                    <label>{{ t('ui.calibration.clear_scope_label') }}</label>
+                  </div>
+                  <div class='calibration-clear-row'>
+                    <div class='calibration-option-grid two'>
+                      <button type='button' class='calibration-route-option'
+                              :class='{selected: calibrationUi.scope === `slot`}'
+                              :disabled='!!calibrationUi.busy'
+                              @click='calibrationSetScope(`slot`)'>
+                        <strong>{{ t('ui.calibration.scope_slot', {slot: dispIdx(calibrationUi.slot)}) }}</strong>
+                      </button>
+                      <button type='button' class='calibration-route-option'
+                              :class='{selected: calibrationUi.scope === `ace`}'
+                              :disabled='!!calibrationUi.busy'
+                              @click='calibrationSetScope(`ace`)'>
+                        <strong>{{ t('ui.calibration.scope_ace', {ace: dispIdx(calibrationUi.ace)}) }}</strong>
+                      </button>
+                    </div>
+                    <div class='row calibration-clear-action'>
+                      <button class='warn' :disabled='!!calibrationClearBlocked || !!calibrationUi.busy'
+                              :title='calibrationClearBlocked?.why || null'
+                              :aria-describedby='calibrationClearBlocked ? `calibration-clear-why-setup` : null'
+                              @click='calibrationClearOpen'>{{ calibrationUi.busy === 'clear'
+                                ? t('ui.calibration.saving') : t('ui.calibration.clear') }}</button>
+                    </div>
+                  </div>
+                  <p v-if='calibrationClearBlocked' id='calibration-clear-why-setup'
+                     class='calibration-clear-reason' :class='{blocked: calibrationClearBlocked.blocked}'>{{ calibrationClearBlocked.why }}</p>
                 </div>
 
                 <p v-if='calibrationRouteLocked' class='calibration-warning'>
@@ -1458,6 +1528,11 @@
                               @click='calibrationVerifyConfigured'>{{ t('ui.calibration.verify_first') }}</button>
                       <button :disabled='!!calibrationUi.busy'
                               @click='calibrationAction(`reset`)'>{{ t('ui.calibration.discard') }}</button>
+                      <button class='warn' :disabled='!!calibrationClearBlocked || !!calibrationUi.busy'
+                              :title='calibrationClearBlocked?.why || null'
+                              :aria-describedby='calibrationClearBlocked ? `calibration-clear-why-results` : null'
+                              @click='calibrationClearOpen'>{{ calibrationUi.busy === 'clear'
+                                ? t('ui.calibration.saving') : t('ui.calibration.clear') }}</button>
                     </div>
                     <template v-else>
                       <p class='calibration-success'>
@@ -1468,6 +1543,11 @@
                                 @click='calibrationNextRoute'>{{ t('ui.calibration.next_route') }}</button>
                         <button :disabled='!calibrationCanVerifyConfigured || !!calibrationUi.busy'
                                 @click='calibrationVerifyConfigured'>{{ t('ui.calibration.verify_saved') }}</button>
+                        <button class='warn' :disabled='!!calibrationClearBlocked || !!calibrationUi.busy'
+                                :title='calibrationClearBlocked?.why || null'
+                                :aria-describedby='calibrationClearBlocked ? `calibration-clear-why-results` : null'
+                                @click='calibrationClearOpen'>{{ calibrationUi.busy === 'clear'
+                                  ? t('ui.calibration.saving') : t('ui.calibration.clear') }}</button>
                       </div>
                     </template>
                   </template>
@@ -1475,6 +1555,11 @@
                     <button class='primary' :disabled='!calibrationCanVerifyConfigured || !!calibrationUi.busy'
                             @click='calibrationVerifyConfigured'>{{ t('ui.calibration.v_again') }}</button>
                     <button @click='calibrationBeginRecalibration'>{{ t('ui.calibration.recalibrate') }}</button>
+                    <button class='warn' :disabled='!!calibrationClearBlocked || !!calibrationUi.busy'
+                            :title='calibrationClearBlocked?.why || null'
+                            :aria-describedby='calibrationClearBlocked ? `calibration-clear-why-results` : null'
+                            @click='calibrationClearOpen'>{{ calibrationUi.busy === 'clear'
+                              ? t('ui.calibration.saving') : t('ui.calibration.clear') }}</button>
                   </div>
                 </template>
 
@@ -1487,6 +1572,11 @@
                     <button class='primary'
                             @click='calibrationSetPanel(`verify`)'>{{ t('ui.calibration.verify_saved') }}</button>
                     <button @click='calibrationBeginRecalibration'>{{ t('ui.calibration.recalibrate') }}</button>
+                    <button class='warn' :disabled='!!calibrationClearBlocked || !!calibrationUi.busy'
+                            :title='calibrationClearBlocked?.why || null'
+                            :aria-describedby='calibrationClearBlocked ? `calibration-clear-why-results` : null'
+                            @click='calibrationClearOpen'>{{ calibrationUi.busy === 'clear'
+                              ? t('ui.calibration.saving') : t('ui.calibration.clear') }}</button>
                   </div>
                 </template>
                 <template v-else>
@@ -1497,8 +1587,15 @@
                     <button class='primary'
                             @click='calibrationBeginRecalibration'>{{ t('ui.calibration.start_calibration') }}</button>
                     <button @click='calibrationSetPanel(`setup`)'>{{ t('ui.calibration.review_route') }}</button>
+                    <button class='warn' :disabled='!!calibrationClearBlocked || !!calibrationUi.busy'
+                            :title='calibrationClearBlocked?.why || null'
+                            :aria-describedby='calibrationClearBlocked ? `calibration-clear-why-results` : null'
+                            @click='calibrationClearOpen'>{{ calibrationUi.busy === 'clear'
+                              ? t('ui.calibration.saving') : t('ui.calibration.clear') }}</button>
                   </div>
                 </template>
+                <p v-if='calibrationClearBlocked' id='calibration-clear-why-results'
+                   class='calibration-clear-reason' :class='{blocked: calibrationClearBlocked.blocked}'>{{ calibrationClearBlocked.why }}</p>
               </section>
             </div>
           </div>
@@ -3112,6 +3209,47 @@ reboot</pre>
         <button v-if="!confirmDialog.dismissOnly" class="nt-cancel-r" @click="cancelConfirm">{{ t('ui.common.cancel') }}</button>
         <button v-if="confirmDialog.altLabel" class="nt-alt" @click="altConfirm">{{ confirmDialog.altLabel }}</button>
         <button @click="okConfirm" class="primary nt-main" :disabled="!!confirmInputError">{{ confirmDialog.okLabel || 'OK' }}</button>
+      </div>
+    </div>
+  </div>
+  <!-- Calibration: clear saved values. Its own dialog, the generic one
+       cannot hold the per-key table. -->
+  <div v-if="calibrationClear.open" class="overlay overlay-top" @click.self="calibrationClear.open = false">
+    <div class="dialog nt-confirm calibration-clear-dialog" role="dialog" aria-modal="true"
+         aria-labelledby="calibration-clear-title">
+      <h3 id="calibration-clear-title">{{ calibrationClearPlan.level === 'slot'
+        ? t('ui.calibration.clear_title_slot', {slot: dispIdx(calibrationClearPlan.slot)})
+        : t('ui.calibration.clear_title_ace', {ace: dispIdx(calibrationClearPlan.ace)}) }}</h3>
+      <p>{{ calibrationClearLead }}</p>
+      <p v-if="calibrationClearPlan.keeps.length">{{ t('ui.calibration.clear_keeps_own', {
+        slots: calibrationClearPlan.keeps.map(s => dispIdx(s)).join(', ')}) }}</p>
+      <table class="calibration-clear-table">
+        <thead><tr>
+          <th>{{ t('ui.calibration.col_config') }}</th>
+          <th>{{ t('ui.calibration.col_prev') }}</th>
+          <th>{{ t('ui.calibration.clear_after') }}</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="row in calibrationClearPlan.rows" :key="row.key">
+            <td>{{ t('ui.calibration.' + row.label) }}<small>{{ row.config }}</small></td>
+            <td>{{ row.old ?? '–' }}</td>
+            <td :class="{changed: row.after !== row.old}">{{ row.after ?? '–' }}<small>{{ row.src === 'ace'
+              ? t('ui.calibration.clear_src_ace', {ace: dispIdx(calibrationClearPlan.ace)})
+              : t('ui.calibration.clear_src_default') }}</small></td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-if="calibrationClearSession && calibrationClearSession.mm > 0" class="calibration-warning">
+        <strong>{{ t('ui.calibration.clear_filament_out', {mm: calibrationClearSession.mm}) }}</strong>
+        {{ t('ui.calibration.clear_filament_out_hint') }}</p>
+      <p v-if="calibrationClearSession?.action" class="calibration-warning">{{ calibrationUi.panel === 'results' && calibrationResultCase
+        ? t('ui.calibration.clear_run_reset_results') : t('ui.calibration.clear_run_reset') }}</p>
+      <p class="calibration-notice">{{ t('ui.calibration.clear_restart') }}</p>
+      <div class="row nt-dlg-foot">
+        <button class="nt-cancel-r" @click="calibrationClear.open = false">{{ t('ui.common.cancel') }}</button>
+        <button class="warn nt-main calibration-clear-confirm"
+                :disabled="!!calibrationClearBlocked || !!calibrationUi.busy"
+                @click="calibrationClearConfirm">{{ t('ui.calibration.clear_confirm') }}</button>
       </div>
     </div>
   </div>

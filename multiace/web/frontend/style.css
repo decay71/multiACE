@@ -2057,6 +2057,88 @@ body:has(.panel) .overlay .dialog {
 }
 .calibration-success strong { display: block; }
 .calibration-panel p.muted { margin: .6rem 0; font-size: .78rem; line-height: 1.45; }
+/* Saved values of the route on Setup, with the scope and Clear. */
+.calibration-saved-values {
+  margin-top: 1rem; padding: .75rem;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+}
+.calibration-saved-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem;
+  margin-bottom: .5rem; color: var(--muted); font-size: .72rem;
+}
+.calibration-badge {
+  padding: .18rem .5rem; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--muted); font-size: .68rem; white-space: nowrap;
+}
+.calibration-badge.own { color: var(--accent); border-color: var(--accent); }
+.calibration-badge.shared { color: var(--ok); border-color: var(--ok); }
+.calibration-badge.none { color: var(--warn); border-color: var(--warn); }
+.calibration-clear-table {
+  width: 100%; border-collapse: collapse; font-size: .76rem;
+  font-variant-numeric: tabular-nums;
+}
+.calibration-clear-table th, .calibration-clear-table td {
+  padding: .38rem .4rem; text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.calibration-clear-table th:first-child,
+.calibration-clear-table td:first-child { text-align: left; }
+.calibration-clear-table th { color: var(--muted); font-weight: 500; }
+.calibration-clear-table tr:last-child td { border-bottom: 0; }
+.calibration-clear-table td small {
+  display: block; color: var(--muted); font-size: .66rem;
+}
+.calibration-clear-table tr.unset td { color: var(--muted); }
+.calibration-clear-table tr.in-use td:first-child { color: var(--fg); font-weight: 600; }
+.calibration-clear-table .in-use-tag {
+  margin-left: .3rem; color: var(--accent); font-size: .64rem; font-weight: 500;
+}
+.calibration-clear-table td.changed { color: var(--warn); font-weight: 600; }
+.calibration-saved-values .calibration-selector-block { margin-top: .7rem; }
+.calibration-clear-row {
+  display: flex; flex-wrap: wrap; align-items: stretch; gap: .5rem;
+  margin-top: .7rem;
+}
+.calibration-saved-values .calibration-selector-block + .calibration-clear-row { margin-top: 0; }
+.calibration-clear-row .calibration-option-grid { flex: 1 1 260px; }
+.calibration-clear-row .calibration-route-option { justify-content: center; }
+.calibration-page .calibration-clear-action { flex: 0 0 auto; margin: 0; }
+.calibration-page .calibration-clear-action button { height: 100%; }
+.calibration-clear-reason { margin: .45rem 0 0; color: var(--muted); font-size: .72rem; }
+.calibration-clear-reason::before { content: '\24D8\00A0'; }
+.calibration-clear-reason.blocked { color: var(--warn); }
+/* Undo bar after a clear. */
+.calibration-undo {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: .5rem .8rem; margin: 0 0 1rem; padding: .65rem .8rem;
+  color: var(--muted); background: var(--card);
+  border: 1px solid var(--border); border-left: 3px solid var(--warn);
+  border-radius: 5px; font-size: .78rem; line-height: 1.45;
+}
+.calibration-undo.done { border-left-color: var(--ok); }
+.calibration-undo strong { display: block; color: var(--fg); }
+.calibration-undo > div { min-width: 0; flex: 1 1 220px; }
+.calibration-page .calibration-undo.row { margin: 0 0 1rem; }
+/* Clear confirm dialog. */
+.dialog.calibration-clear-dialog { width: min(500px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto; }
+.calibration-clear-dialog .calibration-clear-table { margin: .8rem 0; }
+.calibration-clear-dialog .calibration-warning,
+.calibration-clear-dialog .calibration-notice { margin: .6rem 0 0; font-size: .78rem; }
+.calibration-clear-dialog .calibration-notice strong { display: inline; }
+/* Destructive confirm: the existing danger colour, filled. */
+.calibration-clear-dialog button.calibration-clear-confirm {
+  color: #fff; background: var(--danger); border-color: var(--danger); font-weight: 600;
+}
+.calibration-clear-dialog button.calibration-clear-confirm:hover:not(:disabled) { filter: brightness(1.12); }
+.calibration-clear-dialog button.calibration-clear-confirm:disabled { opacity: .5; filter: none; }
+@media (max-width: 560px) {
+  .calibration-clear-row { flex-direction: column; }
+  .calibration-clear-row .calibration-option-grid { flex: none; }
+  .calibration-page .calibration-clear-action,
+  .calibration-page .calibration-clear-action button { width: 100%; }
+  .calibration-clear-table th, .calibration-clear-table td { padding: .32rem .25rem; }
+  .calibration-undo > button { width: 100%; }
+}
 @media (max-width: 760px) {
   .calibration-steps div { font-size: .68rem; overflow-wrap: anywhere; }
   .calibration-glossary { text-align: left; }

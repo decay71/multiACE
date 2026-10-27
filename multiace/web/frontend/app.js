@@ -1451,15 +1451,16 @@ createApp({
         target.retract_length = v.retract;
       }
       calibrationUi.busy = 'apply';
-      const before = configLog.value;
       await saveConfigForm();
       calibrationUi.busy = '';
       // saveConfigForm reports through configLog: a line starting with the
-      // check mark is the only success it writes.
-      calibrationUi.saved = configLog.value !== before
-        && String(configLog.value || '').startsWith('✓');
+      // check mark is the only success it writes. It overwrites the log
+      // first, so an earlier save's identical line cannot pass for this one.
+      calibrationUi.saved = String(configLog.value || '').startsWith('✓');
       if (!calibrationUi.saved) {
         calibrationUi.error = configLog.value || t('ui.calibration.err_save');
+      } else {
+        _calibrationClearBarClose();
       }
     }
 
@@ -1472,6 +1473,195 @@ createApp({
       calibrationUi.saved = false;
       calibrationUi.recalibrate = false;
       calibrationSetPanel('setup');
+    }
+
+    // Clearing saved values: the three keys go blank at the level Save
+    // writes (this slot's own values or the ACE's shared ones), through the
+    // same config save. No G-code; like Save it takes effect with the next
+    // printer restart. Undo writes the old values back to that same level.
+    const CAL_CLEAR_KEYS = [
+      {key: 'load_length', label: 'row_load'},
+      {key: 'swap_retract_length', label: 'm_splitter'},
+      {key: 'retract_length', label: 'row_retract'},
+    ];
+    const calibrationClear = reactive({
+      open: false, undo: null, restored: false, sha1: '',
+    });
+    let _calibrationRestoredTimer = null;
+    // Where the selected slot gets its values: own, the ACE's shared, none.
+    const calibrationSavedKind = computed(() => {
+      const aceCfg = configForm.perAce?.[Number(calibrationUi.ace)] || {};
+      if (calibrationOwnValueSlots.value.includes(Number(calibrationUi.slot))) return 'own';
+      return _calSavedAt(aceCfg, 'retract_length') ? 'shared' : 'none';
+    });
+    // The three values at each level for the selected route, the level
+    // each one is taken from marked as in use.
+    const calibrationSavedLevels = computed(() => {
+      const ace = Number(calibrationUi.ace);
+      const slot = Number(calibrationUi.slot);
+      const aceCfg = configForm.perAce?.[ace] || {};
+      const slotCfg = aceCfg.perSlot?.[slot] || {};
+      const levels = [
+        {src: 'slot', cfg: slotCfg,
+         name: t('ui.calibration.values_level_slot', {slot: dispIdx(slot)})},
+        {src: 'ace', cfg: aceCfg,
+         name: t('ui.calibration.values_level_ace', {ace: dispIdx(ace)})},
+        {src: 'default', cfg: configForm,
+         name: t('ui.calibration.values_level_default')},
+      ];
+      const inUse = CAL_CLEAR_KEYS.map(({key}) =>
+        levels.find(level => _calSavedAt(level.cfg, key))?.src);
+      return levels.map(level => ({
+        src: level.src, name: level.name,
+        values: CAL_CLEAR_KEYS.map(({key}) =>
+          _calSavedAt(level.cfg, key) ? Number(level.cfg[key]) : null),
+        set: CAL_CLEAR_KEYS.some(({key}) => _calSavedAt(level.cfg, key)),
+        inUse: inUse.includes(level.src),
+      }));
+    });
+    function _calibrationSlotList(slots) {
+      const names = slots.map(slot => dispIdx(slot));
+      if (names.length < 2) return names.join('');
+      return t('ui.calibration.clear_list_and', {
+        rest: names.slice(0, -1).join(', '), last: names[names.length - 1]});
+    }
+    // What a clear at the current scope removes, and what each key falls
+    // back to afterwards. Calibrated or not follows calibrationRouteCalibrated.
+    const calibrationClearPlan = computed(() => {
+      const ace = Number(calibrationUi.ace);
+      const slot = Number(calibrationUi.slot);
+      const level = calibrationUi.scope === 'slot' ? 'slot' : 'ace';
+      const aceCfg = configForm.perAce?.[ace] || {};
+      const slotCfg = aceCfg.perSlot?.[slot] || {};
+      const levelCfg = level === 'slot' ? slotCfg : aceCfg;
+      const rows = CAL_CLEAR_KEYS.map(({key, label}) => {
+        const fromAce = level === 'slot' && _calSavedAt(aceCfg, key);
+        const after = fromAce ? Number(aceCfg[key])
+          : _calSavedAt(configForm, key) ? Number(configForm[key]) : null;
+        return {
+          key, label, config: level === 'slot' ? `${key}_${slot}` : key,
+          old: _calSavedAt(levelCfg, key) ? Number(levelCfg[key]) : null,
+          after, src: fromAce ? 'ace' : 'default',
+        };
+      });
+      const calibrated = (own, shared) => ['retract_length', 'swap_retract_length']
+        .every(key => _calSavedAt(own, key) || _calSavedAt(shared, key));
+      const affected = [], keeps = [];
+      if (level === 'ace') {
+        (aceCfg.perSlot || []).forEach((own, idx) => {
+          if (calibrated(own, aceCfg) && !calibrated(own, null)) affected.push(idx);
+          else if (calibrationOwnValueSlots.value.includes(idx)) keeps.push(idx);
+        });
+      }
+      return {
+        level, ace, slot, rows,
+        saved: rows.some(row => row.old != null),
+        staysCalibrated: level === 'slot' && calibrated(null, aceCfg),
+        affected, keeps,
+      };
+    });
+    // Why Clear cannot run right now (null = it can). `blocked` marks the
+    // reasons that are a temporary refusal rather than nothing to clear.
+    const calibrationClearBlocked = computed(() => {
+      const plan = calibrationClearPlan.value;
+      if (calibrationMoving.value) {
+        return {blocked: true, why: t('ui.calibration.clear_blk_moving', {
+          ace: dispIdx(state.calibration?.ace ?? plan.ace)})};
+      }
+      if (!plan.saved) {
+        return {blocked: false, why: plan.level === 'slot'
+          ? t('ui.calibration.clear_blk_none_slot')
+          : t('ui.calibration.clear_blk_none_ace', {ace: dispIdx(plan.ace)})};
+      }
+      return null;
+    });
+    // The open run of this route goes with the values it was measured
+    // against. Filament still out of the ACE: the run is cancelled instead,
+    // which keeps the tip position, so the return to the ACE stays offered.
+    const calibrationClearSession = computed(() => {
+      const c = state.calibration || {};
+      if (!calibrationSessionMatchesSelection.value || calibrationMoving.value
+          || (c.state || 'idle') === 'idle') return null;
+      if (calibrationRouteOccupied.value) {
+        return {
+          action: ['cancelled', 'failed'].includes(c.state) ? '' : 'cancel',
+          mm: Math.round(Number(c.tip_position_mm) || 0),
+        };
+      }
+      return {action: 'reset', mm: 0};
+    });
+    const calibrationClearLead = computed(() => {
+      const plan = calibrationClearPlan.value;
+      if (plan.level === 'slot') {
+        return plan.staysCalibrated
+          ? t('ui.calibration.clear_falls_ace', {ace: dispIdx(plan.ace)})
+          : t('ui.calibration.clear_falls_default');
+      }
+      if (!plan.affected.length) {
+        return t('ui.calibration.clear_affected_none', {ace: dispIdx(plan.ace)});
+      }
+      return t(plan.affected.length === 1
+        ? 'ui.calibration.clear_affected_one' : 'ui.calibration.clear_affected_many',
+      {slots: _calibrationSlotList(plan.affected)});
+    });
+    function calibrationClearOpen() {
+      if (calibrationClearBlocked.value || calibrationUi.busy) return;
+      calibrationClear.open = true;
+    }
+    function _calibrationClearBarClose() {
+      calibrationClear.undo = null;
+      calibrationClear.restored = false;
+      clearTimeout(_calibrationRestoredTimer);
+    }
+    // Writes the three keys at one level and saves the config the way Save
+    // does. On a failed save the form gets its previous values back.
+    async function _calibrationWriteLevel(level, ace, slot, values, busy) {
+      const aceCfg = configForm.perAce?.[ace];
+      const target = level === 'slot' ? aceCfg?.perSlot?.[slot] : aceCfg;
+      if (!target) {
+        calibrationUi.error = t('ui.calibration.err_no_section');
+        return false;
+      }
+      const previous = {};
+      for (const {key} of CAL_CLEAR_KEYS) {
+        previous[key] = target[key];
+        target[key] = values[key];
+      }
+      calibrationUi.busy = busy;
+      calibrationUi.error = '';
+      await saveConfigForm();
+      calibrationUi.busy = '';
+      const ok = String(configLog.value || '').startsWith('✓');
+      if (!ok) {
+        Object.assign(target, previous);
+        calibrationUi.error = configLog.value || t('ui.calibration.err_save');
+      }
+      return ok;
+    }
+    async function calibrationClearConfirm() {
+      const plan = calibrationClearPlan.value;
+      const session = calibrationClearSession.value;
+      if (calibrationClearBlocked.value || calibrationUi.busy) return;
+      calibrationClear.open = false;
+      const old = {};
+      for (const row of plan.rows) old[row.key] = row.old == null ? '' : row.old;
+      const blank = {load_length: '', swap_retract_length: '', retract_length: ''};
+      if (!await _calibrationWriteLevel(plan.level, plan.ace, plan.slot, blank, 'clear')) return;
+      _calibrationClearBarClose();
+      calibrationClear.undo = {level: plan.level, ace: plan.ace, slot: plan.slot, values: old};
+      calibrationClear.sha1 = config.sha1;
+      calibrationUi.saved = false;
+      if (session?.action) await calibrationAction(session.action);
+    }
+    // Config only: a run reset by the clear stays gone.
+    async function calibrationClearUndo() {
+      const undo = calibrationClear.undo;
+      if (!undo || calibrationUi.busy) return;
+      if (!await _calibrationWriteLevel(undo.level, undo.ace, undo.slot, undo.values, 'undo')) return;
+      _calibrationClearBarClose();
+      calibrationClear.restored = true;
+      calibrationClear.sha1 = config.sha1;
+      _calibrationRestoredTimer = setTimeout(() => { calibrationClear.restored = false; }, 6000);
     }
 
     function clearAllErrors() {
@@ -5195,6 +5385,21 @@ createApp({
           || state.calibration?.state !== 'idle') return;
       calibrationSetPanel(routeKnown ? 'verify' : 'setup', false);
     }, {immediate: true});
+    // A new route (or the config arriving) starts the scope from the
+    // route's badge: own values -> this slot, otherwise the whole ACE. The
+    // undo bar of a clear belongs to the route it was made on.
+    watch(() => [calibrationUi.ace, calibrationUi.slot, calibrationUi.head, config.path],
+      (next, previous) => {
+        calibrationUi.scope = calibrationSavedKind.value === 'own' ? 'slot' : 'ace';
+        if (previous && next.slice(0, 3).some((v, i) => Number(v) !== Number(previous[i]))) {
+          _calibrationClearBarClose();
+        }
+      }, {immediate: true});
+    // Any other config write (or a reload of a changed file) ends the undo.
+    watch(() => config.sha1, (sha1) => {
+      if ((calibrationClear.undo || calibrationClear.restored)
+          && sha1 !== calibrationClear.sha1) _calibrationClearBarClose();
+    });
     // True after a config save, which needs a full printer restart to take
     // effect (a bare Klipper restart misses USB/serial + PAXX boot-script
     // changes). Drives the prominent top reboot banner; cleared once a restart
@@ -8146,6 +8351,10 @@ createApp({
       calibrationTrackPercent, calibrationDragLabel, calibrationDragStart,
       calibrationDragMove, calibrationDragEnd, calibrationDragCancel,
       calibrationNextRoute,
+      calibrationClear, calibrationSavedKind, calibrationSavedLevels,
+      calibrationClearPlan, calibrationClearBlocked, calibrationClearSession,
+      calibrationClearLead, calibrationClearOpen, calibrationClearConfirm,
+      calibrationClearUndo,
       calibrationVerifyConfigured, calibrationAction, calibrationApply,
       calibrationVerifyValues,
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,

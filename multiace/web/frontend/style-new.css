@@ -1620,6 +1620,38 @@ html[data-theme="new"] .calibration-review input {
   height: 30px; border-radius: 0; color: var(--fg); background: var(--nt-input); border: 1px solid var(--nt-ctl);
 }
 html[data-theme="new"] .calibration-review input:focus { outline: none; border-color: var(--accent); }
+
+/* saved values, clear, undo bar and the clear dialog */
+html[data-theme="new"] .calibration-saved-values {
+  padding: 14px 16px; border-radius: 0; background: var(--nt-bg2); border-color: var(--border);
+}
+html[data-theme="new"] .calibration-saved-head { font-size: 12px; }
+html[data-theme="new"] .calibration-badge { border-radius: 0; font-size: 11.5px; border-color: var(--nt-ctl); }
+html[data-theme="new"] .calibration-badge.own { color: var(--accent); border-color: var(--accent); }
+html[data-theme="new"] .calibration-badge.shared { color: var(--nt-ok); border-color: var(--nt-ok); }
+html[data-theme="new"] .calibration-badge.none { color: var(--nt-warn-fg); border-color: var(--nt-warn); }
+html[data-theme="new"] .calibration-clear-table { font-size: 13px; }
+html[data-theme="new"] .calibration-clear-table th { font-size: 12px; font-weight: 400; color: var(--nt-label); }
+html[data-theme="new"] .calibration-clear-table th,
+html[data-theme="new"] .calibration-clear-table td { padding: 8px 10px; border-bottom-color: var(--nt-line); }
+html[data-theme="new"] .calibration-clear-table td small { font-size: 11px; color: var(--nt-label); }
+html[data-theme="new"] .calibration-clear-table tr.unset td { color: var(--nt-disabled); }
+html[data-theme="new"] .calibration-clear-table td.changed { color: var(--nt-warn-fg); }
+html[data-theme="new"] .calibration-clear-reason { font-size: 12px; }
+html[data-theme="new"] .calibration-clear-reason.blocked { color: var(--nt-warn-fg); }
+html[data-theme="new"] .calibration-undo {
+  border-radius: 0; font-size: 12.5px; background: var(--nt-bg2);
+  border-color: var(--border); border-left: 1px solid var(--border);
+  box-shadow: inset 2px 0 0 var(--nt-warn-hi);
+}
+html[data-theme="new"] .calibration-undo.done { box-shadow: inset 2px 0 0 var(--nt-ok); }
+html[data-theme="new"] .nt-confirm.calibration-clear-dialog { width: 500px; }
+html[data-theme="new"] .nt-confirm > .calibration-clear-table { margin: 14px 18px 0; width: calc(100% - 36px); }
+html[data-theme="new"] .nt-confirm > .calibration-warning,
+html[data-theme="new"] .nt-confirm > .calibration-notice { margin: 12px 18px 0; }
+html[data-theme="new"] .nt-confirm .nt-dlg-foot .nt-main.calibration-clear-confirm {
+  color: var(--nt-on-color); background: var(--nt-danger); border-color: var(--nt-danger);
+}
 @media (max-width: 760px) {
   html[data-theme="new"] .calibration-workflow-body { padding: 14px 12px; }
   html[data-theme="new"] .calibration-steps { gap: 8px; }
@@ -1634,6 +1666,8 @@ html[data-theme="new"] .calibration-review input:focus { outline: none; border-c
   html[data-theme="new"] .calibration-review th,
   html[data-theme="new"] .calibration-review td { padding: 8px 6px; }
   html[data-theme="new"] .calibration-page .row button.primary { flex: 1 1 100%; }
+  html[data-theme="new"] .calibration-clear-table th,
+  html[data-theme="new"] .calibration-clear-table td { padding: 7px 5px; }
 }
 
 /* ---- Light shade: surfaces the new design inherits from style.css ----
