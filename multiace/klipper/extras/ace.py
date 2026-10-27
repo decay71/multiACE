@@ -11184,7 +11184,7 @@ class MultiAce:
 
     cmd_ACE_CALIBRATION_FEED_JOG_help = (
         '[multiACE] Calibration forward jog: correct an over-retract while '
-        'clearing the splitter. LENGTH=5..500 mm. Feeds toward the toolhead '
+        'clearing the splitter. LENGTH=5..5000 mm. Feeds toward the toolhead '
         'and reduces the cumulative retract - never past the sensor start.')
     def cmd_ACE_CALIBRATION_FEED_JOG(self, gcmd):
         c = self._calibration
@@ -11195,9 +11195,9 @@ class MultiAce:
             raise gcmd.error(
                 '[multiACE] calibration is not ready for a forward jog')
         length = gcmd.get_int('LENGTH')
-        if length < 5 or length > 500:
+        if length < 5 or length > 5000:
             raise gcmd.error(
-                '[multiACE] calibration jog LENGTH must be 5-500')
+                '[multiACE] calibration jog LENGTH must be 5-5000')
         # Mirror of the retract guard: never feed back past the toolhead
         # sensor start (commanded_retract == 0), which would re-trigger it.
         if int(c.get('commanded_retract_mm', 0)) - length < 0:

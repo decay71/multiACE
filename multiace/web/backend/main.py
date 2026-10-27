@@ -4493,8 +4493,8 @@ async def calibration_action(payload: CalibrationAction) -> dict:
         script = 'ACE_CALIBRATION_RETRACT LENGTH=%d' % length
     elif action == 'feed_jog':
         length = int(payload.length or 0)
-        if length < 5 or length > 500:
-            raise HTTPException(400, 'forward jog length must be 5-500 mm')
+        if length < 5 or length > 5000:
+            raise HTTPException(400, 'forward jog length must be 5-5000 mm')
         script = 'ACE_CALIBRATION_FEED_JOG LENGTH=%d' % length
     elif action == 'mark_swap':
         script = 'ACE_CALIBRATION_MARK MARK=swap'

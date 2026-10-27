@@ -424,3 +424,17 @@ def test_moonraker_error_text():
                          'ACE preload reference')
     assert text('plain text') == 'plain text'
     assert text('{"error": "boom"}') == 'boom'
+
+
+# ---- drag handle: long bounded moves (review point 4) ---------------------
+
+def test_feed_jog_long_and_bounded():
+    a, c = new_session(1543, 'v2')
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=1300))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    retract = c['commanded_retract_mm']
+    a.cmd_ACE_CALIBRATION_FEED_JOG(GCmd(LENGTH=1200))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    assert c['commanded_retract_mm'] == retract - 1200
+    with pytest.raises(Exception, match='toolhead sensor start'):
+        a.cmd_ACE_CALIBRATION_FEED_JOG(GCmd(LENGTH=c['commanded_retract_mm'] + 50))

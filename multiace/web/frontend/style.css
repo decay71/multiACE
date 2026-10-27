@@ -2008,13 +2008,44 @@ body:has(.panel) .overlay .dialog {
   border: 1px solid var(--border); border-radius: 5px; background: #191919;
 }
 .calibration-jog-panel .calibration-jogs { margin: 0; }
-.calibration-hold {
-  min-width: 15rem; padding: .6rem 1rem; text-align: center;
-  color: var(--fg); background: #2a2a2a; border: 1px solid var(--border);
-  border-radius: 4px; cursor: pointer; touch-action: none; user-select: none;
+.calibration-track-wrap {
+  margin: .8rem 0; padding: .75rem .9rem .6rem;
+  border: 1px solid var(--border); border-radius: 5px; background: #191919;
 }
-.calibration-hold.holding {
-  color: var(--accent-fg); background: var(--accent); border-color: var(--accent);
+.calibration-track-wrap > p { margin: 0 0 1.4rem; color: var(--muted); font-size: .74rem; }
+.calibration-track {
+  position: relative; height: 4px; margin: 0 12px; border-radius: 4px;
+  background: #484848; cursor: pointer; touch-action: none;
+}
+.calibration-track::before {     /* a taller hit area than the 4 px line */
+  content: ''; position: absolute; left: -12px; right: -12px; top: -14px; bottom: -14px;
+}
+.calibration-track.disabled { cursor: not-allowed; opacity: .55; }
+.calibration-track-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--accent);
+}
+.calibration-track-hub {
+  position: absolute; top: -9px; width: 2px; height: 22px;
+  background: var(--warn); transform: translateX(-1px); pointer-events: none;
+}
+.calibration-track-hub small {
+  position: absolute; top: -17px; left: 50%; transform: translateX(-50%);
+  color: var(--warn); font-size: .64rem; white-space: nowrap;
+}
+.calibration-track-handle, .calibration-track-ghost {
+  position: absolute; top: 50%; width: 22px; height: 22px; border-radius: 50%;
+  transform: translate(-50%, -50%); pointer-events: none;
+}
+.calibration-track-handle { background: var(--accent); border: 2px solid #111; }
+.calibration-track.dragging .calibration-track-handle { opacity: .55; }
+.calibration-track-ghost { border: 2px dashed var(--accent); }
+.calibration-track-ends {
+  display: flex; justify-content: space-between; margin-top: .75rem;
+  color: var(--muted); font-size: .68rem;
+}
+.calibration-drag-label {
+  min-height: 1.2rem; margin-top: .35rem; text-align: center;
+  color: var(--accent); font-size: .76rem;
 }
 .calibration-review td small {
   display: block; color: var(--muted); font-size: .66rem;
@@ -2039,7 +2070,6 @@ body:has(.panel) .overlay .dialog {
     top: 50%; left: 14px; transform: translateY(-50%);
   }
   .calibration-metrics.two { grid-template-columns: 1fr; }
-  .calibration-hold { min-width: 0; width: 100%; }
   .calibration-review th:nth-child(2), .calibration-review td:nth-child(2),
   .calibration-review td small { display: none; }
   .calibration-review th, .calibration-review td { padding: .4rem .3rem; }

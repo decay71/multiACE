@@ -705,7 +705,7 @@ createApp({
       loadAllowance: 150, swapAllowance: 100,
       panel: 'setup', panelTouched: false, recalibrate: false,
       busy: '', cancelRequested: false, error: '', saved: false,
-      hubAdjust: false, holding: false, restarting: false,
+      hubAdjust: false, restarting: false,
     });
     const calibrationSelectionTouched = reactive({
       ace: false, slot: false, head: false,
@@ -1324,34 +1324,75 @@ createApp({
       }
       await calibrationAction('mark_undo');
     }
-    // Hold to pull back: one long retract while the button is held, a stop
-    // on release. If the release never arrives the retract ends at the park
-    // position, which is where a full return would end anyway.
-    let _calibrationHoldPromise = null;
-    function calibrationHoldStart() {
+    // Drag handle on the "clear the hub" step: nothing moves while
+    // dragging; on release ONE bounded move covers the difference (a
+    // pull-back never past the park position, a forward move never past the
+    // toolhead-sensor start). Below 5 mm nothing is sent.
+    const CALIBRATION_MIN_MOVE_MM = 5;
+    const calibrationDrag = reactive({active: false, targetMm: null});
+    const calibrationTipNowMm = computed(() => {
       const c = state.calibration || {};
-      if (calibrationUi.holding || calibrationMoving.value || calibrationUi.busy) return;
-      const length = Math.min(5000,
-        Number(c.load_length_mm || 0) - Number(c.commanded_retract_mm || 0));
-      if (!(length >= 5)) return;
-      calibrationUi.holding = true;
-      window.addEventListener('pointerup', calibrationHoldEnd);
-      window.addEventListener('pointercancel', calibrationHoldEnd);
-      window.addEventListener('blur', calibrationHoldEnd);
-      _calibrationHoldPromise = calibrationAction('retract', Math.floor(length));
+      return Math.max(0, Number(c.load_length_mm || 0)
+        - Number(c.commanded_retract_mm || 0));
+    });
+    // The saved hub clearance point as a reference mark, if there is one.
+    const calibrationTrackHubMm = computed(() => {
+      const load = Number(state.calibration?.load_length_mm || 0);
+      const swap = calibrationConfiguredRoute.value.swap;
+      return load > 0 && swap > 0 && swap < load ? load - swap : null;
+    });
+    function calibrationTrackPercent(mm) {
+      const load = Number(state.calibration?.load_length_mm || 0);
+      return load > 0 ? Math.max(0, Math.min(100, 100 * Number(mm) / load)) : 0;
     }
-    async function calibrationHoldEnd() {
-      if (!calibrationUi.holding) return;
-      calibrationUi.holding = false;
-      window.removeEventListener('pointerup', calibrationHoldEnd);
-      window.removeEventListener('pointercancel', calibrationHoldEnd);
-      window.removeEventListener('blur', calibrationHoldEnd);
-      await _calibrationHoldPromise;
-      _calibrationHoldPromise = null;
-      if (state.calibration?.state === 'retracting') {
-        await calibrationAction('stop');
-        await _calibrationWaitState(s => s !== 'retracting');
-      }
+    const calibrationDragLabel = computed(() => {
+      if (calibrationDrag.targetMm == null) return '';
+      const diff = calibrationDrag.targetMm - calibrationTipNowMm.value;
+      if (Math.abs(diff) < CALIBRATION_MIN_MOVE_MM) return t('ui.calibration.drag_small');
+      return t('ui.calibration.drag_release', {
+        mm: Math.abs(Math.round(diff)),
+        dir: t(diff < 0 ? 'ui.calibration.dir_ace' : 'ui.calibration.dir_head'),
+      });
+    });
+    function _calibrationTrackMm(evt) {
+      const rect = evt.currentTarget.getBoundingClientRect();
+      const load = Number(state.calibration?.load_length_mm || 0);
+      const fraction = rect.width > 0 ? (evt.clientX - rect.left) / rect.width : 0;
+      return Math.round(Math.max(0, Math.min(1, fraction)) * load);
+    }
+    function _calibrationCanDrag() {
+      return ['at_sensor', 'retract_ready'].includes(state.calibration?.state)
+        && !calibrationMoving.value && !calibrationUi.busy;
+    }
+    function calibrationDragStart(evt) {
+      if (!_calibrationCanDrag()) return;
+      evt.preventDefault();
+      try { evt.currentTarget.setPointerCapture(evt.pointerId); } catch (_) {}
+      calibrationDrag.active = true;
+      calibrationDrag.targetMm = _calibrationTrackMm(evt);
+    }
+    function calibrationDragMove(evt) {
+      if (calibrationDrag.active) calibrationDrag.targetMm = _calibrationTrackMm(evt);
+    }
+    function calibrationDragCancel() {
+      calibrationDrag.active = false;
+      calibrationDrag.targetMm = null;
+    }
+    async function calibrationDragEnd() {
+      if (!calibrationDrag.active) return;
+      const target = calibrationDrag.targetMm;
+      calibrationDragCancel();
+      if (target != null) await calibrationMoveTo(target);
+    }
+    async function calibrationMoveTo(targetMm) {
+      const c = state.calibration || {};
+      const load = Number(c.load_length_mm || 0);
+      const retract = Number(c.commanded_retract_mm || 0);
+      const target = Math.max(0, Math.min(load, Math.round(targetMm)));
+      const diff = target - (load - retract);
+      if (Math.abs(diff) < CALIBRATION_MIN_MOVE_MM) return false;
+      if (diff < 0) return calibrationAction('retract', -diff);
+      return calibrationAction('feed_jog', Math.min(diff, retract));
     }
     async function calibrationApply() {
       const c = state.calibration || {};
@@ -8088,7 +8129,10 @@ createApp({
       calibrationCancelPrepare,
       calibrationSelectAce, calibrationSelectSlot, calibrationSelectHead,
       calibrationStart, calibrationMarkAndReturn, calibrationUndoMark,
-      calibrationHoldStart, calibrationReboot,
+      calibrationDrag, calibrationTipNowMm, calibrationTrackHubMm,
+      calibrationTrackPercent, calibrationDragLabel, calibrationDragStart,
+      calibrationDragMove, calibrationDragEnd, calibrationDragCancel,
+      calibrationReboot,
       calibrationVerifyConfigured, calibrationAction, calibrationApply,
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
