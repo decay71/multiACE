@@ -249,6 +249,15 @@ CAL_DECODER_SLACK_MM = 30.0
 # After the toolhead sensor stops a feed: let the lane come to rest, then
 # take one last encoder reading before the distance is booked.
 CAL_SETTLE_S = 0.4
+# V1 (ACE Pro) stops an unwind only with stop_unwind_filament, and a firmware
+# that does not know a stop just keeps going. So a V1 unwind counts as
+# stopped only when the unit reports ready within CONFIRM after the stop;
+# otherwise the stop is taken as ignored and the FULL commanded length is
+# booked once the move has run out. The cached status needs the move to be
+# SETTLED old before 'ready' means anything (it can still be the 'ready'
+# from before the command).
+CAL_V1_STOP_CONFIRM_S = 1.5
+CAL_STATUS_SETTLED_S = 1.0
 # Every state in which the ACE is being driven by the calibration.
 CAL_MOVING_STATES = (
     'feeding', 'retracting', 'returning', 'feed_jogging', 'homing',
@@ -10173,7 +10182,12 @@ class MultiAce:
         state = self._calibration_unload
         ace, slot, head = state.get('ace'), state.get('slot'), state.get('head')
         if isinstance(ace, int) and isinstance(slot, int):
-            for method in ('stop_feed_filament', 'stop_feed_assist'):
+            proto = getattr(self, '_protocols', {}).get(ace)
+            methods = ['stop_feed_filament', 'stop_feed_assist']
+            if getattr(proto, 'NAME', None) != 'v2':
+                # the preparation unload retracts; on V1 only this stops it
+                methods.insert(1, 'stop_unwind_filament')
+            for method in methods:
                 try:
                     self.send_request_to(ace, {
                         'method': method, 'params': {'index': slot}},
@@ -10220,17 +10234,32 @@ class MultiAce:
             except Exception:
                 pass
 
-    def _calibration_send_stop(self):
+    def _calibration_stop_method(self, move):
+        # V2 stops either direction with one command. V1 has a separate
+        # stop for each: stop_feed_filament leaves an unwind running.
+        if (self._calibration.get('protocol') != 'v2' and move is not None
+                and move.get('method') == 'unwind_filament'):
+            return 'stop_unwind_filament'
+        return 'stop_feed_filament'
+
+    def _calibration_send_stop(self, move=None):
         c = self._calibration
         idx, slot = c.get('ace'), c.get('slot')
         if not isinstance(idx, int) or not isinstance(slot, int):
             return
-        try:
-            self.send_request_to(idx, {
-                'method': 'stop_feed_filament',
-                'params': {'index': slot}}, lambda self, response: None)
-        except Exception:
-            pass
+        move = move if move is not None else self._calibration_move
+        if move is None and c.get('protocol') != 'v2':
+            # direction unknown on V1: stop both
+            methods = ('stop_feed_filament', 'stop_unwind_filament')
+        else:
+            methods = (self._calibration_stop_method(move),)
+        for method in methods:
+            try:
+                self.send_request_to(idx, {
+                    'method': method,
+                    'params': {'index': slot}}, lambda self, response: None)
+            except Exception:
+                pass
 
     def _calibration_restore_active(self):
         prev = self._calibration_prev_ace
@@ -10335,6 +10364,9 @@ class MultiAce:
         # has reported (V2), else commanded speed x elapsed time. The clock
         # starts when the command is queued, so the time estimate runs ahead
         # of the filament and is capped at the commanded length.
+        if move.get('stop_ignored'):
+            # the ACE ran the whole move despite the stop
+            return float(move['length'])
         dec = move.get('dec')
         if dec is not None:
             self._calibration['position_source'] = 'encoder'
@@ -10351,6 +10383,10 @@ class MultiAce:
         move = self._calibration_move
         self._calibration_send_stop()
         self._calibration_timer = None
+        if (c.get('protocol') != 'v2' and move is not None
+                and move.get('method') == 'unwind_filament'):
+            self._calibration_settle_v1_unwind(finalize)
+            return
         if (c.get('protocol') != 'v2' or move is None
                 or not c.get('decoder_ok')):
             finalize()
@@ -10374,6 +10410,44 @@ class MultiAce:
         now = self.reactor.monotonic()
         self.reactor.register_callback(_sample, now + CAL_SETTLE_S)
         self.reactor.register_callback(_finish, now + CAL_SETTLE_S + 1.5)
+
+    def _calibration_settle_v1_unwind(self, finalize):
+        # A V1 unwind after its stop: book the covered part only once the
+        # unit has confirmed the stop by going ready, else book the whole
+        # move once it has run out (see CAL_V1_STOP_CONFIRM_S).
+        c = self._calibration
+        move = self._calibration_move
+        sid, state, mid, idx = c['session_id'], c['state'], move['id'], c['ace']
+        started = float(move['started'])
+        expected = float(move['length']) / max(float(move['speed']), 1.)
+        stop_at = self.reactor.monotonic()
+        def _poll(eventtime):
+            cc = self._calibration
+            current = self._calibration_move
+            if (cc.get('session_id') != sid or cc.get('state') != state
+                    or current is None or current.get('id') != mid):
+                return
+            if not self._connected_per_ace.get(idx, False):
+                self._calibration_move = None
+                self._calibration_fail('selected ACE disconnected')
+                return
+            ready = ((self._info_per_ace.get(idx, {}) or {}).get('status')
+                     == 'ready')
+            settled = eventtime - started >= CAL_STATUS_SETTLED_S
+            if not move.get('stop_ignored'):
+                if ready and settled:
+                    finalize()
+                    return
+                if settled and eventtime - stop_at >= CAL_V1_STOP_CONFIRM_S:
+                    move['stop_ignored'] = True
+                    self.log_error(
+                        '[multiACE] ACE %d did not stop the unwind - booked '
+                        'the full %d mm' % (idx, int(move['length'])))
+            elif ready or eventtime - started > expected + 8.0:
+                finalize()
+                return
+            self.reactor.register_callback(_poll, eventtime + 0.1)
+        self.reactor.register_callback(_poll, stop_at + 0.1)
 
     def _calibration_accumulate_decoder(self, move):
         # Returns False when the standstill guard failed the session, so the
@@ -10613,6 +10687,7 @@ class MultiAce:
             'speed': speed, 'started': eventtime,
             'position_start': position, 'direction': direction,
             'dec': None,
+            'method': method,
             'next_decoder_sample': eventtime, 'error': None,
         }
         self._calibration_move = move
@@ -10931,6 +11006,7 @@ class MultiAce:
             'id': move_id, 'kind': kind, 'length': length,
             'speed': speed, 'started': eventtime,
             'dec': None, 'tip_start': tip_start,
+            'method': method,
             'next_decoder_sample': eventtime, 'error': None,
         }
         self._calibration_move = move
@@ -11074,6 +11150,7 @@ class MultiAce:
             'speed': min(30, self.get_retract_speed(c['ace'])),
             'started': now,
             'dec': None,
+            'method': 'unwind_filament',
             'next_decoder_sample': now, 'error': None,
         }
         self._calibration_move = move
@@ -11119,6 +11196,7 @@ class MultiAce:
             'speed': min(30, self.get_feed_speed(c['ace'])),
             'started': now,
             'dec': None,
+            'method': 'feed_filament',
             'next_decoder_sample': now, 'error': None,
         }
         self._calibration_move = move
@@ -11369,6 +11447,7 @@ class MultiAce:
                 'length': abs(delta), 'speed': speed, 'started': now,
                 'position_start': position, 'direction': direction,
                 'dec': None,
+                'method': method,
                 'next_decoder_sample': now, 'error': None,
             }
             self._calibration_move = move
@@ -11427,6 +11506,7 @@ class MultiAce:
                 'length': length, 'speed': speed, 'started': now,
                 'position_start': position, 'direction': -1,
                 'dec': None,
+                'method': 'unwind_filament',
                 'next_decoder_sample': now, 'error': None,
             }
             c['state'] = 'verify_splitter_adjusting'
@@ -11464,15 +11544,27 @@ class MultiAce:
         if c.get('state') not in self._CAL_VERIFY_MOVING:
             raise gcmd.error('[multiACE] verification is not moving')
         now = self.reactor.monotonic()
-        c['verify_position_mm'] = self._calibration_verify_position(
-            now, commit=True)
-        if c.get('state') == 'failed':
+        move = self._calibration_move
+
+        def _commit():
+            c['verify_position_mm'] = self._calibration_verify_position(
+                now, commit=True)
+            if c.get('state') == 'failed':
+                self._calibration_stop_timer()
+                return
+            c['verify_paused_from'] = c['state']
+            c['state'] = 'verify_paused'
+            c['verify_phase'] = 'paused'
+
+        if (c.get('protocol') != 'v2' and move is not None
+                and move.get('method') == 'unwind_filament'):
+            # same as a stop: book only what the V1 unit confirms
             self._calibration_stop_timer()
+            self._calibration_send_stop(move)
+            self._calibration_settle_v1_unwind(_commit)
             return
-        c['verify_paused_from'] = c['state']
-        c['state'] = 'verify_paused'
-        c['verify_phase'] = 'paused'
-        self._calibration_send_stop()
+        _commit()
+        self._calibration_send_stop(move)
         self._calibration_stop_timer()
 
     def _calibration_verify_resume(self, gcmd):
