@@ -104,7 +104,7 @@ HEARTBEAT_LAG = 0.6     # s between sampling the unit and the report landing
 
 
 def make_ace(true_mm, proto, stop_mode='honest', start_latency=START_LATENCY,
-             ready_before_motion=False):
+             ready_before_motion=False, enc_scale=1.0):
     """A MultiAce wired to one fake ACE (index 0, slot 0, head 0) whose
     toolhead sensor trips once the filament tip reaches `true_mm`.
 
@@ -113,7 +113,8 @@ def make_ace(true_mm, proto, stop_mode='honest', start_latency=START_LATENCY,
     fresh report replaces it once per HEARTBEAT_S, reflecting the unit as it
     was HEARTBEAT_LAG earlier. `ready_before_motion` makes the unit answer
     'ready' between a motion command and the first motion, as a V1 that has
-    not started yet may."""
+    not started yet may. `enc_scale` is the V2 lane encoder's counts per mm
+    the unit actually moves (a real unit read 1.03 on 2026-10-27)."""
     MultiAce = load_ace().MultiAce
     a = MultiAce.__new__(MultiAce)
     a.reactor = Reactor()
@@ -195,7 +196,7 @@ def make_ace(true_mm, proto, stop_mode='honest', start_latency=START_LATENCY,
         if move and now >= move['go_at']:
             dist = min(move['left'], move['speed'] * dt)
             ace['pos'] += move['dir'] * dist
-            ace['dec'] += move['dir'] * dist
+            ace['dec'] += move['dir'] * dist * enc_scale
             move['left'] -= dist
             if move['left'] <= 1e-9:
                 ace['move'] = None
@@ -600,3 +601,48 @@ def test_refused_home_does_not_switch_the_ace():
         a.cmd_ACE_CALIBRATION_HOME(GCmd())
     assert a.switched == []
     assert a._calibration_prev_ace is None
+
+
+# ---- encoder scale: bookkeeping stays in commanded mm ---------------------
+
+def test_encoder_scale_measure_and_return():
+    a = make_ace(1400, 'v2', enc_scale=1.03)
+    a.proto = 'v2'
+    c = at_sensor(a)
+    run_until(a, lambda: a._info_per_ace[0]['status'] == 'ready')
+    assert abs(c['load_length_mm'] - 1400) <= 10
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=1100))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    a.cmd_ACE_CALIBRATION_MARK(GCmd(MARK='swap'))
+    a.cmd_ACE_CALIBRATION_RETURN(GCmd())
+    assert pump(a, ('complete',)) == 'complete'
+    assert abs(phys(a)) <= 15, 'the return did not end at the park position'
+
+
+def test_encoder_scale_verify_confirms():
+    a = make_ace(1400, 'v2', enc_scale=1.03)
+    a.proto = 'v2'
+    c = at_sensor(a)
+    run_until(a, lambda: a._info_per_ace[0]['status'] == 'ready')
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=1100))
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    a.cmd_ACE_CALIBRATION_MARK(GCmd(MARK='swap'))
+    a.cmd_ACE_CALIBRATION_RETURN(GCmd())
+    assert pump(a, ('complete',)) == 'complete'
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='start'))
+    run_until(a, lambda: c['state'] == 'verify_splitter')
+    assert c['verify_remeasured_mm'] is None
+    assert abs(c['verify_feed_delta_mm']) <= 10
+    assert abs(c['load_length_mm'] - 1400) <= 10
+
+
+def test_encoder_scale_stop_books_commanded_mm():
+    a = make_ace(1400, 'v2', enc_scale=1.03)
+    a.proto = 'v2'
+    c = at_sensor(a)
+    run_until(a, lambda: a._info_per_ace[0]['status'] == 'ready')
+    a.cmd_ACE_CALIBRATION_RETRACT(GCmd(LENGTH=c['load_length_mm']))
+    run_for(a, 15)
+    a.cmd_ACE_CALIBRATION_STOP(GCmd())
+    assert pump(a, ('retract_ready',)) == 'retract_ready'
+    assert abs(c['tip_position_mm'] - phys(a)) <= 15

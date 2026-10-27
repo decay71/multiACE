@@ -246,6 +246,14 @@ CAL_VERIFY_DEADBAND_MM = 10
 # nothing can have travelled further than the commanded speed allows (slack).
 CAL_DECODER_HOLDOFF_S = 0.3
 CAL_DECODER_SLACK_MM = 30.0
+# The lane encoder does not count exactly one per commanded mm (a unit read
+# 1.03). Lengths in the config are commanded mm, so encoder readings are
+# converted with the ratio seen on this session's completed moves; a move
+# whose reading is outside this band was cut short or misread and is not
+# learned from.
+CAL_ENCODER_RATIO_MIN = 0.85
+CAL_ENCODER_RATIO_MAX = 1.20
+CAL_ENCODER_LEARN_MIN_MM = 50
 # After the toolhead sensor stops a feed: let the lane come to rest, then
 # take one last encoder reading before the distance is booked.
 CAL_SETTLE_S = 0.4
@@ -10016,6 +10024,8 @@ class MultiAce:
             'commanded_feed_mm': 0,
             'commanded_retract_mm': 0,
             'feed_travel_mm': 0.0,
+            'encoder_counts': 0.0,
+            'encoder_commanded_mm': 0.0,
             'decoder_ok': False,
             'position_source': 'timing',
             'load_length_mm': None,
@@ -10390,10 +10400,34 @@ class MultiAce:
         dec = move.get('dec')
         if dec is not None:
             self._calibration['position_source'] = 'encoder'
-            return float(dec)
+            return min(float(move['length']),
+                       float(dec) / self._calibration_encoder_ratio())
         self._calibration['position_source'] = 'timing'
         elapsed = max(0.0, eventtime - float(move['started']))
         return min(float(move['length']), elapsed * float(move['speed']))
+
+    def _calibration_encoder_ratio(self):
+        # Encoder counts per commanded mm on this session's completed moves.
+        c = self._calibration
+        commanded = float(c.get('encoder_commanded_mm') or 0.0)
+        if commanded < CAL_ENCODER_LEARN_MIN_MM:
+            return 1.0
+        return float(c.get('encoder_counts') or 0.0) / commanded
+
+    def _calibration_learn_encoder(self, move):
+        # A move that ran its full commanded length.
+        c = self._calibration
+        dec = move.get('dec')
+        length = float(move.get('length') or 0.0)
+        if (dec is None or move.get('stop_ignored')
+                or length < CAL_ENCODER_LEARN_MIN_MM):
+            return
+        if not (CAL_ENCODER_RATIO_MIN <= float(dec) / length
+                <= CAL_ENCODER_RATIO_MAX):
+            return
+        c['encoder_counts'] = float(c.get('encoder_counts') or 0.0) + float(dec)
+        c['encoder_commanded_mm'] = float(
+            c.get('encoder_commanded_mm') or 0.0) + length
 
     def _calibration_settle(self, finalize):
         # Called when the toolhead sensor ends a feed. On V2 the booked
@@ -10764,7 +10798,8 @@ class MultiAce:
                 covered = move['length']
                 if (move.get('kind') == 'verify_feed'
                         and move.get('dec') is not None):
-                    covered = move['dec']
+                    self._calibration_learn_encoder(move)
+                    covered = self._calibration_move_travel(move, eventtime)
                 c['verify_position_mm'] = int(round(
                     move.get('position_start', 0)
                     + move.get('direction', 1) * covered))
@@ -10937,6 +10972,7 @@ class MultiAce:
                     self._calibration_move = None
                     self._calibration_timer = None
                     return self.reactor.NEVER
+                self._calibration_learn_encoder(move)
                 if state == 'feeding':
                     c['commanded_feed_mm'] = int(
                         c.get('commanded_feed_mm', 0)) + int(move['length'])
@@ -10944,7 +10980,8 @@ class MultiAce:
                     # saw, not as what was asked for.
                     c['feed_travel_mm'] = (
                         float(c.get('feed_travel_mm') or 0.0)
-                        + (move['dec'] if move.get('dec') is not None
+                        + (self._calibration_move_travel(move, eventtime)
+                           if move.get('dec') is not None
                            else float(move['length'])))
                     self._calibration_move = None
                     if c['commanded_feed_mm'] >= c['max_feed_mm']:
