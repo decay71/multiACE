@@ -280,8 +280,6 @@ class AceBgSwap:
                                     desc=self.cmd_ACE_BG_MOVE_help)
         self.gcode.register_command('ACE_BG_SET_HEAD', self.cmd_ACE_BG_SET_HEAD,
                                     desc=self.cmd_ACE_BG_SET_HEAD_help)
-        self.gcode.register_command('ACE_BG_DEBUG', self.cmd_ACE_BG_DEBUG,
-                                    desc=self.cmd_ACE_BG_DEBUG_help)
 
         self.gcode.register_command('ACE_BG_SWAP', self.cmd_ACE_BG_SWAP,
                                     desc=self.cmd_ACE_BG_SWAP_help)
@@ -347,25 +345,6 @@ class AceBgSwap:
                      else 'disabled',
                      [self._dh(h) for h in sorted(self.enabled_heads)]
                      or 'NONE', sfx))
-
-    cmd_ACE_BG_DEBUG_help = (
-        '[multiACE] Toggle background swap and arrival hold console debug messages. '
-        'Usage: ACE_BG_DEBUG [ENABLE=0|1] [PERSIST=0]')
-    def cmd_ACE_BG_DEBUG(self, gcmd):
-        enable = gcmd.get_int('ENABLE', -1)
-        if enable == -1:
-            state = 'enabled' if self.debug else 'disabled'
-            gcmd.respond_info('[bg-swap] debug console output is %s' % state)
-            return
-        self.debug = bool(enable)
-        state = 'enabled' if self.debug else 'disabled'
-        _ace = self.printer.lookup_object('ace', None)
-        _wt = getattr(_ace, '_wt_persist', None)
-        sfx = ''
-        if _wt is not None:
-            sfx = _wt(gcmd, 'debug', 'True' if self.debug else 'False',
-                      None, section='ace_bg_swap')
-        gcmd.respond_info('[bg-swap] debug console output %s%s' % (state, sfx))
 
     def request_pick_abort(self, head):
         """Toolchange notice from ace.py's T0-T3 wrapper, sent BEFORE the
@@ -538,8 +517,9 @@ class AceBgSwap:
             logging.info('[multiACE] [bg-wait] park at discard failed: %s' % e)
             return False
 
-    def _restore_active_position(self, snapshot):
-        """Milestone 4.3: Restore toolhead to the snapshotted coordinates with Z clearance hop."""
+    def _restore_active_position(self, snapshot, travel=True):
+        """Milestone 4.3: Restore toolhead speed, coordinate mode, and optionally
+        position coordinates with Z clearance hop."""
         if snapshot is None:
             return
         try:
@@ -555,19 +535,26 @@ class AceBgSwap:
             e_diff = gcode_move.last_position[3] - saved_e_last
             gcode_move.base_position[3] = saved_e_base + e_diff
 
-            # Approach pattern matching inline swap tail: XY approach +2mm above print pos
-            self.gcode.run_script_from_command('G90')
-            self.gcode.run_script_from_command('G0 Z%.3f F600' % (saved_pos[2] + 3.0))
-            self.gcode.run_script_from_command('G0 Y%.3f F12000' % saved_pos[1])
-            self.gcode.run_script_from_command('G0 X%.3f F12000' % saved_pos[0])
-            self.gcode.run_script_from_command('G0 Z%.3f F600' % (saved_pos[2] + 2.0))
-            toolhead.wait_moves()
+            if travel:
+                # Approach pattern matching inline swap tail: XY approach +2mm above print pos
+                self.gcode.run_script_from_command('G90')
+                self.gcode.run_script_from_command('G0 Z%.3f F600' % (saved_pos[2] + 3.0))
+                self.gcode.run_script_from_command('G0 Y%.3f F12000' % saved_pos[1])
+                self.gcode.run_script_from_command('G0 X%.3f F12000' % saved_pos[0])
+                self.gcode.run_script_from_command('G0 Z%.3f F600' % (saved_pos[2] + 2.0))
+                toolhead.wait_moves()
 
             if saved_absolute:
                 self.gcode.run_script_from_command('G90')
+            else:
+                self.gcode.run_script_from_command('G91')
             self.gcode.run_script_from_command('G1 F%d' % int(saved_speed * 60))
-            logging.info('[multiACE] [bg-wait] restored active position X=%.2f Y=%.2f Z=%.2f'
-                         % (saved_pos[0], saved_pos[1], saved_pos[2]))
+            if travel:
+                logging.info('[multiACE] [bg-wait] restored active position X=%.2f Y=%.2f Z=%.2f'
+                             % (saved_pos[0], saved_pos[1], saved_pos[2]))
+            else:
+                logging.info('[multiACE] [bg-wait] restored feedrate F%d and coordinate mode (G%s) at discard position'
+                             % (int(saved_speed * 60), '90' if saved_absolute else '91'))
         except Exception as e:
             logging.info('[multiACE] [bg-wait] position restore failed: %s' % e)
 
@@ -1582,10 +1569,11 @@ class AceBgSwap:
                                           % (self._dh(head), elapsed_wait, released_reason))
 
                     if restore_pos:
-                        self._restore_active_position(snapshot)
+                        self._restore_active_position(snapshot, travel=True)
                         if debug:
                             gcmd.respond_info('[bg-wait] HEAD=%d restored to original coordinates' % self._dh(head))
                     else:
+                        self._restore_active_position(snapshot, travel=False)
                         logging.info('[multiACE] [bg-wait] HEAD=%d parked at discard position; skipped pos restore for direct dock'
                                      % self._dh(head))
                         if debug:
@@ -1596,13 +1584,10 @@ class AceBgSwap:
             # 1. Early phases ('QUEUED', 'FA_STOP', 'HEAT'):
             #    Active Abort: Abort if the head is in early HEAT (to prevent scheduled cold-pull extrusion).
             #    Do NOT zero the heater here: preserve any preheat progress for the arrival swap.
-            # 2. Late loading phases ('LD_GRIP', 'LD_PRIME'):
-            #    Graceful Handover Notice: Send request_pick_abort(head) so the engine cuts short
-            #    its prime loop at the next move boundary, sets its anti-ooze cushion, and releases
-            #    the head before arrival T executes. This prevents mid-air extrusion/drool blobs.
-            # 3. Post-pull / bulk phases ('RETRACT', 'BOOKKEEP', 'LD_FEED'):
-            #    Pass through: the arrival swap already waits for bulk retract, stages filament cleanly,
-            #    or takes over inline.
+            # 2. Later phases ('PULL', 'RETRACT', 'BOOKKEEP', 'LD_FEED', 'LD_GRIP', 'LD_PRIME'):
+            #    Pass through: the arrival toolchange T wrapper in ace.py (_notify_bg_pick)
+            #    notifies the bg engine via request_pick_abort(head) at the toolchange boundary,
+            #    and inline paths take over cleanly.
             cur_p = self.phase(head).upper()
             base_p = cur_p.split(':')[0]
             if head in self._busy and base_p in ('QUEUED', 'FA_STOP', 'HEAT'):
@@ -1614,14 +1599,6 @@ class AceBgSwap:
                 if debug:
                     gcmd.respond_info('[bg-wait] HEAD=%d early heat op cleanly aborted before arrival pick (preheat preserved)'
                                       % self._dh(head))
-            elif head in self._busy and base_p in ('LD_GRIP', 'LD_PRIME'):
-                if self.request_pick_abort(head):
-                    handover_deadline = self.reactor.monotonic() + 8.0
-                    while head in self._busy and self.reactor.monotonic() < handover_deadline:
-                        self.reactor.pause(self.reactor.monotonic() + 0.10)
-                    if debug:
-                        gcmd.respond_info('[bg-wait] HEAD=%d late loading op (%s) handed over with anti-ooze cushion before arrival pick'
-                                          % (self._dh(head), cur_p))
             elif debug:
                 gcmd.respond_info('[bg-wait] HEAD=%d passing through (%s)'
                                   % (self._dh(head), cur_p))

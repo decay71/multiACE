@@ -105,7 +105,6 @@ heads print one fixed colour from the side feeder.
 |---------|-----------|--------|
 | `ACE_BG_SWAP` | `HEAD=n SLOT=n [ACE=n] [TEMP=] [ANTI_OOZE=] [PURGE=mm] [QUIET=1] [FORCE=1]` | Unload and reload a **parked** head's ACE slot while another head prints, so the arrival toolchange becomes a no-op. Requires the head to be opted in (`ACE_BG_SET_HEAD HEAD=n ENABLE=1`, a hardware declaration that the dock is open below). `QUIET=1` turns every refusal into a log line (the arrival then swaps inline). Requires the `[ace_bg_swap]` section. **Not yet part of the stable contract** - parameters may still change. |
 | `ACE_BG_WAIT` | `HEAD=n [DEBUG=0\|1] [TIMEOUT=s] [RESTORE_POS=0\|1]` | Hold the active toolhead at the discard chute if docked target `HEAD` is in late HEAT or PULL, until RETRACT is reached. By default (`RESTORE_POS=0`), leaves the carriage at the discard chute so the subsequent arrival `T` docks directly without redundant bed travel. Set `RESTORE_POS=1` to restore coordinates before returning. If ineligible or timed out, falls back cleanly to inline swap. |
-| `ACE_BG_DEBUG` | `[ENABLE=0\|1] [PERSIST=0]` | Query or toggle background swap and arrival hold console diagnostics. Omit parameters to query; pass `ENABLE=1` to enable verbose arrival breakdown. `PERSIST=0` limits changes to memory until restart. |
 
 ### Feed assist
 
