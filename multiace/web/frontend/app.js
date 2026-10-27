@@ -7860,13 +7860,22 @@ createApp({
       const key = historyRowKey(row);
       history.detail = history.detail === key ? null : key;
     }
-    function historyColors(row) {
+    // A head's entry is one slot (older records) or a list of every slot that
+    // fed it during the print; both come out as a list.
+    function historyLoadout(row) {
       const asn = (row && row.multiace && row.multiace.assignment) || {};
-      return Object.keys(asn).map(h => ({
-        head: h, ace: asn[h].ace_index, slot: asn[h].slot,
-        color: asn[h].color ? ("#" + String(asn[h].color).replace(/^#/, ""))
-                            : "#666",
-      }));
+      return Object.keys(asn).sort((a, b) => Number(a) - Number(b)).map(h => {
+        const v = asn[h];
+        return {head: h, slots: (Array.isArray(v) ? v : [v]).filter(Boolean).map(e => ({
+          ace: e.ace_index, slot: e.slot,
+          color: e.color ? ("#" + String(e.color).replace(/^#/, "")) : "#666",
+        }))};
+      });
+    }
+    function historyColors(row) {
+      return historyLoadout(row).flatMap(l => l.slots.map((s, i) => ({
+        head: l.head + "-" + i, th: l.head, ace: s.ace, slot: s.slot, color: s.color,
+      })));
     }
     function fmtDuration(sec) {
       if (!sec || sec < 0) return "–";
@@ -7880,24 +7889,23 @@ createApp({
     // still apply, so the user gets to compare the loadout of that run with
     // what sits on the machine now before confirming.
     function reprintLoadoutHtml(row) {
-      const asn = (row && row.multiace && row.multiace.assignment) || {};
-      const heads = Object.keys(asn).sort((a, b) => Number(a) - Number(b));
-      if (!heads.length) {
+      const loadout = historyLoadout(row).filter(l => l.slots.length);
+      if (!loadout.length) {
         return `<p class="muted small">${escapeHtml(t("ui.history.reprint_no_record"))}</p>`;
       }
-      const items = heads.map(h => {
-        const e = asn[h] || {};
-        const hasAce = e.ace_index != null && e.slot != null;
-        const where = hasAce
-          ? `ACE ${dispIdx(e.ace_index)} / ${dispIdx(e.slot)}`
-          : t("ui.history.reprint_feeder");
-        const sp = hasAce ? spoolForSlot(e.ace_index, e.slot) : spoolForHead(Number(h));
-        const now = sp ? t("ui.history.reprint_now", {spool: spoolTitle(sp)})
-                       : t("ui.history.reprint_now_empty");
-        const color = e.color ? "#" + String(e.color).replace(/^#/, "") : "#666";
-        return `<li><span class="swatch" style="background:${escapeHtml(color)}"></span> ` +
-               `<b>T${escapeHtml(dispIdx(Number(h)))}</b> · ${escapeHtml(where)} ` +
-               `<span class="muted small">(${escapeHtml(now)})</span></li>`;
+      const items = loadout.map(l => {
+        const slots = l.slots.map(e => {
+          const hasAce = e.ace != null && e.slot != null;
+          const where = hasAce
+            ? `ACE ${dispIdx(e.ace)} / ${dispIdx(e.slot)}`
+            : t("ui.history.reprint_feeder");
+          const sp = hasAce ? spoolForSlot(e.ace, e.slot) : spoolForHead(Number(l.head));
+          const now = sp ? t("ui.history.reprint_now", {spool: spoolTitle(sp)})
+                         : t("ui.history.reprint_now_empty");
+          return `<span class="swatch" style="background:${escapeHtml(e.color)}"></span> ` +
+                 `${escapeHtml(where)} <span class="muted small">(${escapeHtml(now)})</span>`;
+        });
+        return `<li><b>T${escapeHtml(dispIdx(Number(l.head)))}</b> · ${slots.join(" → ")}</li>`;
       });
       return `<ul class="reprint-loadout">${items.join("")}</ul>`;
     }

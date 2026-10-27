@@ -1602,9 +1602,9 @@
                 <td>
                   <span v-for="c in historyColors(row)" :key="'hc-'+c.head"
                         class="swatch" :style="{background: c.color}"
-                        :title="'T' + c.head + ' · ACE ' + c.ace + ' / slot ' + c.slot"></span>
+                        :title="'T' + c.th + ' · ACE ' + c.ace + ' / slot ' + c.slot"></span>
                 </td>
-                <td>{{ row.multiace ? row.multiace.toolchanges : '–' }}</td>
+                <td>{{ row.multiace && row.multiace.toolchanges != null ? row.multiace.toolchanges : '–' }}</td>
                 <td>{{ row.filament_used ? Math.round(row.filament_used / 1000) + ' m' : '–' }}</td>
                 <td><span class="pill">{{ row.status || '–' }}</span></td>
                 <td>
@@ -1620,7 +1620,7 @@
               <tr v-if="history.detail === historyRowKey(row)" class="history-detail">
                 <td colspan="8">
                   <div v-if="row.multiace">
-                    <p><b>{{ t('ui.history.plan') }}:</b> {{ row.multiace.plan || '–' }}
+                    <p v-if="row.multiace.plan || row.multiace.load_retries != null"><b>{{ t('ui.history.plan') }}:</b> {{ row.multiace.plan || '–' }}
                        · <b>{{ t('ui.history.retries') }}:</b> {{ row.multiace.load_retries }}</p>
                     <table class="history-swaps" v-if="(row.multiace.swaps || []).length">
                       <tr v-for="(sw, i) in row.multiace.swaps" :key="'sw-'+i">

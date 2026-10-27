@@ -717,6 +717,23 @@ def _resolve_multiace_paths(config):
     }
 
 
+class _HeadSourceMap(dict):
+    """head -> source dict. Reports every non-empty assignment to `observer`
+    so the print history can collect which slots fed a head, without a hook
+    at each of the places that load one. The observer must never raise into
+    the caller; a failure is dropped here as well."""
+    observer = None
+
+    def __setitem__(self, head, value):
+        dict.__setitem__(self, head, value)
+        cb = self.observer
+        if cb is not None and value:
+            try:
+                cb(head, value)
+            except Exception:
+                pass
+
+
 class MultiAce:
     # Canonical [ace] config file - the write-through target. Mirrors the
     # web backend's MULTIACE_CFG_PATH
@@ -1546,7 +1563,9 @@ class MultiAce:
         self._i18n_fallbacks.append(os.path.join(self._web_dir, 'i18n'))
         self._reload_i18n_catalog()
 
-        self._head_source = {0: None, 1: None, 2: None, 3: None}
+        self._job = None  # print history record being collected
+        self._job_history_mod = None
+        self._head_source = self._new_head_source()
         # head -> the (type,vendor,color,sub) identity whose display-heal push
         # the firmware rejected as "official filament, not configurable" (a tag
         # written in a non-Anycubic format). Negative-cache so we don't re-push
@@ -4657,7 +4676,124 @@ class MultiAce:
                 return bool(pin)
         return motion
 
+    # ---- print history record -------------------------------------------
+    # One record per print, written once when it ends. The slots that fed
+    # each head are collected in memory as loads happen (_HeadSourceMap), so
+    # nothing is written to flash while the print runs and nothing in the
+    # swap path knows about history. Every method here swallows its own
+    # errors: history is never worth disturbing Klipper over.
+
+    def _new_head_source(self):
+        m = _HeadSourceMap({0: None, 1: None, 2: None, 3: None})
+        m.observer = self._job_note_load
+        return m
+
+    def _job_note_load(self, head, src):
+        job = self._job
+        if job is None or not isinstance(src, dict):
+            return
+        ace = src.get('ace_index')
+        slot = src.get('slot')
+        if ace is None or slot is None:
+            return
+        color = str(src.get('color') or '').lstrip('#') or None
+        seen = job['loadout'].setdefault(int(head), {})
+        if (ace, slot) not in seen or (seen[(ace, slot)] is None and color):
+            seen[(ace, slot)] = color
+
+    def _job_snapshot_sources(self):
+        try:
+            if self._job is None:
+                return
+            for head, src in self._head_source.items():
+                if src:
+                    self._job_note_load(head, src)
+        except Exception as e:
+            logging.info('[multiACE] history snapshot failed (ignored): %s' % e)
+
+    def _job_note_start(self):
+        # print_stats:start also fires on RESUME. The same file with a record
+        # still open is a resume: keep collecting into it, never open a second.
+        try:
+            ps = self.printer.lookup_object('print_stats', None)
+            filename = (ps.get_status(self.reactor.monotonic()).get('filename')
+                        if ps is not None else '') or ''
+            if self._job is not None and self._job['filename'] == filename:
+                return
+            self._job = {'filename': filename, 'start_time': time.time(),
+                         'loadout': {}}
+        except Exception as e:
+            self._job = None
+            logging.info('[multiACE] history start failed (ignored): %s' % e)
+
+    def _job_note_end(self):
+        try:
+            job = self._job
+            if job is None:
+                return
+            self._job_snapshot_sources()
+            self._job = None
+            # print_stats flips its state around the stop event; read the
+            # final state a moment later rather than race it.
+            self.reactor.register_callback(
+                lambda et, j=job: self._job_write(j),
+                self.reactor.monotonic() + 1.0)
+        except Exception as e:
+            self._job = None
+            logging.info('[multiACE] history end failed (ignored): %s' % e)
+
+    def _job_history(self):
+        if self._job_history_mod is None:
+            import importlib.util
+            here = os.path.dirname(os.path.abspath(__file__))
+            for cand in (os.path.join(self.paths['config_dir'], 'tools',
+                                      'job_history.py'),
+                         os.path.join(here, '..', '..', 'tools',
+                                      'job_history.py')):
+                if not os.path.isfile(cand):
+                    continue
+                spec = importlib.util.spec_from_file_location(
+                    'multiace_job_history', cand)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                self._job_history_mod = mod
+                break
+        return self._job_history_mod
+
+    def _job_write(self, job):
+        try:
+            ps = self.printer.lookup_object('print_stats', None)
+            state = (ps.get_status(self.reactor.monotonic()).get('state')
+                     if ps is not None else '')
+            result = {'complete': 'completed', 'cancelled': 'cancelled',
+                      'error': 'error'}.get(state, 'unknown')
+            assignment = {}
+            for head, seen in sorted(job['loadout'].items()):
+                assignment[str(head)] = [
+                    {'ace_index': a, 'slot': sl, 'color': c}
+                    for (a, sl), c in sorted(seen.items())]
+            hist = self._job_history()
+            if hist is None:
+                logging.info('[multiACE] history: job_history.py not found, '
+                             'record dropped')
+                return
+            data_dir = (os.environ.get('MULTIACE_DATA_DIR')
+                        or os.path.join(self.paths['printer_data'],
+                                        'multiace'))
+            now = time.time()
+            hist.append_record(data_dir, {
+                'filename': job['filename'],
+                'start_time': job['start_time'],
+                'end_time': now,
+                'duration': now - job['start_time'],
+                'result': result,
+                'assignment': assignment,
+            })
+        except Exception as e:
+            logging.info('[multiACE] history write failed (ignored): %s' % e)
+
     def _on_print_start(self, *args):
+        self._job_note_start()
         # Sniffed per print. print_stats:start fires on start AND on resume
         # (note_start runs in the virtual_sdcard work handler), so the flag
         # is refreshed on every resume as well.
@@ -4698,6 +4834,7 @@ class MultiAce:
                     '[multiACE] Print start: cleared stale head_source for '
                     'head(s) %s (sensor reports no filament)'
                     % ', '.join('T%d' % h for h in stale_heads))
+            self._job_snapshot_sources()
             if ghost_heads:
                 self._ghost_heads = set(ghost_heads)
                 head_list = ', '.join('T%d' % h for h in ghost_heads)
@@ -4915,6 +5052,7 @@ class MultiAce:
             })
 
     def _on_print_end(self, *args):
+        self._job_note_end()
         self._auto_feed_enabled = False
         self._fa_context = 'idle'
         self._runout_suppress_heads = set()
@@ -22082,7 +22220,7 @@ class MultiAce:
             self._clear_filament_display(head)
             self.log_always(self._t('msg.cleared_head_mapping', head=self._disp(head)))
         else:
-            self._head_source = {0: None, 1: None, 2: None, 3: None}
+            self._head_source = self._new_head_source()
             for h in range(4):
                 self._clear_filament_display(h)
             self.log_always(self._t('msg.cleared_all_head_mappings'))
