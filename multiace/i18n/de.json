@@ -859,6 +859,7 @@
       "reprint_title": "Diese Datei erneut drucken?",
       "reprint_msg": "Dieser erneute Druck verwendet die folgende Beladung:",
       "reprint_confirm_q": "Möchtest du fortfahren?",
+      "reprint_note": "Es wird die Datei verwendet, wie sie bereits auf dem Drucker liegt - Beladung und Preflight werden nicht erneut geprüft.",
       "reprint_no_record": "Für diesen Druck wurde keine Beladung aufgezeichnet, daher kann sie nicht angezeigt werden. Die Datei wird gedruckt, wie sie auf dem Drucker liegt.",
       "reprint_now": "jetzt: {spool}",
       "reprint_now_empty": "jetzt: keine Spule zugeordnet",

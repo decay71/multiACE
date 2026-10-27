@@ -306,6 +306,7 @@
       "reprint_title": "重新打印该文件？",
       "reprint_msg": "本次重新打印将使用以下装载：",
       "reprint_confirm_q": "是否继续？",
+      "reprint_note": "将直接使用打印机上现有的文件 - 不会重新检查装载或重新预检。",
       "reprint_no_record": "该次打印没有装载记录，无法显示。将直接使用打印机上现有的文件打印。",
       "reprint_now": "当前：{spool}",
       "reprint_now_empty": "当前：未绑定耗材盘",

@@ -7908,6 +7908,7 @@ createApp({
         message: `<p><b>${escapeHtml(row.filename)}</b></p>` +
                  `<p>${escapeHtml(t("ui.history.reprint_msg"))}</p>` +
                  reprintLoadoutHtml(row) +
+                 `<p class="muted small">${escapeHtml(t("ui.history.reprint_note"))}</p>` +
                  `<p>${escapeHtml(t("ui.history.reprint_confirm_q"))}</p>`,
         okLabel: t("ui.history.reprint_ok"),
         onOk: () => doReprint(row),
@@ -7929,7 +7930,8 @@ createApp({
     }
     const closeHistoryInfo = () => { history.info = null; };
     document.addEventListener("click", closeHistoryInfo);
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeHistoryInfo(); });
+    const historyInfoKeydown = (e) => { if (e.key === "Escape") closeHistoryInfo(); };
+    document.addEventListener("keydown", historyInfoKeydown);
     window.addEventListener("scroll", closeHistoryInfo, true);
     async function doReprint(row) {
       history.reprinting = historyRowKey(row);
@@ -7954,6 +7956,7 @@ createApp({
 
     onUnmounted(() => {
       document.removeEventListener("click", closeHistoryInfo);
+      document.removeEventListener("keydown", historyInfoKeydown);
       window.removeEventListener("scroll", closeHistoryInfo, true);
       clearTimeout(wsReconnectTimer);
       clearInterval(screenTimer);

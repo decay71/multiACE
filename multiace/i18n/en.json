@@ -859,6 +859,7 @@
       "reprint_title": "Reprint this file?",
       "reprint_msg": "This re-print will use the following loadout:",
       "reprint_confirm_q": "Do you want to proceed?",
+      "reprint_note": "This uses the file as it already is on the printer - it will not re-check the loadout or re-run preflight.",
       "reprint_no_record": "No loadout was recorded for this print, so it cannot be shown. The file will be printed as it already is on the printer.",
       "reprint_now": "now: {spool}",
       "reprint_now_empty": "now: no spool bound",
