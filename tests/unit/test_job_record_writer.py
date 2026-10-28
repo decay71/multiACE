@@ -8,6 +8,7 @@ open a second record; nothing may raise into Klipper.
 import importlib
 import json
 import os
+import shutil
 import sys
 import types
 
@@ -68,6 +69,7 @@ def ace(tmp_path, monkeypatch):
     a.reactor = Reactor()
     a.ps = PrintStats()
     a.printer = Printer(a.ps)
+    a._web_dir = str(tmp_path / 'multiace_web')
     a.paths = {'config_dir': str(tmp_path), 'printer_data': str(tmp_path)}
     a._job = None
     a._job_history_mod = None
@@ -125,6 +127,27 @@ def test_loads_outside_a_print_are_not_recorded(ace, tmp_path):
     ace._job_note_end()
     ace.reactor.run()
     assert _records(tmp_path) == []
+
+
+def test_failed_load_is_not_recorded_until_confirmed(ace, tmp_path):
+    ace._job_note_start()
+    failed = dict(_src(0, 3, 'FF0000'), load_failed=True)
+    ace._head_source[0] = failed
+    ace._job_snapshot_sources()
+    assert ace._job['loadout'] == {}
+    failed['load_failed'] = False                    # confirmed later
+    ace._job_note_end()
+    ace.reactor.run()
+    (rec,) = _records(tmp_path)
+    assert rec['assignment']['0'][0]['slot'] == 3
+
+
+def test_finds_job_history_in_the_web_backend_first(ace, tmp_path):
+    backend = tmp_path / 'multiace_web' / 'backend'
+    backend.mkdir(parents=True)
+    src = os.path.join(EXTRAS, '..', '..', 'tools', 'job_history.py')
+    shutil.copy(src, backend / 'job_history.py')
+    assert ace._job_history().__file__ == str(backend / 'job_history.py')
 
 
 def test_errors_never_reach_klipper(ace, tmp_path):

@@ -4692,6 +4692,8 @@ class MultiAce:
         job = self._job
         if job is None or not isinstance(src, dict):
             return
+        if src.get('load_failed'):
+            return  # the slot never fed the head
         ace = src.get('ace_index')
         slot = src.get('slot')
         if ace is None or slot is None:
@@ -4746,7 +4748,9 @@ class MultiAce:
         if self._job_history_mod is None:
             import importlib.util
             here = os.path.dirname(os.path.abspath(__file__))
-            for cand in (os.path.join(self.paths['config_dir'], 'tools',
+            for cand in (os.path.join(self._web_dir, 'backend',
+                                      'job_history.py'),
+                         os.path.join(self.paths['config_dir'], 'tools',
                                       'job_history.py'),
                          os.path.join(here, '..', '..', 'tools',
                                       'job_history.py')):
