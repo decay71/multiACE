@@ -65,9 +65,15 @@ UNMEASURED_S = {
     # First load of a head before the print body - no tip-form, no spool
     # change, because there is nothing to remove yet.
     "first_load_extra": 0.0,
+    # A toolchange that needs no filament change (onto a pinned feeder, or
+    # onto a head that already holds the filament): pick and park, nothing
+    # else. Median of a measured 1000-swap print on a bg-loaded arrival;
+    # pickup cleaning, when on, adds its wipe on top (no clean number yet).
+    "head_change":      4.2,
 }
 
-SWAP_KINDS = ("same_ace", "cross_ace_inline", "cross_ace_bg", "first_load")
+SWAP_KINDS = ("same_ace", "cross_ace_inline", "cross_ace_bg", "first_load",
+              "head_change")
 
 #: Kinds whose cost lands on the print's critical path in full.
 INLINE_KINDS = ("same_ace", "cross_ace_inline")
@@ -514,6 +520,8 @@ class SwapCostModel(object):
         retract = max(1.0, self._p("retract_speed", ace, slot, 80.0))
         load_len = self._p("load_length", ace, slot, 0.0)
         seat = self._p("seat_overshoot_length", ace, slot, 0.0)
+        if kind == "head_change":
+            return 0.0
         if kind == "first_load":
             return load_len / feed + (2.0 * seat) / feed
         if kind == "cross_ace_bg":
@@ -527,6 +535,8 @@ class SwapCostModel(object):
 
     def _constant_seconds(self, kind):
         c = self.constants
+        if kind == "head_change":
+            return c["head_change"]
         if kind == "cross_ace_bg":
             return c["tool_pickup"] + c["bg_handover"]
         if kind == "first_load":
@@ -642,7 +652,7 @@ def build_estimate(model, header, timeline, *, materials=None,
     assumptions = list(extra_assumptions or [])
 
     counts = {"inline": 0, "bg": 0, "unknown_window": 0,
-              "first_load": 0}
+              "first_load": 0, "head_change": 0}
     added_s = 0.0
     purge_mm_total = 0.0
     per_tool_purge_mm = {}
@@ -663,7 +673,8 @@ def build_estimate(model, header, timeline, *, materials=None,
             # or a synthetic event built by a test) - resolve one the
             # same way the rewrite would, just without a flush-matrix
             # stamp to prefer (see resolve_swap_purge_mm).
-            purge = model.resolve_swap_purge_mm()
+            purge = (0.0 if kind == "head_change"
+                     else model.resolve_swap_purge_mm())
         purge = float(purge or 0.0)
         # A finished background swap purges on the parked head, off the
         # critical path; its prime is the purge plus BG_LOAD_PRIME_EXTRA_MM.
@@ -685,10 +696,13 @@ def build_estimate(model, header, timeline, *, materials=None,
             counts["bg"] += 1
         elif kind == "first_load":
             counts["first_load"] += 1
+        elif kind == "head_change":
+            counts["head_change"] += 1
         else:
             counts["inline"] += 1
-        if ev.get("window_min") is None and kind in ("cross_ace_bg",
-                                                     "cross_ace_inline"):
+        if kind == "cross_ace_bg" and ev.get("window_min") is None:
+            # Stamped as a background swap without a known window: the
+            # engine aborts it if the head turns out to be needed sooner.
             counts["unknown_window"] += 1
 
     # The ACE-chute purge (INNER_FLUSH_FILAMENT) is a physically SEPARATE
@@ -763,6 +777,7 @@ def build_estimate(model, header, timeline, *, materials=None,
                           else total_s + added_purge_s, 0),
         "inline_swaps": counts["inline"],
         "bg_swaps": counts["bg"],
+        "head_changes": counts["head_change"],
         "unknown_window_swaps": counts["unknown_window"],
         "purge": {"mm": _round(purge_mm_total), "g": _round(purge_g_total, 2),
                   "destination": dest},

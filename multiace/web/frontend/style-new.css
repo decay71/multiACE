@@ -1392,6 +1392,284 @@ html[data-theme="new"] .nt-config-tab > .config-form > .config-row:has(.spool-pi
 html[data-theme="new"] .nt-config-tab > .config-form > .config-row:has(.spool-picker-row) { justify-content: flex-start; }
 
 
+/* ---- Calibration tab -------------------------------------------------
+   style.css paints this tab with fixed dark colours and rounded cards.
+   Here every surface goes through the design tokens (so the light shade
+   needs no rules of its own) and takes the square, line-drawn look of the
+   other tabs. */
+html[data-theme="new"] .calibration-page h2 {
+  margin: 18px 0 6px; font-size: 22px; font-weight: 600;
+  text-transform: none; letter-spacing: 0; color: var(--fg);
+}
+html[data-theme="new"] .calibration-heading { margin-bottom: 14px; }
+html[data-theme="new"] .calibration-heading p.muted { font-size: 12.5px; color: var(--muted); max-width: 720px; }
+html[data-theme="new"] .calibration-guided { max-width: none; }
+
+/* route header + diagram */
+html[data-theme="new"] .calibration-route-summary {
+  padding: 14px 16px; background: var(--card); border-color: var(--border); border-radius: 0;
+}
+html[data-theme="new"] .calibration-route-summary strong { font-size: 14px; font-weight: 700; color: var(--fg); }
+html[data-theme="new"] .calibration-route-summary small { font-size: 12.5px; color: var(--muted); }
+html[data-theme="new"] .calibration-route-summary > span {
+  padding: 4px 10px; border-radius: 0; font-size: 11.5px; font-weight: 700;
+  color: var(--nt-warn-fg); border-color: var(--nt-warn); background: transparent;
+}
+html[data-theme="new"] .calibration-route-summary > span.ready { color: var(--nt-ok); border-color: var(--nt-ok); }
+html[data-theme="new"] .calibration-route-summary > span.busy { color: var(--accent); border-color: var(--accent); }
+html[data-theme="new"] .calibration-route-summary > span.attention { color: var(--nt-warn-fg); border-color: var(--nt-warn); }
+html[data-theme="new"] .calibration-guided .calibration-route {
+  padding: 18px 16px 22px; background: var(--nt-bg2); border-color: var(--border); border-radius: 0;
+}
+html[data-theme="new"] .calibration-route span {
+  padding: 8px 10px; border-radius: 0; border-color: var(--nt-ctl);
+  background: var(--card); color: var(--muted); font-size: 11.5px;
+}
+html[data-theme="new"] .calibration-route strong { color: var(--fg); font-size: 13px; font-weight: 700; }
+html[data-theme="new"] .calibration-route-tube { height: 2px; border-radius: 0; background: var(--nt-ctl); }
+html[data-theme="new"] .calibration-route-tube small { top: 10px; font-size: 11px; color: var(--nt-label); }
+html[data-theme="new"] .calibration-tip-marker {
+  color: var(--accent-fg); background: var(--accent); border-color: var(--nt-bg2);
+}
+html[data-theme="new"] .calibration-route.paused .calibration-tip-marker {
+  color: var(--nt-on-color); background: var(--nt-warn-hi);
+}
+html[data-theme="new"] .calibration-route.unknown .calibration-tip-marker {
+  color: var(--nt-warn-fg); background: var(--nt-warn-bg); border-color: var(--nt-warn);
+}
+html[data-theme="new"] .calibration-route.moving .calibration-tip-marker { animation-name: nt-calibration-tip-pulse; }
+@keyframes nt-calibration-tip-pulse {
+  50% { box-shadow: 0 0 0 6px rgba(var(--accent-rgb), .18); }
+}
+html[data-theme="new"] .calibration-route-caption {
+  padding: 10px 16px; margin-bottom: 16px; font-size: 12px;
+  color: var(--muted); background: var(--card); border-color: var(--border); border-radius: 0;
+}
+html[data-theme="new"] .calibration-route-caption strong { color: var(--fg); }
+html[data-theme="new"] .calibration-glossary summary { color: var(--accent); }
+html[data-theme="new"] .calibration-glossary dt { color: var(--fg); }
+
+/* stopped / returning bar */
+html[data-theme="new"] .calibration-recovery {
+  margin-bottom: 16px; padding: 14px 16px; border-radius: 0;
+  border: 1px solid var(--nt-warn); background: var(--nt-warn-bg);
+  box-shadow: inset 2px 0 0 var(--nt-warn-hi);
+}
+html[data-theme="new"] .calibration-recovery > div:first-child { color: var(--nt-fg2); font-size: 12.5px; }
+html[data-theme="new"] .calibration-recovery strong { color: var(--nt-warn-fg); font-size: 14px; }
+
+/* workflow shell + its four tabs */
+html[data-theme="new"] .calibration-workflow { background: var(--card); border-color: var(--border); border-radius: 0; }
+html[data-theme="new"] .calibration-workflow-tabs { background: var(--nt-bg2); border-bottom-color: var(--border); }
+html[data-theme="new"] .calibration-workflow-tabs button {
+  padding: 12px 16px; color: var(--muted); border-right-color: var(--border);
+}
+html[data-theme="new"] .calibration-workflow-tabs button:hover { background: rgba(var(--nt-tint), .03); }
+html[data-theme="new"] .calibration-workflow-tabs button.active {
+  color: var(--accent); background: var(--card); box-shadow: inset 0 -2px 0 var(--accent);
+}
+html[data-theme="new"] .calibration-workflow-tabs strong { font-size: 13.5px; font-weight: 600; color: var(--fg); }
+html[data-theme="new"] .calibration-workflow-tabs button.active strong { color: var(--accent); }
+html[data-theme="new"] .calibration-workflow-tabs small { font-size: 11.5px; }
+html[data-theme="new"] .calibration-workflow-body { padding: 20px; }
+
+/* panel heading */
+html[data-theme="new"] .calibration-task-heading > div > small {
+  margin-bottom: 4px; font-size: 12px; font-weight: 400; letter-spacing: 0;
+  text-transform: none; color: var(--nt-label);
+}
+html[data-theme="new"] .calibration-task-heading h3 {
+  margin: 0 0 4px; font-size: 17px; font-weight: 600;
+  text-transform: none; letter-spacing: 0; color: var(--fg);
+}
+html[data-theme="new"] .calibration-task-heading p { font-size: 12.5px; color: var(--muted); }
+html[data-theme="new"] .calibration-task-heading > span {
+  padding: 4px 10px; border-radius: 0; font-size: 11.5px;
+  color: var(--accent); border-color: var(--accent);
+}
+
+/* route choices (ACE, slot, toolhead, save-for) */
+html[data-theme="new"] .calibration-selector-block > label { font-size: 12px; color: var(--muted); }
+html[data-theme="new"] .calibration-route-option {
+  padding: 10px 12px; border-radius: 0; color: var(--fg);
+  background: var(--nt-input); border: 1px solid var(--nt-ctl);
+}
+html[data-theme="new"] .calibration-route-option strong { font-size: 13.5px; font-weight: 700; }
+html[data-theme="new"] .calibration-route-option small { font-size: 11.5px; color: var(--muted); }
+html[data-theme="new"] .calibration-route-option:hover:not(:disabled) { border-color: var(--accent); }
+html[data-theme="new"] .calibration-route-option.selected {
+  border-color: var(--accent); background: var(--nt-sel); box-shadow: inset 2px 0 0 var(--accent);
+}
+html[data-theme="new"] .calibration-route-option:disabled { opacity: 1; color: var(--nt-disabled); border-color: var(--nt-line); }
+html[data-theme="new"] .calibration-route-option:disabled small { color: var(--nt-disabled); }
+html[data-theme="new"] .calibration-route-option.selected:disabled { border-color: var(--nt-ctl); box-shadow: inset 2px 0 0 var(--nt-ctl); color: var(--nt-fg2); }
+
+/* check list: a line each, the state carried by the mark */
+html[data-theme="new"] .calibration-checks { gap: 0 24px; }
+html[data-theme="new"] .calibration-checks div {
+  padding: 10px 0; border: 0; border-bottom: 1px solid var(--nt-line); border-radius: 0;
+  background: transparent; color: var(--muted); font-size: 12.5px;
+}
+html[data-theme="new"] .calibration-checks div::before { color: var(--nt-warn-fg); }
+html[data-theme="new"] .calibration-checks div.ok { color: var(--fg); background: transparent; border-color: var(--nt-line); }
+html[data-theme="new"] .calibration-checks div.ok::before { color: var(--nt-ok); }
+
+/* step chips: a rule above, like the tab underline */
+html[data-theme="new"] .calibration-steps { gap: 12px; margin: 14px 0; }
+html[data-theme="new"] .calibration-steps div {
+  padding: 8px 0 0; border: 0; border-top: 2px solid var(--nt-ctl); border-radius: 0;
+  background: transparent; color: var(--nt-label); font-size: 12px;
+}
+html[data-theme="new"] .calibration-steps div.active { color: var(--accent); border-top-color: var(--accent); }
+html[data-theme="new"] .calibration-steps div.done { color: var(--nt-ok); border-top-color: var(--nt-ok); }
+
+/* value cells */
+html[data-theme="new"] .calibration-metrics { gap: 0; border: 1px solid var(--border); }
+html[data-theme="new"] .calibration-metrics div {
+  padding: 12px 16px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: var(--nt-bg2);
+}
+html[data-theme="new"] .calibration-metrics div:last-child { border-right: 0; }
+html[data-theme="new"] .calibration-metrics small { font-size: 12px; text-transform: none; color: var(--nt-label); }
+html[data-theme="new"] .calibration-metrics strong { font-size: 18px; font-weight: 700; color: var(--fg); }
+html[data-theme="new"] .calibration-metrics span { font-size: 11.5px; color: var(--muted); }
+
+/* jog panels */
+html[data-theme="new"] .calibration-jog-panel,
+html[data-theme="new"] .calibration-fine-position {
+  padding: 14px 16px; border-radius: 0; background: var(--nt-bg2); border-color: var(--border);
+}
+html[data-theme="new"] .calibration-fine-position { border-color: var(--nt-warn); }
+html[data-theme="new"] .calibration-fine-head span,
+html[data-theme="new"] .calibration-fine-row > span { font-size: 12px; color: var(--muted); }
+html[data-theme="new"] .calibration-fine-row > strong { color: var(--fg); }
+
+/* buttons: outlined by default, the accent fill for the one next step */
+html[data-theme="new"] .calibration-jogs button,
+html[data-theme="new"] .calibration-page .row button {
+  min-height: 34px; padding: 0 14px; border-radius: 0; font-size: 12.5px;
+  color: var(--fg); background: transparent; border: 1px solid var(--nt-ctl);
+}
+html[data-theme="new"] .calibration-jogs button:hover:not(:disabled),
+html[data-theme="new"] .calibration-page .row button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+html[data-theme="new"] .calibration-page .row button.primary {
+  min-height: 40px; padding: 0 18px; font-weight: 700;
+  color: var(--accent-fg); background: var(--accent); border-color: var(--accent);
+}
+html[data-theme="new"] .calibration-page .row button.primary:hover:not(:disabled) {
+  color: var(--accent-fg); background: var(--accent-hi); border-color: var(--accent-hi);
+}
+html[data-theme="new"] .calibration-page .row button.warn,
+html[data-theme="new"] .calibration-jogs button.warn {
+  color: var(--nt-danger-fg); border-color: var(--nt-danger); background: transparent;
+}
+html[data-theme="new"] .calibration-page .row button.warn:hover:not(:disabled) {
+  color: var(--nt-on-color); background: var(--nt-danger); border-color: var(--nt-danger);
+}
+html[data-theme="new"] .calibration-page button:disabled { opacity: 1; }
+html[data-theme="new"] .calibration-jogs button:disabled,
+html[data-theme="new"] .calibration-page .row button:disabled { color: var(--nt-disabled); border-color: var(--nt-line); }
+html[data-theme="new"] .calibration-page .row button.primary:disabled {
+  color: var(--nt-main-dis-fg); background: var(--nt-main-dis-bg); border-color: var(--nt-main-dis-bg);
+}
+
+/* drag track */
+html[data-theme="new"] .calibration-track-wrap {
+  padding: 14px 16px 10px; border-radius: 0; background: var(--nt-bg2); border-color: var(--border);
+}
+html[data-theme="new"] .calibration-track-wrap > p { font-size: 12.5px; color: var(--muted); }
+html[data-theme="new"] .calibration-track { height: 2px; border-radius: 0; background: var(--nt-ctl); }
+html[data-theme="new"] .calibration-track-fill { border-radius: 0; background: var(--accent); }
+html[data-theme="new"] .calibration-track-hub { background: var(--nt-warn-hi); }
+html[data-theme="new"] .calibration-track-hub small { color: var(--nt-warn-fg); font-size: 11px; }
+html[data-theme="new"] .calibration-track-handle { background: var(--accent); border-color: var(--nt-bg2); }
+html[data-theme="new"] .calibration-track-ghost { border-color: var(--accent); }
+html[data-theme="new"] .calibration-track-ends { font-size: 11.5px; color: var(--nt-label); }
+html[data-theme="new"] .calibration-drag-label { font-size: 12.5px; color: var(--accent); }
+
+/* messages */
+html[data-theme="new"] .calibration-notice,
+html[data-theme="new"] .calibration-warning,
+html[data-theme="new"] .calibration-success {
+  padding: 12px 16px; border-radius: 0; font-size: 12.5px; line-height: 1.5;
+}
+html[data-theme="new"] .calibration-notice { color: var(--muted); background: var(--nt-bg2); border-color: var(--border); }
+html[data-theme="new"] .calibration-notice strong { color: var(--fg); }
+html[data-theme="new"] .calibration-warning {
+  color: var(--nt-warn-fg); background: var(--nt-warn-bg); border: 1px solid var(--nt-warn);
+  box-shadow: inset 2px 0 0 var(--nt-warn-hi);
+}
+html[data-theme="new"] .calibration-success {
+  color: var(--fg); background: var(--nt-bg2); border: 1px solid var(--border);
+  box-shadow: inset 2px 0 0 var(--nt-ok);
+}
+html[data-theme="new"] .calibration-success strong { color: var(--nt-ok); }
+html[data-theme="new"] .calibration-details { color: var(--muted); font-size: 12.5px; }
+html[data-theme="new"] .calibration-panel p.muted { font-size: 12.5px; color: var(--muted); }
+html[data-theme="new"] .calibration-details summary { color: var(--fg); }
+
+/* results table */
+html[data-theme="new"] .calibration-review { border: 1px solid var(--border); font-size: 13px; }
+html[data-theme="new"] .calibration-review th {
+  padding: 10px 12px; font-size: 12px; font-weight: 400; color: var(--muted); border-bottom-color: var(--border);
+}
+html[data-theme="new"] .calibration-review td { padding: 10px 12px; border-bottom-color: var(--border); }
+html[data-theme="new"] .calibration-review tr:last-child td { border-bottom: 0; }
+html[data-theme="new"] .calibration-review td small { font-size: 11.5px; color: var(--muted); }
+html[data-theme="new"] .calibration-review td.save { color: var(--accent); font-weight: 700; font-size: 14px; }
+html[data-theme="new"] .calibration-review input {
+  height: 30px; border-radius: 0; color: var(--fg); background: var(--nt-input); border: 1px solid var(--nt-ctl);
+}
+html[data-theme="new"] .calibration-review input:focus { outline: none; border-color: var(--accent); }
+
+/* saved values, clear, undo bar and the clear dialog */
+html[data-theme="new"] .calibration-saved-values {
+  padding: 14px 16px; border-radius: 0; background: var(--nt-bg2); border-color: var(--border);
+}
+html[data-theme="new"] .calibration-saved-head { font-size: 12px; }
+html[data-theme="new"] .calibration-badge { border-radius: 0; font-size: 11.5px; border-color: var(--nt-ctl); }
+html[data-theme="new"] .calibration-badge.own { color: var(--accent); border-color: var(--accent); }
+html[data-theme="new"] .calibration-badge.shared { color: var(--nt-ok); border-color: var(--nt-ok); }
+html[data-theme="new"] .calibration-badge.none { color: var(--nt-warn-fg); border-color: var(--nt-warn); }
+html[data-theme="new"] .calibration-clear-table { font-size: 13px; }
+html[data-theme="new"] .calibration-clear-table th { font-size: 12px; font-weight: 400; color: var(--nt-label); }
+html[data-theme="new"] .calibration-clear-table th,
+html[data-theme="new"] .calibration-clear-table td { padding: 8px 10px; border-bottom-color: var(--nt-line); }
+html[data-theme="new"] .calibration-clear-table td small { font-size: 11px; color: var(--nt-label); }
+html[data-theme="new"] .calibration-clear-table tr.unset td { color: var(--nt-disabled); }
+html[data-theme="new"] .calibration-clear-table td.changed { color: var(--nt-warn-fg); }
+html[data-theme="new"] .calibration-clear-reason { font-size: 12px; }
+html[data-theme="new"] .calibration-clear-reason.blocked { color: var(--nt-warn-fg); }
+html[data-theme="new"] .calibration-undo {
+  border-radius: 0; font-size: 12.5px; background: var(--nt-bg2);
+  border-color: var(--border); border-left: 1px solid var(--border);
+  box-shadow: inset 2px 0 0 var(--nt-warn-hi);
+}
+html[data-theme="new"] .calibration-undo.done { box-shadow: inset 2px 0 0 var(--nt-ok); }
+html[data-theme="new"] .nt-confirm.calibration-clear-dialog { width: 500px; }
+html[data-theme="new"] .nt-confirm > .calibration-clear-table { margin: 14px 18px 0; width: calc(100% - 36px); }
+html[data-theme="new"] .nt-confirm > .calibration-warning,
+html[data-theme="new"] .nt-confirm > .calibration-notice { margin: 12px 18px 0; }
+html[data-theme="new"] .nt-confirm .nt-dlg-foot .nt-main.calibration-clear-confirm {
+  color: var(--nt-on-color); background: var(--nt-danger); border-color: var(--nt-danger);
+}
+@media (max-width: 760px) {
+  html[data-theme="new"] .calibration-workflow-body { padding: 14px 12px; }
+  html[data-theme="new"] .calibration-steps { gap: 8px; }
+  html[data-theme="new"] .calibration-steps div { font-size: 11px; }
+}
+@media (max-width: 560px) {
+  html[data-theme="new"] .calibration-guided .calibration-route { padding: 14px 12px; }
+  html[data-theme="new"] .calibration-route-tube { width: 2px; height: 34px; }
+  html[data-theme="new"] .calibration-route-tube small { top: 50%; }
+  html[data-theme="new"] .calibration-metrics div { border-right: 0; border-bottom: 1px solid var(--border); }
+  html[data-theme="new"] .calibration-metrics div:last-child { border-bottom: 0; }
+  html[data-theme="new"] .calibration-review th,
+  html[data-theme="new"] .calibration-review td { padding: 8px 6px; }
+  html[data-theme="new"] .calibration-page .row button.primary { flex: 1 1 100%; }
+  html[data-theme="new"] .calibration-clear-table th,
+  html[data-theme="new"] .calibration-clear-table td { padding: 7px 5px; }
+}
+
 /* ---- Light shade: surfaces the new design inherits from style.css ----
    style.css paints these with fixed dark colours. The dark shade lives
    with that, the light one replaces them here. Kept at the end of the file

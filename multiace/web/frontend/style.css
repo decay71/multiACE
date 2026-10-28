@@ -1483,6 +1483,8 @@ body.panel-embedded .sm-right { font-size: .68rem; }
 }
 .calibration-derived-route > div small { color: var(--muted); }
 .calibration-primary-actions { margin-top: 1rem; }
+.calibration-mark-hint { margin: 1rem 0 0; font-size: .76rem; }
+.calibration-mark-hint + .calibration-primary-actions { margin-top: .5rem; }
 .calibration-primary-actions .primary { padding: .6rem 1rem; }
 .calibration-saved-summary { min-height: 280px; }
 .calibration-notice {
@@ -1951,6 +1953,214 @@ body:has(.panel) .overlay .dialog {
   background: var(--card); border: 1px solid var(--border);
   border-radius: 4px; white-space: pre-wrap; font-size: .8rem; }
 
+/* Guided calibration: to-scale route, steps, recovery, hold */
+@media (min-width: 761px) {
+  .calibration-guided .calibration-route {
+    grid-template-columns: var(--route-cols, auto 1fr auto 1fr auto);
+  }
+}
+.calibration-route span.unknown { border-style: dashed; opacity: .6; }
+.calibration-route-tube small {
+  position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
+  color: var(--muted); font-size: .62rem; white-space: nowrap;
+}
+.calibration-route-summary > span.busy {
+  color: var(--accent); border-color: #2b666a;
+}
+.calibration-route-summary > span.attention {
+  color: var(--warn); border-color: #735429;
+}
+.calibration-route-caption { align-items: flex-start; }
+.calibration-glossary { flex: 0 1 auto; text-align: right; }
+.calibration-glossary summary { color: var(--accent); cursor: pointer; }
+.calibration-glossary dl {
+  display: grid; grid-template-columns: max-content minmax(0, 34rem);
+  gap: .3rem .9rem; margin: .5rem 0 0; text-align: left;
+}
+.calibration-glossary dt { color: var(--fg); }
+.calibration-glossary dd { margin: 0; }
+.calibration-recovery {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; padding: .8rem 1rem;
+  border: 1px solid #735429; border-radius: 7px; background: #342815;
+}
+.calibration-recovery > div:first-child {
+  display: flex; flex-direction: column; gap: .2rem; min-width: 0;
+  color: #ffd6a0; font-size: .8rem;
+}
+.calibration-recovery strong { font-size: .9rem; }
+.calibration-recovery .row { margin: 0; }
+.calibration-page .row button.warn, .calibration-jogs button.warn {
+  color: var(--error); border-color: var(--error); background: var(--error-bg);
+}
+.calibration-steps {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem;
+  margin: .8rem 0;
+}
+.calibration-steps div {
+  padding: .45rem .55rem; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--muted); background: #191919; font-size: .74rem;
+}
+.calibration-steps div.active { color: var(--accent); border-color: #2b666a; }
+.calibration-steps div.done { color: var(--ok); border-color: #2d7137; }
+.calibration-metrics.two { grid-template-columns: repeat(2, 1fr); }
+.calibration-metrics span { color: var(--muted); font-size: .68rem; }
+.calibration-jog-panel {
+  display: grid; gap: .65rem; margin: .8rem 0; padding: .75rem;
+  border: 1px solid var(--border); border-radius: 5px; background: #191919;
+}
+.calibration-jog-panel .calibration-jogs { margin: 0; }
+.calibration-track-wrap {
+  margin: .8rem 0; padding: .75rem .9rem .6rem;
+  border: 1px solid var(--border); border-radius: 5px; background: #191919;
+}
+.calibration-track-wrap > p { margin: 0 0 1.4rem; color: var(--muted); font-size: .74rem; }
+.calibration-track {
+  position: relative; height: 4px; margin: 0 12px; border-radius: 4px;
+  background: #484848; cursor: pointer; touch-action: none;
+}
+.calibration-track::before {     /* a taller hit area than the 4 px line */
+  content: ''; position: absolute; left: -12px; right: -12px; top: -14px; bottom: -14px;
+}
+.calibration-track.disabled { cursor: not-allowed; opacity: .55; }
+.calibration-track-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--accent);
+}
+.calibration-track-hub {
+  position: absolute; top: -9px; width: 2px; height: 22px;
+  background: var(--warn); transform: translateX(-1px); pointer-events: none;
+}
+.calibration-track-hub small {
+  position: absolute; top: -17px; left: 50%; transform: translateX(-50%);
+  color: var(--warn); font-size: .64rem; white-space: nowrap;
+}
+.calibration-track-handle, .calibration-track-ghost {
+  position: absolute; top: 50%; width: 22px; height: 22px; border-radius: 50%;
+  transform: translate(-50%, -50%); pointer-events: none;
+}
+.calibration-track-handle { background: var(--accent); border: 2px solid #111; }
+.calibration-track.dragging .calibration-track-handle { opacity: .55; }
+.calibration-track-ghost { border: 2px dashed var(--accent); }
+.calibration-track-ends {
+  display: flex; justify-content: space-between; margin-top: .75rem;
+  color: var(--muted); font-size: .68rem;
+}
+.calibration-drag-label {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: .5rem; min-height: 1.2rem; margin-top: .35rem; text-align: center;
+  color: var(--accent); font-size: .76rem;
+}
+.calibration-review td small {
+  display: block; color: var(--muted); font-size: .66rem;
+}
+.calibration-review td.save { color: var(--accent); font-weight: 700; }
+.calibration-review input {
+  width: 4.5rem; background: #111; color: var(--fg); text-align: right;
+  border: 1px solid var(--border); border-radius: 4px; padding: .25rem;
+}
+.calibration-success strong { display: block; }
+.calibration-panel p.muted { margin: .6rem 0; font-size: .78rem; line-height: 1.45; }
+/* Saved values of the route on Setup, with the scope and Clear. */
+.calibration-saved-values {
+  margin-top: 1rem; padding: .75rem;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+}
+.calibration-saved-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem;
+  margin-bottom: .5rem; color: var(--muted); font-size: .72rem;
+}
+.calibration-badge {
+  padding: .18rem .5rem; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--muted); font-size: .68rem; white-space: nowrap;
+}
+.calibration-badge.own { color: var(--accent); border-color: var(--accent); }
+.calibration-badge.shared { color: var(--ok); border-color: var(--ok); }
+.calibration-badge.none { color: var(--warn); border-color: var(--warn); }
+.calibration-clear-table {
+  width: 100%; border-collapse: collapse; font-size: .76rem;
+  font-variant-numeric: tabular-nums;
+}
+.calibration-clear-table th, .calibration-clear-table td {
+  padding: .38rem .4rem; text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.calibration-clear-table th:first-child,
+.calibration-clear-table td:first-child { text-align: left; }
+.calibration-clear-table th { color: var(--muted); font-weight: 500; }
+.calibration-clear-table tr:last-child td { border-bottom: 0; }
+.calibration-clear-table td small {
+  display: block; color: var(--muted); font-size: .66rem;
+}
+.calibration-clear-table tr.unset td { color: var(--muted); }
+.calibration-clear-table tr.in-use td:first-child { color: var(--fg); font-weight: 600; }
+.calibration-clear-table .in-use-tag {
+  margin-left: .3rem; color: var(--accent); font-size: .64rem; font-weight: 500;
+}
+.calibration-clear-table td.changed { color: var(--warn); font-weight: 600; }
+.calibration-saved-values .calibration-selector-block { margin-top: .7rem; }
+.calibration-clear-row {
+  display: flex; flex-wrap: wrap; align-items: stretch; gap: .5rem;
+  margin-top: .7rem;
+}
+.calibration-saved-values .calibration-selector-block + .calibration-clear-row { margin-top: 0; }
+.calibration-clear-row .calibration-option-grid { flex: 1 1 260px; }
+.calibration-clear-row .calibration-route-option { justify-content: center; }
+.calibration-page .calibration-clear-action { flex: 0 0 auto; margin: 0; }
+.calibration-page .calibration-clear-action button { height: 100%; }
+.calibration-clear-reason { margin: .45rem 0 0; color: var(--muted); font-size: .72rem; }
+.calibration-clear-reason::before { content: '\24D8\00A0'; }
+.calibration-clear-reason.blocked { color: var(--warn); }
+/* Undo bar after a clear. */
+.calibration-undo {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: .5rem .8rem; margin: 0 0 1rem; padding: .65rem .8rem;
+  color: var(--muted); background: var(--card);
+  border: 1px solid var(--border); border-left: 3px solid var(--warn);
+  border-radius: 5px; font-size: .78rem; line-height: 1.45;
+}
+.calibration-undo.done { border-left-color: var(--ok); }
+.calibration-undo strong { display: block; color: var(--fg); }
+.calibration-undo > div { min-width: 0; flex: 1 1 220px; }
+.calibration-page .calibration-undo.row { margin: 0 0 1rem; }
+/* Clear confirm dialog. */
+.dialog.calibration-clear-dialog { width: min(500px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto; }
+.calibration-clear-dialog .calibration-clear-table { margin: .8rem 0; }
+.calibration-clear-dialog .calibration-warning,
+.calibration-clear-dialog .calibration-notice { margin: .6rem 0 0; font-size: .78rem; }
+.calibration-clear-dialog .calibration-notice strong { display: inline; }
+/* Destructive confirm: the existing danger colour, filled. */
+.calibration-clear-dialog button.calibration-clear-confirm {
+  color: #fff; background: var(--danger); border-color: var(--danger); font-weight: 600;
+}
+.calibration-clear-dialog button.calibration-clear-confirm:hover:not(:disabled) { filter: brightness(1.12); }
+.calibration-clear-dialog button.calibration-clear-confirm:disabled { opacity: .5; filter: none; }
+@media (max-width: 560px) {
+  .calibration-clear-row { flex-direction: column; }
+  .calibration-clear-row .calibration-option-grid { flex: none; }
+  .calibration-page .calibration-clear-action,
+  .calibration-page .calibration-clear-action button { width: 100%; }
+  .calibration-clear-table th, .calibration-clear-table td { padding: .32rem .25rem; }
+  .calibration-undo > button { width: 100%; }
+}
+@media (max-width: 760px) {
+  .calibration-steps div { font-size: .68rem; overflow-wrap: anywhere; }
+  .calibration-glossary { text-align: left; }
+  .calibration-glossary dl { grid-template-columns: 1fr; }
+}
+/* Phone width: the route runs top to bottom, so the tube lengths sit beside
+   the tubes, and the results table drops what does not fit. */
+@media (max-width: 560px) {
+  .calibration-route-tube { height: 34px; }
+  .calibration-route-tube small {
+    top: 50%; left: 14px; transform: translateY(-50%);
+  }
+  .calibration-metrics.two { grid-template-columns: 1fr; }
+  .calibration-review th:nth-child(2), .calibration-review td:nth-child(2),
+  .calibration-review td small { display: none; }
+  .calibration-review th, .calibration-review td { padding: .4rem .3rem; }
+  .calibration-review input { width: 3.6rem; }
+  .calibration-recovery .row { width: 100%; }
+}
 
 /* Control tab (Print Hub): camera, print panel, console. */
 .control-tab { display: flex; flex-direction: column; gap: 1rem; max-width: 1100px; padding-top: 1rem; }

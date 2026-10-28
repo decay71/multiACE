@@ -470,3 +470,30 @@ class TestEstimateBlock:
         est = sc.build_estimate(model, self._header(), [])
         assert est["added_s"] == 0
         assert est["total_s"] == 3600
+
+
+class TestHeadChange:
+    """A toolchange that needs no filament change: pick and park only."""
+
+    def test_it_costs_the_measured_pick_and_nothing_else(self, model):
+        assert model.swap_seconds("head_change") == pytest.approx(4.2)
+
+    def test_it_ignores_the_bowden_length(self):
+        long_bowden = sc.SwapCostModel.from_params(dict(CFG, load_length=4200))
+        assert long_bowden.swap_seconds("head_change") == pytest.approx(4.2)
+
+    def test_the_constant_is_replaceable(self):
+        m = sc.SwapCostModel.from_params(CFG, constants={"head_change": 9.0})
+        assert m.swap_seconds("head_change") == 9.0
+
+    def test_the_estimate_counts_it_apart_and_bills_no_purge(self, model):
+        header = sc.parse_header(
+            "; filament used [mm] = 1000.0\n"
+            "; estimated printing time = 1h 0m 0s\n")
+        est = sc.build_estimate(model, header, [
+            {"t": 0, "kind": "head_change"},
+            {"t": 0, "kind": "head_change"}])
+        assert est["head_changes"] == 2
+        assert est["inline_swaps"] == 0 and est["bg_swaps"] == 0
+        assert est["added_s"] == pytest.approx(8, abs=1)
+        assert est["purge"]["mm"] == 0
