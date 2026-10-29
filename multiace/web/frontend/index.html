@@ -1861,7 +1861,13 @@
             <template v-for="row in history.jobs" :key="historyRowKey(row)">
               <tr class="history-row" @click="openHistoryDetail(row)">
                 <td>{{ new Date((row.start_time || 0) * 1000).toLocaleString() }}</td>
-                <td>{{ row.filename }}
+                <td>
+                  <button type="button" class="fav-btn" :class="{on: isFavorite(row)}"
+                          :disabled="!favKey(row) || history.favBusy"
+                          :title="isFavorite(row) ? t('ui.history.favorite_remove') : t('ui.history.favorite_add')"
+                          :aria-pressed="isFavorite(row)"
+                          @click.stop="toggleFavorite(row)">{{ isFavorite(row) ? '★' : '☆' }}</button>
+                  {{ row.filename }}
                   <span v-if="row.ambiguous" class="muted small"
                         :title="t('ui.history.ambiguous_hint')">· {{ t('ui.history.ambiguous') }}</span>
                 </td>
@@ -1914,6 +1920,47 @@
            :style="{left: history.info.left + 'px', top: history.info.top + 'px'}">
         <b>{{ t('ui.history.' + history.info.col) }}</b>
         <div>{{ t('ui.history.' + history.info.col + '_info') }}</div>
+      </div>
+    </section>
+    <!-- FAVORITES: starred prints as cards; Reprint reuses the History
+         dialog, so the loadout comparison is the same. -->
+    <section v-show="tab==='favorites'" class="favorites-tab">
+      <div class="row">
+        <h3>{{ t('ui.history.favorites_title') }}</h3>
+        <button @click="loadFavoritesTab" :disabled="history.busy">
+          {{ history.busy ? t('ui.common.saving') : t('ui.common.reload') }}
+        </button>
+      </div>
+      <p v-if="history.error" class="error">{{ history.error }}</p>
+      <p v-if="history.favLoaded && !history.favorites.length" class="muted">
+        {{ t('ui.history.favorites_empty') }}
+      </p>
+      <div class="fav-grid">
+        <div v-for="c in favoriteCards" :key="c.key" class="fav-card" :class="{gone: c.gone}">
+          <div class="fav-head">
+            <b class="fav-name" :title="c.row.filename">{{ c.row.filename }}</b>
+            <button type="button" class="fav-btn on" :disabled="history.favBusy"
+                    :title="t('ui.history.favorite_remove')"
+                    @click="toggleFavorite({job_id: c.key.startsWith('mr:') ? c.key.slice(3) : null, id: c.key.startsWith('ma:') ? c.key.slice(3) : null})">★</button>
+          </div>
+          <div class="muted small">{{ new Date((c.row.start_time || 0) * 1000).toLocaleString() }}</div>
+          <div v-if="!c.gone" class="fav-meta">
+            <span v-for="col in historyColors(c.row)" :key="'fc-'+col.head"
+                  class="swatch" :style="{background: col.color}"
+                  :title="'T' + col.th + ' · MMU ' + col.ace + ' / slot ' + col.slot"></span>
+            <span class="small">{{ fmtDuration(c.row.duration) }}</span>
+            <span v-if="c.row.status" class="pill">{{ c.row.status }}</span>
+          </div>
+          <p v-else class="muted small" :title="t('ui.history.favorite_gone_hint')">
+            {{ t('ui.history.favorite_gone') }}</p>
+          <button v-if="c.row.filename" class="reprint-btn"
+                  :disabled="isPrinting || history.reprinting !== ''"
+                  :title="t('ui.history.reprint_hint')"
+                  @click="reprintJob(c.row)">
+            {{ history.reprinting === historyRowKey(c.row)
+               ? t('ui.preflight.sending') : t('ui.history.reprint') }}
+          </button>
+        </div>
       </div>
     </section>
     <section v-show="tab==='spools'" class="nt-spools-tab">

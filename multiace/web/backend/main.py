@@ -6464,6 +6464,44 @@ async def history_swap_stats(request: Request) -> dict:
             "min_samples": hist.MIN_CALIBRATION_SAMPLES}
 
 
+_mock_favorites: list = []
+
+
+class _FavoriteRequest(BaseModel):
+    key: str
+    on: bool
+    filename: str | None = None
+    start_time: float | None = None
+
+
+@app.get("/api/history/favorites")
+async def history_favorites(request: Request) -> dict:
+    """The starred prints, newest star first. Kept on the printer, so a star
+    set on one device shows on every other."""
+    if _mock_enabled(request):
+        return {"favorites": list(_mock_favorites), "mock": True}
+    return {"favorites": _require_history().load_favorites(MULTIACE_DATA_DIR)}
+
+
+@app.post("/api/history/favorites")
+async def history_favorite_toggle(request: Request,
+                                  req: _FavoriteRequest) -> dict:
+    key = (req.key or "").strip()
+    if not (key.startswith("mr:") or key.startswith("ma:")) or len(key) < 4:
+        raise HTTPException(status_code=400, detail="invalid favorite key")
+    if _mock_enabled(request):
+        _mock_favorites[:] = [f for f in _mock_favorites if f["key"] != key]
+        if req.on:
+            _mock_favorites.insert(0, {"key": key,
+                                       "filename": req.filename or "",
+                                       "start_time": req.start_time,
+                                       "ts": time.time()})
+        return {"favorites": list(_mock_favorites), "mock": True}
+    favs = _require_history().toggle_favorite(
+        MULTIACE_DATA_DIR, key, req.on, req.filename, req.start_time)
+    return {"favorites": favs}
+
+
 @app.get("/api/history/{job_id}")
 async def history_detail(job_id: str, request: Request) -> dict:
     if _mock_enabled(request):

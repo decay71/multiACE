@@ -2336,3 +2336,20 @@ body:has(.panel) .overlay .dialog {
 .pf-est-ass { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .pf-est-ass summary { cursor: pointer; }
 .pf-est-ass ul { margin: 6px 0 0 18px; padding: 0; }
+
+/* Favorites: star button in the History table, card grid in the tab. */
+.fav-btn { background: none; border: 0; padding: 0 .3rem; cursor: pointer;
+  font-size: 1.05rem; line-height: 1; color: var(--muted, #888); }
+.fav-btn.on { color: #e6a700; }
+.fav-btn:disabled { opacity: .4; cursor: default; }
+.fav-grid { display: grid; gap: .8rem;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-top: .6rem; }
+.fav-card { border: 1px solid var(--border, #444); border-radius: 8px;
+  padding: .7rem .8rem; display: flex; flex-direction: column; gap: .4rem; }
+.fav-card.gone { opacity: .75; }
+.fav-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .4rem; }
+.fav-name { overflow-wrap: anywhere; }
+.fav-meta { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; }
+.fav-meta .swatch { display: inline-block; width: .9rem; height: .9rem;
+  border-radius: 50%; border: 1px solid rgba(128,128,128,.5); }
+.fav-card .reprint-btn { align-self: flex-start; margin-top: auto; }

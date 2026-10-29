@@ -12,7 +12,7 @@ createApp({
     const CALIBRATION_TAB = true;
     // Orca profile section in Config (profile download + tool map).
     const ORCA_SECTION = true;
-    const _validTabs = new Set(["dashboard", "control", "history", "spools", "config", "devices"]);
+    const _validTabs = new Set(["dashboard", "control", "history", "favorites", "spools", "config", "devices"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
     const _storedTab = localStorage.getItem("multiace.tab");
     const _isPluginTab = (s) => typeof s === "string" && s.startsWith("plugin:");
@@ -65,6 +65,8 @@ createApp({
       items.push({key: "control", group: "printhub", label: t("ui.tabs.control")});
       items.push({key: "history", group: "printhub",
                   label: t("ui.tabs.history")});
+      items.push({key: "favorites", group: "printhub",
+                  label: t("ui.tabs.favorites")});
       items.push({key: "spools", label: t("ui.tabs.spools")});
       // Config children: Settings (the tab key stays "config"), Devices
       // (unit places, names, firmware flash) and Calibration (bowden path).
@@ -8664,6 +8666,7 @@ createApp({
     const history = reactive({
       loaded: false, busy: false, error: "", jobs: [], detail: null,
       reprinting: "", stats: [], minSamples: 5, info: null,
+      favorites: [], favLoaded: false, favBusy: false, favJobs: [],
     });
     async function loadHistory() {
       history.busy = true;
@@ -8804,8 +8807,87 @@ createApp({
         history.reprinting = "";
       }
     }
-    watch(tab, (v) => { if (v === "history" && !history.loaded) loadHistory(); });
-    if (tab.value === "history") loadHistory();
+    // Favorites. A star is stored on the printer (not in the browser), keyed
+    // by Moonraker's job id, or by the multiACE record id when Moonraker has
+    // none. Rows that carry neither (ambiguous matches) cannot be starred.
+    function favKey(row) {
+      if (!row) return "";
+      if (row.job_id) return "mr:" + row.job_id;
+      if (row.id) return "ma:" + row.id;
+      return "";
+    }
+    const favKeys = computed(() => new Set(history.favorites.map(f => f.key)));
+    function isFavorite(row) {
+      const k = favKey(row);
+      return !!k && favKeys.value.has(k);
+    }
+    async function loadFavorites() {
+      try {
+        const r = await fetch(`${API}/history/favorites`);
+        if (!r.ok) return;
+        const j = await r.json();
+        history.favorites = j.favorites || [];
+        history.favLoaded = true;
+      } catch (e) {}
+    }
+    async function toggleFavorite(row) {
+      const key = favKey(row);
+      if (!key || history.favBusy) return;
+      history.favBusy = true;
+      try {
+        const r = await fetch(`${API}/history/favorites`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({key, on: !favKeys.value.has(key),
+                                filename: row.filename || "",
+                                start_time: row.start_time || null}),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `${r.status}`);
+        history.favorites = j.favorites || [];
+      } catch (e) {
+        history.error = t("ui.history.favorite_error") + ": " + (e.message || e);
+      } finally {
+        history.favBusy = false;
+      }
+    }
+    // The favorites tab needs jobs older than the History table shows, so it
+    // fetches the full list itself. A star whose job is gone from that list
+    // stays as a card of its own (name and date) and can still be reprinted.
+    async function loadFavoritesTab() {
+      history.busy = true;
+      try {
+        await loadFavorites();
+        const r = await fetch(`${API}/history?limit=200`);
+        const j = await r.json().catch(() => ({}));
+        if (r.ok) history.favJobs = j.jobs || [];
+      } catch (e) {
+        history.error = e.message || String(e);
+      } finally {
+        history.busy = false;
+      }
+    }
+    const favoriteCards = computed(() => {
+      const byKey = new Map();
+      for (const row of history.favJobs) {
+        const k = favKey(row);
+        if (k) byKey.set(k, row);
+      }
+      return history.favorites.map(f => {
+        const row = byKey.get(f.key);
+        return row ? {key: f.key, gone: false, row}
+                   : {key: f.key, gone: true,
+                      row: {filename: f.filename, start_time: f.start_time,
+                            multiace: null}};
+      });
+    });
+    watch(tab, (v) => {
+      if (v === "history" && !history.loaded) loadHistory();
+      if (v === "history" && !history.favLoaded) loadFavorites();
+      if (v === "favorites") loadFavoritesTab();
+    });
+    if (tab.value === "history") { loadHistory(); loadFavorites(); }
+    if (tab.value === "favorites") loadFavoritesTab();
 
     onUnmounted(() => {
       document.removeEventListener("click", closeHistoryInfo);
@@ -8821,6 +8903,7 @@ createApp({
     return {
       history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
       fmtDuration, reprintJob, historyColumnInfo, swapKindLabel,
+      isFavorite, toggleFavorite, favKey, favoriteCards, loadFavoritesTab,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,

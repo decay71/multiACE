@@ -95,6 +95,36 @@ class TestLive:
         assert c.post("/api/history/clear").json()["ok"] is True
         assert hist.load_records(str(data)) == []
 
+    def test_favorites_toggle_persists_and_lists_newest_first(self, live):
+        main, c, data = live
+        assert c.get("/api/history/favorites").json()["favorites"] == []
+        body = {"key": "mr:0001", "on": True, "filename": "a.gcode",
+                "start_time": 1000.0}
+        favs = c.post("/api/history/favorites", json=body).json()["favorites"]
+        assert [f["key"] for f in favs] == ["mr:0001"]
+        c.post("/api/history/favorites",
+               json={**body, "key": "ma:j2", "filename": "b.gcode"})
+        listed = c.get("/api/history/favorites").json()["favorites"]
+        assert [f["key"] for f in listed] == ["ma:j2", "mr:0001"]
+        assert (data / "favorites.json").exists()
+
+    def test_unstar_removes_it(self, live):
+        main, c, _ = live
+        c.post("/api/history/favorites", json={"key": "mr:1", "on": True})
+        favs = c.post("/api/history/favorites",
+                      json={"key": "mr:1", "on": False}).json()["favorites"]
+        assert favs == []
+
+    def test_a_malformed_favorite_key_is_rejected(self, live):
+        main, c, _ = live
+        for bad in ("", "x:1", "mr:"):
+            r = c.post("/api/history/favorites", json={"key": bad, "on": True})
+            assert r.status_code == 400
+
+    def test_favorites_route_is_not_swallowed_by_the_job_id_route(self, live):
+        main, c, _ = live
+        assert "favorites" in c.get("/api/history/favorites").json()
+
     def test_a_missing_library_is_a_503(self, live, monkeypatch):
         main, c, _ = live
         monkeypatch.setattr(main, "_job_history_mod", None)
