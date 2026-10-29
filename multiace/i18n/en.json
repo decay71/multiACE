@@ -604,7 +604,23 @@
       "tier_name_base": "name·base",
       "tier_name_canon": "name·synonym",
       "tier_no_slot": "no slot ⚠",
-      "title": "G-code preflight"
+      "title": "G-code preflight",
+      "est_title": "Estimate",
+      "est_badge": "estimated",
+      "est_conf_degraded": "partial data",
+      "est_conf_calibrated": "calibrated",
+      "est_updating": "updating...",
+      "est_slicer": "Slicer time",
+      "est_total": "With multiACE",
+      "est_added": "Added by swaps",
+      "est_filament": "Filament",
+      "est_purge": "Purge",
+      "est_no_window": "without a known window",
+      "est_timeline": "Swap timeline",
+      "est_colour": "Colour",
+      "est_print": "Print",
+      "est_sum": "Total",
+      "est_assumptions": "Assumptions"
     },
     "queue": {
       "clear_errors": "Clear errors",
@@ -1039,7 +1055,9 @@
       "swap_kind": {
         "first_load": "First load",
         "same_ace": "Same MMU",
-        "cross_ace_inline": "Cross-MMU"
+        "cross_ace_inline": "Cross-MMU",
+        "cross_ace_bg": "Background",
+        "head_change": "Head change"
       }
     }
   },

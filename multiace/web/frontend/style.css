@@ -2309,3 +2309,30 @@ body:has(.panel) .overlay .dialog {
 .devices-table tr.dev-free td { color: var(--muted); font-style: italic; }
 .restart-hint { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; color: var(--accent); font-size: .9rem; }
 .devices-table input.dev-name { width: 9rem; max-width: 100%; padding: .2rem .4rem; font-size: .9rem; }
+
+/* preflight estimate card (every theme: colours come from the shared tokens) */
+.pf-est { margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--card, transparent); }
+.pf-est.stale .pf-est-nums { opacity: .55; }
+.pf-est-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.pf-est-tag { font-size: 11px; padding: 0 6px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); }
+.pf-est-tag.warn { color: var(--warn, #d9a441); border-color: currentColor; }
+.pf-est-nums { display: flex; flex-wrap: wrap; gap: 8px 26px; }
+.pf-est-nums > span { display: flex; flex-direction: column; }
+.pf-est-nums small { font-size: 11.5px; color: var(--muted); }
+.pf-est-nums b { font-size: 22px; font-weight: 600; line-height: 1.15; }
+.pf-est-nums b u { text-decoration: none; font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 2px; }
+.pf-est-nums i { font-style: normal; font-size: 12px; color: var(--muted); }
+.pf-est-counts { margin: 8px 0 0; }
+.pf-est-tl { display: flex; gap: 1px; height: 10px; margin: 10px 0; border-radius: 3px; overflow: hidden; background: var(--border); }
+.pf-tl-seg { min-width: 2px; background: var(--muted); opacity: .8; }
+.pf-tl-seg.k-cross_ace_inline { background: var(--warn, #d9a441); }
+.pf-tl-seg.k-same_ace { background: var(--muted); }
+.pf-tl-seg.k-cross_ace_bg { background: var(--ok, #4caf7d); }
+.pf-tl-seg.k-head_change { background: var(--accent, #4a90d9); }
+.pf-tl-seg.k-first_load { background: var(--border); }
+.pf-est-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.pf-est-tbl th { text-align: left; font-weight: 400; color: var(--muted); padding: 2px 8px 2px 0; }
+.pf-est-tbl td { padding: 2px 8px 2px 0; }
+.pf-est-ass { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.pf-est-ass summary { cursor: pointer; }
+.pf-est-ass ul { margin: 6px 0 0 18px; padding: 0; }

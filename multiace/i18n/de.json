@@ -605,7 +605,23 @@
       "tier_name_base": "Name·Grundton",
       "tier_name_canon": "Name·Synonym",
       "tier_no_slot": "kein Slot ⚠",
-      "title": "G-Code Preflight"
+      "title": "G-Code Preflight",
+      "est_title": "Schätzung",
+      "est_badge": "geschätzt",
+      "est_conf_degraded": "unvollständige Daten",
+      "est_conf_calibrated": "kalibriert",
+      "est_updating": "wird aktualisiert...",
+      "est_slicer": "Slicer-Zeit",
+      "est_total": "Mit multiACE",
+      "est_added": "Durch Wechsel hinzugefügt",
+      "est_filament": "Filament",
+      "est_purge": "Spülung",
+      "est_no_window": "ohne bekanntes Zeitfenster",
+      "est_timeline": "Wechsel-Zeitleiste",
+      "est_colour": "Farbe",
+      "est_print": "Druck",
+      "est_sum": "Gesamt",
+      "est_assumptions": "Annahmen"
     },
     "queue": {
       "clear_errors": "Fehler löschen",
@@ -1040,7 +1056,9 @@
       "swap_kind": {
         "first_load": "Erstes Laden",
         "same_ace": "Gleiche MMU",
-        "cross_ace_inline": "MMU-übergreifend"
+        "cross_ace_inline": "MMU-übergreifend",
+        "cross_ace_bg": "Hintergrund",
+        "head_change": "Kopfwechsel"
       }
     }
   },

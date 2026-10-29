@@ -3679,6 +3679,37 @@ reboot</pre>
              design; repeat it for the selected plan under the cards. -->
         <p v-if="uiTheme === 'new' && pfSelected() && pfPlanFeasible(pfSelected()) && pfPlanBg(pfSelected())"
            class="muted small nt-pf-bg">{{ headPlanBgLabel(pfSelected()) }}</p>
+        <div v-if="uiTheme === 'new' && pfSelected() && pfPlanFeasible(pfSelected()) && pfEst(pfSelected())"
+             class="pf-est" :class="{stale: pfEstStale}">
+          <div class="pf-est-head">
+            <b>{{ t('ui.preflight.est_title') }}</b>
+            <span class="pf-est-tag">{{ t('ui.preflight.est_badge') }}</span>
+            <span v-if="pfEst(pfSelected()).confidence !== 'modelled'" class="pf-est-tag warn">{{ t('ui.preflight.est_conf_' + pfEst(pfSelected()).confidence) }}</span>
+            <span v-if="pfEstStale" class="muted small">{{ t('ui.preflight.est_updating') }}</span>
+          </div>
+          <div class="pf-est-nums">
+            <span v-if="pfEst(pfSelected()).base_s !== null"><small>{{ t('ui.preflight.est_slicer') }}</small><b>{{ fmtDuration(pfEst(pfSelected()).base_s) }}</b></span>
+            <span v-if="pfEst(pfSelected()).total_s !== null"><small>{{ t('ui.preflight.est_total') }}</small><b>{{ fmtDuration(pfEst(pfSelected()).total_s) }}</b><i>{{ pfEstDelta(pfEst(pfSelected())) }}</i></span>
+            <span v-else><small>{{ t('ui.preflight.est_added') }}</small><b>{{ pfEstDelta(pfEst(pfSelected())) }}</b></span>
+            <span><small>{{ t('ui.preflight.est_filament') }}</small><b>{{ pfEst(pfSelected()).totals.g }}<u>g</u></b><i>{{ pfEst(pfSelected()).totals.m }} m</i></span>
+            <span><small>{{ t('ui.preflight.est_purge') }}</small><b>{{ pfEst(pfSelected()).purge.g }}<u>g</u></b><i>{{ pfEst(pfSelected()).purge.mm }} mm</i></span>
+          </div>
+          <p v-if="pfEstCounts(pfEst(pfSelected()))" class="muted small pf-est-counts">{{ pfEstCounts(pfEst(pfSelected())) }}<template v-if="pfEst(pfSelected()).unknown_window_swaps"> · {{ pfEst(pfSelected()).unknown_window_swaps }} {{ t('ui.preflight.est_no_window') }}</template></p>
+          <div v-if="pfTimelineSegs(pfSelected()).length" class="pf-est-tl" :aria-label="t('ui.preflight.est_timeline')">
+            <span v-for="sg in pfTimelineSegs(pfSelected())" :key="sg.key" class="pf-tl-seg" :class="'k-' + sg.kind"
+                  :style="{flexBasis: sg.pct + '%'}" :title="sg.tip"></span>
+          </div>
+          <table v-if="pfEst(pfSelected()).per_color && pfEst(pfSelected()).per_color.length" class="pf-est-tbl">
+            <thead><tr><th>{{ t('ui.preflight.est_colour') }}</th><th>{{ t('ui.preflight.est_print') }}</th><th>{{ t('ui.preflight.est_purge') }}</th><th>{{ t('ui.preflight.est_sum') }}</th></tr></thead>
+            <tbody><tr v-for="c in pfEst(pfSelected()).per_color" :key="'ec-' + c.t">
+              <td>T{{ dispIdx(c.t) }}</td><td>{{ c.print_g }} g</td><td>{{ c.purge_g }} g</td><td>{{ (c.print_g + c.purge_g).toFixed(1) }} g</td>
+            </tr></tbody>
+          </table>
+          <details v-if="pfEst(pfSelected()).assumptions && pfEst(pfSelected()).assumptions.length" class="pf-est-ass">
+            <summary>{{ t('ui.preflight.est_assumptions') }}</summary>
+            <ul><li v-for="(a, i) in pfEst(pfSelected()).assumptions" :key="'as-' + i">{{ a }}</li></ul>
+          </details>
+        </div>
         <template v-for="mode in ['slicer', 'optimize', 'layer']"
                   :key="'plan-' + mode">
           <div v-if="preflight.report.plans[mode]" class="preflight-plan"
@@ -3689,6 +3720,7 @@ reboot</pre>
                     class="muted small">
                 {{ mode === 'slicer' ? slicerSwapsDisplay() : preflight.report.plans[mode].swaps }}
                 {{ t('ui.preflight.swaps_label') }}
+                <span v-if="uiTheme === 'classic' && pfEst(mode) && pfEst(mode).total_s !== null">· ≈ {{ fmtDuration(pfEst(mode).total_s) }} ({{ pfEstDelta(pfEst(mode)) }}, {{ t('ui.preflight.est_badge') }})</span>
               </span>
               <span v-else class="preflight-infeasible">
                 {{ t('ui.preflight.not_feasible') }}
@@ -3850,6 +3882,37 @@ reboot</pre>
              design; repeat it for the selected plan under the cards. -->
         <p v-if="uiTheme === 'new' && pfSelected() && pfPlanFeasible(pfSelected()) && pfPlanBg(pfSelected())"
            class="muted small nt-pf-bg">{{ headPlanBgLabel(pfSelected()) }}</p>
+        <div v-if="uiTheme === 'new' && pfSelected() && pfPlanFeasible(pfSelected()) && pfEst(pfSelected())"
+             class="pf-est" :class="{stale: pfEstStale}">
+          <div class="pf-est-head">
+            <b>{{ t('ui.preflight.est_title') }}</b>
+            <span class="pf-est-tag">{{ t('ui.preflight.est_badge') }}</span>
+            <span v-if="pfEst(pfSelected()).confidence !== 'modelled'" class="pf-est-tag warn">{{ t('ui.preflight.est_conf_' + pfEst(pfSelected()).confidence) }}</span>
+            <span v-if="pfEstStale" class="muted small">{{ t('ui.preflight.est_updating') }}</span>
+          </div>
+          <div class="pf-est-nums">
+            <span v-if="pfEst(pfSelected()).base_s !== null"><small>{{ t('ui.preflight.est_slicer') }}</small><b>{{ fmtDuration(pfEst(pfSelected()).base_s) }}</b></span>
+            <span v-if="pfEst(pfSelected()).total_s !== null"><small>{{ t('ui.preflight.est_total') }}</small><b>{{ fmtDuration(pfEst(pfSelected()).total_s) }}</b><i>{{ pfEstDelta(pfEst(pfSelected())) }}</i></span>
+            <span v-else><small>{{ t('ui.preflight.est_added') }}</small><b>{{ pfEstDelta(pfEst(pfSelected())) }}</b></span>
+            <span><small>{{ t('ui.preflight.est_filament') }}</small><b>{{ pfEst(pfSelected()).totals.g }}<u>g</u></b><i>{{ pfEst(pfSelected()).totals.m }} m</i></span>
+            <span><small>{{ t('ui.preflight.est_purge') }}</small><b>{{ pfEst(pfSelected()).purge.g }}<u>g</u></b><i>{{ pfEst(pfSelected()).purge.mm }} mm</i></span>
+          </div>
+          <p v-if="pfEstCounts(pfEst(pfSelected()))" class="muted small pf-est-counts">{{ pfEstCounts(pfEst(pfSelected())) }}<template v-if="pfEst(pfSelected()).unknown_window_swaps"> · {{ pfEst(pfSelected()).unknown_window_swaps }} {{ t('ui.preflight.est_no_window') }}</template></p>
+          <div v-if="pfTimelineSegs(pfSelected()).length" class="pf-est-tl" :aria-label="t('ui.preflight.est_timeline')">
+            <span v-for="sg in pfTimelineSegs(pfSelected())" :key="sg.key" class="pf-tl-seg" :class="'k-' + sg.kind"
+                  :style="{flexBasis: sg.pct + '%'}" :title="sg.tip"></span>
+          </div>
+          <table v-if="pfEst(pfSelected()).per_color && pfEst(pfSelected()).per_color.length" class="pf-est-tbl">
+            <thead><tr><th>{{ t('ui.preflight.est_colour') }}</th><th>{{ t('ui.preflight.est_print') }}</th><th>{{ t('ui.preflight.est_purge') }}</th><th>{{ t('ui.preflight.est_sum') }}</th></tr></thead>
+            <tbody><tr v-for="c in pfEst(pfSelected()).per_color" :key="'ec-' + c.t">
+              <td>T{{ dispIdx(c.t) }}</td><td>{{ c.print_g }} g</td><td>{{ c.purge_g }} g</td><td>{{ (c.print_g + c.purge_g).toFixed(1) }} g</td>
+            </tr></tbody>
+          </table>
+          <details v-if="pfEst(pfSelected()).assumptions && pfEst(pfSelected()).assumptions.length" class="pf-est-ass">
+            <summary>{{ t('ui.preflight.est_assumptions') }}</summary>
+            <ul><li v-for="(a, i) in pfEst(pfSelected()).assumptions" :key="'as-' + i">{{ a }}</li></ul>
+          </details>
+        </div>
           <template v-for="hp in ['loadout', 'optimize', 'layer', 'color']"
                     :key="'hplan-'+hp">
             <div v-if="preflight.report.plans[hp]" class="preflight-plan"
@@ -3860,6 +3923,7 @@ reboot</pre>
                   {{ headPlanSwaps(hp) }}<template v-if="hp === 'loadout' && headCopyPlan().suggestions.length"> → {{ headCopyPlan().swaps_after }}</template> {{ t('ui.preflight.swaps_label') }}
                   <span v-if="headPlanBg(hp)">· {{ headPlanBgLabel(hp) }}</span>
                   <span v-if="headPlanFlushG(hp) !== null">· {{ headPlanFlushG(hp) }} {{ t('ui.preflight.flush_g_label') }}</span>
+                  <span v-if="uiTheme === 'classic' && pfEst(hp) && pfEst(hp).total_s !== null">· ≈ {{ fmtDuration(pfEst(hp).total_s) }} ({{ pfEstDelta(pfEst(hp)) }}, {{ t('ui.preflight.est_badge') }})</span>
                 </span>
                 <span v-else class="preflight-infeasible">
                   {{ t('ui.preflight.not_feasible') }}

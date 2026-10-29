@@ -6895,6 +6895,7 @@ createApp({
       preflight.slicerSwaps = realSwapCount(
         (preflight.report && preflight.report.events) || [],
         _slicerEffectiveMapping());
+      scheduleEstimate("slicer");
     }
     function slicerSwapsDisplay() {
       if (preflight.slicerSwaps !== null) return preflight.slicerSwaps;
@@ -7341,6 +7342,7 @@ createApp({
       preflight.headSwaps = headSwapCount(
         (preflight.report && preflight.report.events) || [],
         _headEffectiveAssignment(), headCopiesEffective());
+      scheduleEstimate("loadout");
     }
     function headSwapsDisplay() {
       if (preflight.headSwaps !== null) return preflight.headSwaps;
@@ -7811,6 +7813,76 @@ createApp({
       for (const p of list) if (pfPlanSwaps(p) < pfPlanSwaps(best)) best = p;
       return best === list[0] ? null : best;
     }
+    // ---- estimate card ----------------------------------------------------
+    // Every number is a model estimate (never measured). A plan's estimate
+    // comes with the report; after a mapping edit the browser worker
+    // recomputes it for the plan being edited (pfEstLive), without a re-parse.
+    const pfEstLive = reactive({});
+    let pfEstTimer = null;
+    let pfEstSeq = 0;
+    function pfEst(p) {
+      const live = pfEstLive[p];
+      if (live && live.estimate) return live.estimate;
+      const pl = preflight.report && preflight.report.plans && preflight.report.plans[p];
+      return (pl && pl.estimate) || null;
+    }
+    function pfTimeline(p) {
+      const live = pfEstLive[p];
+      if (live && live.timeline) return live.timeline;
+      const pl = preflight.report && preflight.report.plans && preflight.report.plans[p];
+      return (pl && pl.timeline) || [];
+    }
+    function pfEstDelta(e) {
+      return (e && e.added_s !== null && e.added_s !== undefined) ? "+" + fmtDuration(e.added_s) : "";
+    }
+    // Per-kind share of the added time, for the timeline strip.
+    function pfTimelineSegs(p) {
+      const evs = pfTimeline(p).filter(ev => ev.kind !== "first_load" && Number(ev.seconds) > 0);
+      const total = evs.reduce((a, ev) => a + (Number(ev.seconds) || 0), 0) || 1;
+      return evs.map((ev, i) => ({
+        key: i, kind: ev.kind, t: ev.t,
+        pct: Math.max(0.4, 100 * (Number(ev.seconds) || 0) / total),
+        tip: "T" + ev.t + " - " + swapKindLabel(ev.kind)
+             + " - " + fmtDuration(ev.seconds)
+             + (ev.purge_mm ? " - " + Math.round(ev.purge_mm) + " mm" : ""),
+      }));
+    }
+    function pfEstCounts(e) {
+      const parts = [];
+      if (e.inline_swaps)  parts.push(swapKindLabel("cross_ace_inline") + " x " + e.inline_swaps);
+      if (e.bg_swaps)      parts.push(swapKindLabel("cross_ace_bg") + " x " + e.bg_swaps);
+      if (e.head_changes)  parts.push(swapKindLabel("head_change") + " x " + e.head_changes);
+      return parts.join(" · ");
+    }
+    // Live recompute after a mapping/target edit. Only the in-browser path
+    // can do it (the server has no endpoint for it); otherwise the numbers
+    // keep showing the analysed assignment, flagged stale.
+    const pfEstStale = ref(false);
+    function scheduleEstimate(plan) {
+      if (!preflight.local || !preflightJobId) return;
+      pfEstStale.value = true;
+      clearTimeout(pfEstTimer);
+      pfEstTimer = setTimeout(async () => {
+        const seq = ++pfEstSeq;
+        const payload = {jobId: preflightJobId, plan};
+        if (plan === "slicer") {
+          payload.mapping = _slicerEffectiveMapping();
+        } else {
+          payload.targetIds = _headEffectiveAssignment();
+          payload.copyIds = headCopiesEffective();
+        }
+        try {
+          const j = await runPreflightWorker("estimate", payload);
+          if (seq !== pfEstSeq) return;
+          if (j.result) pfEstLive[plan] = j.result;
+          pfEstStale.value = false;
+        } catch (_) { /* keep the analysed numbers */ }
+      }, 200);
+    }
+    watch(() => preflight.report, () => {
+      for (const k of Object.keys(pfEstLive)) delete pfEstLive[k];
+      pfEstStale.value = false;
+    });
     function pfPlanTitle(p) {
       return t(preflight.report && preflight.report.head_mode
                ? "ui.preflight.head_plan_" + p : "ui.preflight.plan_" + p);
@@ -8837,7 +8909,7 @@ createApp({
       headTargets, headTargetOptions, headEffectiveTargetId, headTargetLabel,
       headTargetColor, chipBg, headTargetLabelById, onHeadTargetChange, headSwapsDisplay,
       hmDropOpen, hmDdToggle, hmDdClose, hmDdPick,
-      pfPlanSel, pfPlanList, pfPlanFeasible, pfPlanSwaps, pfPlanFlush, pfPlanBg, pfSelected, pfRecommended, pfPlanTitle, pfGoLabel, pfPrintSelected,
+      pfPlanSel, pfEst, pfTimelineSegs, pfEstCounts, pfEstDelta, pfEstStale, pfPlanList, pfPlanFeasible, pfPlanSwaps, pfPlanFlush, pfPlanBg, pfSelected, pfRecommended, pfPlanTitle, pfGoLabel, pfPrintSelected,
       headFeasible, headPlanFeasible, headPlanSwaps, headPlanBg, headPlanFlushG, headPlanBgLabel, headSlicerHex,
       headSlicerMat, headProposalLabel,
       headMaxCopies, headCopiesEffective, headCopyPlan, headCopyList, copySlotLabel, setPreflightCopies,

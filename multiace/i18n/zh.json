@@ -284,7 +284,23 @@
       "not_feasible": "不可行",
       "slicer": "切片",
       "printer": "打印机",
-      "match_tier": "匹配"
+      "match_tier": "匹配",
+      "est_title": "预估",
+      "est_badge": "估算值",
+      "est_conf_degraded": "数据不完整",
+      "est_conf_calibrated": "已校准",
+      "est_updating": "更新中...",
+      "est_slicer": "切片软件时间",
+      "est_total": "使用 multiACE",
+      "est_added": "换料增加",
+      "est_filament": "耗材",
+      "est_purge": "冲洗",
+      "est_no_window": "窗口未知",
+      "est_timeline": "换料时间线",
+      "est_colour": "颜色",
+      "est_print": "打印",
+      "est_sum": "合计",
+      "est_assumptions": "假设"
     },
     "queue": {
       "send_all_tooltip": "将所有排队命令发送到打印机（之后可以关闭界面）",
@@ -335,7 +351,9 @@
       "swap_kind": {
         "first_load": "首次装载",
         "same_ace": "同一 MMU",
-        "cross_ace_inline": "跨 MMU"
+        "cross_ace_inline": "跨 MMU",
+        "cross_ace_bg": "后台",
+        "head_change": "喷头切换"
       }
     }
   },
