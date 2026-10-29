@@ -1084,12 +1084,32 @@ class FilamentFeed:
         if abs(sp) >= UNLOAD_DECODER_MIN_MOVE:
             return False
         logging.warning(
-            '[multiACE] [feed][unload] head %d ACE slot %d: bulk retract of '
+            '[multiACE] [feed][unload] head %d MMU slot %d: bulk retract of '
             '%dmm moved the lane encoder %s (n=%s) - the filament did not '
-            'move. The ACE reports rollbacks as successful even when nothing '
+            'move. The MMU reports rollbacks as successful even when nothing '
             'feeds, so this unload is NOT verified.'
             % (head, slot, int(length), sp, n))
         return True
+
+    def _restore_print_fa_gate(self, ch):
+        """Give the FA gate back to the print after a load that ran inside
+        it, and arm feed assist for the head that prints next."""
+        ace = self.ace
+        ace._auto_feed_enabled = True
+        ace._fa_context = 'print'
+        ace._fa_trace('gate restored (context=print) via FEED_ACT_LOAD '
+                      'finally - load ran inside a print')
+        if self.channel_state[ch] != FEED_STA_LOAD_FINISH:
+            return
+        try:
+            name = self.toolhead.get_extruder().get_name()
+            head = 0 if name == 'extruder' else int(name.replace('extruder', ''))
+            src = ace._head_source.get(head)
+            if src is not None and ace.head_uses_ace(head):
+                ace._arm_fa_for(src['ace_index'], src['slot'])
+        except Exception as e:
+            logging.info('[multiACE] FA re-arm after in-print load failed: %s'
+                         % e)
 
     def _do_feed(self, ch, action=None, stage=None, auto_mode=None):
         if ch < 0 or ch >= FEED_CHANNEL_NUMS or action == None:
@@ -1315,6 +1335,7 @@ class FilamentFeed:
             elif action == FEED_ACT_LOAD:
 
                 fa_gate_opened = False
+                fa_prev_gate = (False, 'idle')
                 if self.ace is not None:
                     # Head mode: point the active device at this head's wired ACE
                     # (head_ace_for) BEFORE feeding - the whole feed path uses
@@ -1329,6 +1350,8 @@ class FilamentFeed:
                     self.ace._check_calibration_unload_cancel()
                     self.ace._fa_trace('FEED_ACT_LOAD enter: ch=%d head=%d active_ace=%d'
                                        % (ch, self.filament_ch[ch], self.ace._active_device_index))
+                    fa_prev_gate = (bool(self.ace._auto_feed_enabled),
+                                    self.ace._fa_context)
                     self.ace._auto_feed_enabled = True
                     self.ace._fa_context = 'load'
                     self.ace._fa_trace('gate OPEN (context=load) via FEED_ACT_LOAD')
@@ -1429,7 +1452,7 @@ class FilamentFeed:
                             # bump, RE-SYNC this copy against that source.
                             # ===========================================================
                             logging.info(
-                                "[feed_loading] feeder head %d: native side-feed (no ACE)"
+                                "[feed_loading] feeder head %d: native side-feed (no MMU)"
                                 % self.filament_ch[ch])
                             while 1:
                                 wheel_cnt_a_1 = self.wheel[ch].get_counts()
@@ -1494,7 +1517,7 @@ class FilamentFeed:
                             # above, like a head-mode feeder head.)
                             if ace_idx in self.ace._fa_load_disable:
                                 logging.info(
-                                    '[multiACE] FEED_AUTO LOAD: ACE %d in fa_load_disable, skipping feed+FA' % ace_idx)
+                                    '[multiACE] FEED_AUTO LOAD: MMU %d in fa_load_disable, skipping feed+FA' % ace_idx)
                                 self.channel_error[ch] = FEED_OK
                             else:
 
@@ -1504,7 +1527,7 @@ class FilamentFeed:
                                 _ace_slot = self.ace._ace_slot_for_head(_head_idx)
                                 if _ace_slot != _head_idx:
                                     logging.info(
-                                        "[feed_loading] head %d loads from ACE slot %d (slot!=head)",
+                                        "[feed_loading] head %d loads from MMU slot %d (slot!=head)",
                                         _head_idx, _ace_slot)
                                 load_retries = self.ace.head_load_retry[_head_idx]
                                 load_retry_retract = self.ace.head_load_retry_retract[_head_idx]
@@ -1625,6 +1648,8 @@ class FilamentFeed:
                                         break
 
                                     logging.info("[feed_loading] attempt %d: sensor not reached", load_attempt + 1)
+                                    self._note_feed_verdict(_ace_slot, load_attempt,
+                                                            self.reactor.monotonic() - _feed_start)
 
                                 if not load_found and self.channel_error[ch] != FEED_ERR_NO_FILAMENT:
                                     self.channel_error[ch] = FEED_ERR_TIMEOUT
@@ -1738,7 +1763,7 @@ class FilamentFeed:
                                     except Exception as _ge:
                                         logging.info(
                                             '[feed_loading] press extruder '
-                                            'couple failed (%s) - ACE-only '
+                                            'couple failed (%s) - MMU-only '
                                             'window' % _ge)
                                     _rem = _t_end - self.reactor.monotonic()
                                     if _rem > 0:
@@ -2209,7 +2234,7 @@ class FilamentFeed:
                                         self.ace._feed_assist_index = -1
                                     self.ace.wait_ace_ready()
                                     self.ace._fa_trace(
-                                        'phase3 wiggle %s: stop FA slot=%d on ACE %d'
+                                        'phase3 wiggle %s: stop FA slot=%d on MMU %d'
                                         % (wiggle_char, slot_p3, ace_idx_p3))
                                 except Exception as e:
                                     logging.info(
@@ -2258,11 +2283,11 @@ class FilamentFeed:
                                             + (push_mm / max(1, feed_speed)) + 0.5)
                                         self.ace.wait_ace_ready()
                                         self.ace._fa_trace(
-                                            'phase3 ACE wiggle done slot=%d on ACE %d (retract=%d push=%d)'
+                                            'phase3 MMU wiggle done slot=%d on MMU %d (retract=%d push=%d)'
                                             % (slot_p3, ace_idx_p3, retract_mm, push_mm))
                                     except Exception as e:
                                         logging.info(
-                                            '[multiACE] phase3 ACE wiggle failed: %s' % e)
+                                            '[multiACE] phase3 MMU wiggle failed: %s' % e)
                                     finally:
                                         if extruder_disabled:
                                             try:
@@ -2287,7 +2312,7 @@ class FilamentFeed:
                                     try:
                                         self.ace._arm_fa_for(ace_idx_p3, slot_p3)
                                         self.ace._fa_trace(
-                                            'phase3 E wiggle: restart FA slot=%d on ACE %d before push'
+                                            'phase3 E wiggle: restart FA slot=%d on MMU %d before push'
                                             % (slot_p3, ace_idx_p3))
                                     except Exception as e:
                                         logging.info(
@@ -2419,7 +2444,7 @@ class FilamentFeed:
                         self.ace._head_source[head_idx] = _ident
                         self.ace._save_head_source()
                         self.ace._ghost_heads.discard(head_idx)
-                        logging.info('[multiACE] FEED_AUTO LOAD: head_source[%d] -> ACE %d / Slot %d' % (
+                        logging.info('[multiACE] FEED_AUTO LOAD: head_source[%d] -> MMU %d / Slot %d' % (
                             head_idx, ace_idx, ace_slot))
 
                     self.gcode.respond_raw('ok')
@@ -2436,7 +2461,13 @@ class FilamentFeed:
                     self.gcode.run_script_from_command("M107\r\n")
                     self.gcode.run_script_from_command("M104 S0\r\n")
 
-                    if fa_gate_opened and self.ace is not None:
+                    if (fa_gate_opened and self.ace is not None
+                            and fa_prev_gate == (True, 'print')):
+                        # A load inside a print (start-block preload, a
+                        # RESUME that reloads): hand the gate back to the
+                        # print instead of closing it for the rest of it.
+                        self._restore_print_fa_gate(ch)
+                    elif fa_gate_opened and self.ace is not None:
                         self.ace._auto_feed_enabled = False
                         self.ace._fa_context = 'idle'
                         self.ace._fa_trace('gate CLOSE (context=idle) via FEED_ACT_LOAD finally')
@@ -2458,6 +2489,19 @@ class FilamentFeed:
                     # then it raises so the web abort actually takes effect at
                     # the next wait instead of after the full sequence.
                     self.ace._check_calibration_unload_cancel()
+
+                # Head mode without a mapping for this head: decide NOW,
+                # before anything below (tip-form pre-prime, FA arms) can
+                # arm a GUESSED slot and make the retract guard read "feed
+                # assist running" (HW 2026-10-26: the pre-prime armed MMU 0
+                # slot 0, the guard let the bulk retract through, an
+                # uninvolved spool left the unit).
+                if self.ace is not None:
+                    try:
+                        self.ace._note_unload_mapping(self.filament_ch[ch])
+                    except Exception as nm_e:
+                        logging.info('[multiACE] unload mapping verdict '
+                                     'failed: %s' % nm_e)
 
                 # Manual/TPU head: do NOT arm the V2 rollback-assist - it spins
                 # the ACE motor (the rollback pull during unload). A manual or
@@ -2647,17 +2691,26 @@ class FilamentFeed:
                                     "(non-swap)", filament_unload_temp)
                             head_idx = self.filament_ch[ch]
                             source = self.ace._head_source.get(head_idx)
+                            # A bg-staged head has no head_source; ace.py hands
+                            # the staged slot over as a hint (older ace.py: none).
+                            _hint = None
+                            if source is None:
+                                _hint = (getattr(self.ace, '_unload_slot_hint', None)
+                                         or {}).get(head_idx)
+                                if _hint:
+                                    source = _hint
                             if source and source['ace_index'] != self.ace._active_device_index:
-                                logging.info('[multiACE] FEED_AUTO UNLOAD: switching to ACE %d for retract' % source['ace_index'])
+                                logging.info('[multiACE] FEED_AUTO UNLOAD: switching to MMU %d for retract' % source['ace_index'])
                                 self.ace._switch_ace_for_head_target(source['ace_index'])
 
                             unload_max = self.ace.unload_retry if self.ace is not None else 3
                             unload_ok = False
                             unload_reason = 'toolhead'
-                            _ace_slot = self.ace._ace_slot_for_head(head_idx)
+                            _ace_slot = (_hint['slot'] if _hint
+                                         else self.ace._ace_slot_for_head(head_idx))
                             if _ace_slot != head_idx:
                                 logging.info(
-                                    "[feed][unload] head %d unloads to ACE slot %d (slot!=head)",
+                                    "[feed][unload] head %d unloads to MMU slot %d (slot!=head)",
                                     head_idx, _ace_slot)
                             # Full-unload-safe + faster: retract only a short
                             # probe length first and verify the toolhead sensor
@@ -2693,13 +2746,50 @@ class FilamentFeed:
                                                and _gates[_ace_slot] == 0)
                             except Exception:
                                 _gate_empty = False
-                            if _gate_empty:
+                            # An earlier unload already found this gate empty
+                            # and marked the head_source: the strand in the
+                            # head is not in the ACE any more, whatever the
+                            # gate reads now (a fresh spool at the same gate
+                            # would be the one the retract pulls out).
+                            _gate_marked = bool(source and not _hint
+                                                and source.get('gate_empty'))
+                            if _gate_empty or _gate_marked:
                                 unload_max = 0
+                                unload_reason = 'gate_empty'
+                                if source and not _hint:
+                                    source['gate_empty'] = True
+                                    try:
+                                        self.ace._save_head_source()
+                                    except Exception:
+                                        logging.exception(
+                                            '[feed][unload] gate_empty mark')
                                 self.ace.log_error(self.ace._t(
-                                    'msg.unload_gate_empty',
+                                    'msg.unload_gate_empty' if _gate_empty
+                                    else 'msg.unload_gate_empty_again',
                                     head=self.ace._disp(head_idx),
                                     ace=self.ace._disp(_gate_ace),
                                     slot=self.ace._disp(_ace_slot)))
+                            # Head mode, no head_source and no feed assist
+                            # running on the unit: the slot would be a guess
+                            # (first spool at a gate), and a wrong guess pulls
+                            # somebody else's spool out of the ACE. The tip pull
+                            # ran; the ACE side is left to the user.
+                            _held = getattr(self.ace, '_unload_no_mapping', None)
+                            if _held is not None:
+                                _no_map = bool(unload_max and source is None
+                                               and _held.get(head_idx))
+                            else:
+                                _armed_fn = getattr(self.ace, '_armed_slot_for_ace', None)
+                                _no_map = bool(
+                                    unload_max and source is None and _armed_fn is not None
+                                    and getattr(self.ace, '_ace_mode', 'multi') == 'head'
+                                    and _armed_fn(self.ace._active_device_index) is None)
+                            if _no_map:
+                                unload_max = 0
+                                self.ace.log_error(self.ace._t(
+                                    'msg.unload_no_mapping_skip',
+                                    head=self.ace._disp(head_idx),
+                                    ace=self.ace._disp(self.ace._active_device_index)))
                             for unload_attempt in range(unload_max):
                                 self.ace._check_calibration_unload_cancel()
                                 # Wait ready BEFORE the span wrapper: its
@@ -3068,17 +3158,26 @@ class FilamentFeed:
                                     "(non-swap)", filament_unload_temp)
                             head_idx = self.filament_ch[ch]
                             source = self.ace._head_source.get(head_idx)
+                            # A bg-staged head has no head_source; ace.py hands
+                            # the staged slot over as a hint (older ace.py: none).
+                            _hint = None
+                            if source is None:
+                                _hint = (getattr(self.ace, '_unload_slot_hint', None)
+                                         or {}).get(head_idx)
+                                if _hint:
+                                    source = _hint
                             if source and source['ace_index'] != self.ace._active_device_index:
-                                logging.info('[multiACE] FEED_AUTO UNLOAD: switching to ACE %d for retract' % source['ace_index'])
+                                logging.info('[multiACE] FEED_AUTO UNLOAD: switching to MMU %d for retract' % source['ace_index'])
                                 self.ace._switch_ace_for_head_target(source['ace_index'])
 
                             unload_max = self.ace.unload_retry if self.ace is not None else 3
                             unload_ok = False
                             unload_reason = 'toolhead'
-                            _ace_slot = self.ace._ace_slot_for_head(head_idx)
+                            _ace_slot = (_hint['slot'] if _hint
+                                         else self.ace._ace_slot_for_head(head_idx))
                             if _ace_slot != head_idx:
                                 logging.info(
-                                    "[feed][unload] head %d unloads to ACE slot %d (slot!=head)",
+                                    "[feed][unload] head %d unloads to MMU slot %d (slot!=head)",
                                     head_idx, _ace_slot)
                             # Full-unload-safe + faster: retract only a short
                             # probe length first and verify the toolhead sensor
@@ -3114,13 +3213,50 @@ class FilamentFeed:
                                                and _gates[_ace_slot] == 0)
                             except Exception:
                                 _gate_empty = False
-                            if _gate_empty:
+                            # An earlier unload already found this gate empty
+                            # and marked the head_source: the strand in the
+                            # head is not in the ACE any more, whatever the
+                            # gate reads now (a fresh spool at the same gate
+                            # would be the one the retract pulls out).
+                            _gate_marked = bool(source and not _hint
+                                                and source.get('gate_empty'))
+                            if _gate_empty or _gate_marked:
                                 unload_max = 0
+                                unload_reason = 'gate_empty'
+                                if source and not _hint:
+                                    source['gate_empty'] = True
+                                    try:
+                                        self.ace._save_head_source()
+                                    except Exception:
+                                        logging.exception(
+                                            '[feed][unload] gate_empty mark')
                                 self.ace.log_error(self.ace._t(
-                                    'msg.unload_gate_empty',
+                                    'msg.unload_gate_empty' if _gate_empty
+                                    else 'msg.unload_gate_empty_again',
                                     head=self.ace._disp(head_idx),
                                     ace=self.ace._disp(_gate_ace),
                                     slot=self.ace._disp(_ace_slot)))
+                            # Head mode, no head_source and no feed assist
+                            # running on the unit: the slot would be a guess
+                            # (first spool at a gate), and a wrong guess pulls
+                            # somebody else's spool out of the ACE. The tip pull
+                            # ran; the ACE side is left to the user.
+                            _held = getattr(self.ace, '_unload_no_mapping', None)
+                            if _held is not None:
+                                _no_map = bool(unload_max and source is None
+                                               and _held.get(head_idx))
+                            else:
+                                _armed_fn = getattr(self.ace, '_armed_slot_for_ace', None)
+                                _no_map = bool(
+                                    unload_max and source is None and _armed_fn is not None
+                                    and getattr(self.ace, '_ace_mode', 'multi') == 'head'
+                                    and _armed_fn(self.ace._active_device_index) is None)
+                            if _no_map:
+                                unload_max = 0
+                                self.ace.log_error(self.ace._t(
+                                    'msg.unload_no_mapping_skip',
+                                    head=self.ace._disp(head_idx),
+                                    ace=self.ace._disp(self.ace._active_device_index)))
                             for unload_attempt in range(unload_max):
                                 self.ace._check_calibration_unload_cancel()
                                 # Wait ready BEFORE the span wrapper: its
@@ -3540,22 +3676,88 @@ class FilamentFeed:
         finally:
             self.channel_active = None
 
+    def _localized_feed_head(self, channel):
+        # Head of `channel` when its feed fault gets the multiACE wording:
+        # multi mode every head (as before), head mode the heads an ACE
+        # drives (a feeder or manual head keeps the stock text, nothing of
+        # multiACE moved its filament). None = no ace object or normal mode.
+        # HW 2026-10-25: head mode showed the raw "state: load_extruding,
+        # error: move_extrude!raw msg:logic error!" (code 210) because both
+        # emitters were multi-only.
+        if self.ace is None:
+            return None
+        mode = getattr(self.ace, '_ace_mode', '')
+        head = self.filament_ch[channel]
+        if mode == 'multi':
+            return head
+        if mode == 'head':
+            uses_ace = getattr(self.ace, 'head_uses_ace', None)
+            if uses_ace is None or uses_ace(head):
+                return head
+        return None
+
     def _emit_feed_pause(self, channel, key):
         # Localized multiACE pause message for a feed fault, rendered via the
         # ACE _t() catalog (1-based indices, ACE/Slot from head_source when
         # known). Returns the [multiACE]-prefixed text for the gcmd.error raise,
-        # or None when not in multi mode / no ACE (caller falls back to the
-        # technical text). No M117 (invisible on the Snapmaker touchscreen) and
-        # no RESPOND (the raised gcmd.error already reaches popup + Fluidd).
-        if self.ace is None or getattr(self.ace, '_ace_mode', '') != 'multi':
+        # or None when not in multi/head mode / no ACE (caller falls back to
+        # the technical text). No M117 (invisible on the Snapmaker touchscreen)
+        # and no RESPOND (the raised gcmd.error already reaches popup + Fluidd).
+        head = self._localized_feed_head(channel)
+        if head is None:
             return None
-        head = self.filament_ch[channel]
         hd = self.ace._disp(head)
         src = (getattr(self.ace, '_head_source', None) or {}).get(head) or {}
         a, s = src.get('ace_index'), src.get('slot')
-        loc = ' (ACE %d / Slot %d)' % (self.ace._disp(a), self.ace._disp(s)) \
+        loc = ' (MMU %d / Slot %d)' % (self.ace._disp(a), self.ace._disp(s)) \
             if a is not None and s is not None else ''
         return self.ace._t(key, head=hd, loc=loc)
+
+    # The ACE 2 reports a lane whose motor turned while the encoder saw no
+    # filament as slot_status 'feed_error' (the firmware's own slip check,
+    # ~10 s into the feed); a lane that ran the whole commanded length
+    # without the toolhead sensor firing comes back 'ready'. The two are
+    # different failures for the user (spool / gear slip vs. a path
+    # problem downstream), so the verdict is kept per (ace, slot) on the
+    # ace object and the load-slip wording reads it. The status frame
+    # arrives at 1 Hz, so after a failed attempt wait briefly for the
+    # device's word; the retry's retract follows anyway. Units without a
+    # per-slot status (ACE Pro) carry no verdict and keep the old wording.
+    FEED_VERDICT_WAIT_S = 1.5
+
+    def _note_feed_verdict(self, slot, attempt, elapsed):
+        ace = self.ace
+        idx = ace._active_device_index
+        store = getattr(ace, '_load_feed_error', None)
+        if store is None:
+            return
+        key = (int(idx), int(slot))
+        cap = getattr(ace, '_cap', None)
+        read = getattr(ace, '_v2_get_slot_status', None)
+        if cap is None or read is None or not cap(idx, 'has_slot_status_truth'):
+            store.pop(key, None)
+            return
+        deadline = self.reactor.monotonic() + self.FEED_VERDICT_WAIT_S
+        status = None
+        while True:
+            status = read(idx, slot)
+            if status is not None and status != 'feeding':
+                break
+            if self.reactor.monotonic() >= deadline:
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if status == 'feed_error':
+            store[key] = self.reactor.monotonic()
+            logging.info(
+                "[feed_loading] attempt %d: MMU %d reports feed_error after %.1fs"
+                " - the motor turned but the filament did not move (slip at the MMU)",
+                attempt + 1, idx, elapsed)
+        else:
+            store.pop(key, None)
+            logging.info(
+                "[feed_loading] attempt %d: MMU %d slot_status=%s after %.1fs"
+                " - filament moved but did not arrive (path downstream)",
+                attempt + 1, idx, status, elapsed)
 
     def _feed_load_fail_details(self, channel):
         # (detail, steps) for a failed LOAD, classified the way the SWAP path
@@ -3568,16 +3770,17 @@ class FilamentFeed:
         # ace._load_slip_details and word the same failure identically.
         #
         # (None, None) = cannot classify, caller keeps the flat message:
-        # no ace object, not multi (the localized feed message is multi-only
-        # by design, see _emit_feed_pause), no head_source to name an
-        # ACE/slot, or an ace.py that predates the helper - ace.py is NOT
-        # part of the bundle sha, so it can be older than this file.
-        if self.ace is None or getattr(self.ace, '_ace_mode', '') != 'multi':
+        # no ace object, a head without multiACE wording (normal mode, a
+        # feeder/manual head in head mode, see _localized_feed_head), no
+        # head_source to name an ACE/slot, or an ace.py that predates the
+        # helper - ace.py is NOT part of the bundle sha, so it can be older
+        # than this file.
+        head = self._localized_feed_head(channel)
+        if head is None:
             return None, None
         detail_fn = getattr(self.ace, '_load_slip_details', None)
         if detail_fn is None:
             return None, None
-        head = self.filament_ch[channel]
         src = (getattr(self.ace, '_head_source', None) or {}).get(head) or {}
         a, s = src.get('ace_index'), src.get('slot')
         if a is None or s is None:
@@ -3785,6 +3988,54 @@ class FilamentFeed:
                     self.motor_tachometer.get_counts()))
         gcmd.respond_info(msg, log=False)
 
+    def _virtual_preload(self, gcmd, channel):
+        """Start-gcode preload of a raw Orca virtual-tool print. An ACE head
+        loads the slot its first tool needs, like stock loads its side
+        ports before the first layer. Returns True when handled here; False
+        lets a feeder/manual head take the stock rule below. A resume or a
+        replenish loads nothing, the head keeps what it had."""
+        head = self.filament_ch[channel]
+        if not self.ace.head_uses_ace(head):
+            return False
+        msm = self.printer.lookup_object('machine_state_manager', None)
+        if msm is not None:
+            action = str(msm.get_status().get("action_code"))
+            if action in ("PRINT_RESUMING", "PRINT_REPLENISHING"):
+                logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] "
+                             "is_printing=1, %s keeps the loaded head",
+                             channel, action)
+                return True
+        take = getattr(self.ace, '_take_virtual_preload', None)
+        target = take(head) if take is not None else None
+        if target is None:
+            logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] "
+                         "is_printing=1, virtual-tool print, no preload "
+                         "planned for head %d", channel, head)
+            return True
+        if self.ace._head_is_loaded(head):
+            logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] "
+                         "is_printing=1, head %d already loaded (its first "
+                         "tool swaps if needed)", channel, head)
+            return True
+        ace, slot = target
+        name = 'extruder' if head == 0 else 'extruder%d' % head
+        extruder = self.printer.lookup_object(name, None)
+        last_temp = 0
+        try:
+            last_temp = int(extruder.heater.target_temp)
+        except Exception:
+            pass
+        logging.info("[feed] FEED_AUTO LOAD: channel[%d] is_printing=1, "
+                     "virtual-tool preload head %d <- MMU %d / Slot %d",
+                     channel, head, ace, slot)
+        try:
+            self.gcode.run_script_from_command(
+                'ACE_LOAD_HEAD HEAD=%d ACE=%d SLOT=%d' % (head, ace, slot))
+        finally:
+            self.gcode.run_script_from_command(
+                'M104 S%d T%d A0' % (last_temp, head))
+        return True
+
     def cmd_FEED_AUTO(self, gcmd):
         channel = gcmd.get_int('CHANNEL')
         if channel < 0 or channel >= FEED_CHANNEL_NUMS:
@@ -3842,13 +4093,66 @@ class FilamentFeed:
                 return
 
             if is_printing == 1:
-                logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] is_printing=1", channel)
-                return
+                # Stock loads a PRINTING=1 request (the start gcode's
+                # SM_PRINT_AUTO_FEED, INNER_RESUME) only when the port holds
+                # filament. The fork used to skip every such request, so a
+                # raw slicer print on an ACE never auto-loaded its preloaded
+                # slot and ran into a runout at the first extrusion. Stock
+                # rule restored; a file that carries its own multiACE loads
+                # (preflight auto-load block, virtual tools) keeps the skip,
+                # those loads come from the gcode itself.
+                carries_loads = bool(self.ace is not None and getattr(
+                    self.ace, '_print_has_gcode_loads', False))
+                virtual_raw = bool(carries_loads and getattr(
+                    self.ace, '_print_virtual_raw', False))
+                if carries_loads and not virtual_raw:
+                    logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] "
+                                 "is_printing=1, print carries its own loads",
+                                 channel)
+                    return
+                if virtual_raw and self._virtual_preload(gcmd, channel):
+                    return
+                # An ACE head only has an unambiguous slot in multi mode with
+                # one ACE (slot k feeds head k). With several ACEs, or four
+                # slots per ACE in head mode, the slot would be a guess: stop
+                # the print and point to the preflight instead.
+                head = self.filament_ch[channel]
+                if (self.ace is not None and self.ace.head_uses_ace(head)
+                        and not (getattr(self.ace, '_ace_mode', '') == 'multi'
+                                 and len(getattr(self.ace, '_ace_devices',
+                                                 None) or []) == 1)):
+                    logging.info("[feed] FEED_AUTO LOAD refused: channel[%d] "
+                                 "is_printing=1, raw print, slot ambiguous "
+                                 "(mode=%s, aces=%d)", channel,
+                                 getattr(self.ace, '_ace_mode', ''),
+                                 len(getattr(self.ace, '_ace_devices',
+                                             None) or []))
+                    # On a RESUME / replenish the file is already printing;
+                    # the preflight advice is useless there, the way out is
+                    # a load of this head by web or display, then RESUME.
+                    key = 'msg.raw_print_needs_preflight'
+                    msm = self.printer.lookup_object('machine_state_manager',
+                                                     None)
+                    if msm is not None:
+                        action = str(msm.get_status().get("action_code"))
+                        if action in ("PRINT_RESUMING", "PRINT_REPLENISHING"):
+                            key = 'msg.raw_print_resume_load_head'
+                    raise self.ace._ace_error(
+                        gcmd, self.ace._t(key, head=self.ace._disp(head)),
+                        code=212, head=head)
+                if self._port[channel].get_filament_detected() == False:
+                    logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] "
+                                 "is_printing=1, no filament at the port/gate",
+                                 channel)
+                    return
+                logging.info("[feed] FEED_AUTO LOAD: channel[%d] is_printing=1, "
+                             "filament at the port/gate - loading (stock rule)",
+                             channel)
 
             if self.config['auto_mode'][channel] == False:
 
                 if self.ace is not None and getattr(self.ace, '_ace_mode', '') == 'multi':
-                    logging.info("[feed] FEED_AUTO LOAD: ACE bypass auto_mode gate (channel[%d] auto_mode=False ignored)", channel)
+                    logging.info("[feed] FEED_AUTO LOAD: MMU bypass auto_mode gate (channel[%d] auto_mode=False ignored)", channel)
                 else:
                     logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] auto_mode=False", channel)
                     return
@@ -3856,7 +4160,7 @@ class FilamentFeed:
             if self.runout_sensor[channel] is None or self.runout_sensor[channel].get_status(0)['enabled'] == False:
 
                 if self.ace is not None and getattr(self.ace, '_ace_mode', '') == 'multi':
-                    logging.info("[feed] FEED_AUTO LOAD: ACE bypass runout_sensor gate (channel[%d] sensor None or disabled)", channel)
+                    logging.info("[feed] FEED_AUTO LOAD: MMU bypass runout_sensor gate (channel[%d] sensor None or disabled)", channel)
                 else:
                     logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] runout_sensor disabled or None", channel)
                     return

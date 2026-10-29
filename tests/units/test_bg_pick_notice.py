@@ -82,6 +82,7 @@ def _engine(phase=None, busy=True):
         def __init__(self):
             self.said = []
             self._busy = set()
+            self._abort_requested = set()   # arrival-hold abort (#186)
             self._pick_pending = set()
             self.state = {}
 

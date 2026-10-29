@@ -264,7 +264,7 @@ class Gen1TagTunnel:
                 {'method': self.METHOD,
                  'params': {'index': as_signed32(packed)}}, _cb)
         except Exception as e:
-            logging.info('[multiACE] gen1 tag tunnel: send failed on ACE %d: '
+            logging.info('[multiACE] gen1 tag tunnel: send failed on MMU %d: '
                          '%s', self.idx, e)
             return None
         deadline = (self.ace.reactor.monotonic()
@@ -309,13 +309,13 @@ class Gen1TagTunnel:
         self._no_tunnel_said.add(key)
         if not firmware_supports_tunnel(fw):
             logging.info(
-                '[multiACE] gen1 tag tunnel: ACE %d firmware %r has no '
+                '[multiACE] gen1 tag tunnel: MMU %d firmware %r has no '
                 'RC522 tunnel (needs the community tunnel build %s) - the '
                 'unit keeps its normal status-only tag path',
                 self.idx, fw or '?', GEN1_TUNNEL_FW_PREFIX + 'x')
         else:
             logging.info(
-                '[multiACE] gen1 tag tunnel: ACE %d firmware %r matches the '
+                '[multiACE] gen1 tag tunnel: MMU %d firmware %r matches the '
                 'tunnel builds but a probe op did not answer through the '
                 'stub - no tunnel traffic from here',
                 self.idx, fw or '?')
@@ -353,7 +353,7 @@ class Gen1TagTunnel:
             # 0xA1 - a wiring/chip problem on that channel, not a missing
             # tunnel. Say it once; the read will simply find no card.
             logging.info(
-                '[multiACE] gen1 tag tunnel: ACE %d VersionReg on reader 0 '
+                '[multiACE] gen1 tag tunnel: MMU %d VersionReg on reader 0 '
                 'reads 0x%02X (expected 0x%02X) - tunnel present, check '
                 'that channel if reads fail', self.idx, v, VERSION_REG_VALUE)
         return ok
@@ -374,9 +374,9 @@ class Gen1TagTunnel:
         if not ok and not self._release_fail_said:
             self._release_fail_said = True
             logging.warning(
-                '[multiACE] gen1 tag tunnel: ACE %d release (op 8, state '
+                '[multiACE] gen1 tag tunnel: MMU %d release (op 8, state '
                 '%d) did not confirm - the stock recognition state was not '
-                'restored; a power-cycle of the ACE clears it',
+                'restored; a power-cycle of the MMU clears it',
                 self.idx, int(state) & 0xFF)
         return ok
 
@@ -528,7 +528,7 @@ class Gen1TagTunnel:
                 return None
             uid = uid_from_page0(data) if page == 0 else ''
             if uid and uid in skip:
-                logging.info('[multiACE] gen1 tag tunnel: ACE %d slot %d: '
+                logging.info('[multiACE] gen1 tag tunnel: MMU %d slot %d: '
                              'partner card %s in the field - halting it',
                              self.idx, slot, uid)
                 self.halt(channel)

@@ -403,14 +403,14 @@ def flash(port: str, fw, progress,
         _p(None, "waking the link (the unit resets when idle)")
         if not transport.prime():
             raise FlashError(
-                "no response from the ACE on %s - is it powered, and was "
+                "no response from the MMU on %s - is it powered, and was "
                 "the port released (ACE_FW_RELEASE)?" % port)
         info = transport.rpc("get_info", timeout=T_RPC)
         cur_ver = _fw_version(info)
         if cur_ver:
-            _p(None, "ACE reports version %s" % cur_ver)
+            _p(None, "MMU reports version %s" % cur_ver)
         else:
-            _p(None, "the ACE answered, but reports no version")
+            _p(None, "the MMU answered, but reports no version")
         iap = _result_of(transport.rpc("iap_version", timeout=T_RPC)) or {}
 
         if dry_run:
@@ -434,7 +434,7 @@ def flash(port: str, fw, progress,
         # it: only byte-exactly tested images ever reach the wire.
         check_known(fw)
         if info is None:
-            raise FlashError("ACE did not answer the version query - "
+            raise FlashError("MMU did not answer the version query - "
                              "not flashing blind")
 
         total = len(fw.data)
@@ -446,7 +446,7 @@ def flash(port: str, fw, progress,
                            {"size": total, "crc": fw.image_crc,
                             "version": fw.version}, timeout=T_UPGRADE)
         if up is None:
-            raise FlashError("no response to iap_upgrade - is the ACE "
+            raise FlashError("no response to iap_upgrade - is the MMU "
                              "powered and on this port?")
         code = up.get("code")
         if code not in (None, 0):
@@ -466,7 +466,7 @@ def flash(port: str, fw, progress,
                    "flashing chunk %d/%d" % (i + 1, n_chunks))
         _p(100.0, "image written in %.1fs" % (time.time() - t0))
 
-        _p(100.0, "committing (iap_upgrade_finish) - ACE reboots")
+        _p(100.0, "committing (iap_upgrade_finish) - MMU reboots")
         # The reply is optional: the commit reboots the unit, which can
         # cut the answer off - the bench flasher expects exactly that. The
         # cut can also surface as a serial error (the USB device vanishes
@@ -477,7 +477,7 @@ def flash(port: str, fw, progress,
         except Exception as e:
             _p(100.0, "link dropped at commit (%s) - unit rebooting" % e)
 
-        _p(None, "waiting for the ACE to come back")
+        _p(None, "waiting for the MMU to come back")
         deadline = time.time() + BOOT_WAIT
         new_ver = None
         while time.time() < deadline:

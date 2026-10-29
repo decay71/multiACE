@@ -720,15 +720,15 @@ def build_estimate(model, header, timeline, *, materials=None,
                  "mixed": "prime tower + flush"}[dest]
         assumptions.append(
             "%s detected - that's the slicer's own purge, separate from "
-            "the ACE-swap purge below" % label)
+            "the MMU-swap purge below" % label)
     elif dest == "unknown":
         assumptions.append(
             "no prime-tower or flush setting found in the header - the "
             "slicer's own purge destination is unknown (informational "
-            "only; the ACE-swap purge below is unaffected)")
+            "only; the MMU-swap purge below is unaffected)")
     if purging_swaps:
         assumptions.append(
-            "%d ACE swap(s) purge through the chute - %.1f g added to "
+            "%d MMU swap(s) purge through the chute - %.1f g added to "
             "the total, on top of anything the slicer itself printed"
             % (purging_swaps, sum(
                 model.purge_grams(mm, materials.get(t))

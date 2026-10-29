@@ -77,7 +77,7 @@ class RunoutHelper:
             hd = ace._disp(head)
             src = (getattr(ace, '_head_source', None) or {}).get(head) or {}
             a, s = src.get('ace_index'), src.get('slot')
-            loc = ' (ACE %d / Slot %d)' % (ace._disp(a), ace._disp(s)) \
+            loc = ' (MMU %d / Slot %d)' % (ace._disp(a), ace._disp(s)) \
                 if a is not None and s is not None else ''
             return ace._t('msg.pause_runout', head=hd, loc=loc)
         return ('[multiACE] %s runout - reload filament '
@@ -327,7 +327,7 @@ class RunoutHelper:
                         and not ace._head_is_loaded(self.extruder_index)):
                     logging.info(
                         '[multiACE] CHECK_FILAMENT_RUNOUT: head %d is an '
-                        'unloaded ACE-driven head and this print carries '
+                        'unloaded MMU-driven head and this print carries '
                         'multiACE loads - its load is ahead in the gcode, '
                         'allowing RESUME' % self.extruder_index)
                     return

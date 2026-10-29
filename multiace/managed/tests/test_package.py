@@ -45,7 +45,7 @@ class PackageTests(unittest.TestCase):
         self.assertIn("klipper/extras/ace_gen1_tunnel.py", manifest["payload"])
         self.assertIn("tools/post_process_virtual_toolheads.py", manifest["payload"])
         self.assertIn("tools/multiace_update.sh", manifest["excluded_from_package"])
-        self.assertIn("tools/merge_ace_cfg.py", manifest["excluded_from_package"])
+        self.assertIn("tools/merge_ace_cfg.py", manifest["payload"])
 
     def test_package_contains_only_managed_payload(self) -> None:
         with tempfile.TemporaryDirectory(prefix="multiace-managed-test-") as tmp:
@@ -69,7 +69,7 @@ class PackageTests(unittest.TestCase):
             self.assertTrue(any(name.endswith("/klipper/extras/ace_gen1_tunnel.py") for name in names))
             self.assertTrue(any(name.endswith("/tools/post_process_virtual_toolheads.py") for name in names))
             self.assertFalse(any(name.endswith("/tools/multiace_update.sh") for name in names))
-            self.assertFalse(any(name.endswith("/tools/merge_ace_cfg.py") for name in names))
+            self.assertTrue(any(name.endswith("/tools/merge_ace_cfg.py") for name in names))
             self.assertFalse(any("/deploy/" in name for name in names))
             self.assertFalse(any("/__pycache__/" in name for name in names))
             self.assertFalse(any(name.endswith((".pyc", ".pyo")) for name in names))

@@ -14,24 +14,7 @@ import importlib
 import sys
 import types
 
-import os
-
-
-class H:
-    """Imports the real Klipper extras as a package (no printer needed)."""
-    EXTRAS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                          'multiace', 'klipper', 'extras')
-    PKG = 'multiace_bg_heat_extras'
-
-    @staticmethod
-    def load_ace():
-        name = H.PKG + '.ace'
-        if name in sys.modules:
-            return sys.modules[name]
-        pkg = types.ModuleType(H.PKG)
-        pkg.__path__ = [H.EXTRAS]
-        sys.modules[H.PKG] = pkg
-        return importlib.import_module(name)
+from . import harness as H
 
 
 class FakeHeater:
@@ -280,3 +263,74 @@ def test_heat_set_own_never_waits():
         pass
     else:
         raise AssertionError('heat_set_own must not accept a wait flag')
+
+
+def test_transport_only_load_leaves_no_claim():
+    """A transport-only bg load never sets the heater, so it must not claim
+    it either: the claim would survive the transport return and the next
+    release without a claim of its own (e.g. _fail_unload before the next
+    HEAT claim) would pick it up. The claim call in _load_core sits under
+    the `not transport_only` branch, next to the set."""
+    import ast
+    import os
+    path = os.path.join(H.EXTRAS, 'ace_bg_swap.py')
+    tree = ast.parse(open(path, encoding='utf-8').read())
+    fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == '_load_core':
+            fn = node
+            break
+    assert fn is not None
+    claims = []
+
+    def walk(node, guards):
+        for child in ast.iter_child_nodes(node):
+            g = guards
+            if isinstance(child, ast.If):
+                g = guards + [ast.unparse(child.test)]
+                for sub in child.body:
+                    walk(sub, g)
+                for sub in child.orelse:
+                    walk(sub, guards + ['else: ' + ast.unparse(child.test)])
+                continue
+            if (isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Attribute)
+                    and child.func.attr == '_heat_claim'):
+                claims.append(list(guards))
+            walk(child, g)
+    walk(fn, [])
+    assert claims, 'no _heat_claim in _load_core'
+    for guards in claims:
+        assert 'not transport_only' in guards, guards
+
+
+def test_waittemp_wait_reasserts_a_moved_target():
+    """The tip-form `waittemp:` wait in _unload_core sets its target once
+    and then only watches the temperature. A foreign set in that window
+    (a slicer preheat for the parked head, a departed-tool M104) moved the
+    target and the wait ran into its 180 s timeout, pulling at the foreign
+    temperature. The wait loop must compare the live TARGET with its own
+    value and re-assert it, in both directions, like the HEAT wait does."""
+    import ast
+    import os
+    path = os.path.join(H.EXTRAS, 'ace_bg_swap.py')
+    tree = ast.parse(open(path, encoding='utf-8').read())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == '_unload_core')
+    branch = next(n for n in ast.walk(fn)
+                  if isinstance(n, ast.If)
+                  and ast.unparse(n.test) == "kind == 'waittemp'")
+    loop = next(n for n in branch.body if isinstance(n, ast.While))
+    reasserts = []
+    for n in ast.walk(loop):
+        if isinstance(n, ast.If):
+            sets = [c for c in ast.walk(n)
+                    if isinstance(c, ast.Call)
+                    and isinstance(c.func, ast.Attribute)
+                    and c.func.attr == '_set_heat']
+            if sets:
+                reasserts.append(ast.unparse(n.test))
+    assert reasserts, 'no _set_heat under a condition inside the waittemp loop'
+    # the guard reads the live target (_t) against the wanted value (c),
+    # as a magnitude: a target moved UP must be pulled back too
+    assert any('abs(_t - c)' in g for g in reasserts), reasserts

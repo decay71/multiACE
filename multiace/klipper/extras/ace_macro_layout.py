@@ -75,6 +75,7 @@ GROUPS = (
             "SET_ACE_MODE",
             "ACEF__Mode_Normal",
             "ACEF__Mode_Multi",
+            "ACEF__Mode_Head",
             "ACEA__Switch_0",
             "ACEA__Switch_1",
             "ACEA__Switch_2",

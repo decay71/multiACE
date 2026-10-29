@@ -38,10 +38,20 @@ jobs:
           python -m py_compile \
             multiace/klipper/extras/ace.py \
             multiace/klipper/extras/ace_gen1_tunnel.py \
+            multiace/klipper/extras/ace_resistance.py \
+            multiace/klipper/extras/ace_display.py \
+            multiace/klipper/extras/ace_spool.py \
+            multiace/klipper/extras/ace_swap.py \
+            multiace/klipper/extras/ace_settings.py \
+            multiace/klipper/extras/ace_unit.py \
+            multiace/klipper/extras/ace_drivers.py \
+            multiace/klipper/extras/ace_protocol_cfs.py \
             multiace/web/backend/i18n_path.py \
             multiace/web/backend/main.py \
+            multiace/web/backend/orca_profile.py \
             multiace/web/backend/preflight_core.py \
             multiace/tools/post_process_virtual_toolheads.py \
+            multiace/tools/job_history.py \
             multiace/tools/swap_cost.py \
             multiace/managed/build_package.py \
             multiace/managed/tests/test_package.py \

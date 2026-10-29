@@ -222,6 +222,15 @@ html[data-theme="new"] .th-section-head { background: var(--card); }
 html[data-theme="new"] .ace-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr)); gap: 20px;
 }
+/* Cards in one row stay equally tall, and the slot row takes the extra
+   height (the tiles' text block grows, the Load strip stays at the
+   bottom). A stretched card with a fixed slot row showed the surplus as
+   an empty band under the Load strip. With an open dryer panel the cards
+   are left at their own height instead, so the panel does not stretch the
+   tiles of its neighbours. */
+html[data-theme="new"] .ace-card { display: flex; flex-direction: column; }
+html[data-theme="new"] .ace-card > .slot-row { flex: 1 1 auto; }
+html[data-theme="new"] .ace-grid:has(.dry-panel) { align-items: start; }
 html[data-theme="new"] .ace-grid > .ace-card:only-child { width: min(560px, 100%); }
 html[data-theme="new"] .ace-card {
   padding: 0; border-radius: 0; background: var(--card); border: 1px solid var(--border);
@@ -240,6 +249,10 @@ html[data-theme="new"] .ace-card h2 .ace-name::before {
 }
 html[data-theme="new"] .ace-card.primary h2 .ace-name::before { background: var(--accent); }
 html[data-theme="new"] .ace-card h2 .ace-proto { font-size: 12px; color: var(--muted); margin: 0; }
+html[data-theme="new"] .ace-card h2 .ace-unit-name {
+  flex: 0 1 auto; min-width: 0; max-width: 9em; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; font-weight: 500;
+}
 html[data-theme="new"] .ace-card h2 .ace-cfw { border-radius: 0; border-color: var(--nt-ctl-hi); }
 html[data-theme="new"] .ace-card h2 small { font-size: 11px; text-transform: none; }
 html[data-theme="new"] .ace-card h2 .ace-status {
@@ -1102,11 +1115,12 @@ html[data-theme="new"] .nt-pc-radio {
 }
 html[data-theme="new"] .nt-plan-card.sel .nt-pc-radio { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--nt-input); background: var(--accent); }
 html[data-theme="new"] .nt-pc-rec { font-size: 11px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); padding: 0 5px; }
-html[data-theme="new"] .nt-pc-nums { display: flex; gap: 22px; margin-top: auto; }
+html[data-theme="new"] .nt-pc-nums { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: auto; }
 html[data-theme="new"] .nt-pc-nums > span { display: flex; flex-direction: column; }
 html[data-theme="new"] .nt-pc-nums b { font-size: 24px; font-weight: 600; line-height: 1.1; }
 html[data-theme="new"] .nt-pc-nums b i { font-style: normal; font-size: 13px; color: var(--muted); margin-left: 2px; font-weight: 400; }
 html[data-theme="new"] .nt-pc-nums small { font-size: 11.5px; color: var(--muted); }
+html[data-theme="new"] .nt-pf-bg { margin: -6px 0 14px; font-size: 12.5px; }
 html[data-theme="new"] .nt-pc-off { font-size: 12.5px; color: var(--nt-warn-fg); }
 /* the selected plan's table */
 html[data-theme="new"] .preflight-plan.nt-pf-off,

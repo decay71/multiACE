@@ -24,5 +24,5 @@ jobs:
       - name: Install dependencies
         run: pip install -r multiace/web/backend/requirements.txt pytest
 
-      - name: Run unit tests
-        run: python -m pytest tests/unit -q
+      - name: Run tests
+        run: python -m pytest tests -q

@@ -1,0 +1,152 @@
+[
+ [
+  "ace.py",
+  "MultiAce._ace_path_sort_key",
+  "kind_literal_compare",
+  "proto_name == 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._ace_path_sort_key",
+  "kind_literal_compare",
+  "proto_name == 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._calibration_send_stop",
+  "kind_literal_compare",
+  "c.get('protocol') != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._calibration_settle",
+  "kind_literal_compare",
+  "c.get('protocol') != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._calibration_settle",
+  "kind_literal_compare",
+  "c.get('protocol') != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._calibration_stop_method",
+  "kind_literal_compare",
+  "self._calibration.get('protocol') != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._calibration_unload_stop_hardware",
+  "name_compare",
+  "getattr(proto, 'NAME', None) != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._calibration_verify_dispatch",
+  "kind_literal_compare",
+  "c.get('protocol') == 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._calibration_verify_encoder_return",
+  "kind_literal_compare",
+  "c.get('protocol') != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._calibration_verify_pause",
+  "kind_literal_compare",
+  "c.get('protocol') != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._community_fw_kind",
+  "fw_suffix_O",
+  "fw.endswith('O')"
+ ],
+ [
+  "ace.py",
+  "MultiAce._is_open_fw_idx",
+  "fw_suffix_O",
+  "fw.strip().upper().endswith('O')"
+ ],
+ [
+  "ace.py",
+  "MultiAce._is_v1",
+  "name_compare",
+  "getattr(p, 'NAME', '') == 'v1'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._is_v2",
+  "name_compare",
+  "getattr(p, 'NAME', '') == 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._is_v2_idx",
+  "name_compare",
+  "getattr(proto, 'NAME', None) == 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._open_fw_version",
+  "fw_suffix_O",
+  "txt.endswith('O')"
+ ],
+ [
+  "ace.py",
+  "MultiAce._v2_resolve_ace",
+  "name_compare",
+  "getattr(active_proto, 'NAME', None) == 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._v2_resolve_ace",
+  "name_compare",
+  "getattr(proto, 'NAME', None) != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce._v2_resolve_ace",
+  "name_compare",
+  "getattr(proto, 'NAME', None) == 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce.cmd_ACE_DWELL_TEST",
+  "name_compare",
+  "getattr(proto, 'NAME', None) != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce.cmd_ACE_FW_RELEASE",
+  "predicate_call",
+  "self._is_v1(idx)"
+ ],
+ [
+  "ace.py",
+  "MultiAce.cmd_ACE_FW_RELEASE",
+  "predicate_call",
+  "self._is_v2(idx)"
+ ],
+ [
+  "ace.py",
+  "MultiAce.cmd_ACE_MULTI_SLOT_TEST",
+  "name_compare",
+  "getattr(proto, 'NAME', None) != 'v2'"
+ ],
+ [
+  "ace.py",
+  "MultiAce.cmd_ACE_RAW_PROBE",
+  "kind_literal_compare",
+  "name == 'v2'"
+ ],
+ [
+  "ace_bg_swap.py",
+  "AceBgSwap._cap",
+  "predicate_call",
+  "ace._is_v2_idx(ace_idx)"
+ ]
+]

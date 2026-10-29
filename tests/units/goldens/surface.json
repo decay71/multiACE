@@ -1,0 +1,730 @@
+{
+ "multiace/klipper/extras/ace_bg_swap.py": {
+  "hard": {
+   "EXTRUDER_MAP": [
+    "AceBgSwap.cmd_ACE_BG_SWAP",
+    "AceBgSwap.cmd_ACE_BG_UNLOAD"
+   ],
+   "_bg_left_empty": [
+    "AceBgSwap._clear_staged",
+    "AceBgSwap._mark_staged"
+   ],
+   "_bg_load_unverified": [
+    "AceBgSwap._load_bookkeeping",
+    "AceBgSwap._unload_core"
+   ],
+   "_disp": [
+    "AceBgSwap._dh"
+   ],
+   "_feed_assist_per_ace": [
+    "AceBgSwap._ace_feed_to_gears",
+    "AceBgSwap._ace_quiesce",
+    "AceBgSwap._fa_on",
+    "AceBgSwap._load_core",
+    "AceBgSwap._unload_core"
+   ],
+   "_ghost_heads": [
+    "AceBgSwap._load_bookkeeping"
+   ],
+   "_head_source": [
+    "AceBgSwap._load_bookkeeping",
+    "AceBgSwap._unload_core",
+    "AceBgSwap.cmd_ACE_BG_SWAP",
+    "AceBgSwap.cmd_ACE_BG_UNLOAD"
+   ],
+   "_info_per_ace": [
+    "AceBgSwap._load_bookkeeping",
+    "AceBgSwap._slot_status"
+   ],
+   "_is_actively_printing": [
+    "AceBgSwap._unload_core"
+   ],
+   "_is_empty_status": [
+    "AceBgSwap._load_core"
+   ],
+   "_is_v2_idx": [
+    "AceBgSwap._cap"
+   ],
+   "_push_rfid_info": [
+    "AceBgSwap._load_bookkeeping",
+    "AceBgSwap._unload_core"
+   ],
+   "_push_slot_rfid_to_extruder": [
+    "AceBgSwap._load_bookkeeping",
+    "AceBgSwap._unload_core"
+   ],
+   "_read_decoder": [
+    "AceBgSwap._ace_feed_to_gears"
+   ],
+   "_reconnecting_per_ace": [
+    "AceBgSwap.cmd_ACE_BG_SWAP",
+    "AceBgSwap.cmd_ACE_BG_UNLOAD"
+   ],
+   "_retract_with_decoder_span": [
+    "AceBgSwap._load_core",
+    "AceBgSwap._unload_core"
+   ],
+   "_runout_suppress_heads": [
+    "AceBgSwap._unload_core"
+   ],
+   "_save_head_source": [
+    "AceBgSwap._load_bookkeeping",
+    "AceBgSwap._unload_core"
+   ],
+   "_serial_failed_per_ace": [
+    "AceBgSwap.cmd_ACE_BG_SWAP",
+    "AceBgSwap.cmd_ACE_BG_UNLOAD"
+   ],
+   "_tipform_material_for": [
+    "AceBgSwap._unload_core"
+   ],
+   "_tipform_vendor_for": [
+    "AceBgSwap._unload_core"
+   ],
+   "_v2_get_slot_status": [
+    "AceBgSwap._slot_status"
+   ],
+   "book_spool_use": [
+    "AceBgSwap._load_core"
+   ],
+   "get_feed_speed": [
+    "AceBgSwap._load_core"
+   ],
+   "get_load_length": [
+    "AceBgSwap._load_core"
+   ],
+   "get_purge_length": [
+    "AceBgSwap._load_core"
+   ],
+   "get_retract_length": [
+    "AceBgSwap._unload_core"
+   ],
+   "get_retract_speed": [
+    "AceBgSwap._unload_core"
+   ],
+   "get_swap_retract_length": [
+    "AceBgSwap._unload_core"
+   ],
+   "head_ace_for": [
+    "AceBgSwap.cmd_ACE_BG_SWAP"
+   ],
+   "head_load_retry": [
+    "AceBgSwap._load_core"
+   ],
+   "head_load_retry_retract": [
+    "AceBgSwap._load_core"
+   ],
+   "head_uses_ace": [
+    "AceBgSwap.cmd_ACE_BG_SWAP",
+    "AceBgSwap.cmd_ACE_BG_UNLOAD"
+   ],
+   "load_retry": [
+    "AceBgSwap._load_core"
+   ],
+   "load_retry_retract": [
+    "AceBgSwap._load_core"
+   ],
+   "log_warn": [
+    "AceBgSwap._fail_unload"
+   ],
+   "note_seat_press_span": [
+    "AceBgSwap._load_core"
+   ],
+   "rgb2hex": [
+    "AceBgSwap._load_bookkeeping"
+   ],
+   "send_request_to": [
+    "AceBgSwap._ace_send"
+   ],
+   "tipform_load_temp_for": [
+    "AceBgSwap._unload_core"
+   ],
+   "tipform_table_for": [
+    "AceBgSwap._unload_core"
+   ],
+   "tipform_unload_temp_for": [
+    "AceBgSwap.is_wait_eligible"
+   ]
+  },
+  "soft": {
+   "_ace_error": [
+    "AceBgSwap._bg_error"
+   ],
+   "_ace_mode": [
+    "AceBgSwap.cmd_ACE_BG_SWAP",
+    "AceBgSwap.cmd_ACE_BG_UNLOAD"
+   ],
+   "_bg_prime_deficit": [
+    "AceBgSwap._load_core",
+    "AceBgSwap._run_swap",
+    "AceBgSwap._unload_core"
+   ],
+   "_bg_staged": [
+    "AceBgSwap._clear_staged",
+    "AceBgSwap._mark_staged"
+   ],
+   "_cap": [
+    "AceBgSwap._cap"
+   ],
+   "_feedlog": [
+    "AceBgSwap._bg_dec_log"
+   ],
+   "_inherit_prev_capture": [
+    "AceBgSwap._load_bookkeeping"
+   ],
+   "_overlay_override": [
+    "AceBgSwap._load_bookkeeping"
+   ],
+   "_save_bg_staged": [
+    "AceBgSwap._clear_staged",
+    "AceBgSwap._mark_staged"
+   ],
+   "_swap_in_progress": [
+    "AceBgSwap.cmd_ACE_BG_SWAP",
+    "AceBgSwap.cmd_ACE_BG_UNLOAD"
+   ],
+   "_wt_persist": [
+    "AceBgSwap.cmd_ACE_BG_SET_HEAD"
+   ],
+   "heat_foreign_since": [
+    "AceBgSwap._release_heat"
+   ],
+   "heat_set_own": [
+    "AceBgSwap._set_heat"
+   ],
+   "load_retry": [
+    "AceBgSwap._load_core"
+   ],
+   "note_seat_press_span": [
+    "AceBgSwap._load_core"
+   ],
+   "seat_overshoot_length": [
+    "AceBgSwap._load_core"
+   ],
+   "swap_anti_ooze_retract": [
+    "AceBgSwap.cmd_ACE_BG_SWAP"
+   ],
+   "swap_dwell_fan": [
+    "AceBgSwap._dwell_fan"
+   ],
+   "tipform_bg_temp_for": [
+    "AceBgSwap.cmd_ACE_BG_SWAP"
+   ],
+   "tipform_prime_for": [
+    "AceBgSwap._unload_core"
+   ],
+   "tipform_unload_temp_for": [
+    "AceBgSwap.is_wait_eligible"
+   ],
+   "unload_gpio": [
+    "AceBgSwap._unload_core"
+   ]
+  }
+ },
+ "multiace/klipper/extras/ace_gen1_tunnel.py": {
+  "hard": {
+   "_ace_models": [
+    "Gen1TagTunnel._fw_string"
+   ],
+   "reactor": [
+    "Gen1TagTunnel._pause",
+    "Gen1TagTunnel._req"
+   ],
+   "send_request_to": [
+    "Gen1TagTunnel._req"
+   ]
+  },
+  "soft": {}
+ },
+ "multiace/klipper/extras/ace_rc522.py": {
+  "hard": {
+   "_disp": [
+    "AceTagReader._clear_neighbour",
+    "AceTagReader._wait_neighbour_settled",
+    "AceTagReader.read_slot",
+    "AceTagReader.read_slot_transport"
+   ],
+   "_get_heads_for_ace_slot": [
+    "AceTagReader._neighbour_movable"
+   ],
+   "_info_per_ace": [
+    "AceTagReader._fw_identify_busy",
+    "AceTagReader._slot_presence"
+   ],
+   "_is_empty_status": [
+    "AceTagReader._neighbour_empty"
+   ],
+   "_persist_tag_reads": [
+    "AceTagReader._forget_identity",
+    "AceTagReader._note_uid"
+   ],
+   "_rc_last_fmt": [
+    "AceTagReader._note_fmt"
+   ],
+   "_rc_last_uid": [
+    "AceTagReader._note_uid"
+   ],
+   "_read_decoder": [
+    "AceTagReader.read_slot_transport"
+   ],
+   "_spool_bind_by_tag": [
+    "AceTagReader._bind_uid",
+    "AceTagReader._finish_present"
+   ],
+   "_spool_by_sku": [
+    "AceTagReader._read_card"
+   ],
+   "_spool_label": [
+    "AceTagReader._bind_uid",
+    "AceTagReader._finish_present"
+   ],
+   "_stop_feeding": [
+    "AceTagReader.read_slot_transport"
+   ],
+   "_v2_get_slot_status": [
+    "AceTagReader._neighbour_inserting",
+    "AceTagReader._neighbour_movable",
+    "AceTagReader.read_slot_transport"
+   ],
+   "_v2_store_filament_read": [
+    "AceTagReader._finish_present",
+    "AceTagReader._read_card",
+    "AceTagReader.write_slot"
+   ],
+   "printer": [
+    "AceTagReader._neighbour_movable"
+   ],
+   "reactor": [
+    "AceTagReader._pause",
+    "AceTagReader._req",
+    "AceTagReader._wait_fw_identify",
+    "AceTagReader._wait_neighbour_settled",
+    "AceTagReader.read_slot_transport"
+   ],
+   "send_request_to": [
+    "AceTagReader._req"
+   ]
+  },
+  "soft": {
+   "_insert_read_queue": [
+    "AceTagReader._clear_neighbour"
+   ],
+   "_native_tag_format": [
+    "AceTagReader._read_card"
+   ],
+   "_rc_last_fmt": [
+    "AceTagReader._note_fmt"
+   ],
+   "_rc_last_uid": [
+    "AceTagReader._known_neighbour_uid",
+    "AceTagReader._note_uid"
+   ],
+   "_spool_bind_tag_codes": [
+    "AceTagReader._read_card",
+    "AceTagReader.write_slot"
+   ],
+   "_tag_read_blocked_by_neighbour": [
+    "AceTagReader._neighbour_blocked_notice"
+   ],
+   "_v2_filament_info_per_ace": [
+    "AceTagReader._forget_identity"
+   ]
+  }
+ },
+ "multiace/klipper/extras/filament_feed_ace.py": {
+  "hard": {
+   "_ace_error": [
+    "FilamentFeed.cmd_FEED_AUTO"
+   ],
+   "_ace_slot_for_head": [
+    "FeedPort.get_filament_detected",
+    "FilamentFeed._do_feed",
+    "FilamentFeed.get_status"
+   ],
+   "_active_device_index": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._note_feed_verdict"
+   ],
+   "_arm_fa_for": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._restore_print_fa_gate"
+   ],
+   "_audit_state": [
+    "FilamentFeed.cmd_FEED_AUTO"
+   ],
+   "_auto_feed_enabled": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._restore_print_fa_gate"
+   ],
+   "_check_calibration_unload_cancel": [
+    "FilamentFeed._do_feed"
+   ],
+   "_connected_per_ace": [
+    "FilamentFeed._do_feed"
+   ],
+   "_disable_feed_assist_all": [
+    "FilamentFeed._do_feed"
+   ],
+   "_disp": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._emit_feed_pause",
+    "FilamentFeed.cmd_FEED_AUTO"
+   ],
+   "_dwell_fan": [
+    "FilamentFeed._do_feed"
+   ],
+   "_ensure_active_ace_for_head": [
+    "FilamentFeed._do_feed"
+   ],
+   "_fa_context": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._restore_print_fa_gate"
+   ],
+   "_fa_load_disable": [
+    "FilamentFeed._do_feed"
+   ],
+   "_fa_trace": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._restore_print_fa_gate"
+   ],
+   "_feed": [
+    "FilamentFeed._do_feed"
+   ],
+   "_feed_assist_index": [
+    "FilamentFeed._do_feed"
+   ],
+   "_feed_assist_per_ace": [
+    "FilamentFeed._do_feed"
+   ],
+   "_gate_status_per_ace": [
+    "FeedPort.get_filament_detected",
+    "FilamentFeed._do_feed"
+   ],
+   "_ghost_heads": [
+    "FilamentFeed._do_feed"
+   ],
+   "_head_is_loaded": [
+    "FilamentFeed._virtual_preload"
+   ],
+   "_head_source": [
+    "FeedPort.get_filament_detected",
+    "FilamentFeed._do_feed",
+    "FilamentFeed._restore_print_fa_gate"
+   ],
+   "_info_per_ace": [
+    "FilamentFeed._do_feed"
+   ],
+   "_last_unload_ok": [
+    "FilamentFeed._do_feed"
+   ],
+   "_last_unload_reason": [
+    "FilamentFeed._do_feed"
+   ],
+   "_machine_state_after_feed_op": [
+    "FilamentFeed._ms_after_feed_op"
+   ],
+   "_note_unload_mapping": [
+    "FilamentFeed._do_feed"
+   ],
+   "_push_slot_rfid_to_extruder": [
+    "FilamentFeed._do_feed"
+   ],
+   "_reconnecting_per_ace": [
+    "FilamentFeed._do_feed"
+   ],
+   "_resistance_note": [
+    "FilamentFeed._do_feed"
+   ],
+   "_resistance_pause_pending": [
+    "FilamentFeed._do_feed"
+   ],
+   "_resolve_retract_length": [
+    "FilamentFeed._do_feed"
+   ],
+   "_retract": [
+    "FilamentFeed._do_feed"
+   ],
+   "_retract_with_decoder_span": [
+    "FilamentFeed._do_feed"
+   ],
+   "_run_tipform": [
+    "FilamentFeed._do_feed"
+   ],
+   "_save_head_source": [
+    "FilamentFeed._do_feed"
+   ],
+   "_stop_feeding": [
+    "FilamentFeed._do_feed"
+   ],
+   "_switch_ace_for_head_target": [
+    "FilamentFeed._do_feed"
+   ],
+   "_t": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._emit_feed_pause",
+    "FilamentFeed.cmd_FEED_AUTO"
+   ],
+   "_tipform_rejected": [
+    "FilamentFeed._do_feed"
+   ],
+   "_tipform_send": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._do_feed._do_press"
+   ],
+   "_v2_active_rev_assist": [
+    "FilamentFeed._do_feed"
+   ],
+   "_v2_arm_fa_for_unload": [
+    "FilamentFeed._do_feed"
+   ],
+   "coil_lowpass_check": [
+    "FilamentFeed._do_feed"
+   ],
+   "extrusion_retry": [
+    "FilamentFeed._do_feed"
+   ],
+   "extrusion_retry_retract": [
+    "FilamentFeed._do_feed"
+   ],
+   "extrusion_retry_retract_a": [
+    "FilamentFeed._do_feed"
+   ],
+   "feed_speed": [
+    "FilamentFeed._do_feed"
+   ],
+   "gate_status": [
+    "FeedPort.get_filament_detected",
+    "FilamentFeed.get_status"
+   ],
+   "get_load_length": [
+    "FilamentFeed._do_feed"
+   ],
+   "get_purge_length": [
+    "FilamentFeed._do_feed"
+   ],
+   "get_retract_speed": [
+    "FilamentFeed._do_feed"
+   ],
+   "head_ace_for": [
+    "FeedPort.get_filament_detected"
+   ],
+   "head_load_retry": [
+    "FilamentFeed._do_feed"
+   ],
+   "head_load_retry_retract": [
+    "FilamentFeed._do_feed"
+   ],
+   "head_uses_ace": [
+    "FeedPort.get_filament_detected",
+    "FilamentFeed._do_feed",
+    "FilamentFeed._restore_print_fa_gate",
+    "FilamentFeed._virtual_preload",
+    "FilamentFeed.cmd_FEED_AUTO",
+    "FilamentFeed.get_status"
+   ],
+   "is_ace_ready": [
+    "FilamentFeed._do_feed"
+   ],
+   "log_error": [
+    "FilamentFeed._do_feed"
+   ],
+   "note_seat_press_span": [
+    "FilamentFeed._do_feed"
+   ],
+   "notify_external_load": [
+    "FilamentFeed.cmd_FEED_AUTO",
+    "FilamentFeed.cmd_FEED_MANUAL"
+   ],
+   "rescue_verify_check": [
+    "FilamentFeed._do_feed"
+   ],
+   "retract_speed": [
+    "FilamentFeed._do_feed"
+   ],
+   "rgb2hex": [
+    "FilamentFeed._do_feed"
+   ],
+   "send_request_to": [
+    "FilamentFeed._do_feed"
+   ],
+   "unload_retry": [
+    "FilamentFeed._do_feed"
+   ],
+   "wait_ace_ready": [
+    "FilamentFeed._do_feed"
+   ]
+  },
+  "soft": {
+   "_ace_devices": [
+    "FilamentFeed.cmd_FEED_AUTO"
+   ],
+   "_ace_mode": [
+    "FeedPort.get_filament_detected",
+    "FilamentFeed._do_feed",
+    "FilamentFeed._localized_feed_head",
+    "FilamentFeed.cmd_FEED_AUTO"
+   ],
+   "_armed_slot_for_ace": [
+    "FilamentFeed._do_feed"
+   ],
+   "_cap": [
+    "FilamentFeed._note_feed_verdict"
+   ],
+   "_feedlog": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._unload_dec_log"
+   ],
+   "_head_source": [
+    "FilamentFeed._emit_feed_pause",
+    "FilamentFeed._feed_load_fail_details"
+   ],
+   "_inherit_prev_capture": [
+    "FilamentFeed._do_feed"
+   ],
+   "_last_unload_ok": [
+    "FilamentFeed._do_feed"
+   ],
+   "_load_feed_error": [
+    "FilamentFeed._note_feed_verdict"
+   ],
+   "_load_slip_details": [
+    "FilamentFeed._feed_load_fail_details"
+   ],
+   "_overlay_override": [
+    "FilamentFeed._do_feed"
+   ],
+   "_print_has_gcode_loads": [
+    "FilamentFeed.cmd_FEED_AUTO"
+   ],
+   "_print_virtual_raw": [
+    "FilamentFeed.cmd_FEED_AUTO"
+   ],
+   "_replenish_check_active": [
+    "FilamentFeed.get_status"
+   ],
+   "_swap_in_progress": [
+    "FilamentFeed._do_feed",
+    "FilamentFeed._runout_evt_handle",
+    "FilamentFeed.cmd_FEED_RUNOUT_EVENT_HANDLE"
+   ],
+   "_swap_probe_ref_temp": [
+    "FilamentFeed._swap_probe_temp"
+   ],
+   "_take_virtual_preload": [
+    "FilamentFeed._virtual_preload"
+   ],
+   "_unload_no_mapping": [
+    "FilamentFeed._do_feed"
+   ],
+   "_unload_slot_hint": [
+    "FilamentFeed._do_feed"
+   ],
+   "_v2_get_slot_status": [
+    "FilamentFeed._note_feed_verdict"
+   ],
+   "_wiggle_log": [
+    "FilamentFeed._do_feed"
+   ],
+   "feed_speed": [
+    "FilamentFeed._do_feed"
+   ],
+   "head_uses_ace": [
+    "FilamentFeed._localized_feed_head"
+   ],
+   "notify_external_load": [
+    "FilamentFeed.cmd_FEED_AUTO",
+    "FilamentFeed.cmd_FEED_MANUAL"
+   ],
+   "retract_speed": [
+    "FilamentFeed._do_feed"
+   ],
+   "seat_overshoot_length": [
+    "FilamentFeed._do_feed"
+   ],
+   "swap_cool_probe": [
+    "FilamentFeed._do_feed"
+   ],
+   "swap_probe_push": [
+    "FilamentFeed._do_feed"
+   ],
+   "swap_probe_temp": [
+    "FilamentFeed._swap_probe_temp"
+   ],
+   "tipform_load_temp_for": [
+    "FilamentFeed._get_filament_temp"
+   ],
+   "tipform_unload_temp_for": [
+    "FilamentFeed._get_filament_unload_temp"
+   ],
+   "unload_decoder_gate": [
+    "FilamentFeed._unload_dec_stalled"
+   ],
+   "unload_gpio": [
+    "FilamentFeed._do_feed"
+   ],
+   "wiggle_scheme": [
+    "FilamentFeed._do_feed"
+   ]
+  }
+ },
+ "multiace/klipper/extras/filament_switch_sensor_ace.py": {
+  "hard": {
+   "_bg_left_empty": [
+    "RunoutHelper.note_filament_present"
+   ],
+   "_disp": [
+    "RunoutHelper._runout_disp"
+   ],
+   "_head_is_loaded": [
+    "RunoutHelper.cmd_CHECK_FILAMENT_RUNOUT"
+   ],
+   "_refresh_filament_exist_flags": [
+    "RunoutHelper._runout_event_handler"
+   ],
+   "_replenish_check_active": [
+    "RunoutHelper._runout_event_handler"
+   ],
+   "_runout_suppress_heads": [
+    "RunoutHelper.note_filament_present"
+   ],
+   "_t": [
+    "RunoutHelper._runout_disp"
+   ],
+   "head_uses_ace": [
+    "RunoutHelper.cmd_CHECK_FILAMENT_RUNOUT"
+   ],
+   "quad_replenish_after_runout": [
+    "RunoutHelper._runout_event_handler._try_quad"
+   ]
+  },
+  "soft": {
+   "_bg_left_empty": [
+    "RunoutHelper.note_filament_present"
+   ],
+   "_head_source": [
+    "RunoutHelper._runout_disp"
+   ],
+   "_print_has_gcode_loads": [
+    "RunoutHelper.cmd_CHECK_FILAMENT_RUNOUT"
+   ],
+   "_runout_suppress_heads": [
+    "RunoutHelper._runout_event_handler",
+    "RunoutHelper.cmd_CHECK_FILAMENT_RUNOUT",
+    "RunoutHelper.note_filament_present"
+   ],
+   "_swap_in_progress": [
+    "RunoutHelper._runout_event_handler",
+    "RunoutHelper.note_filament_present"
+   ],
+   "_t": [
+    "RunoutHelper._runout_disp"
+   ],
+   "quad_first": [
+    "RunoutHelper._runout_event_handler"
+   ],
+   "quad_replenish_after_runout": [
+    "RunoutHelper._runout_event_handler._try_quad"
+   ]
+  }
+ }
+}

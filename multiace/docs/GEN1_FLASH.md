@@ -66,7 +66,7 @@ sequence, but nothing on the wire:
 * **Stop a running dry cycle before flashing.** The release stops the
   cycle multiACE started, but a manual one survives until the flash
   reboots the unit (the reporter's procedure stops it explicitly with
-  `drying_stop`). Stop it from the web UI / `ACE_EXT_RAW` first.
+  `drying_stop`). Stop it from the web UI / `ACE_STOP_DRYING` first.
 * **Keep the link busy.** A Gen-1 unit self-resets after roughly 3.3 s
   without traffic (an unconnected ACE Pro USB-reboots every ~3.5 s until
   something talks to it). The chunk stream keeps the link busy during the

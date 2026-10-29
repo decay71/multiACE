@@ -18,27 +18,67 @@ Or with pytest:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-# Mock third-party web dependencies if not installed in standalone test environment
-for mod in [
+try:
+    import pytest
+except ImportError:  # direct run without pytest installed
+    pytest = None
+
+# Stub third-party web dependencies only when they are really missing, and
+# only for the duration of this module. A stub left in sys.modules replaces
+# the real fastapi for every later test module (tests/unit imports
+# fastapi.testclient), so the stubs and the stubbed main are removed again.
+_STUB_MODULES = [
     "websockets",
     "httpx",
     "fastapi",
     "fastapi.responses",
     "fastapi.staticfiles",
     "pydantic",
-    "preflight_core",
-]:
-    if mod not in sys.modules:
+]
+
+
+def _missing(mod: str) -> bool:
+    try:
+        return importlib.util.find_spec(mod) is None
+    except (ImportError, ValueError):
+        return True
+
+
+def _install_stubs() -> list:
+    installed = []
+    for mod in _STUB_MODULES:
+        if mod in sys.modules or not _missing(mod):
+            continue
         m = MagicMock()
         if mod == "fastapi":
             m.FastAPI.return_value = MagicMock()
         sys.modules[mod] = m
+        installed.append(mod)
+    return installed
+
+
+def _remove_stubs(installed: list) -> None:
+    for mod in installed:
+        sys.modules.pop(mod, None)
+    # main was imported against this module's environment; drop it so the
+    # next test module imports it fresh.
+    sys.modules.pop("main", None)
+
+
+if pytest is not None:
+    @pytest.fixture(autouse=True, scope="module")
+    def _stubbed_web_dependencies():
+        installed = _install_stubs()
+        yield
+        _remove_stubs(installed)
+
 
 BACKEND_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -251,4 +291,8 @@ def run_checks() -> None:
 
 
 if __name__ == "__main__":
-    run_checks()
+    _installed = _install_stubs()
+    try:
+        run_checks()
+    finally:
+        _remove_stubs(_installed)

@@ -1,0 +1,4 @@
+# multiACE: let Klipper (user lava) open USB-RS485 dongles that drive an
+# MMU (CFS Nano on a CH340, ACE 2 on a generic adapter). Without it the
+# tty is root:dialout 0660 and lava is not in dialout.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666"

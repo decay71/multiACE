@@ -172,8 +172,23 @@ json_asset_url() {
         fi
     done
 }
+# Version = base ('1.30b') plus an optional pre-release suffix
+# ('-pre', '-pre2'). The suffix is kept: a tester on 1.30b-pre1 must see
+# 1.30b-pre2 and the final 1.30b as updates, and a release user must
+# never be offered a pre-release of the version he already runs.
 normalize_version() {
-    echo "${1:-}" | sed -n 's/^v\?\([0-9][0-9.]*[a-z]\?\).*/\1/p'
+    echo "${1:-}" | sed -n 's/^v\?\([0-9][0-9.]*[a-z]\?\(-pre[0-9]*\)\?\).*/\1/p'
+}
+version_base() {
+    echo "${1%%-pre*}"
+}
+version_pre() {
+    # pre-release number: '' = final, 0 = bare '-pre', N = '-preN'
+    case "$1" in
+        *-pre) echo 0 ;;
+        *-pre*) echo "${1##*-pre}" ;;
+        *) echo "" ;;
+    esac
 }
 is_newer() {
     cur="$1"
@@ -181,8 +196,18 @@ is_newer() {
     [ -z "$lat" ] && return 1
     [ -z "$cur" ] && return 0
     [ "$cur" = "$lat" ] && return 1
-    newest="$(printf '%s\n%s\n' "$cur" "$lat" | sort -V | tail -1)"
-    [ "$newest" = "$lat" ] && return 0
+    cur_b="$(version_base "$cur")"
+    lat_b="$(version_base "$lat")"
+    if [ "$cur_b" != "$lat_b" ]; then
+        newest="$(printf '%s\n%s\n' "$cur_b" "$lat_b" | sort -V | tail -1)"
+        [ "$newest" = "$lat_b" ] && return 0
+        return 1
+    fi
+    cur_p="$(version_pre "$cur")"
+    lat_p="$(version_pre "$lat")"
+    [ -z "$lat_p" ] && return 0          # final beats any pre of the same base
+    [ -z "$cur_p" ] && return 1          # a release never downgrades to a pre
+    [ "$lat_p" -gt "$cur_p" ] 2>/dev/null && return 0
     return 1
 }
 cmd_check() {

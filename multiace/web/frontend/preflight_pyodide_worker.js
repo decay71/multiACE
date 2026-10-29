@@ -17,8 +17,9 @@
  *   <- {type:"analyze", jobId, file, liveSlots, headCtx, costParams}
  *   -> {type:"analyze-done", jobId, report}             (+ {type:"progress"})
  *   <- {type:"rewrite", jobId, file, liveSlots, headCtx, mode, remapOverride,
- *                        headAssignment, headPlan, headCopies}
- *   -> {type:"rewrite-done", jobId, text}               (+ {type:"progress"})
+ *                        headAssignment, headPlan, headCopies,
+ *                        printPrefs:{bedMesh, camera, flowCal}}
+ *   -> {type:"rewrite-done", jobId, blob}               (+ {type:"progress"})
  *   <- {type:"estimate", jobId, plan, mapping, targetIds, copyIds}
  *   -> {type:"estimate-done", jobId, result}    ({estimate, timeline} for the
  *                        edited mapping, or null when there is no estimate)
@@ -53,6 +54,28 @@ function progress(jobId, stage, percent) {
   self.postMessage({type: "progress", jobId, stage, percent});
 }
 
+// The uploaded File is mounted read-only via WORKERFS instead of being read
+// into a string: Python then iterates it line by line straight from the
+// Blob, so memory no longer grows with the file. file.text() + splitlines
+// held the whole file twice (a UTF-16 JS string plus ~13 M Python line
+// strings for a 340 MB file) and killed the tab (Chrome "Aw, Snap").
+// Returns the path of the file inside the mount; unmountJob() releases it.
+function mountJob(jobId, file) {
+  const FS = pyodide.FS;
+  const dir = "/in/" + String(jobId).replace(/[^A-Za-z0-9_-]/g, "_");
+  unmountJob(dir);
+  FS.mkdirTree(dir);
+  FS.mount(FS.filesystems.WORKERFS,
+           {blobs: [{name: "src.gcode", data: file}]}, dir);
+  return {dir, path: dir + "/src.gcode"};
+}
+
+function unmountJob(dir) {
+  const FS = pyodide.FS;
+  try { FS.unmount(dir); } catch (e) {}
+  try { FS.rmdir(dir); } catch (e) {}
+}
+
 // One-time Pyodide bring-up: load the runtime, then write the two unmodified
 // .py sources into the in-memory FS and import them. The post-processor is pure
 // stdlib (no pip/micropip needed), so a bare Pyodide can run it as-is.
@@ -83,7 +106,30 @@ import sys, json
 sys.path.insert(0, "/multiace")
 import post_process_virtual_toolheads as _pp
 import preflight_core as _core
+import codecs
 _captures = {}
+
+def _chunk_lines(path, size=1 << 20):
+    # Lines of a (mounted) file, read in 1 MB blocks and split with
+    # str.splitlines(True) - the same line rules the old whole-text
+    # splitlines used, with only one block in memory at a time.
+    # Faster than iterating the WORKERFS file line by line (150 MB:
+    # 9 s vs 39 s; the old file.text() path took 22 s and 758 MB heap).
+    # The last line of a block waits for the next one, so a CRLF or a
+    # multi-byte character split across the block edge stays whole.
+    dec = codecs.getincrementaldecoder("utf-8")("replace")
+    rest = ""
+    with open(path, "rb") as fh:
+        while True:
+            b = fh.read(size)
+            text = rest + dec.decode(b, final=not b)
+            if not b:
+                if text:
+                    yield from text.splitlines(True)
+                return
+            lines = text.splitlines(True)
+            rest = lines.pop() if lines else ""
+            yield from lines
 `);
       ready = true;
     })();
@@ -98,22 +144,26 @@ async function doAnalyze(jobId, file, liveSlots, headCtx, freshCostParams) {
   slotsByJob.set(jobId, liveSlots);
   ctxByJob.set(jobId, headCtx);
   progress(jobId, "analyze", 5);
-  const text = await file.text();
-  progress(jobId, "analyze", 40);
 
   const py = pyodide;
-  py.globals.set("_gtext", text);
-  py.globals.set("_live", JSON.stringify(liveSlots || []));
-  py.globals.set("_hctx", JSON.stringify(headCtx || {mode: "multi"}));
-  py.globals.set("_fname", file.name || "upload.gcode");
-  py.globals.set("_fsize", file.size || text.length);
-  py.globals.set("_cost", JSON.stringify(costParams || {}));
-  py.globals.set("_job_id", jobId);
-  const reportJson = py.runPython(`
+  const mnt = mountJob(jobId, file);
+  let reportJson;
+  try {
+    py.globals.set("_src", mnt.path);
+    py.globals.set("_live", JSON.stringify(liveSlots || []));
+    py.globals.set("_hctx", JSON.stringify(headCtx || {mode: "multi"}));
+    py.globals.set("_fname", file.name || "upload.gcode");
+    py.globals.set("_fsize", file.size || 0);
+    py.globals.set("_cost", JSON.stringify(costParams || {}));
+    py.globals.set("_job_id", jobId);
+    progress(jobId, "analyze", 10);
+    // parse_meta takes any line iterator and keeps only the head/tail
+    // windows and the plan lines - the same call the rewrite makes.
+    reportJson = py.runPython(`
 _live_slots = json.loads(_live)
 _head_ctx   = json.loads(_hctx)
 _colors, _types, _naces, _used, _plan, _meta, _hdr = _core.parse_meta(
-    _pp, _gtext.splitlines(True), with_header=True)
+    _pp, _chunk_lines(_src), with_header=True)
 _capture = {}
 _report = _core.build_report(
     _pp,
@@ -125,8 +175,10 @@ _report = _core.build_report(
 _captures[_job_id] = _capture
 json.dumps(_report)
 `);
-  // free the big strings from the Python globals
-  py.runPython("del _gtext, _plan, _hdr\n");
+    py.runPython("del _plan, _hdr\n");
+  } finally {
+    unmountJob(mnt.dir);
+  }
   progress(jobId, "done", 100);
   return JSON.parse(reportJson);
 }
@@ -164,7 +216,29 @@ json.dumps(_core.recompute_all_estimates(
 `));
 }
 
-// Rewrite: run the full pipeline in MEMFS, return the print-ready gcode text.
+// Read a MEMFS file into a Blob in slices: no single copy of the whole
+// file as a JS string or one big array. The Blob crosses to the main
+// thread by reference.
+function memfsToBlob(path, slice = 8 << 20) {
+  const FS = pyodide.FS;
+  const size = FS.stat(path).size;
+  const fd = FS.open(path, "r");
+  const parts = [];
+  try {
+    for (let pos = 0; pos < size; pos += slice) {
+      const n = Math.min(slice, size - pos);
+      const buf = new Uint8Array(n);
+      FS.read(fd, buf, 0, n, pos);
+      parts.push(buf);
+    }
+  } finally {
+    FS.close(fd);
+  }
+  return new Blob(parts, {type: "application/octet-stream"});
+}
+
+// Rewrite: run the full pipeline in MEMFS, return the print-ready gcode as a
+// Blob.
 async function doRewrite(jobId, msg) {
   const file = files.get(jobId) || msg.file;
   const liveSlots = slotsByJob.get(jobId) || msg.liveSlots || [];
@@ -173,11 +247,12 @@ async function doRewrite(jobId, msg) {
   if (!file) throw new Error("missing file");
 
   progress(jobId, "analyze", 2);
-  const text = await file.text();
 
   const py = pyodide;
   py.FS.mkdirTree("/preflight");
-  py.FS.writeFile("/preflight/src.gcode", text);
+  // Source straight from the File (WORKERFS), no JS string, no MEMFS copy.
+  const mnt = mountJob(jobId, file);
+  py.globals.set("_src", mnt.path);
   py.globals.set("_live", JSON.stringify(liveSlots));
   py.globals.set("_hctx", JSON.stringify(headCtx));
   py.globals.set("_mode", mode);
@@ -185,6 +260,10 @@ async function doRewrite(jobId, msg) {
   py.globals.set("_hassign", JSON.stringify(msg.headAssignment || null));
   py.globals.set("_hplan", msg.headPlan || "loadout");
   py.globals.set("_hcopies", JSON.stringify(msg.headCopies || null));
+  const prefs = msg.printPrefs || {};
+  py.globals.set("_prefs", JSON.stringify({
+    bed_mesh: !!prefs.bedMesh, camera: !!prefs.camera,
+    flow_cal: !!prefs.flowCal}));
 
   // Bridge the streaming-stage progress out to the main thread. set_stage maps
   // a coarse (stage, percent); the fine per-file callbacks stay no-ops for now
@@ -194,31 +273,50 @@ async function doRewrite(jobId, msg) {
   py.globals.set("_on_stage", onStage);
 
   progress(jobId, "rewrite", 10);
-  const outText = py.runPython(`
+  let outBlob;
+  try {
+  const finalPath = py.runPython(`
 _live_slots = json.loads(_live)
 _head_ctx   = json.loads(_hctx)
 _remap_ov   = json.loads(_remap)
 _hassign_ov = json.loads(_hassign)
 _hcopies_ov = json.loads(_hcopies)
 _colors, _types, _naces, _used, _plan, _meta = _core.parse_meta(
-    _pp, open("/preflight/src.gcode", "r", encoding="utf-8", errors="replace"))
+    _pp, _chunk_lines(_src))
 _final = _core.rewrite_pipeline(
     _pp,
-    src_path="/preflight/src.gcode",
+    src_path=_src,
     tmp_a="/preflight/a.gcode", tmp_b="/preflight/b.gcode",
     slicer_colors=_colors, slicer_types=_types, num_aces=_naces,
     live_slots=_live_slots, head_ctx=_head_ctx, mode=_mode,
     remap_override=_remap_ov, head_assignment=_hassign_ov, head_plan=_hplan,
     meta=_meta, head_copies=_hcopies_ov,
     set_stage=lambda s, p: _on_stage(s, p))
-open(_final, "r", encoding="utf-8", errors="replace").read()
+_pf = json.loads(_prefs)
+if _pf["bed_mesh"] or _pf["camera"] or _pf["flow_cal"]:
+    # Same streaming pass as the printer backend (preflight_core).
+    _on_stage("print_prefs", 84)
+    _other = ("/preflight/b.gcode" if _final == "/preflight/a.gcode"
+              else "/preflight/a.gcode")
+    _core.prepend_print_prefs(_final, _other, _pf["bed_mesh"],
+                              _pf["camera"], _pf["flow_cal"])
+    _final = _other
+_final
 `);
-  // tidy MEMFS so a second print doesn't accumulate
-  try { py.FS.unlink("/preflight/src.gcode"); } catch (e) {}
-  try { py.FS.unlink("/preflight/a.gcode"); } catch (e) {}
-  try { py.FS.unlink("/preflight/b.gcode"); } catch (e) {}
+    // The stage the pipeline did not end on is dead weight: drop it before
+    // the result is copied out.
+    for (const p of ["/preflight/a.gcode", "/preflight/b.gcode"]) {
+      if (p !== finalPath) { try { py.FS.unlink(p); } catch (e) {} }
+    }
+    outBlob = memfsToBlob(finalPath);
+  } finally {
+    unmountJob(mnt.dir);
+    // tidy MEMFS so a second print doesn't accumulate
+    try { py.FS.unlink("/preflight/a.gcode"); } catch (e) {}
+    try { py.FS.unlink("/preflight/b.gcode"); } catch (e) {}
+  }
   progress(jobId, "done", 100);
-  return outText;
+  return outBlob;
 }
 
 self.onmessage = async (ev) => {
@@ -252,8 +350,8 @@ self.onmessage = async (ev) => {
     }
     if (msg.type === "rewrite") {
       await ensureInit(msg);
-      const text = await doRewrite(jobId, msg);
-      self.postMessage({type: "rewrite-done", jobId, text});
+      const blob = await doRewrite(jobId, msg);
+      self.postMessage({type: "rewrite-done", jobId, blob});
       return;
     }
     if (msg.type === "clear") {

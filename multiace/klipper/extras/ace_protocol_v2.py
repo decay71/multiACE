@@ -39,6 +39,7 @@ class Cmd:
     SET_VALVE = 66
     FILAMENT_IDENTIFY = 68
     RFID_TEST = 69
+    FLASH_LED = 70
     SET_FAN = 71
     GET_KEY_STATE = 73
     GET_FEED_INFO = 76
@@ -191,6 +192,36 @@ FEED_MODE_ROLLBACK_ASSIST = 3
 class AceProtocolV2(AceProtocol):
     NAME = 'v2'
     DEFAULT_BAUD = 230400
+    # ACE 2: threaded reader/writer, per-slot status truth, decoder, humidity
+    # sensor, exhaust valve; the gearbox does not freewheel.
+    CAPS_STATIC = {
+        'transport_engine': 'threaded',
+        'blocking_write_on_reactor': False,
+        'reconnectable': True,
+        'presence_sensor': True,
+        'empty_token': 'empty',
+        'has_slot_status_truth': True,
+        'busy_wait_floor': True,
+        'fa_monitor': True,
+        'needs_fa_prestop': True,
+        'has_rollback_assist': True,
+        'no_freewheel': True,
+        'self_stops_on_resistance': True,
+        'has_decoder': True,
+        'v1_fa_health_log': False,
+        'tag_identity_in_status': False,
+        'fw_tag_pair_dedupe': False,
+        'has_humidity': True,
+        'has_dryer': True,
+        'has_exhaust_valve': True,
+        'has_feed_check': True,
+        'flash_engine': 'ota_v2',
+        'v2_command_set': True,
+        'lanes_concurrent': None,
+        'speed_unit': 'mm_s',
+        'busy_reply': 'error_code',
+        'has_stable_id': True,
+    }
     # Opt-in extra (vid, pid) lowercase-hex pairs, set from ace.py at init
     # from the [ace] v2_extra_usb_ids option. Lets a generic USB-RS485
     # adapter (e.g. a CH340 1a86:7523) be used in place of the genuine
@@ -328,8 +359,6 @@ class AceProtocolV2(AceProtocol):
                 timeout=0.05,
                 write_timeout=0.25,
                 exclusive=True,
-                dtr=False,
-                rts=False,
             )
         except Exception as e:
             return {'ok': False, 'category': cls._probe_error_category(e),
@@ -451,6 +480,33 @@ class AceProtocolV2(AceProtocol):
                 ser.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def uid_key(uid):
+        """Stable unit key from the discover_device words (uid1..3):
+        'uid:<8hex>-<8hex>-<8hex>', '' when all zero."""
+        try:
+            parts = tuple(int(x or 0) for x in uid)
+        except (TypeError, ValueError):
+            return ''
+        if len(parts) != 3 or not any(parts):
+            return ''
+        return 'uid:' + '-'.join('%08x' % x for x in parts)
+
+    @classmethod
+    def probe_uid(cls, path, query_timeout=0.35):
+        """(key, reason): the unit's stable key (uid_key) read before the
+        connect, so the unit order can be placed by device instead of by
+        port (D4). Opens the port exclusively for two bounded queries and
+        closes it again. key '' when the unit does not answer (unpowered,
+        bootloader, not an ACE 2), reason = the probe's failure category
+        and error text; the caller then treats the unit as keyless for
+        this scan."""
+        res = cls.probe_device(path, query_timeout=query_timeout) or {}
+        if res.get('ok'):
+            return cls.uid_key(res.get('uid') or ()), ''
+        return '', '%s: %s' % (res.get('category', '?'),
+                               res.get('error', ''))
 
     @classmethod
     def open_transport(cls, path, baud, **kwargs):
@@ -625,6 +681,19 @@ class AceProtocolV2(AceProtocol):
             payload = (pb_uint32(1, speed)
                        + pb_bool(2, speed > 0) + pb_bool(3, speed > 0))
             return Cmd.SET_FAN, payload
+        if method == 'flash_led':
+            # FlashLedRequest (hakimio's reconstructed .proto): six uint32,
+            # components / loop / quick1 / slow1 / quick2 / slow2. The
+            # handler is registered in stock V1.1.31; the field semantics
+            # are not documented anywhere, ACE_LOCATE exposes them for the
+            # bench. Reply is the generic code/msg frame.
+            # Fields not given are left out of the frame (not sent as 0).
+            payload = b''
+            for fnum, key in enumerate(('components', 'loop', 'quick1',
+                                        'slow1', 'quick2', 'slow2'), 1):
+                if key in params:
+                    payload += pb_uint32(fnum, int(params[key]))
+            return Cmd.FLASH_LED, payload
 
         if method == 'feed_or_rollback_raw':
             slot = int(params.get('index', 0))

@@ -1096,11 +1096,12 @@ def whose_scenario(leaves_after=None):
 
 
 v, fed, back, own = whose_scenario(leaves_after=60)
-check("partner rotation: the card leaves with the partner -> partner's",
-      v == 'partner' and fed == 60 and back == 60 and own == [],
+check("partner rotation: the card leaves with the partner -> partner's "
+      "(one 100mm step, one SELECT)",
+      v == 'partner' and fed == 100 and back == 100 and own == [],
       (v, fed, back, own))
 v, fed, back, own = whose_scenario(leaves_after=None)
-check("partner rotation: the card stays after 200mm -> ours",
+check("partner rotation: the card stays after 200mm (2 steps) -> ours",
       v == 'ours' and fed == 200 and back == 200 and own == [],
       (v, fed, back, own))
 inst = make_ace(flag=True)

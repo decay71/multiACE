@@ -52,6 +52,22 @@
 #                     hotter pull is what frees a stuck tip. Range
 #                     175-350; 'pla: unloadtemp:220, loadtemp:220' is a
 #                     valid param-only table (comma-separated!).
+#   bgtemp:<C>        Parameter: the BACKGROUND load half (feed, grip,
+#                     prime through the open dock) runs at this temp
+#                     instead of loadtemp - purge strings into the bin
+#                     may run hotter than the inline purge that can
+#                     pause over the part. Without it: loadtemp. Range
+#                     175-350.
+#   prime:<mm>[@<f>]  Parameter: a HOT PRE-PURGE right before the tip
+#   primetemp:<C>     forms - heat to primetemp (default: loadtemp),
+#                     push <mm> into the discard (inline) / through the
+#                     dock (background), then cool to unloadtemp and
+#                     pull. A tip formed from a freshly primed, hot melt
+#                     zone is more reproducible than one formed from
+#                     whatever the print left behind. The cool-down is
+#                     passive (no fan on the unload path), budget the
+#                     time. prime 1-200 mm (feedrate mm/min, default
+#                     300), primetemp 175-350.
 #
 # Example (PETG with ramming + cooling moves):
 #   [ace_tipform]
@@ -94,6 +110,10 @@ def parse_table(raw):
     net = 0.
     unload_temp = None
     load_temp = None
+    bg_temp = None
+    prime_temp = None
+    prime_mm = None
+    prime_f = 300.
     last_waittemp = None
     for part in str(raw).replace('\n', ',').split(','):
         part = part.strip()
@@ -145,6 +165,38 @@ def parse_table(raw):
                 raise ValueError('loadtemp out of range (%d-%d C): %r'
                                  % (int(MIN_MOVE_TEMP), int(MAX_TEMP), part))
             load_temp = c
+        elif low.startswith('bgtemp:'):
+            # Parameter: the background load half only (bg feed/grip/prime
+            # through the open dock), else loadtemp.
+            c = float(low.split(':', 1)[1])
+            if not MIN_MOVE_TEMP <= c <= MAX_TEMP:
+                raise ValueError('bgtemp out of range (%d-%d C): %r'
+                                 % (int(MIN_MOVE_TEMP), int(MAX_TEMP), part))
+            bg_temp = c
+        elif low.startswith('primetemp:'):
+            # Parameter pair with prime: temperature of the pre-purge.
+            c = float(low.split(':', 1)[1])
+            if not MIN_MOVE_TEMP <= c <= MAX_TEMP:
+                raise ValueError('primetemp out of range (%d-%d C): %r'
+                                 % (int(MIN_MOVE_TEMP), int(MAX_TEMP), part))
+            prime_temp = c
+        elif low.startswith('prime:'):
+            # Parameter: hot pre-purge length before the tip forms,
+            # optionally '@<feedrate>' (mm/min, default 300).
+            body = low.split(':', 1)[1]
+            if '@' in body:
+                _mm, _f = body.split('@', 1)
+                prime_f = float(_f)
+                if not 0 < prime_f <= MAX_FEEDRATE:
+                    raise ValueError('prime feedrate out of range '
+                                     '(1-%d mm/min): %r'
+                                     % (int(MAX_FEEDRATE), part))
+            else:
+                _mm = body
+            v = float(_mm)
+            if not 1. <= v <= 200.:
+                raise ValueError('prime out of range (1-200 mm): %r' % part)
+            prime_mm = v
         elif '@' in part:
             mm_s, f_s = part.split('@', 1)
             try:
@@ -171,16 +223,23 @@ def parse_table(raw):
         else:
             raise ValueError("unrecognised token %r (expected mm@feedrate, "
                              "pause:ms, temp:C, waittemp:C, fan:0-255, "
-                             "unloadtemp:C or loadtemp:C)"
+                             "unloadtemp:C, loadtemp:C, bgtemp:C, "
+                             "prime:mm or primetemp:C)"
                              % part)
     if tokens and not any(t[0] == TOKEN_MOVE for t in tokens):
         raise ValueError('table has no moves')
-    if not tokens and unload_temp is None and load_temp is None:
+    if prime_temp is not None and prime_mm is None:
+        raise ValueError('primetemp:%d needs a prime:<mm> length'
+                         % int(prime_temp))
+    if (not tokens and unload_temp is None and load_temp is None
+            and bg_temp is None and prime_mm is None):
         raise ValueError('table has no moves')
     if net > 0.:
         raise ValueError('table pushes a NET %+.1f mm - the tip must end '
                          'retracted out of the melt zone' % net)
-    return tokens, unload_temp, load_temp
+    prime = ((prime_temp, prime_mm, prime_f) if prime_mm is not None
+             else None)
+    return tokens, unload_temp, load_temp, bg_temp, prime
 
 
 class AceTipform:
@@ -194,6 +253,8 @@ class AceTipform:
         self.tables = {}
         self.unload_temps = {}
         self.load_temps = {}
+        self.bg_temps = {}
+        self.primes = {}
         # Every option in the section is a table (keys are free-form
         # material names); read them ALL so Klipper's every-option-must-be-
         # accessed check never halts on a user-added material.
@@ -214,17 +275,22 @@ class AceTipform:
         previously-saved table can turn invalid on an update; the web
         editor is the strict gate). Built into locals first, so a
         reload that dies mid-parse cannot leave half-swapped state."""
-        tables, unload_temps, load_temps = {}, {}, {}
+        tables, unload_temps, load_temps, bg_temps = {}, {}, {}, {}
+        primes = {}
         dropped = []
         for opt, raw in items:
             try:
-                _toks, _utemp, _ltemp = parse_table(raw)
+                _toks, _utemp, _ltemp, _btemp, _prime = parse_table(raw)
+                if _prime is not None:
+                    primes[opt.strip().lower()] = _prime
                 if _toks:
                     tables[opt.strip().lower()] = _toks
                 if _utemp is not None:
                     unload_temps[opt.strip().lower()] = _utemp
                 if _ltemp is not None:
                     load_temps[opt.strip().lower()] = _ltemp
+                if _btemp is not None:
+                    bg_temps[opt.strip().lower()] = _btemp
             except ValueError as e:
                 dropped.append(opt)
                 logging.error('[multiACE] ace_tipform: table %r DISABLED '
@@ -233,19 +299,26 @@ class AceTipform:
         self.tables = tables
         self.unload_temps = unload_temps
         self.load_temps = load_temps
+        self.bg_temps = bg_temps
+        self.primes = primes
         logging.info('[multiACE] ace_tipform: mode=%s tables=%s '
-                     'unload_temps=%s load_temps=%s'
+                     'unload_temps=%s load_temps=%s bg_temps=%s primes=%s'
                      % (self.mode, sorted(self.tables.keys()) or 'none',
                         sorted(self.unload_temps.keys()) or 'none',
-                        sorted(self.load_temps.keys()) or 'none'))
-        if (self.unload_temps or self.load_temps) and self.mode != 'custom':
+                        sorted(self.load_temps.keys()) or 'none',
+                        sorted(self.bg_temps.keys()) or 'none',
+                        sorted(self.primes.keys()) or 'none'))
+        if ((self.unload_temps or self.load_temps or self.bg_temps
+                or self.primes) and self.mode != 'custom'):
             # A set-but-inert knob must be LOUD, never silently skipped.
             logging.error(
                 "[multiACE] ace_tipform: unloadtemp/loadtemp set for %s but "
                 "mode is 'stock' - IGNORED. Set 'mode: custom' to activate "
                 "(choreography stays stock for param-only tables)."
                 % sorted(set(self.unload_temps.keys())
-                         | set(self.load_temps.keys())))
+                         | set(self.load_temps.keys())
+                         | set(self.bg_temps.keys())
+                         | set(self.primes.keys())))
         return dropped
 
     def _default_cfg_path(self):
@@ -316,7 +389,8 @@ class AceTipform:
         msg = ('[multiACE] tipform reloaded live: mode=%s, %d table(s)%s'
                % (self.mode,
                   len(set(self.tables) | set(self.unload_temps)
-                      | set(self.load_temps)),
+                      | set(self.load_temps) | set(self.bg_temps)
+                      | set(self.primes)),
                   (', DROPPED invalid: %s' % ', '.join(dropped))
                   if dropped else ''))
         gcmd.respond_info(msg)
@@ -388,6 +462,42 @@ class AceTipform:
             return self.load_temps['soft']
         return self.load_temps.get('default')
 
+    def bg_temp_for(self, material, vendor=None, soft=False):
+        """The custom BACKGROUND-load temp for a (vendor, material), or
+        None = use loadtemp. Same precedence and mode gate as
+        load_temp_for."""
+        if self.mode != 'custom':
+            return None
+        mat = (material or '').strip().lower()
+        ven = '_'.join((vendor or '').strip().lower().split())
+        if mat and ven and ven not in ('none', 'generic'):
+            vkey = '%s_%s' % (ven, mat)
+            if vkey in self.bg_temps:
+                return self.bg_temps[vkey]
+        if mat and mat in self.bg_temps:
+            return self.bg_temps[mat]
+        if soft and 'soft' in self.bg_temps:
+            return self.bg_temps['soft']
+        return self.bg_temps.get('default')
+
+    def prime_for(self, material, vendor=None, soft=False):
+        """(primetemp or None, prime_mm) of the hot pre-purge for a
+        (vendor, material), or None = no pre-purge. Same precedence and
+        mode gate as the other parameters."""
+        if self.mode != 'custom':
+            return None
+        mat = (material or '').strip().lower()
+        ven = '_'.join((vendor or '').strip().lower().split())
+        if mat and ven and ven not in ('none', 'generic'):
+            vkey = '%s_%s' % (ven, mat)
+            if vkey in self.primes:
+                return self.primes[vkey]
+        if mat and mat in self.primes:
+            return self.primes[mat]
+        if soft and 'soft' in self.primes:
+            return self.primes['soft']
+        return self.primes.get('default')
+
     def get_status(self, eventtime):
         # tables = UNION of move-tables and param-only (unloadtemp:/
         # loadtemp:) keys - the web's restart-pending banner compares cfg
@@ -397,9 +507,13 @@ class AceTipform:
             'mode': self.mode,
             'tables': sorted(set(self.tables.keys())
                              | set(self.unload_temps.keys())
-                             | set(self.load_temps.keys())),
+                             | set(self.load_temps.keys())
+                             | set(self.bg_temps.keys())
+                             | set(self.primes.keys())),
             'unload_temps': dict(self.unload_temps),
             'load_temps': dict(self.load_temps),
+            'bg_temps': dict(self.bg_temps),
+            'primes': {k: list(v) for k, v in self.primes.items()},
         }
 
 

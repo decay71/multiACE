@@ -1,8 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Question or general discussion
-    url: https://github.com/decay71/multiACE/discussions
-    about: For questions, setup help and anything that is not a concrete bug.
   - name: Third-party firmware images
     url: https://github.com/decay71/multiACE#supported-builds
     about: >

@@ -96,7 +96,10 @@ class DiscoveryScopeTests(unittest.TestCase):
                    and node.func.attr == 'serial_port_in_use'
                    for node in ast.walk(method)):
                 callers.add(name)
-        self.assertEqual(callers, {'_probe_v2_generic_candidate'})
+        # The CFS pre-claim probe is a generic-candidate probe too (a
+        # CH340 dongle, verified before the claim).
+        self.assertEqual(callers, {'_probe_v2_generic_candidate',
+                                   '_probe_claim'})
 
     def test_known_device_scan_does_not_apply_generic_port_exclusions(self):
         scan = self.methods['_scan_ace_devices']
@@ -156,8 +159,10 @@ class V2ProbeTests(unittest.TestCase):
                                          0x3456789a))
         self.assertEqual(_FakeSerial.seen_requests,
                          [(1, Cmd.DISCOVER_DEVICE), (2, Cmd.GET_INFO)])
-        self.assertFalse(_FakeSerial.seen_open_kwargs[0]['dtr'])
-        self.assertFalse(_FakeSerial.seen_open_kwargs[0]['rts'])
+        # pyserial's constructor rejects dtr/rts keywords (ValueError), the
+        # probe must not pass them (HW 2026-10-25: both probes gave no key).
+        self.assertNotIn('dtr', _FakeSerial.seen_open_kwargs[0])
+        self.assertNotIn('rts', _FakeSerial.seen_open_kwargs[0])
 
     def test_regular_transport_does_not_request_exclusive_open(self):
         captured = {}

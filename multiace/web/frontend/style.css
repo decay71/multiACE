@@ -280,11 +280,24 @@ header h1 .hl { color: var(--accent); }
 .ace-card.clickable:hover { border-color: var(--accent); }
 /* Not connected: the slots show the last known state, not the live one. */
 .ace-card.offline > :not(h2) { opacity: .4; pointer-events: none; }
+/* Head mode, connected but wired to no head: dimmed, inert, tagged. */
+.ace-card.unwired { position: relative; cursor: default; }
+.ace-card.unwired > :not(.unwired-tag) { opacity: .4; pointer-events: none; }
+.unwired-tag { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+               z-index: 2; padding: .35rem .8rem; white-space: nowrap;
+               background: var(--card); border: 1px solid var(--border); color: var(--fg);
+               font-size: .85rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .ace-offline-text { color: var(--error); font-weight: 600; font-size: .8rem; text-transform: uppercase; }
 .ace-card h2 { margin: 0 0 .6rem 0; font-size: 1.05rem; font-weight: 600;
                display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .6rem; }
 .ace-card h2 .ace-name { display: inline-flex; align-items: center; gap: .4rem;
                           min-width: 0; }
+/* The unit name (ACE_UNIT_NAME) is user text of up to 32 characters; it
+   must never push the temp/rH block or the actions: shrink with an
+   ellipsis, the full name rides in the tooltip. */
+.ace-card h2 .ace-unit-name { flex: 0 1 auto; min-width: 0; max-width: 9em;
+                               overflow: hidden; text-overflow: ellipsis;
+                               white-space: nowrap; font-weight: 500; }
 .ace-card h2 small { color: var(--accent); font-weight: 600; font-size: .7rem; text-transform: uppercase; }
 /* The middle block (temp / rH / state) must never wrap - the header is a
    three-column grid and the left column grew with the firmware version,
@@ -1182,6 +1195,13 @@ body.panel-embedded .sm-right { font-size: .68rem; }
   align-self: flex-start; padding: .2em .6em; font-size: .82em;
 }
 .tipform-pending { color: #e0a020; }
+/* "Restart now" next to a please-restart hint (banner, config hint,
+   tipform hint, notification). */
+.restart-now {
+  margin-left: .8rem; padding: .2rem .7rem;
+  font-size: .85rem; font-weight: 700; vertical-align: middle;
+}
+.notif-item .restart-now { margin-left: .4rem; flex: none; }
 
 /* Bowden calibration tab */
 .calibration-page h2 { margin: .2rem 0 .3rem; font-size: 1.35rem; }
@@ -2162,6 +2182,27 @@ body:has(.panel) .overlay .dialog {
   .calibration-recovery .row { width: 100%; }
 }
 
+/* Config tab: virtual slicer tool -> ACE slot list (Orca profile tile). */
+.tool-map { margin-top: .5rem; }
+.tool-map-groups { display: grid; grid-template-columns: repeat(2, max-content); gap: .6rem; }
+@media (max-width: 700px) { .tool-map-groups { grid-template-columns: minmax(0, 1fr); } }
+.tool-map-group { border: 1px solid var(--border); border-radius: 6px; padding: .4rem .6rem; min-width: 0; }
+.tool-map-head { font-size: .8rem; font-weight: 600; color: var(--muted); margin: .2rem 0 .3rem; }
+/* Fixed columns: number, target list (all the same width), reset. The
+   reset column is kept empty on unchanged rows so the lists line up. */
+.tool-map-row { display: grid; grid-template-columns: 1.8rem minmax(0, 15rem) 1.8rem;
+  align-items: center; gap: .4rem; margin: .2rem 0; }
+.tool-map-name { font-size: .9rem; font-weight: 600; text-align: right; }
+.tool-map-row select { font-size: .8rem; padding: .1rem .3rem; }
+.tool-map-row select.tool-map-target { width: 100%; min-width: 0; }
+.tool-map-reset { width: 1.8rem; }
+.tool-map-row button.tool-map-reset { font-size: .8rem; padding: .05rem 0; line-height: 1.2; }
+.tool-map-swatch { display: inline-block; width: 1rem; height: 1rem; border-radius: 3px;
+  border: 1px solid var(--border); }
+
+/* Raw config editor: scrolled to from the save bar, clear of the sticky header. */
+#raw-config { scroll-margin-top: 5rem; }
+
 /* Control tab (Print Hub): camera, print panel, console. */
 .control-tab { display: flex; flex-direction: column; gap: 1rem; max-width: 1100px; padding-top: 1rem; }
 .control-top { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
@@ -2258,3 +2299,13 @@ body:has(.panel) .overlay .dialog {
 .history-stats { display: flex; flex-wrap: wrap; gap: .4rem .9rem; align-items: baseline; margin: .4rem 0 .8rem; }
 .history-stat { font-size: .85rem; }
 .history-stat .ok { color: var(--ok); }
+
+/* D11 Devices table (Config tab) */
+.devices-table { width: 100%; border-collapse: collapse; font-size: .9rem; margin: .4rem 0 .6rem 0; }
+.devices-table th, .devices-table td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.devices-table th { color: var(--muted); font-weight: 500; font-size: .8rem; }
+.devices-table .dev-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; word-break: break-all; }
+.devices-table tr.dev-absent td { color: var(--muted); }
+.devices-table tr.dev-free td { color: var(--muted); font-style: italic; }
+.restart-hint { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; color: var(--accent); font-size: .9rem; }
+.devices-table input.dev-name { width: 9rem; max-width: 100%; padding: .2rem .4rem; font-size: .9rem; }

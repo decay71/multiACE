@@ -229,6 +229,9 @@ def make_ace(true_mm, proto, stop_mode='honest', start_latency=START_LATENCY,
     a._ace_mode = 'head'
     a._gate_status_per_ace = {0: [load_ace().GATE_AVAILABLE] * 4}
     a._protocols = {}
+    # dev reads the lane encoder through the unit caps (ace_unit.py)
+    a._cap = (lambda idx, name, default=None:
+              (proto == 'v2') if name == 'has_decoder' else default)
     a.head_is_manual = lambda head: False
     a.head_uses_ace = lambda head: True
     a.head_ace_for = lambda head: 0
@@ -283,6 +286,7 @@ def at_sensor(a):
     c = a._calibration_idle_state()
     c.update({'state': 'prepared', 'session_id': 1, 'ace': 0, 'slot': 0,
               'head': 0, 'protocol': a.proto if hasattr(a, 'proto') else '',
+              'has_decoder': getattr(a, 'proto', '') == 'v2',
               'speed_mm_s': SPEED, 'max_feed_mm': 3000, 'tip_position_mm': 0})
     a._calibration = c
     a.cmd_ACE_CALIBRATION_FEED(GCmd())
@@ -368,7 +372,8 @@ def complete_session(true_mm, proto, stop_mode='honest', swap=400,
     a.proto = proto
     c = a._calibration_idle_state()
     c.update({'state': 'complete', 'session_id': 1, 'ace': 0, 'slot': 0,
-              'head': 0, 'protocol': proto, 'speed_mm_s': SPEED,
+              'head': 0, 'protocol': proto, 'has_decoder': proto == 'v2',
+              'speed_mm_s': SPEED,
               'load_length_mm': true_mm, 'retract_length_mm': true_mm,
               'swap_retract_length_mm': swap, 'tip_position_mm': 0,
               'verify_position_mm': 0})
@@ -674,10 +679,96 @@ def test_check_tolerance_two_percent():
     _verify_to_hub(a, c)
     assert c['verify_remeasured_mm'] is None
     assert abs(c['verify_feed_delta_mm'] - 20) <= 3
-    a, c = complete_session(1440, 'v2')
+
+
+# ---- a verify checks the saved values, it never rewrites them ------------
+
+def _full_check(a, c):
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='start'))
+    run_until(a, lambda: c['state'] in ('verify_splitter', 'failed'))
+    if c['state'] == 'failed':
+        return
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='continue'))
+    run_until(a, lambda: c['state'] in ('verified', 'failed'))
+
+
+@pytest.mark.parametrize('proto', ['v1', 'v2'])
+def test_check_within_margin_keeps_values(proto):
+    # sensor 60 mm past the saved distance, inside the 200 mm margin
+    a, c = complete_session(1460, proto)
     c['load_length_mm'] = c['retract_length_mm'] = 1400
-    _verify_to_hub(a, c)
-    assert c['verify_remeasured_mm'] is not None
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='start'))
+    run_until(a, lambda: c['state'] == 'verify_splitter')
+    assert c['verify_remeasured_mm'] is None
+    assert c['verify_outside_tolerance'] is True
+    assert c['load_length_mm'] == 1400 and c['retract_length_mm'] == 1400
+    # V1 estimates the partial chunk from the send time, so it reads up to
+    # speed x start latency long (bounded, it does not add up over runs)
+    slack = 30 if proto == 'v1' else 10
+    assert abs(c['verify_feed_delta_mm'] - 60) <= slack
+    # the hub stop is a pull from the sensor
+    assert abs(phys(a) - (1460 - 400)) <= 20
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='continue'))
+    run_until(a, lambda: c['state'] == 'verified')
+    if proto == 'v2':
+        # the encoder measured the real way: back to where the run started
+        assert abs(phys(a)) <= slack, 'the check did not end at park'
+    else:
+        # no encoder: the return pulls the value under test, like an unload
+        assert abs(phys(a) - (1460 - 1400)) <= 5
+
+
+def test_v1_feed_slip_does_not_walk_park():
+    # The ACE Pro slips while it pushes into the head and moves everything
+    # back on the pull (2026-10-28: ~85 mm per run on a ~2 m route).
+    # Calibration counted the slip into the value (1463 commanded for 1400
+    # real) and its own return left park 63 mm behind the sensor distance.
+    a, c = complete_session(1400, 'v1', slip=(0.957, 1.0))
+    c['load_length_mm'] = c['retract_length_mm'] = 1463
+    a.fake['pos'] = 1400 - 1463
+    for _ in range(4):
+        _full_check(a, c)
+        assert c['state'] == 'verified'
+        assert c['load_length_mm'] == 1463
+        assert c['verify_outside_tolerance'] is True
+        assert abs(phys(a) - (1400 - 1463)) <= 5, 'park walked'
+
+
+@pytest.mark.parametrize('true_mm', [1460, 1500])
+def test_repeated_v1_checks_do_not_ratchet(true_mm):
+    # 1460 trips the sensor mid-chunk, 1500 at a chunk boundary; either way
+    # the values stay and every round ends at the same point: the sensor
+    # minus the value under test, as an unload would
+    a, c = complete_session(true_mm, 'v1')
+    c['load_length_mm'] = c['retract_length_mm'] = 1400
+    for _ in range(4):
+        _full_check(a, c)
+        assert c['state'] == 'verified'
+        assert c['load_length_mm'] == 1400
+        assert c['retract_length_mm'] == 1400
+        assert c['verify_remeasured_mm'] is None
+        assert abs(phys(a) - (true_mm - 1400)) <= 5
+
+
+@pytest.mark.parametrize('proto', ['v1', 'v2'])
+def test_sensor_beyond_margin_fails(proto):
+    a, c = complete_session(1700, proto)
+    c['load_length_mm'] = c['retract_length_mm'] = 1400
+    _full_check(a, c)
+    assert c['state'] == 'failed'
+    assert 'recalibrate' in (c.get('error') or '')
+    assert c['load_length_mm'] == 1400
+
+
+def test_sensor_at_margin_end_fails():
+    # on a unit without encoder the time estimate can run past the window;
+    # it is clamped to the window end, which must not pass as a measurement
+    a, c = complete_session(1400, 'v1')
+    c['verify_search_mm'] = 100
+    c['state'] = 'verifying_feed'
+    a._calibration_verify_at_toolhead(1500)
+    assert c['state'] == 'failed'
+    assert c['load_length_mm'] == 1400
 
 
 def test_forward_jog_reports_tip_live():

@@ -144,9 +144,21 @@ section 3).
 ```jsonc
 {
   "api_version": 1,                 // engine contract version (section 6)
+  "drivers": {"ace_v1": true, "ace_v2": true},  // driver switches the running discovery uses, additive 1.30b
+  "driver_switches": [              // per driver: configured vs running, additive 1.30b
+    {"name": "ace_v2", "label": "AceV2", "enabled": true, "active": true,
+     "tested": "ACE 2 / ACE 2 Pro, in the field since 0.97b", "places": [0]}
+  ],
+  "devices": [                    // D11 unit table + detected units without a place, additive 1.30b
+    {"place": 0, "key": "uid:8f3b5218-...", "name": "", "kind": "v2", "path": "platform-...:1.3:1.0",
+     "present": true, "connected": true, "removed": false},
+    {"place": null, "key": "port:platform-...:1.5:1.0", "name": "", "kind": "v1", "path": "...",
+     "present": true, "connected": false, "removed": true}
+  ],
+  "units_restart_needed": false,  // the table was edited; applies at the next firmware restart
   "status": "ready|busy|unknown",   // active device aggregate
-  "temp": 0,
-  "dryer_status": { ... },
+  "temp": 0,                        // null when the active unit reports none (1.30b)
+  "dryer_status": { ... },          // null when the active unit reports none (1.30b)
   "gate_status": [ ... ],           // active device, per-slot gate flag
   "active_device": 0,
   "device_count": 1,
@@ -164,7 +176,18 @@ section 3).
     {
       "idx": 0,
       "connected": true,
-      "protocol": "v1|v2",
+      "protocol": "v1|v2|cfs",      // codec; further kinds may appear - gate on caps, not on "not v2"
+      "kind": "v1|v2|cfs",          // = protocol (additive, 1.30b)
+      "caps": { "presence_sensor": true, "has_decoder": false, "has_dryer": true,
+                "flash_engine": "iap_v1|ota_v2|none", "rc522_tunnel": false,
+                "has_stable_id": true, ... },
+                                    // additive capability record (ace_unit.py): str keys,
+                                    // bool/str/list/null values; what the unit can do
+      "unit_place": 0,              // saved place of this index (0..3), additive 1.30b
+      "unit_name": "",              // free display name set by ACE_UNIT_NAME ('' = none)
+      "unit_key": "uid:8f3b5218-07b09108-3131334a",  // device id (ACE 2) or 'port:<by-path>' (ACE Pro)
+      "unit_present": true,         // false: assigned unit not on the bus ('absent:' place) or free place
+      "unit_removed": false,        // user removed it from its place (ACE_UNIT_ASSIGN PLACE=NONE)
       "status": "ready|busy|unknown",
       "temp": 0, "humidity": null,
       "dryer_status": { ... },
@@ -198,6 +221,45 @@ Key fields for orchestration:
 - **`aces[i].status`** / **`slots[].status`** - device/slot busy vs idle, used to
   wait for an operation to finish (e.g. a rollback returning to `ready`).
 - **`aces[i].slots[].rfid` / `material` / `color`** - spool identity.
+- **`aces[i].caps`** / **`aces[i].kind`** - capability record of the unit (additive,
+  1.30b). A host decides what a unit can do from `caps` (`presence_sensor`,
+  `has_decoder`, `has_dryer`, `has_humidity`, `flash_engine`, `rc522_tunnel`,
+  `tag_read`, ...), never from `protocol != "v2"`: `protocol` can take further
+  values than `v1|v2`. Absent on engines before 1.30b (fall back to `protocol`).
+- **`aces[i].unit_place`** / **`aces[i].unit_name`** / **`unit_key`** /
+  **`unit_present`** - the unit table (additive, 1.30b; D11). The runtime
+  index IS the place ("MMU n" in the UI, `T = ace*4 + slot`, head wiring):
+  every unit has a key, the MCU id of an ACE 2 (`uid:...`, follows the device
+  across ports and flashes) or the USB socket of an ACE Pro (`port:<by-path>`).
+  An assigned unit that is not on the bus keeps its index with
+  `unit_present == false` (`connected` false, no slots); a place the user
+  emptied below a higher one is also listed with `unit_present == false` and
+  an empty key. A host must therefore not treat `aces[i]` as "a connected
+  unit" without checking `unit_present`/`connected`. New units take the first
+  free place on their own unless the user removed them (`unit_removed`,
+  `ACE_UNIT_ASSIGN KEY=<key> PLACE=NONE`); `ACE_UNIT_ASSIGN KEY= PLACE=1..4`
+  places or swaps, `ACE_UNIT_FORGET KEY=` drops a disconnected key. Table
+  edits apply at the next firmware restart (`units_restart_needed`). The name
+  is user text, `ACE_UNIT_NAME ACE=<idx> NAME=<word>`, and belongs to the
+  key. At most four places (`MAX_ACE_UNITS`).
+- **`devices`** - the same table as a list for a Devices view: one entry per
+  place (`place` 0..3, `key` '' = free) and one per detected unit without a
+  place (`place` null; `removed` true when the user took it out, false when
+  all places are taken). `kind` is the driver name (`v1`/`v2`/...), `path`
+  the by-path basename while present.
+- **`drivers`** - `{name: bool}`, the unit drivers (codecs) as switched in
+  `[ace]` (`enable_ace_v1`, `enable_ace_v2`, `enable_cfs`, one switch per driver). A driver
+  that is off runs no discovery and connects no unit of its kind. New drivers
+  ship off until they have field time. Additive, 1.30b.
+- **`driver_switches`** - one entry per driver for a Devices view: `enabled`
+  is the config line, `active` what the running discovery uses (they differ
+  after `ACE_SET_DRIVER` until the next firmware restart), `tested` the
+  hardware note ('' = untested, opt-in), `places` the connected places it
+  serves. `ACE_SET_DRIVER NAME=<name> ENABLE=0|1` writes the config line; it
+  refuses while printing, for the last enabled driver, for a driver whose
+  unit feeds a head that holds filament, and for every driver while a head
+  holds filament of unknown source. The toolhead sensor decides. Additive,
+  1.30b.
 - **`mode`** / **`head_ace`** / **`head_feeder`** - the routing topology (section 3,
   per-head mode); read it before planning which slot can serve which head.
 
@@ -238,7 +300,7 @@ Emitted events:
 | `airlog_chew` | the in-print flow sampler (`[ace] airlog: true`) saw sustained huge back-pressure while extruding (chew / air-print suspect); with `resistance_pause` on this pauses the print | `head delta run seq` |
 
 `status` on `swap_failed` carries the failure tag (`unload_failed`, `load_failed`,
-`slot_empty`, …). `error` is the generic fallback for an exit that names no tag of
+`slot_empty`, `staged_mismatch`, …). `error` is the generic fallback for an exit that names no tag of
 its own - it means "the swap failed", nothing more; the paused error message that
 comes with it is the specific one. `ok` is never a legal value on this event.
 All push events are best-effort: a transport hiccup never disturbs

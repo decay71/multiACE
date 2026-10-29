@@ -104,6 +104,48 @@ PATCH_SPECS = {
 PATCH_TARGET = "1.1.60O"
 
 
+# Versions a flash may START from. Anything else is either a bootloader
+# shim (Simon-CR's Klipper-MCU firmware answers GET_INFO as 'V2.0.0-shim'
+# while it holds the unit; an IAP_UPGRADE there erases the Klipper
+# application on it) or a build we have never seen. The OEM IAP ('1.0.2')
+# stays flashable: it is the documented way back to stock.
+KNOWN_STOCK_VERSIONS = ("1.1.31", "1.0.2")
+KNOWN_OPEN_VERSIONS = ("1.1.3O", "1.1.46O", "1.1.47O", "1.1.48O",
+                       "1.1.60O", "1.1.61O", "1.1.62O", "1.1.63O")
+
+
+def is_shim_version(v) -> bool:
+    return (v or '').strip().lower().endswith('-shim')
+
+
+def flash_source_known(v) -> bool:
+    nv = _norm_ver((v or '').strip())
+    if not nv:
+        return False
+    reported = {_norm_ver(e["reports"]) for e in KNOWN_FIRMWARE.values()
+                if e.get("reports")}
+    return (nv in KNOWN_STOCK_VERSIONS or nv in KNOWN_OPEN_VERSIONS
+            or nv in {_norm_ver(k) for k in KNOWN_FIRMWARE} or nv in reported)
+
+
+def check_flash_source(cur_ver, force=False) -> None:
+    """Refuse to flash FROM a version that is not a known ACE state.
+    Raises FlashError. The shim refusal cannot be forced."""
+    if is_shim_version(cur_ver):
+        raise FlashError(
+            "the unit answers as %s - a bootloader shim holding it, not a "
+            "running MMU. Flashing there would erase the application on "
+            "it. Power-cycle the unit (or recover it per its own "
+            "documentation) and retry." % cur_ver)
+    if not flash_source_known(cur_ver):
+        if force:
+            return
+        raise FlashError(
+            "the unit reports %s, which is neither a known stock/Open "
+            "version nor the OEM bootloader (1.0.2) - not flashing. "
+            "Use force only if you know what firmware is on it." % cur_ver)
+
+
 def check_known(fw) -> None:
     """Refuse anything that is not byte-exactly a tested image of the
     chosen version. Raises FlashError; the dry run never calls this."""
@@ -503,13 +545,13 @@ def load_image(path: str, version: str, expected_md5=None,
             raise FlashError(f"cannot decrypt .swu: {e}")
         if result is None:
             raise FlashError(
-                "ZIP archive contains no ACE firmware (check the .swu "
-                "password and that it is an ACE update package)")
+                "ZIP archive contains no MMU firmware (check the .swu "
+                "password and that it is an MMU update package)")
         image_data, source = result
     elif raw_bytes[:6] in _CPIO_MAGIC:
         result = _extract_from_cpio_swu(raw_bytes)
         if result is None:
-            raise FlashError("CPIO archive contains no ACE firmware entry")
+            raise FlashError("CPIO archive contains no MMU firmware entry")
         image_data, source = result
     return FirmwareImage(image_data, version, crc16_kermit(image_data),
                          source)
@@ -574,9 +616,9 @@ def flash(port: str, fw, progress,
         current = get_ace_version(transport)
         cur_ver = current[0] if current else None
         if current:
-            _p(None, "ACE reports version %s (boot %s)" % current)
+            _p(None, "MMU reports version %s (boot %s)" % current)
         else:
-            _p(None, "no version response from the ACE")
+            _p(None, "no version response from the MMU")
 
         if dry_run:
             out = {"ok": True, "dry_run": True, "current": cur_ver,
@@ -597,13 +639,14 @@ def flash(port: str, fw, progress,
             raise FlashError(image_error or "no firmware image")
         if not (fw.version or '').strip():
             raise FlashError("a target version is required to flash "
-                             "(it is announced to the ACE)")
+                             "(it is announced to the MMU)")
         # The release gate sits IN the flash path so no caller can forget
         # it: only byte-exactly tested images ever reach the wire.
         check_known(fw)
         if current is None:
-            raise FlashError("ACE did not answer the version query - "
+            raise FlashError("MMU did not answer the version query - "
                              "not flashing blind")
+        check_flash_source(cur_ver, force=force)
         if _norm_ver(cur_ver) == _norm_ver(fw.version) and not force:
             return {"ok": True, "skipped": True, "current": cur_ver,
                     "target": fw.version}
@@ -623,7 +666,7 @@ def flash(port: str, fw, progress,
         results = transport.send_recv(CMD_IAP_UPGRADE, payload,
                                       timeout=T_START)
         if not results:
-            raise FlashError("no response to IAP_UPGRADE - is the ACE "
+            raise FlashError("no response to IAP_UPGRADE - is the MMU "
                              "powered and on this port?")
         code = get_field(pb_decode(results[0]["payload"]), 1, 0)
         if code != 0:
@@ -647,13 +690,25 @@ def flash(port: str, fw, progress,
                 _p((i + 1) / n_chunks * 100.0,
                    "flashing chunk %d/%d" % (i + 1, n_chunks))
 
-        _p(100.0, "committing (IAP_FINISH) - ACE reboots")
-        transport.send_recv(CMD_IAP_FINISH, b'', timeout=T_FINISH)
+        _p(100.0, "committing (IAP_FINISH) - MMU reboots")
+        results = transport.send_recv(CMD_IAP_FINISH, b'', timeout=T_FINISH)
+        # No reply is the normal case (the unit reboots). A reply with a
+        # non-zero code is a refusal: the image did not commit (e.g. a
+        # CRC the bootloader did not accept) and the unit keeps what it
+        # had or stays in the bootloader - say so instead of waiting 30 s
+        # for a version that cannot appear.
+        if results:
+            code = get_field(pb_decode(results[0]["payload"]), 1, 0)
+            if code != 0:
+                raise FlashError("IAP_FINISH rejected: code=%s - the image "
+                                 "did not commit; the unit keeps its "
+                                 "previous firmware or stays in the "
+                                 "bootloader" % code)
 
         # A test build may report another version than its key names
         # ("reports"), so the entry says what the unit will answer.
         expect_ver = _entry.get("reports", fw.version)
-        _p(None, "waiting for the ACE to report %s" % expect_ver)
+        _p(None, "waiting for the MMU to report %s" % expect_ver)
         deadline = time.time() + 30.0
         new_ver = None
         while time.time() < deadline:

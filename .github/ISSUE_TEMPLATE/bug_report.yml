@@ -31,8 +31,8 @@ body:
       description: >
         Run this on the printer and paste the whole line. The `build=` tag
         identifies the exact build and is required to diagnose anything.
-        `grep -m1 "\[multiACE\] Version" /home/lava/printer_data/logs/klippy.log`
-      placeholder: "[multiACE] Version 0.99.6.2b (Persistent Pesterers) build=a1b2c3d file=2026-08-01 12:34:56"
+        `grep -h -m1 "\[multiACE\] Version" /home/lava/printer_data/logs/klippylogs/klippy.log /home/lava/printer_data/logs/klippy.log 2>/dev/null`
+      placeholder: "[multiACE] Version 1.30b build=a1b2c3d4 core=a1b2c3d file=2026-10-23 12:34:56"
     validations:
       required: true
 

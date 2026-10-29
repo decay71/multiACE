@@ -1,9 +1,27 @@
 import os
 
+# Host view of an ACE input gate (slot sensor), derived from the unit's
+# status report. Shared by ace.py and its mixins.
+GATE_UNKNOWN = -1
+GATE_EMPTY = 0
+GATE_AVAILABLE = 1
+
+# Sensor reads: send_request_to never stamps the host-side 'busy' for
+# these (the stamp is for MOTOR commands, held until the next status report
+# shows the motion). Same content for every codec; the contract checker in
+# tests/units/contract.py carries a frozen copy and a test keeps them equal.
+TELEMETRY_METHODS = frozenset((
+    'get_status', 'get_feed_info', 'get_filament_info',
+    'filament_identify', 'filament_recognition'))
+
 class AceProtocol(object):
     NAME = ''
     DEFAULT_BAUD = 0
     SERIAL_KWARGS = {}
+    TELEMETRY_METHODS = TELEMETRY_METHODS
+    # Static unit capabilities of this codec (ace_unit.caps_for merges them
+    # with the firmware-derived ones). Keys and meaning: ace_unit.py.
+    CAPS_STATIC = {}
 
     @staticmethod
     def _read_usb_ids(real_dev):

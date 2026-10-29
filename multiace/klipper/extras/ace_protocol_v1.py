@@ -29,6 +29,36 @@ def calc_crc(buffer):
 class AceProtocolV1(AceProtocol):
     NAME = 'v1'
     DEFAULT_BAUD = 115200
+    # ACE Pro: open-loop unit, reader on the reactor thread, no per-slot
+    # motion truth, no decoder, tag identity arrives inside the status.
+    CAPS_STATIC = {
+        'transport_engine': 'reactor_fd',
+        'blocking_write_on_reactor': True,
+        'reconnectable': True,
+        'presence_sensor': True,
+        'empty_token': 'empty1',
+        'has_slot_status_truth': False,
+        'busy_wait_floor': False,
+        'fa_monitor': False,
+        'needs_fa_prestop': False,
+        'has_rollback_assist': False,
+        'no_freewheel': False,
+        'self_stops_on_resistance': False,
+        'has_decoder': False,
+        'v1_fa_health_log': True,
+        'tag_identity_in_status': True,
+        'fw_tag_pair_dedupe': True,
+        'has_humidity': False,
+        'has_dryer': True,
+        'has_exhaust_valve': False,
+        'has_feed_check': False,
+        'flash_engine': 'iap_v1',
+        'v2_command_set': False,
+        'lanes_concurrent': False,
+        'speed_unit': 'mm_s',
+        'busy_reply': 'code0_forbidden',
+        'has_stable_id': False,
+    }
     SERIAL_KWARGS = {
         'rtscts': True,
         'exclusive': True,

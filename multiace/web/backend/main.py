@@ -313,14 +313,37 @@ def _int_or(v, default):
         return default
 
 
-def _tag_read_possible(a: dict) -> bool:
+def _tag_read_possible(a: dict, caps: dict | None = None) -> bool:
+    """Tag READ possible on this unit. From the capability block when the
+    engine sends one (ACE2-Open tunnel or a probed Gen-1 tunnel); an unprobed
+    Gen-1 community-firmware unit still shows the button until its probe
+    says no. Without caps the firmware-string rules of older engines."""
+    avail = (a.get("tag_tunnel") or {}).get("available")
+    if caps is not None:
+        if caps.get("rc522_tunnel") or caps.get("gen1_tunnel"):
+            return True
+        if avail is not None:
+            return bool(avail)
+        return caps.get("community_fw") == "gen1_cfw"
     fw = str(a.get("firmware", "") or "").strip().upper()
     if fw.endswith("O"):
         return True
-    avail = (a.get("tag_tunnel") or {}).get("available")
     if avail is not None:
         return bool(avail)
     return fw.startswith("CV")
+
+
+_FLASH_ENGINE_BY_PROTOCOL = {"v1": "iap_v1", "v2": "ota_v2"}
+
+
+def _unit_caps(a: dict) -> dict | None:
+    """The engine's capability block of a CONNECTED unit, else None (older
+    ace.py, or a unit whose record is the empty NO_CAPS while disconnected -
+    the firmware-string rules then describe it as before)."""
+    caps = a.get("caps")
+    if isinstance(caps, dict) and a.get("connected"):
+        return caps
+    return None
 
 
 def _community_fw_kind(fw):
@@ -459,6 +482,11 @@ def _parse_state(status: dict) -> dict:
         )
         ace_slots = a.get("slots", []) or []
         slots_by_idx = {s.get("index", n): s for n, s in enumerate(ace_slots)}
+        # A unit without a presence sensor (caps.presence_sensor False) has
+        # no gate truth; its lanes render "no sensor" and are not loadable
+        # from the web nor preflight targets. V1/V2 both have the gate.
+        _caps_here = _unit_caps(a)
+        _no_sensor = bool(_caps_here) and _caps_here.get("presence_sensor") is False
         slots_out = []
         for s in range(SLOT_COUNT):
             sd = slots_by_idx.get(s, {}) or {}
@@ -547,7 +575,7 @@ def _parse_state(status: dict) -> dict:
             if is_empty and ptc_overlay is None:
                 slots_out.append({
                     "idx":       s,
-                    "state":     "empty",
+                    "state":     "nosensor" if _no_sensor else "empty",
                     "raw":       gate,
                     "status":    raw_status,
                     "rfid":      0,
@@ -568,7 +596,8 @@ def _parse_state(status: dict) -> dict:
                 if ptc_overlay is not None:
                     slots_out.append({
                         "idx":       s,
-                        "state":     "ready" if not is_empty else "empty",
+                        "state":     ("nosensor" if _no_sensor
+                                      else "ready" if not is_empty else "empty"),
                         "raw":       gate,
                         "status":    raw_status,
                         "rfid":      rfid_status,
@@ -594,7 +623,8 @@ def _parse_state(status: dict) -> dict:
                 else:
                     slots_out.append({
                         "idx":       s,
-                        "state":     _slot_state_name(gate),
+                        "state":     ("nosensor" if _no_sensor
+                                      else _slot_state_name(gate)),
                         "raw":       gate,
                         "status":    raw_status,
                         "rfid":      rfid_status,
@@ -617,6 +647,8 @@ def _parse_state(status: dict) -> dict:
                         "rfid_data": rfid_data,
                         "source":    source,
                     })
+        caps = _unit_caps(a)
+        proto_l = str(a.get("protocol", "") or "").lower()
         aces_out.append({
             "idx":          i,
             "connected":    a.get("connected"),
@@ -624,17 +656,43 @@ def _parse_state(status: dict) -> dict:
             # "[Errno 13] Permission denied"; '' when none or older ace.py.
             "connect_error": a.get("connect_error") or "",
             "protocol":     a.get("protocol", ""),
+            # Unit kind + capability block (engine, additive since 1.30b).
+            # Every flag below reads caps when present and falls back to
+            # the protocol/firmware rules of older engines; a V1/V2 unit
+            # renders identically either way (tests/unit/test_web_golden.py).
+            "kind":         a.get("kind") or a.get("protocol", ""),
+            "caps":         caps,
+            # D4 unit places (engine, additive since 1.30b): the saved place
+            # this index holds and its free display name ('' = none).
+            "unit_place":   a.get("unit_place", i),
+            "unit_name":    str(a.get("unit_name") or ""),
+            # D11: the unit key filed at this place and whether a unit is
+            # on the bus for it (older ace.py: no field -> present).
+            "unit_key":     str(a.get("unit_key") or ""),
+            "unit_present": bool(a.get("unit_present", True)),
+            "unit_removed": bool(a.get("unit_removed", False)),
+            "presence_sensor": (bool(caps.get("presence_sensor", True))
+                                if caps else True),
+            "flash_engine": (str(caps.get("flash_engine") or "") if caps
+                             else _FLASH_ENGINE_BY_PROTOCOL.get(proto_l, "")),
+            "has_dryer":    (bool(caps.get("has_dryer")) if caps
+                             else proto_l in ("v1", "v2")),
+            "has_decoder":  (bool(caps.get("has_decoder")) if caps
+                             else proto_l == "v2"),
+            "has_humidity": (bool(caps.get("has_humidity")) if caps
+                             else proto_l == "v2"),
             "model":        a.get("model", ""),
             "firmware":     a.get("firmware", ""),
-            # ACE2-Open firmware (Simon-CR): version string ends in the
-            # letter O (V1.1.3O) - same rule as ace._is_open_fw_idx. The
-            # RC522 tag read/write live only there.
-            "open_fw":      str(a.get("firmware", "") or "").strip().upper().endswith("O"),
+            # ACE2-Open firmware (Simon-CR): the RC522 tunnel, where tag
+            # read/write live. caps.rc522_tunnel, or the string rule (ends
+            # in the letter O, V1.1.3O) for an older engine.
+            "open_fw":      (bool(caps.get("rc522_tunnel")) if caps else
+                             str(a.get("firmware", "") or "").strip().upper().endswith("O")),
             # Tag READ possible on this unit: ACE2-Open, or an ACE Pro on
             # community firmware (CV...). The tunnel probe runs on the first
             # read, so an unprobed CV unit shows the button; a failed probe
             # (available False) hides it again.
-            "tag_read":     _tag_read_possible(a),
+            "tag_read":     _tag_read_possible(a, caps),
             # Display-only badge: 'ace2_open' | 'gen1_cfw' | ''. Klipper sends
             # it since 1.20b; derived here from the firmware string for an
             # older ace.py (same rules).
@@ -805,10 +863,24 @@ def _parse_state(status: dict) -> dict:
         # An older ace.py has no field -> 1, today's behaviour.
         "preflight_max_copies": _int_or(ace.get("preflight_max_copies", 1), 1),
         "preflight_copies_strict": bool(ace.get("preflight_copies_strict", False)),
+        # Virtual slicer tools: explicit tool -> [ace, slot] (0-based);
+        # unlisted tools follow the formula. Older ace.py: no field -> {}.
+        "tool_map": (ace.get("tool_map") if isinstance(ace.get("tool_map"), dict)
+                     else {}),
         # Default TRUE like the engine; an older ace.py has no field.
         "pa_sync": bool(ace.get("pa_sync", True)),
         # RC522 tag read/write enabled - gates the picker "write to tag" button.
         "rc522": bool(ace.get("rc522", False)),
+        # D11 Devices list (engine, additive since 1.30b): every place of
+        # the unit table and every detected unit without a place, plus the
+        # "table edited, restart to apply" flag. Older ace.py: empty list.
+        "devices": [d for d in (ace.get("devices") or []) if isinstance(d, dict)],
+        "units_restart_needed": bool(ace.get("units_restart_needed", False)),
+        # Driver switches (engine, additive): configured vs running state,
+        # test note, places served. Older ace.py: empty list, no block.
+        "driver_switches": [d for d in (ace.get("driver_switches") or [])
+                            if isinstance(d, dict)],
+        "locate_busy": bool(ace.get("locate_busy", False)),
         # [ace] tag_write_format - the picker's preselected write format.
         "tag_write_format": str(ace.get("tag_write_format") or "openspool"),
         "tag_write_uid_sku": bool(ace.get("tag_write_uid_sku", True)),
@@ -1149,13 +1221,16 @@ def post_process_script_path() -> Optional[Path]:
 
     Precedence:
       1. MULTIACE_POST_PROCESS_SCRIPT environment variable (if file exists)
-      2. _CFG_DIR / tools / post_process_virtual_toolheads.py
-      3. Package tools/ directory relative to this file
+      2. next to this file (the installer and the bake copy it there)
+      3. _CFG_DIR / tools / post_process_virtual_toolheads.py (older
+         installs; a leftover there must not beat the installed copy)
+      4. Package tools/ directory relative to this file
     """
     override = os.environ.get("MULTIACE_POST_PROCESS_SCRIPT", "").strip()
     if override and os.path.isfile(override):
         return Path(override)
     candidates = [
+        Path(__file__).resolve().parent / "post_process_virtual_toolheads.py",
         Path(_CFG_DIR) / "tools" / "post_process_virtual_toolheads.py",
         Path(__file__).resolve().parent.parent.parent / "tools" / "post_process_virtual_toolheads.py",
     ]
@@ -1214,6 +1289,8 @@ async def _live_slots_async() -> list[dict]:
         # A 5th unit's slots would become T16+, which the rewrite passes
         # through raw and the stock T16 lands on extruder 0: wrong colour.
         if not isinstance(ace.get("idx"), int) or ace.get("idx") > 3:
+            continue
+        if ace.get("presence_sensor") is False:
             continue
         for slot in ace.get("slots", []) or []:
             if slot.get("state") == "empty":
@@ -1351,9 +1428,8 @@ async def preflight(file: UploadFile = File(...)) -> dict:
                     f"({len(data)//1024//1024} MB > "
                     f"{_PREFLIGHT_MAX_SIZE//1024//1024} MB limit). The "
                     f"Snapmaker U1 is too slow to analyse files this large. "
-                    f"Run the multiACE post-processing script in your slicer "
-                    f"instead - it does the same analysis on your PC in "
-                    f"seconds - then upload the result directly via Moonraker. "
+                    f"Use the preflight in the browser instead - it runs the "
+                    f"same analysis on your PC. "
                     f"Advanced: raise the limit via the "
                     f"MULTIACE_PREFLIGHT_MAX_MB env var."))
 
@@ -1419,115 +1495,10 @@ def _stage_progress(state: dict, base: float, span: float):
         state["ts"] = time.time()
     return cb
 
-_FLOW_CAL_LINE_RE = re.compile(r"^\s*SM_PRINT_FLOW_CALIBRATE\b", re.IGNORECASE)
-_AUTO_LOAD_END_RE = re.compile(r"^\s*;\s*multiACE auto-load: end\b")
-_BARE_T_RE = re.compile(r"^\s*T(\d+)\s*(?:;.*)?$")
-
-def _print_prefs_line(bed_mesh: bool, camera: bool,
-                      flow_cal: bool = False) -> str:
-    """Build the SET_PRINT_PREFERENCES line for the chosen preflight toggles.
-    FORCE=1 is required: the line is the first line of the uploaded file, which
-    already runs with print_stats.state == 'printing', and stock rejects a
-    non-forced preference change there (error 531). FORCE=1 bypasses that gate
-    (print_task_config.cmd_SET_PRINT_PREFERENCES); it still runs before the
-    start/bed-leveling steps so the flags are set in time.
-
-    FLOW_CALIBRATE: stock's "flow calibration" is the per-head pressure-
-    advance measurement (flow_calibrator.FLOW_CALIBRATE). With the flag on,
-    stock also IGNORES every SET_PRESSURE_ADVANCE from the slicer while
-    printing (kinematics/extruder.py); with it off, the slicer's own line
-    (Snapmaker Orca ships ADVANCE=0.02 as a placeholder) is what prints.
-    The touchscreen start dialog is the only stock place that turns it on,
-    and a web-started print never sees that dialog - so a preflight print
-    ran at PA 0.02 whatever the user had calibrated (issue #115: rough
-    top surfaces, "overextrusion"). The start gcode's own
-    SM_PRINT_FLOW_CALIBRATE lines sit BEFORE our auto-load block (heads
-    still empty -> runout pause 523), which is why the flag used to be
-    forced off; _prepend_print_prefs moves the calibration behind the
-    block instead when the toggle is on."""
-    return ("SET_PRINT_PREFERENCES BED_LEVEL=%d FLOW_CALIBRATE=%d "
-            "TIME_LAPSE_CAMERA=%d FORCE=1"
-            % (1 if bed_mesh else 0, 1 if flow_cal else 0,
-               1 if camera else 0))
-
-def _flow_cal_block(lines: list) -> tuple:
-    """(insert_index, block_lines) for the relocated flow calibration, or
-    (None, []) when the file has no auto-load block to anchor on (then the
-    slicer's lines stay where they are = stock placement).
-
-    One T<h> A0 + FLOW_CALIBRATE pair per PHYSICAL head the processed file
-    actually prints with (bare T lines), NOT the stock SM_PRINT_FLOW_
-    CALIBRATE wrapper: that wrapper skips heads stock believes unused, and
-    stock derives 'used' from the slicer header's per-LOGICAL-T grams via
-    its map table - which no longer matches the physical heads after our
-    remap (issue #115 file: head 0 printed but read as unused). The pair
-    is exactly what the wrapper runs internally (print_stats.py). Ends by
-    re-selecting the tool the start gcode had selected before the block,
-    mirroring stock's own re-select after its calibration, because the
-    prime line follows right after the block with the active tool."""
-    end_idx = None
-    initial = None
-    heads = set()
-    for i, line in enumerate(lines):
-        m = _BARE_T_RE.match(line)
-        if m:
-            h = int(m.group(1))
-            if 0 <= h <= 3:
-                heads.add(h)
-                if end_idx is None:
-                    initial = h
-            continue
-        if end_idx is None and _AUTO_LOAD_END_RE.match(line):
-            end_idx = i
-    if end_idx is None or not heads:
-        return None, []
-    if initial is None:
-        initial = min(heads)
-    block = ["; multiACE preflight: flow calibration (moved behind the "
-             "auto-load, heads loaded)\n"]
-    # Start tool LAST: the block ends with the head the start line needs
-    # already in the gripper, so the closing re-select is a no-op instead
-    # of one more tool change.
-    order = sorted(h for h in heads if h != initial) + \
-        ([initial] if initial in heads else [])
-    for h in order:
-        block.append("T%d A0\n" % h)
-        block.append("FLOW_CALIBRATE EXTRUDER=%d\n" % h)
-    block.append("T%d\n" % initial)
-    block.append("; multiACE preflight: flow calibration end\n")
-    return end_idx + 1, block
-
-def _prepend_print_prefs(in_path: str, out_path: str,
-                         bed_mesh: bool = False, camera: bool = False,
-                         flow_cal: bool = False) -> None:
-    """Stream-copy in_path to out_path with the print-preference line
-    prepended at the very top (before the start gcode's calibration).
-    Any SET_PRINT_PREFERENCES the slicer already emits is commented out
-    so it can't override ours from further down the file. With flow_cal
-    the slicer's SM_PRINT_FLOW_CALIBRATE lines are commented out and the
-    calibration is re-emitted behind the auto-load block (see
-    _flow_cal_block); the file is read twice for that (anchor + heads),
-    still streamed on the write side."""
-    ins_idx, block = None, []
-    if flow_cal:
-        with open(in_path, "r", encoding="utf-8", errors="replace") as src:
-            ins_idx, block = _flow_cal_block(src.readlines())
-    with open(out_path, "w", encoding="utf-8", errors="replace") as out:
-        out.write("; multiACE preflight: print preferences\n")
-        out.write(_print_prefs_line(bed_mesh, camera, flow_cal) + "\n")
-        with open(in_path, "r", encoding="utf-8", errors="replace") as src:
-            for i, line in enumerate(src):
-                if ins_idx is not None and i == ins_idx:
-                    out.writelines(block)
-                if line.lstrip().upper().startswith("SET_PRINT_PREFERENCES"):
-                    out.write("; multiACE disabled: " + line.lstrip())
-                    continue
-                if ins_idx is not None and _FLOW_CAL_LINE_RE.match(line):
-                    out.write("; multiACE moved: " + line.lstrip())
-                    continue
-                out.write(line)
-            if ins_idx is not None and ins_idx >= i + 1:
-                out.writelines(block)
+# Print preferences live in preflight_core (shared with the browser).
+_print_prefs_line = preflight_core.print_prefs_line
+_flow_cal_block = preflight_core.flow_cal_block
+_prepend_print_prefs = preflight_core.prepend_print_prefs
 
 def _prune_old_jobs() -> None:
     now = time.time()
@@ -3090,6 +3061,28 @@ async def export_spools() -> Response:
         headers={"Content-Disposition":
                  'attachment; filename="multiace_spools.json"'})
 
+@app.get("/api/orca/profile")
+async def orca_profile_download(nozzle: str = "0.4") -> Response:
+    """Snapmaker Orca printer profile with virtual multiACE tools (T4.. =
+    ACE/slot, resolved on the printer by ACE_TOOL). Built from the live
+    state: one tool per connected ACE slot, slot colours as extruder
+    colours. Import in the slicer via File > Import > Import Configs."""
+    import orca_profile
+    try:
+        state = _parse_state(await _query_state_gated())
+    except Exception as e:
+        raise HTTPException(503, f"printer state unavailable: {e}")
+    try:
+        body = orca_profile.profile_json(state, nozzle)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    fname = "%s %s.json" % (orca_profile.PROFILE_NAME, nozzle)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"Content-Disposition":
+                 'attachment; filename="%s"' % fname})
+
 @app.post("/api/spools/import")
 async def import_spools(file: UploadFile = File(...),
                         mode: str = "merge") -> dict:
@@ -3724,6 +3717,8 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
     occupied, still-unbound slot whose LAST tag read carries our own
     SM<id> scheme is adopted and bound in one sweep - the rolls stay in
     their slots, nothing needs re-inserting or hand-adopting.
+    A slot's card UID (8/14/20 hex) is tried first, against `card_uids`
+    only; its sku follows as the fallback.
     Accepted tag forms (each with or without a leading '#'):
       SM<digits> / bare digits - lookup by Spoolman id (the tag-writer
         community's convention; the residual risk that a purely numeric
@@ -3754,19 +3749,26 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
     binding = state.get("spool_binding") or {}
     adopted, errs = 0, []
     coll = None   # collection, fetched lazily on the first non-SM code
-    # Work items: (key, raw code, assign script template, bare_digits_are_id).
-    # Slots and heads resolve through ONE loop so the two paths cannot
-    # drift; only the code SOURCE and the assign target differ.
+    # Work items: (key, raw code, assign script template, bare_digits_are_id,
+    # is_uid). Slots and heads resolve through ONE loop so the two paths
+    # cannot drift; only the code SOURCE and the assign target differ.
+    # A slot contributes its card UID FIRST (the per-chip key, card_uids
+    # compare only - never a Spoolman id) and its sku as the fallback; the
+    # first code that adopts wins the slot.
     items: list = []
     for ace in state.get("aces") or []:
         for sl in ace.get("slots") or []:
             if (sl.get("state") or "") in ("", "empty", "unknown"):
                 continue
-            items.append((f"{ace.get('idx')}_{sl.get('idx')}",
-                          str(sl.get("sku") or "").strip(),
-                          f"ACE_SPOOL_ASSIGN ACE={ace.get('idx')} "
-                          f"SLOT={sl.get('idx')} ID={{lid}}",
-                          True))
+            key = f"{ace.get('idx')}_{sl.get('idx')}"
+            tpl = (f"ACE_SPOOL_ASSIGN ACE={ace.get('idx')} "
+                   f"SLOT={sl.get('idx')} ID={{lid}}")
+            uid = _card_canon(str(sl.get("uid") or "").strip().lstrip("#"))
+            sku = str(sl.get("sku") or "").strip()
+            if uid:
+                items.append((key, uid, tpl, False, True))
+            if sku and _card_canon(sku.lstrip("#")) != uid:
+                items.append((key, sku, tpl, True, False))
     # Head loop (feeder/manual): Klipper fills head_tag_seen only for
     # non-ACE heads, from the STOCK feeder reader's card UID (hex) or M1
     # SKU int. Bare digits are NOT treated as a Spoolman id here - feeder
@@ -3781,17 +3783,29 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
         if code:
             items.append((f"h{h}", code,
                           f"ACE_SPOOL_ASSIGN HEAD={h} ID={{lid}}",
-                          False))
-    for key, sku_raw, script_tpl, bare_id_ok in items:
-        if key in binding:
+                          False, False))
+    done: set = set()
+    for key, sku_raw, script_tpl, bare_id_ok, is_uid in items:
+        if key in binding or key in done:
             continue
         sku = sku_raw.lstrip("#").lower()
-        m = re.fullmatch(r"(?:sm)?(\d+)" if bare_id_ok else r"sm(\d+)", sku)
-        # Everything else (3-19 chars, tag SKU hard cap) goes to the
-        # card_uids compare; shorter reads are junk, not codes.
-        if not m and not (3 <= len(sku) <= 19):
-            continue
-        if not strict and _sweep_tried.get(key) == sku:
+        if is_uid:
+            # Card UID: plain hex of a 4-, 7- or 10-byte chip, nothing else.
+            m = None
+            if len(sku) not in (8, 14, 20) or any(
+                    ch not in "0123456789abcdef" for ch in sku):
+                continue
+        else:
+            m = re.fullmatch(r"(?:sm)?(\d+)" if bare_id_ok else r"sm(\d+)",
+                             sku)
+            # Everything else (3-19 chars, tag SKU hard cap) goes to the
+            # card_uids compare; shorter reads are junk, not codes.
+            if not m and not (3 <= len(sku) <= 19):
+                continue
+        # Remembered per slot AND code kind, so a definitive answer for
+        # the UID does not block the sku (and the other way round).
+        tkey = f"{key}|{'uid' if is_uid else 'code'}"
+        if not strict and _sweep_tried.get(tkey) == sku:
             # Spoolman already answered definitively for THIS tag (id
             # branch: 404; card branch: UID on multiple spools).
             # Retrying every minute would hammer the instance / spam
@@ -3823,20 +3837,21 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
                 continue
             if len(hits) > 1:
                 ids = ", ".join(f"#{sp.get('id')}" for sp in hits)
-                _sweep_tried[key] = sku
+                _sweep_tried[tkey] = sku
                 errs.append(f"{key}: card UID {uid} on multiple "
                             f"spools: {ids} - fix in Spoolman")
                 continue
             smid_s = str(hits[0].get("id", ""))
             tag_sku = sku_raw
-        _sweep_tried[key] = sku
+        _sweep_tried[tkey] = sku
         try:
             lid = await _spoolman_adopt_one(smid_s, tag_sku=tag_sku)
             await _mr_post("/printer/gcode/script", {
                 "script": script_tpl.format(lid=lid)},
                 timeout=_MR_SPOOL_GCODE_TIMEOUT)
             adopted += 1
-            _sweep_tried.pop(key, None)
+            done.add(key)
+            _sweep_tried.pop(tkey, None)
             _trace.info("spoolman tag adopt: %s -> SM%s (local #%s%s)",
                         key, smid_s, lid,
                         " via card_uid" if tag_sku else "")
@@ -3847,7 +3862,7 @@ async def _spoolman_sweep_tags(strict: bool = False) -> dict:
         except Exception as e:
             # Timeout / connection / anything else: says nothing about
             # the spool, so let the next tick try again.
-            _sweep_tried.pop(key, None)
+            _sweep_tried.pop(tkey, None)
             # str(httpx.ReadTimeout()) is EMPTY - the bare "0_1: " it
             # logged cost a round of guessing. Name the class instead.
             # str(e), not `e or ...`: an exception object is TRUTHY even
@@ -4139,14 +4154,17 @@ async def acefw_flash(payload: dict | None = None) -> dict:
     entry = next((a for a in (state.get("aces") or [])
                   if int(a.get("idx", -1)) == ace), None)
     if entry is None:
-        raise HTTPException(404, f"no ACE {ace}")
+        raise HTTPException(404, f"no MMU {ace}")
     port = str(entry.get("serial_path") or "").strip()
     if not port:
-        raise HTTPException(400, "ACE reports no serial path")
+        raise HTTPException(400, "MMU reports no serial path")
     # Which generation owns this unit? The web sends the same payload for
     # both; the routing is by the protocol Klipper detected, never by a
     # client flag - a V1 image can never be fed to the ACE 2 engine.
-    gen1 = str(entry.get("protocol") or "").lower() == "v1"
+    _engine = str(entry.get("flash_engine") or "")
+    if _engine not in ("iap_v1", "ota_v2"):
+        raise HTTPException(400, f"MMU {ace} has no flash engine ({_engine or 'none'})")
+    gen1 = _engine == "iap_v1"
     if gen1 and patch_to_open:
         # The ACE2-Open patcher is a Gen-2 stage on a Gen-2 stock image;
         # ignore the flag on a Gen-1 target instead of feeding the
@@ -5198,7 +5216,7 @@ async def apply_snapshot(name: str, mode: str | None = None) -> dict:
             errors.append({
                 "head": idx, "ace": ace_i, "slot": slot_i,
                 "kind": "empty",
-                "message": (f"T{idx}: ACE {ace_i} / Slot {slot_i} ist leer "
+                "message": (f"T{idx}: MMU {ace_i} / Slot {slot_i} ist leer "
                             f"({(dt.get('material') or '?')} erwartet)"),
             })
             continue
@@ -5214,7 +5232,7 @@ async def apply_snapshot(name: str, mode: str | None = None) -> dict:
                 "head": idx, "ace": ace_i, "slot": slot_i, "kind": "material",
                 "want": want_mat, "have": have_mat,
                 "message": (f"T{idx}: Snapshot will {want_mat}, "
-                            f"ACE {ace_i} / Slot {slot_i} hat {have_mat or '?'}"),
+                            f"MMU {ace_i} / Slot {slot_i} hat {have_mat or '?'}"),
             })
         elif want_col and have_col and want_col.lower() != have_col.lower():
             warnings.append({
@@ -5382,7 +5400,7 @@ def _drop_override_if_present(ace: int, slot: int) -> bool:
     key = _override_key(ace, slot)
     if key in _slot_overrides:
         old = _slot_overrides.pop(key, None)
-        _trace.info("override DROP gate==0 ACE %d / slot %d (was %s)", ace, slot, old)
+        _trace.info("override DROP gate==0 MMU %d / slot %d (was %s)", ace, slot, old)
         return True
     return False
 
@@ -5415,7 +5433,7 @@ def _track_unload_clears(head_source: dict) -> None:
             key = _override_key(prev[0], prev[1])
             if key in _slot_overrides:
                 old = _slot_overrides.pop(key, None)
-                _trace.info("override DROP unload T%d (was loaded from ACE %d / slot %d): %s",
+                _trace.info("override DROP unload T%d (was loaded from MMU %d / slot %d): %s",
                             t, prev[0], prev[1], old)
                 changed = True
         _last_head_source[t] = (d, sl) if (d is not None and sl is not None) else None
@@ -5439,7 +5457,7 @@ async def set_slot_override(req: SlotOverride) -> dict:
     }
     old = _slot_overrides.get(key)
     _slot_overrides[key] = new
-    _trace.info("override SET via picker POST ACE %d / slot %d: %s -> %s",
+    _trace.info("override SET via picker POST MMU %d / slot %d: %s -> %s",
                 req.ace, req.slot, old, new)
     _save_overrides_to_disk()
     return {"ok": True, "key": key, "override": _slot_overrides[key]}
@@ -5449,7 +5467,7 @@ async def delete_slot_override(ace: int, slot: int) -> dict:
     key = _override_key(ace, slot)
     if key in _slot_overrides:
         old = _slot_overrides.pop(key, None)
-        _trace.info("override DROP via picker DELETE ACE %d / slot %d (was %s)",
+        _trace.info("override DROP via picker DELETE MMU %d / slot %d (was %s)",
                     ace, slot, old)
         _save_overrides_to_disk()
     return {"ok": True}
@@ -6492,16 +6510,114 @@ async def history_clear() -> dict:
 # and only while it was open).
 # no-cache is NOT no-store: the copy stays in the cache, the browser just
 # asks before using it, and with the ETag StaticFiles already sends that is
-# a 304 with no body - unnoticeable on a LAN. Deliberately only the shell:
-# the vendored Vue bundle and the icons change with a release, and it was
-# the stale shell that hid them.
-_SHELL_PATHS = {"/", "/index.html", "/app.js", "/style.css", "/style-new.css"}
+# a 304 with no body - unnoticeable on a LAN. The shell and the assets
+# index.html loads; icons and manifest keep StaticFiles' defaults.
+_SHELL_PATHS = {"/", "/index.html", "/app.js", "/style.css", "/style-new.css",
+                "/vendor/vue.global.prod.js", "/preflight_pyodide_worker.js"}
+
+# Assets index.html loads with a content-hash query (?v=<md5>). A cache
+# entry stored before no-cache existed is heuristically fresh and never
+# revalidated, and the managed package extracts every file with mtime 0
+# (StaticFiles' ETag is then the size alone) - a new URL per content is
+# the only key no old entry can hit.
+_SHELL_ASSETS = ("app.js", "vendor/vue.global.prod.js", "style.css",
+                 "style-new.css", "preflight_pyodide_worker.js")
+_SHELL_REF_RE = re.compile(
+    r'\b(src|href)="(app\.js|vendor/vue\.global\.prod\.js|style\.css|'
+    r'style-new\.css)"')
+_asset_hash_cache: dict = {}
+_shell_html_cache: dict = {}
+
+
+def _stat_key(path: str):
+    """Change key of a file: ctime is set on every write or replace and
+    cannot be forged by tar, so it holds even with mtime 0."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _asset_hash(rel: str) -> str:
+    """Short md5 of a frontend file's content, '' when it is missing."""
+    path = os.path.join(FRONTEND_DIR, rel)
+    key = _stat_key(path)
+    if key is None:
+        return ""
+    hit = _asset_hash_cache.get(rel)
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
+        with open(path, "rb") as f:
+            digest = hashlib.md5(f.read()).hexdigest()[:10]
+    except OSError:
+        return ""
+    _asset_hash_cache[rel] = (key, digest)
+    return digest
+
+
+def _render_shell() -> str | None:
+    """index.html with every asset reference carrying its content hash, and
+    the worker's hash for app.js (window.MA_ASSET_V). None when missing."""
+    path = os.path.join(FRONTEND_DIR, "index.html")
+    key = _stat_key(path)
+    if key is None:
+        return None
+    hashes = {rel: _asset_hash(rel) for rel in _SHELL_ASSETS}
+    ckey = (key, tuple(sorted(hashes.items())))
+    if _shell_html_cache.get("key") == ckey:
+        return _shell_html_cache["html"]
+    try:
+        with open(path, encoding="utf-8") as f:
+            html = f.read()
+    except OSError:
+        return None
+
+    def _ref(m):
+        h = hashes.get(m.group(2))
+        return f'{m.group(1)}="{m.group(2)}?v={h}"' if h else m.group(0)
+
+    html = _SHELL_REF_RE.sub(_ref, html)
+    inject = ("<script>window.MA_ASSET_V = "
+              + json.dumps({"worker": hashes.get(
+                  "preflight_pyodide_worker.js", "")})
+              + ";</script>\n")
+    html = html.replace("</head>", inject + "</head>", 1)
+    _shell_html_cache.update(key=ckey, html=html)
+    return html
+
+
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+@app.api_route("/index.html", methods=["GET", "HEAD"], include_in_schema=False)
+async def _app_shell(request: Request):
+    html = _render_shell()
+    if html is None:
+        raise HTTPException(404, "index.html not found")
+    etag = '"%s"' % hashlib.md5(html.encode("utf-8")).hexdigest()[:16]
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=html, media_type="text/html; charset=utf-8",
+                    headers=headers)
+
 
 @app.middleware("http")
 async def _shell_revalidate(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in _SHELL_PATHS:
-        response.headers["Cache-Control"] = "no-cache"
+    path = request.url.path
+    if path in _SHELL_PATHS:
+        v = request.query_params.get("v")
+        # A URL carrying the CURRENT content hash never changes meaning:
+        # cache it for good, no 304 round trips. Anything else revalidates.
+        rel = path.lstrip("/")
+        if (v and rel in _SHELL_ASSETS
+                and response.status_code in (200, 304)
+                and v == _asset_hash(rel)):
+            response.headers["Cache-Control"] = (
+                "public, max-age=31536000, immutable")
+        else:
+            response.headers["Cache-Control"] = "no-cache"
     return response
 
 if Path(FRONTEND_DIR).is_dir():

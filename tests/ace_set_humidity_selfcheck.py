@@ -277,9 +277,9 @@ check("ACE_SET_HUMIDITY stores rh/temp/ttl/ts",
       and st.get('ttl') == 1800.0 and st.get('ts') == inst.reactor.now)
 check("... and never writes _info_per_ace (1 Hz heartbeat owns it)",
       inst._info_per_ace == before_info)
-check("... response names the ACE, value, TTL and 'external'",
+check("... response names the MMU, value, TTL and 'external'",
       '42.5' in resp and '1800' in resp and 'external' in resp.lower()
-      and ('ACE %d' % inst._disp(0)) in resp, resp)
+      and ('MMU %d' % inst._disp(0)) in resp, resp)
 check("... logs exactly one accepted push per call",
       len([r for r in inst.responses if 'external' in r.lower()]) == 1)
 

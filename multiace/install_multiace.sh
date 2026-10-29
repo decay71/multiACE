@@ -71,6 +71,13 @@ for f in \
     "klipper/extras/ace_tipform.py" \
     "klipper/extras/ace_rc522.py" \
     "klipper/extras/ace_gen1_tunnel.py" \
+    "klipper/extras/ace_resistance.py" \
+    "klipper/extras/ace_display.py" \
+    "klipper/extras/ace_spool.py" \
+    "klipper/extras/ace_settings.py" \
+    "klipper/extras/ace_swap.py" \
+    "klipper/extras/ace_unit.py" \
+    "klipper/extras/ace_drivers.py" \
     "klipper/kinematics/extruder_ace.py" \
     "config/extended/ace.cfg" \
     "config/extended/multiace/ace_mode_switch.sh" \
@@ -146,6 +153,7 @@ cp "$INSTALL_DIR/klipper/extras/ace_macro_layout.py" "$EXTRAS_DIR/ace_macro_layo
 cp "$INSTALL_DIR/klipper/extras/ace_protocol.py" "$EXTRAS_DIR/ace_protocol.py"
 cp "$INSTALL_DIR/klipper/extras/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v1.py"
 cp "$INSTALL_DIR/klipper/extras/ace_protocol_v2.py" "$EXTRAS_DIR/ace_protocol_v2.py"
+cp "$INSTALL_DIR/klipper/extras/ace_protocol_cfs.py" "$EXTRAS_DIR/ace_protocol_cfs.py"
 cp "$INSTALL_DIR/klipper/extras/filament_feed_ace.py" "$EXTRAS_DIR/filament_feed_ace.py"
 cp "$INSTALL_DIR/klipper/extras/filament_switch_sensor_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py"
 # Background-swap module (EXPERIMENTAL): inert without its config section
@@ -160,7 +168,20 @@ cp "$INSTALL_DIR/klipper/extras/ace_rc522.py" "$EXTRAS_DIR/ace_rc522.py"
 # Gen 1 tag tunnel - helper module imported lazily by ace.py; used only on
 # ACE Pro units with the tunnel firmware and [ace] gen1_tag_tunnel on.
 cp "$INSTALL_DIR/klipper/extras/ace_gen1_tunnel.py" "$EXTRAS_DIR/ace_gen1_tunnel.py"
-chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/ace_macro_layout.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py" "$EXTRAS_DIR/ace_tipform.py" "$EXTRAS_DIR/ace_rc522.py" "$EXTRAS_DIR/ace_gen1_tunnel.py"
+# Resistance watch / air-print detection - mixin of MultiAce, imported by ace.py
+cp "$INSTALL_DIR/klipper/extras/ace_resistance.py" "$EXTRAS_DIR/ace_resistance.py"
+# Touchscreen filament identity - mixin of MultiAce, imported by ace.py
+cp "$INSTALL_DIR/klipper/extras/ace_display.py" "$EXTRAS_DIR/ace_display.py"
+# Spool table / tag binding / booking - mixin of MultiAce, imported by ace.py
+cp "$INSTALL_DIR/klipper/extras/ace_spool.py" "$EXTRAS_DIR/ace_spool.py"
+# Swap cluster (ACE_SWAP_HEAD, recovery pause, bg arrival) - mixin of MultiAce, imported by ace.py
+cp "$INSTALL_DIR/klipper/extras/ace_swap.py" "$EXTRAS_DIR/ace_swap.py"
+# Settings cluster (i18n catalog, display indices, settings write-through, ACE_SET_* setters) - mixin of MultiAce, imported by ace.py
+cp "$INSTALL_DIR/klipper/extras/ace_settings.py" "$EXTRAS_DIR/ace_settings.py"
+# Unit capabilities (UnitCaps, caps_for) - imported by ace.py
+cp "$INSTALL_DIR/klipper/extras/ace_unit.py" "$EXTRAS_DIR/ace_unit.py"
+cp "$INSTALL_DIR/klipper/extras/ace_drivers.py" "$EXTRAS_DIR/ace_drivers.py"
+chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/ace_macro_layout.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/ace_protocol_cfs.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py" "$EXTRAS_DIR/ace_tipform.py" "$EXTRAS_DIR/ace_rc522.py" "$EXTRAS_DIR/ace_gen1_tunnel.py" "$EXTRAS_DIR/ace_resistance.py" "$EXTRAS_DIR/ace_display.py" "$EXTRAS_DIR/ace_spool.py" "$EXTRAS_DIR/ace_swap.py" "$EXTRAS_DIR/ace_settings.py" "$EXTRAS_DIR/ace_unit.py" "$EXTRAS_DIR/ace_drivers.py"
 log "  Klipper extras installed"
 cp "$INSTALL_DIR/klipper/kinematics/extruder_ace.py" "$KINEMATICS_DIR/extruder_ace.py"
 chmod 644 "$KINEMATICS_DIR/extruder_ace.py"
@@ -196,6 +217,24 @@ if [ -f "$INSTALL_DIR/deploy/S59multiace-prewarm" ]; then
         /etc/init.d/S59multiace-prewarm start >>"$LOGFILE" 2>&1 || true
     else
         log "  SKIP: S59multiace-prewarm install needs root (existing copy stays active)"
+    fi
+fi
+# udev rule for USB-RS485 dongles (CFS Nano, generic ACE 2 adapter): the
+# tty is root:dialout 0660 and Klipper runs as lava. Root only.
+if [ -f "$INSTALL_DIR/deploy/99-multiace-rs485.rules" ]; then
+    if [ "$IS_ROOT" = "1" ] && [ -d /etc/udev/rules.d ]; then
+        cp "$INSTALL_DIR/deploy/99-multiace-rs485.rules" /etc/udev/rules.d/99-multiace-rs485.rules
+        sed -i 's/\r$//' /etc/udev/rules.d/99-multiace-rs485.rules
+        chmod 0644 /etc/udev/rules.d/99-multiace-rs485.rules
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules >>"$LOGFILE" 2>&1 || true
+            udevadm trigger --subsystem-match=tty >>"$LOGFILE" 2>&1 || true
+        fi
+        log "  Installed udev rule: /etc/udev/rules.d/99-multiace-rs485.rules"
+    elif [ "$IS_ROOT" = "1" ]; then
+        log "  SKIP: no /etc/udev/rules.d - udev rule for RS485 dongles not installed"
+    else
+        log "  SKIP: udev rule install needs root (existing copy stays active)"
     fi
 fi
 prune_cfg_backups() {
@@ -277,11 +316,13 @@ if [ "$IS_ROOT" = "1" ]; then
     chown -R lava:lava "$MULTIACE_DIR" 2>/dev/null || true
     log "  multiace config dir ownership set to lava:lava"
 fi
-if [ -d "$INSTALL_DIR/tools" ]; then
-    mkdir -p "${HOME_DIR}/printer_data/config/tools"
-    cp "$INSTALL_DIR/tools/"*.py "${HOME_DIR}/printer_data/config/tools/" 2>/dev/null || true
-    log "  Tools installed"
-fi
+# The post-processor lives next to the web backend now (copied below); the
+# copies older versions put into the Fluidd-visible config/tools/ go.
+rm -f "${HOME_DIR}/printer_data/config/tools/post_process_virtual_toolheads.py" \
+      "${HOME_DIR}/printer_data/config/tools/post_process_virtual_toolheads.py.bak" \
+      "${HOME_DIR}/printer_data/config/tools/merge_ace_cfg.py" \
+      "${HOME_DIR}/printer_data/config/tools/merge_ace_cfg.py.bak" 2>/dev/null || true
+rmdir "${HOME_DIR}/printer_data/config/tools" 2>/dev/null || true
 # The updater is usually the process RUNNING this installer (web update).
 # bash reads a script while executing it, so overwriting that file in
 # place (cp = same inode) makes the running copy continue in the new text
@@ -406,6 +447,8 @@ verify_match "$INSTALL_DIR/klipper/extras/ace_protocol_v1.py" \
              "$EXTRAS_DIR/ace_protocol_v1.py" "ace_protocol_v1.py"
 verify_match "$INSTALL_DIR/klipper/extras/ace_protocol_v2.py" \
              "$EXTRAS_DIR/ace_protocol_v2.py" "ace_protocol_v2.py"
+verify_match "$INSTALL_DIR/klipper/extras/ace_protocol_cfs.py" \
+             "$EXTRAS_DIR/ace_protocol_cfs.py" "ace_protocol_cfs.py"
 verify_match "$INSTALL_DIR/klipper/extras/filament_feed_ace.py" \
              "$EXTRAS_DIR/filament_feed_ace.py" "filament_feed_ace.py"
 verify_match "$INSTALL_DIR/klipper/extras/filament_switch_sensor_ace.py" \
@@ -484,6 +527,8 @@ if [ "$INSTALL_WEB" = "1" ]; then
         cp "$INSTALL_DIR/tools/swap_cost.py" "$WEB_DEST/backend/"
     fi
     cp -a "$WEB_SRC/frontend/." "$WEB_DEST/frontend/"
+    cp "$INSTALL_DIR/tools/post_process_virtual_toolheads.py" "$WEB_DEST/backend/"
+    cp "$INSTALL_DIR/tools/job_history.py" "$WEB_DEST/backend/"
     if [ -d "$INSTALL_DIR/i18n" ]; then
         cp -a "$INSTALL_DIR/i18n/." "$WEB_DEST/i18n/"
     fi
@@ -636,8 +681,10 @@ PYEOF
         # A root-owned instance (S98 boot / web-update context) is out of
         # lava's reach - the pkill above cannot touch it and the fresh code
         # will NOT serve until a reboot. Say so instead of staying silent.
+        # Not in the web-update path: the caller re-execs itself only
+        # after this script returns, so the port is always still held here.
         sleep 2
-        if netstat -tln 2>/dev/null | grep -q ':7126 '; then
+        if [ -z "$MULTIACE_WEB_PID" ] && netstat -tln 2>/dev/null | grep -q ':7126 '; then
             log "  WARN: :7126 still served by an instance we cannot replace"
             log "        (root-owned?) - new web code is NOT live until reboot"
         fi

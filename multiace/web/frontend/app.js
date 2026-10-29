@@ -8,10 +8,11 @@ const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://")
 const SCREEN = "/screen";
 createApp({
   setup() {
-    // Bowden-path calibration tab (physicsG port): hidden upstream (Dirk
-    // 2026-09-25), shown on this branch.
+    // Bowden-path calibration tab (physicsG, #168).
     const CALIBRATION_TAB = true;
-    const _validTabs = new Set(["dashboard", "control", "history", "spools", "config"]);
+    // Orca profile section in Config (profile download + tool map).
+    const ORCA_SECTION = true;
+    const _validTabs = new Set(["dashboard", "control", "history", "spools", "config", "devices"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
     const _storedTab = localStorage.getItem("multiace.tab");
     const _isPluginTab = (s) => typeof s === "string" && s.startsWith("plugin:");
@@ -65,12 +66,13 @@ createApp({
       items.push({key: "history", group: "printhub",
                   label: t("ui.tabs.history")});
       items.push({key: "spools", label: t("ui.tabs.spools")});
-      items.push({key: "config", label: t("ui.tabs.config")});
-      // Calibration hangs off Config: shown only while one of the two is
-      // open, so it cannot vanish under the user once selected.
-      if (CALIBRATION_TAB && state.mode !== "normal"
-          && (tab.value === "config" || tab.value === "calibration")) {
-        items.push({key: "calibration", label: t("ui.tabs.calibration")});
+      // Config children: Settings (the tab key stays "config"), Devices
+      // (unit places, names, firmware flash) and Calibration (bowden path).
+      items.push({key: "config", group: "config", label: t("ui.tabs.settings")});
+      items.push({key: "devices", group: "config", label: t("ui.tabs.devices")});
+      if (CALIBRATION_TAB && state.mode !== "normal") {
+        items.push({key: "calibration", group: "config",
+                    label: t("ui.tabs.calibration")});
       }
       for (const p of plugins.items) {
         items.push({key: "plugin:" + p.name, label: p.label});
@@ -84,6 +86,7 @@ createApp({
     // is the only thing that makes its group appear.
     const NAV_GROUPS = [
       {key: "printhub", labelKey: "ui.tabs.print_hub", before: "spools"},
+      {key: "config", labelKey: "ui.tabs.config", after: "spools"},
     ];
     const groupLast = reactive({});
     for (const g of NAV_GROUPS) {
@@ -114,6 +117,7 @@ createApp({
         if (it.group) continue;
         for (const g of NAV_GROUPS) if (g.before === it.key) addGroup(g);
         out.push(it);
+        for (const g of NAV_GROUPS) if (g.after === it.key) addGroup(g);
       }
       return out;
     });
@@ -257,6 +261,7 @@ createApp({
       pickup_cleaning: false,
       preflight_max_copies: 1,
       preflight_copies_strict: false,
+      tool_map: {},
       confirm_commands: false,
       spoolman_url: "",
       spoolman_auto: false,
@@ -270,6 +275,8 @@ createApp({
       // Default TRUE, like the engine, for the pre-first-state instant.
       pa_sync: true,
       rc522: false,
+      devices: [], units_restart_needed: false, driver_switches: [],
+      locate_busy: false,
       tag_write_format: "openspool",
       tag_write_uid_sku: true,
       tag_op: {busy: false, kind: "", seq: 0, result: null},
@@ -360,7 +367,7 @@ createApp({
       const el = document.createElement("div");
       el.id = "ma-splash";
       el.setAttribute("aria-hidden", "true");
-      el.innerHTML = '<div class="ma-logo">m<span>U</span>lt<span>1</span>ACE</div>'
+      el.innerHTML = '<div class="ma-logo">m<span>U</span>lt<span>1</span>ACE<span>+</span></div>'
         + '<div class="ma-spin"></div>';
       document.body.appendChild(el);
     }
@@ -418,9 +425,11 @@ createApp({
         // A restart is in progress -> the pending config/mode change is being
         // applied; drop the persistent "restart needed" banner.
         rebootNeeded.value = false;
+        restartNoteDown();
         return;
       }
       if (loadError.value === t('ui.common.please_restart')) loadError.value = "";
+      restartNoteBack();
       state.ace_status    = s.ace_status ?? null;
       state.ace_temp      = s.ace_temp ?? null;
       state.printer_state = s.printer_state ?? null;
@@ -430,6 +439,7 @@ createApp({
       state.pickup_cleaning = !!s.pickup_cleaning;
       state.preflight_max_copies = Math.max(1, Math.min(4, Number(s.preflight_max_copies || 1)));
       state.preflight_copies_strict = !!s.preflight_copies_strict;
+      state.tool_map = (s.tool_map && typeof s.tool_map === "object") ? s.tool_map : {};
       state.confirm_commands = !!s.confirm_commands;
       state.spoolman_url = s.spoolman_url || "";
       state.spoolman_auto = !!s.spoolman_auto;
@@ -463,6 +473,11 @@ createApp({
       // Feeder-reader card per non-ACE head; the head picker's Read button
       // judges its result by this field.
       state.head_tag_seen = s.head_tag_seen || {};
+      state.devices = Array.isArray(s.devices) ? s.devices : [];
+      devNameSettle(state.devices);
+      state.units_restart_needed = !!s.units_restart_needed;
+      state.driver_switches = Array.isArray(s.driver_switches) ? s.driver_switches : [];
+      state.locate_busy = !!s.locate_busy;
       state.auto_dry_masters = Array.isArray(s.auto_dry_masters)
         ? s.auto_dry_masters : [];
       // What Klipper RUNS (the cfg side comes from /api/tipform). Missing
@@ -702,7 +717,7 @@ createApp({
       // generous margin: the load is stopped by the toolhead sensor
       // anyway, and a swap retract that runs long only costs seconds
       // while one that stops short leaves filament in the hub.
-      loadAllowance: 150, swapAllowance: 100,
+      loadAllowance: 150, swapAllowance: 100,   // load: 200 without encoder (below)
       panel: 'setup', panelTouched: false, recalibrate: false,
       busy: '', cancelRequested: false, error: '', saved: false,
       hubAdjust: false,
@@ -727,6 +742,13 @@ createApp({
       state.aces.filter(a => a && a.connected));
     const calibrationSelectedAce = computed(() =>
       state.aces.find(a => Number(a.idx) === Number(calibrationUi.ace)) || null);
+    // Load margin default per unit: without an encoder the feed slips
+    // while it pushes into the head (ACE Pro: ~4% of the route, +100 mm on
+    // 2.3 m), so the budget gets more room there. Set only when the kind of
+    // the selected unit changes, so a typed value stays.
+    watch(() => aceHasDecoder(calibrationSelectedAce.value), (hasEncoder) => {
+      calibrationUi.loadAllowance = hasEncoder ? 150 : 200;
+    }, {immediate: true});
     const calibrationSelectedToolhead = computed(() =>
       state.toolheads.find(
         h => Number(h.idx) === Number(calibrationUi.head)) || null);
@@ -866,10 +888,15 @@ createApp({
       const measuredSwap = !calibrationSessionMatchesSelection.value
         || c.swap_retract_length_mm == null
         ? null : Number(c.swap_retract_length_mm);
+      // Saved values only stand in when this route really is calibrated
+      // (per slot or per MMU). The global [ace] defaults would otherwise
+      // draw a hub position nobody measured.
+      const cfg = calibrationRouteCalibrated.value
+        ? calibrationConfiguredRoute.value : {};
       const load = Number.isFinite(measuredLoad) && measuredLoad > 0
-        ? measuredLoad : calibrationConfiguredRoute.value.load;
+        ? measuredLoad : (cfg.load ?? null);
       const swap = Number.isFinite(measuredSwap) && measuredSwap > 0
-        ? measuredSwap : calibrationConfiguredRoute.value.swap;
+        ? measuredSwap : (cfg.swap ?? null);
       return {load, swap, source: measuredLoad > 0 && measuredSwap > 0
         ? 'measured' : 'configured'};
     });
@@ -975,6 +1002,10 @@ createApp({
       return c.state === 'verified' && c.values_source === 'saved'
         && !c.verify_remeasured_mm && !c.verify_hub_extra_mm;
     });
+    // The verify keeps the saved values; this only flags a run whose sensor
+    // came outside the tolerance but inside the margin.
+    const calibrationVerifyOutsideTolerance = computed(() =>
+      !!(state.calibration || {}).verify_outside_tolerance);
     const calibrationResultCase = computed(() => {
       const c = state.calibration || {};
       if (!['complete', 'verified'].includes(c.state)) return '';
@@ -1772,7 +1803,7 @@ createApp({
         case 'ACE_UNLOAD_ALL_HEADS':
           return t('ui.queue.lbl_unload_all');
         case 'ACE_SWITCH':
-          return `ACE ${di(a.TARGET ?? 0)}`
+          return `MMU ${di(a.TARGET ?? 0)}`
             + ((a.AUTOLOAD == 1 || a.AUTOLOAD === true)
                ? ' ' + t('ui.queue.lbl_autoload') : '');
         case 'ACE_DRY':
@@ -1783,7 +1814,7 @@ createApp({
       return null;
     }
     function slotTitle(ace, slot) {
-      const bits = [`ACE ${dispIdx(ace.idx)} / Slot ${dispIdx(slot.idx)}`];
+      const bits = [`MMU ${dispIdx(ace.idx)} / Slot ${dispIdx(slot.idx)}`];
       if (slot.material) bits.push(slot.material);
       if (slot.brand) bits.push(slot.brand);
       bits.push(slot.state);
@@ -2104,13 +2135,13 @@ createApp({
           // The head is what you look for; if the armed slot feeds none
           // (possible between a swap's unload and load), name the unit
           // instead of inventing a head.
-          main: head === null ? "ACE " + dispIdx(a.idx) : "T" + dispIdx(head),
+          main: head === null ? "MMU " + dispIdx(a.idx) : "T" + dispIdx(head),
           sub: slot.material || "",
         };
       }
       // Nothing armed: idle, or a print that has not reached its first load.
       return {color: null,
-              main: shown ? "ACE " + dispIdx(shown.idx) : "multiACE", sub: ""};
+              main: shown ? "MMU " + dispIdx(shown.idx) : "multiACE", sub: ""};
     });
     // Ask back before anything that moves filament, when the printer has
     // "confirm commands" on. Deliberately the native confirm(): it blocks,
@@ -2173,7 +2204,28 @@ createApp({
     function slotIsEmpty(aceIdx, slotIdx) {
       const a = (state.aces || []).find(x => x.idx === aceIdx);
       const sl = a && (a.slots || []).find(s => s.idx === slotIdx);
-      return !!sl && sl.state === 'empty';
+      // 'nosensor': a unit without presence gate (caps) - nothing to load
+      // from here, the lane has no truth to offer.
+      return !!sl && (sl.state === 'empty' || sl.state === 'nosensor');
+    }
+    // Capability helpers: the backend derives these from the engine's caps
+    // block when present and from protocol/firmware otherwise (older ace.py);
+    // the fallbacks here cover a backend that predates the fields.
+    function aceFlashEngine(a) {
+      if (!a) return "";
+      if (a.flash_engine !== undefined) return a.flash_engine || "";
+      const p = (a.protocol || "").toLowerCase();
+      return p === "v1" ? "iap_v1" : p === "v2" ? "ota_v2" : "";
+    }
+    function aceHasDryer(a) {
+      if (!a) return false;
+      if (a.has_dryer !== undefined) return !!a.has_dryer;
+      return ["v1", "v2"].includes((a.protocol || "").toLowerCase());
+    }
+    function aceHasDecoder(a) {
+      if (!a) return false;
+      if (a.has_decoder !== undefined) return !!a.has_decoder;
+      return (a.protocol || "").toLowerCase() === "v2";
     }
     // multi: slot N feeds head N. A head without ACE (manual/feeder) takes
     // nothing from a slot - a slot load there would load the head from its
@@ -2934,11 +2986,11 @@ createApp({
     // runs - never a user flag.
     const acefwCandidates = computed(() =>
       (state.aces || [])
-        .filter(a => ["v1", "v2"].includes((a.protocol || "").toLowerCase()))
+        .filter(a => ["iap_v1", "ota_v2"].includes(aceFlashEngine(a)))
         .map(a => {
-          const v1 = (a.protocol || "").toLowerCase() === "v1";
+          const v1 = aceFlashEngine(a) === "iap_v1";
           return {value: a.idx, v1: v1,
-                  label: "ACE " + dispIdx(a.idx)
+                  label: "MMU " + dispIdx(a.idx)
                          + " · " + t(v1 ? "ui.config.acefw_gen1"
                                         : "ui.config.acefw_gen2")
                          + (a.firmware && a.firmware !== "Unknown"
@@ -3569,7 +3621,7 @@ createApp({
         return `T${dispIdx(h)} · ${t(th.manual ? "ui.dashboard.manual" : "ui.dashboard.feeder")}`;
       }
       const [a, sl] = key.split("_").map(Number);
-      return `ACE ${dispIdx(a)} / ${dispIdx(sl)}`;
+      return `MMU ${dispIdx(a)} / ${dispIdx(sl)}`;
     }
     // Remaining weight is an estimate (extruded length x density), but it
     // renders WITHOUT a ~ (Spoolman/SpoolLink show plain grams too).
@@ -3602,6 +3654,21 @@ createApp({
       await spoolMacro("ACE_SET_SPOOLMAN", {MODE: v});
     }
     const spoolAddBusy = ref(false);
+    // The sentence out of a failed /api/macro: Moonraker answers with a
+    // JSON envelope (message + traceback) or Klipper's "Error on '...':"
+    // wrapper; only the message is for the user.
+    function macroErrorText(detail) {
+      const d = String(detail || "");
+      try {
+        const j = JSON.parse(d);
+        const m = j && j.error && j.error.message;
+        if (m) return String(m);
+      } catch (e) {}
+      const jm = d.match(/"message":\s*"((?:[^"\\]|\\.)*)"/);
+      if (jm) return jm[1].replace(/\\"/g, '"');
+      const km = d.match(/[Ee]rror on '[^']*':\s*(.*)/);
+      return (km ? km[1] : d).slice(0, 300);
+    }
     async function spoolMacro(name, args) {
       // One ACE_SPOOL_ADD at a time: /api/macro blocks while the printer
       // runs long gcode (a swap holds the script queue ~150s), so every
@@ -3627,10 +3694,7 @@ createApp({
         if (!ok) {
           const body = await r.json().catch(() => ({}));
           const detail = String(body.detail || `HTTP ${r.status}`);
-          // Klipper's error text carries the reason; strip the wrapper so
-          // the banner shows the sentence, not a JSON envelope.
-          const m = detail.match(/[Ee]rror on '[^']*':\s*(.*)/);
-          setMacroLog(`${name}: ${(m ? m[1] : detail).slice(0, 200)}`);
+          setMacroLog(`${name}: ${macroErrorText(detail).slice(0, 200)}`);
         }
       } catch (e) {
         setMacroLog(`${name}: ${e}`);
@@ -3725,7 +3789,7 @@ createApp({
         for (const sl of (a.slots || [])) {
           const key = `${a.idx}_${sl.idx}`;
           out.push({key, taken: bound.has(key),
-                    label: `ACE ${dispIdx(a.idx)} / ${dispIdx(sl.idx)}`});
+                    label: `MMU ${dispIdx(a.idx)} / ${dispIdx(sl.idx)}`});
         }
       }
       // Feeder/manual heads take a spool too (bound to the head, 'h<n>') -
@@ -3889,7 +3953,7 @@ createApp({
       if (picker.weight !== "") parts.push(picker.weight + " g");
       const isHead = picker.head !== null && picker.head !== undefined;
       parts.push(isHead ? `T${dispIdx(picker.head)}`
-                        : `ACE ${dispIdx(picker.ace)} / ${dispIdx(picker.slot)}`);
+                        : `MMU ${dispIdx(picker.ace)} / ${dispIdx(picker.slot)}`);
       return base + " · " + parts.join(" · ");
     }
     async function spoolCreateFromPicker() {
@@ -4116,6 +4180,122 @@ createApp({
     function spoolExport() {
       window.open(`${API}/spools/export`, "_blank");
     }
+    // Orca printer profile with virtual tools (T4.. = ACE/slot). Built on
+    // the backend from the live state; the browser just downloads it.
+    function orcaProfile() {
+      window.open(`${API}/orca/profile`, "_blank");
+    }
+    // Virtual tools 4.. with their current ACE/slot target (tool_map entry
+    // or the formula), for the Config-tab list. Display numbers 1-based.
+    function virtualTools() {
+      const count = Math.max(1, Math.min(8, Number(state.device_count || 1)));
+      const out = [];
+      // Tools 0-3 are the heads; tool n >= 4 = ACE (n-4)/4, slot (n-4)%4.
+      for (let n = 4; n < Math.min(32, 4 + 4 * count); n++) {
+        const ent = state.tool_map && state.tool_map[String(n)];
+        const mapped = Array.isArray(ent) && ent.length === 2;
+        const ace = mapped ? Number(ent[0]) : Math.floor((n - 4) / 4);
+        const slot = mapped ? Number(ent[1]) : (n - 4) % 4;
+        const a = (state.aces || [])[ace];
+        const sl = a && a.slots ? a.slots[slot] : null;
+        out.push({tool: n, ace, slot, mapped,
+                  color: sl && sl.color ? sl.color : null,
+                  material: sl ? (sl.material || sl.type || "") : ""});
+      }
+      return out;
+    }
+    // The same list in blocks of four (filaments 5-8, 9-12, ...) for the
+    // 2x2 layout. No ACE label on a block: an entry can point elsewhere.
+    function virtualToolGroups() {
+      const groups = [];
+      for (const vt of virtualTools()) {
+        const g = Math.floor((vt.tool - 4) / 4);
+        if (!groups[g]) groups[g] = {ace: g, tools: []};
+        groups[g].tools.push(vt);
+      }
+      return groups.filter(Boolean);
+    }
+    // Approximate colour name for the tool-map list, from hue and lightness
+    // ("dark purple", "light blue"). Slots only store a hex value, so this
+    // is a reading aid next to the colour itself, not an identity.
+    function colorName(hex) {
+      const h6 = _hex6(hex);
+      if (h6.length !== 7) return "";
+      const [r, g, b] = [1, 3, 5].map(i => parseInt(h6.slice(i, i + 2), 16) / 255);
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const l = (max + min) / 2;
+      const d = max - min;
+      const sat = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+      let hue = 0;
+      if (d) {
+        if (max === r) hue = 60 * (((g - b) / d) % 6);
+        else if (max === g) hue = 60 * ((b - r) / d + 2);
+        else hue = 60 * ((r - g) / d + 4);
+        if (hue < 0) hue += 360;
+      }
+      const name = (k) => t("ui.config.orca_color." + k);
+      if (l < 0.1) return name("black");
+      if (l > 0.93) return name("white");
+      if (sat < 0.15) {
+        if (l < 0.35) return t("ui.config.orca_color.dark", {c: name("gray")});
+        if (l > 0.7) return t("ui.config.orca_color.light", {c: name("gray")});
+        return name("gray");
+      }
+      let key;
+      if (hue < 15 || hue >= 345) key = "red";
+      else if (hue < 40) key = l < 0.35 ? "brown" : "orange";
+      else if (hue < 68) key = l < 0.3 ? "brown" : "yellow";
+      else if (hue < 165) key = "green";
+      else if (hue < 195) key = "turquoise";
+      else if (hue < 255) key = "blue";
+      else if (hue < 290) key = "purple";
+      else key = "pink";
+      // Pale warm tones read as beige, pale reds as pink, not "light red".
+      if ((key === "orange" || key === "yellow") && l > 0.72 && sat < 0.6) key = "beige";
+      if (key === "red" && l > 0.65) key = "pink";
+      if (key === "brown" || key === "beige") return name(key);
+      if (l < 0.3) return t("ui.config.orca_color.dark", {c: name(key)});
+      if (l > 0.72 && key !== "pink") return t("ui.config.orca_color.light", {c: name(key)});
+      return name(key);
+    }
+    // Every slot of every ACE as one target list: "ACE 1 / 2: PLA red".
+    function toolTargetOptions(vt) {
+      const out = [];
+      const count = Math.max(1, Math.min(8, Number(state.device_count || 1)));
+      for (let a = 0; a < count; a++) {
+        const ace = (state.aces || [])[a];
+        for (let sl = 0; sl < 4; sl++) {
+          const slot = ace && ace.slots ? ace.slots[sl] : null;
+          const empty = !slot || slot.state === "empty";
+          const mat = slot ? (slot.material || slot.type || "") : "";
+          const color = !empty && slot.color ? slot.color : null;
+          const desc = empty ? t("ui.common.empty")
+            : [mat, color ? colorName(color) : ""].filter(Boolean).join(" ") || "-";
+          out.push({value: a + ":" + sl, color,
+                    label: `MMU ${a + 1} / ${sl + 1}: ${desc}`});
+        }
+      }
+      if (vt && !out.some(o => o.value === vt.ace + ":" + vt.slot)) {
+        out.push({value: vt.ace + ":" + vt.slot, color: null,
+                  label: `MMU ${vt.ace + 1} / ${vt.slot + 1}`});
+      }
+      return out;
+    }
+    function setToolMapTarget(tool, value) {
+      const [ace, slot] = String(value).split(":").map(Number);
+      return setToolMap(tool, ace, slot);
+    }
+    // Both go through headSet: a refusal (e.g. while printing) lands in
+    // the macro log instead of vanishing, and the state reloads after.
+    function setToolMap(tool, ace, slot) {
+      return headSet("macro",
+        {name: "ACE_SET_TOOL", args: {TOOL: tool, ACE: Number(ace), SLOT: Number(slot)}},
+        `T${tool}`);
+    }
+    function resetToolMap(tool) {
+      return headSet("macro", {name: "ACE_SET_TOOL", args: {TOOL: tool, RESET: 1}},
+                     `T${tool}`);
+    }
     async function spoolImport(fileList) {
       const f = fileList && fileList[0];
       if (spoolFileInput.value) spoolFileInput.value.value = "";
@@ -4151,6 +4331,125 @@ createApp({
     // engine flag as quad_first - so the template inverts, not this. Keeping
     // the stored name means no config/save-variable migration: an [ace]
     // quad_first line that is no longer read would halt Klipper.
+    // D11 Devices: assignment of a unit (by its key) to a place, removal
+    // ("none") and forgetting a disconnected key. The engine applies the
+    // table at the next firmware restart and says so (units_restart_needed).
+    // A refused command reaches the alerts strip through Klipper's own
+    // error path; the tab shows nothing extra (it used to duplicate it).
+    async function assignUnit(key, place) {
+      if (!key) return;
+      const p = (place === "" || place === null || place === undefined)
+        ? "NONE" : String(Number(place) + 1);
+      await unitMacro("ACE_UNIT_ASSIGN", {KEY: key, PLACE: p});
+    }
+    function forgetUnit(dev) {
+      confirm({
+        title: t("ui.config.dev_forget"),
+        message: tHtml("ui.config.dev_forget_confirm", {key: dev.key}),
+        okLabel: t("ui.config.dev_forget"),
+        onOk: () => unitMacro("ACE_UNIT_FORGET", {KEY: dev.key}),
+      });
+    }
+    // Rename a unit: the name belongs to its key, the engine takes the
+    // place index. Klipper splits gcode parameters on blanks, so blanks
+    // become underscores.
+    // The name field is bound to POLLED printer state (devices arrive every
+    // second), so the typed text needs an edit buffer or the next poll
+    // overwrites it. Buffer wins while editing; released when the printer
+    // reports the committed name back (applyState), on an unchanged commit,
+    // or when the rename failed (the error box explains, the old name shows).
+    const devNameEdit = reactive({});
+    function devNameClean(name) {
+      return String(name || "").trim().replace(/\s+/g, "_").slice(0, 32);
+    }
+    function devNameValue(dev) {
+      const k = dev && dev.key;
+      return (k in devNameEdit) ? devNameEdit[k] : (dev.name || "");
+    }
+    function devNameInput(dev, ev) {
+      if (dev && dev.key) devNameEdit[dev.key] = ev.target.value;
+    }
+    async function devNameCommit(dev, ev) {
+      if (!dev || !dev.key) return;
+      const clean = devNameClean(ev.target.value);
+      if (clean === (dev.name || "")) { delete devNameEdit[dev.key]; return; }
+      devNameEdit[dev.key] = clean;
+      const ok = await renameUnit(dev, clean);
+      if (!ok) delete devNameEdit[dev.key];
+    }
+    function devNameSettle(devices) {
+      for (const d of devices || []) {
+        if (d && d.key in devNameEdit && (d.name || "") === devNameEdit[d.key]) {
+          delete devNameEdit[d.key];
+        }
+      }
+    }
+    // Locate: the engine blinks an ACE 2 or jogs a slot on an ACE Pro.
+    function locateUnit(dev) {
+      if (!dev || dev.place === null || dev.place === undefined) return;
+      return unitMacro("ACE_LOCATE", {ACE: dev.place});
+    }
+    async function renameUnit(dev, name) {
+      if (!dev || dev.place === null || dev.place === undefined) return false;
+      return unitMacro("ACE_UNIT_NAME", {ACE: dev.place, NAME: devNameClean(name)});
+    }
+    async function unitMacro(name, args) {
+      let ok = true;
+      try {
+        const r = await fetch(`${API}/macro`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name, args}),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(macroErrorText(j.detail || `${r.status}`));
+      } catch (e) {
+        console.warn(`${name}: ${macroErrorText(e.message || String(e))}`);
+        ok = false;
+      }
+      reloadState();
+      return ok;
+    }
+    // Driver switches: the engine refuses the last active driver and a
+    // driver whose unit feeds a loaded head (reason in the alerts strip);
+    // the checkbox only shows what the printer reports back.
+    function driverOnlyActive(drv) {
+      return drv.enabled
+        && !(state.driver_switches || []).some(d => d.name !== drv.name && d.enabled);
+    }
+    function driverToggle(drv, ev) {
+      ev.target.checked = !!drv.enabled;
+      return unitMacro("ACE_SET_DRIVER", {NAME: drv.name, ENABLE: drv.enabled ? 0 : 1});
+    }
+    function driverNote(drv) {
+      const parts = [];
+      if (drv.enabled !== drv.active) {
+        parts.push(t(drv.enabled ? "ui.config.driver_pending_on" : "ui.config.driver_pending_off"));
+      }
+      if (drv.places && drv.places.length) {
+        parts.push(t("ui.config.driver_serves",
+                     {list: drv.places.map(p => dispIdx(p)).join(", ")}));
+      }
+      if (!drv.tested) parts.push(t("ui.config.driver_untested"));
+      return parts.join(" · ");
+    }
+    const driversRestartNeeded = computed(() =>
+      (state.driver_switches || []).some(d => d.enabled !== d.active));
+    function deviceStatus(dev) {
+      if (dev.removed) return t("ui.config.dev_removed");
+      if (!dev.present) return t("ui.config.dev_not_connected");
+      return dev.connected ? t("ui.config.dev_connected") : t("ui.config.dev_present");
+    }
+    function deviceDriver(dev) {
+      return unitDriverLabel({kind: dev.kind});
+    }
+    // Places in the unit table (for the per-place [ace N] cards): the
+    // table decides, the old ace_device_count only on an engine without it.
+    function perAceCount() {
+      const places = (state.devices || []).filter(d => d.place !== null && d.place !== undefined);
+      if (places.length) return Math.min(4, Math.max(...places.map(d => d.place)) + 1);
+      return Math.max(1, Math.min(4, configForm.ace_device_count | 0));
+    }
     async function setQuadFirst(first) {
       try {
         await fetch(`${API}/macro`, {
@@ -4195,7 +4494,7 @@ createApp({
     const aceOptions = computed(() =>
       (state.aces || []).map(a => ({
         value: a.idx,
-        label: "ACE " + dispIdx(a.idx) + (a.protocol ? " (" + a.protocol.toUpperCase() + ")" : ""),
+        label: "MMU " + dispIdx(a.idx) + (unitDriverLabel(a) ? " (" + unitDriverLabel(a) + ")" : ""),
       })));
     // head mode: the ACE currently wired to a head (head_ace), defaulting to the
     // head index.
@@ -4207,6 +4506,15 @@ createApp({
     function aceCfwTitle(ace) {
       const key = ace.community_fw === "gen1_cfw" ? "ui.common.cfw_gen1" : "ui.common.cfw_ace2_open";
       return [t(key), ace.firmware].filter(Boolean).join(" · ");
+    }
+    // Driver label behind the place number (D11): the registry name of the
+    // codec that drives this unit, never the place. 'v1'/'v2' are the codec
+    // names ace.py reports as kind/protocol.
+    const DRIVER_LABELS = {v1: "AceV1", v2: "AceV2", cfs: "CFS Nano", ace2k: "Ace2k"};
+    function unitDriverLabel(ace) {
+      const k = String((ace && (ace.kind || ace.protocol)) || "");
+      if (!k) return "";
+      return DRIVER_LABELS[k] || k;
     }
     function aceProtoTitle(ace) {
       return [ace.model,
@@ -4270,6 +4578,17 @@ createApp({
       }
       return out;
     });
+    // Head mode hides ACEs no head is wired to. A connected one would then
+    // simply not exist on the dashboard, so it is shown after the wired
+    // ones, dimmed and inert (_unwired).
+    const unwiredAces = computed(() => {
+      if (state.mode !== "head") return [];
+      const shown = new Set(visibleAces.value.map(a => a.idx));
+      return (state.aces || []).filter(a => a.connected !== false
+                                           && !shown.has(a.idx));
+    });
+    const gridAces = computed(() => visibleAces.value.concat(
+      unwiredAces.value.map(a => Object.assign({}, a, {_unwired: true}))));
     function loadSlot(aceIdx, slotIdx) {
       if (_blockIfPrinting()) return;
       // Before anything is enqueued: an empty source slot cannot load, and
@@ -4408,7 +4727,7 @@ createApp({
     // {type, a, b}: move -> a@b, others -> type:a. Mirrors the token grammar
     // in ace_tipform.parse_table; the backend parse_table remains the strict
     // gate on save, so a half-built table can never reach Klipper.
-    const TIPFORM_STEP_TYPES = ["move", "pause", "temp", "waittemp", "fan", "unloadtemp", "loadtemp"];
+    const TIPFORM_STEP_TYPES = ["move", "pause", "temp", "waittemp", "fan", "unloadtemp", "loadtemp", "bgtemp", "prime", "primetemp"];
     function tipformParseSteps(tableStr) {
       const steps = [];
       for (let part of String(tableStr || "").split(",")) {
@@ -4416,7 +4735,7 @@ createApp({
         if (!part) continue;
         const low = part.toLowerCase();
         let m;
-        if ((m = /^(pause|waittemp|unloadtemp|loadtemp|temp|fan)\s*:\s*(.*)$/.exec(low))) {
+        if ((m = /^(pause|waittemp|unloadtemp|loadtemp|bgtemp|primetemp|prime|temp|fan)\s*:\s*(.*)$/.exec(low))) {
           steps.push({type: m[1], a: m[2].trim(), b: ""});
         } else if (part.includes("@")) {
           const [mm, f] = part.split("@");
@@ -5372,6 +5691,18 @@ createApp({
     const configLog = ref("");
     const configLoadError = ref("");
     const showRawConfig = ref(false);
+    // The button sits in the save bar, which sticks to the bottom of the
+    // window in the new design: open the editor and scroll to it.
+    function toggleRawConfig() {
+      showRawConfig.value = !showRawConfig.value;
+      if (!showRawConfig.value) return;
+      nextTick(() => {
+        const el = document.getElementById("raw-config");
+        if (!el) return;
+        el.open = true;
+        el.scrollIntoView({behavior: "smooth", block: "start"});
+      });
+    }
     const configForm = reactive({
       ace_device_count: 1,
       feed_speed: 80,
@@ -5406,7 +5737,7 @@ createApp({
       };
     }
     function _ensurePerAceLength() {
-      const n = Math.max(0, Math.min(4, configForm.ace_device_count | 0));
+      const n = Math.max(0, Math.min(4, perAceCount()));
       while (configForm.perAce.length < n) {
         configForm.perAce.push(_makePerAceEntry());
       }
@@ -5414,7 +5745,7 @@ createApp({
         configForm.perAce.pop();
       }
     }
-    watch(() => configForm.ace_device_count, _ensurePerAceLength, {immediate: true});
+    watch(() => [configForm.ace_device_count, (state.devices || []).length], _ensurePerAceLength, {immediate: true});
     watch([() => tab.value, calibrationRouteKnown], ([activePage, routeKnown]) => {
       if (activePage !== 'calibration' || calibrationUi.panelTouched
           || state.calibration?.state !== 'idle') return;
@@ -5441,6 +5772,62 @@ createApp({
     // actually starts (klippy down). Mode changes do NOT use this - crossing
     // 'normal' raises a backend reboot error that reaches the display too.
     const rebootNeeded = ref(false);
+    // An update that could not restart the Klipper service itself: the new
+    // code only loads after a reboot. Same banner, other text.
+    const printerRebootNeeded = ref(false);
+    // Restart straight from a "please restart" hint: same endpoint and
+    // confirm dialog as the Control tab. Not offered while a print runs or
+    // when the platform manages the install (the server refuses both).
+    const restartNotice = ref("");
+    let _restartNoticeTimer = null;
+    // "restart requested" is cleared once the restart has visibly happened
+    // (klippy or the websocket went down and a state came back); the timer
+    // below is only the fallback.
+    let _restartAwaitDown = false, _restartSeenDown = false;
+    function restartNoticeClear() {
+      restartNotice.value = "";
+      _restartAwaitDown = _restartSeenDown = false;
+      if (_restartNoticeTimer) { clearTimeout(_restartNoticeTimer); _restartNoticeTimer = null; }
+    }
+    function restartNoteDown() { if (_restartAwaitDown) _restartSeenDown = true; }
+    function restartNoteBack() { if (_restartSeenDown) restartNoticeClear(); }
+    const restartOffered = computed(() => !updateState.managed
+      && !["printing", "paused"].includes(state.printer_state));
+    function restartNow(behavior) {
+      confirm({
+        title: t(`ui.restart.${behavior}_title`),
+        message: t(`ui.restart.${behavior}_msg`),
+        okLabel: t(`ui.restart.${behavior}_btn`),
+        onOk: async () => {
+          try {
+            const r = await fetch(`${API}/restart`, {
+              method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({behavior}),
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j.detail || `${r.status}`);
+            rebootNeeded.value = false;
+            printerRebootNeeded.value = false;
+            restartNotice.value = t(`ui.restart.${behavior}_sent`);
+            _restartAwaitDown = true; _restartSeenDown = false;
+          } catch (e) {
+            restartNotice.value = `${t("ui.restart.failed")}: ${e.message || e}`;
+            _restartAwaitDown = _restartSeenDown = false;
+          }
+          if (_restartNoticeTimer) clearTimeout(_restartNoticeTimer);
+          _restartNoticeTimer = setTimeout(() => {
+            restartNotice.value = "";
+            _restartNoticeTimer = null;
+            _restartAwaitDown = _restartSeenDown = false;
+          }, 60000);
+        },
+      });
+    }
+    // Klipper's own "please reboot" (SET_ACE_MODE across 'normal' swaps the
+    // feed modules) reaches the web as a notification.
+    function notifWantsReboot(n) {
+      return /please reboot/i.test((n && n.msg) || "");
+    }
     function paramsToForm(params, perAceParams) {
       if (!params) return;
       const num  = (k) => params[k] != null ? Number(params[k]) : configForm[k];
@@ -5762,6 +6149,7 @@ createApp({
             if (j.ok) {
               const reboot = (j.status_lines || []).some(l => String(l).startsWith("please_reboot"));
               setMacroLog(t(reboot ? "ui.config.update_done_reboot" : "ui.config.update_done"));
+              if (reboot) printerRebootNeeded.value = true;
             }
           } catch (e) {
             updateState.statusText = `${t("ui.config.update_failed")}: ${e.message || e}`;
@@ -6030,7 +6418,7 @@ createApp({
           else if (m.type === "error") conn.value = {state: "warn", text: m.error || t("ui.header.ws_error")};
         } catch (_) {}
       };
-      ws.onclose = () => { conn.value = {state: "warn", text: t("ui.header.offline")}; scheduleReconnect(); };
+      ws.onclose = () => { conn.value = {state: "warn", text: t("ui.header.offline")}; restartNoteDown(); scheduleReconnect(); };
       ws.onerror = () => { conn.value = {state: "err", text: t("ui.header.ws_error")}; };
     }
     function scheduleReconnect() {
@@ -6560,7 +6948,7 @@ createApp({
       if (!tg) return "";
       const mat = tg.material || "?";
       if (tg.kind === "pin") return pinLabel(tg.head) + " · " + mat;
-      return "ACE " + dispIdx(tg.ace) + " Slot " + dispIdx(tg.slot) + " · " + mat;
+      return "MMU " + dispIdx(tg.ace) + " Slot " + dispIdx(tg.slot) + " · " + mat;
     }
     // Background for a colour chip or select: the "no colour" placeholder
     // goes through a CSS variable (fallback #444), so the light shade can
@@ -6928,7 +7316,7 @@ createApp({
       return out;
     }
     function copySlotLabel(ace, slot) {
-      return "ACE " + dispIdx(ace) + " Slot " + dispIdx(slot);
+      return "MMU " + dispIdx(ace) + " Slot " + dispIdx(slot);
     }
     async function _setPreflightCopiesArgs(args) {
       try {
@@ -7073,7 +7461,7 @@ createApp({
       // The proposed destination for a slicer colour (load that colour here).
       if (!m || m.kind === "none") return "";
       if (m.kind === "pin") return pinLabel(m.head);
-      return "ACE " + dispIdx(m.ace) + " Slot " + dispIdx(m.slot);
+      return "MMU " + dispIdx(m.ace) + " Slot " + dispIdx(m.slot);
     }
     // ---- Send-to-multiACE inbox -----------------------------------------
     // A slicer pushed a raw gcode to /api/preflight/inbox (store-only). The
@@ -7159,7 +7547,12 @@ createApp({
     function ensurePreflightWorker() {
       if (!window.Worker) throw new Error(t("ui.preflight.local_worker_missing"));
       if (preflightWorker && preflightWorkerReady) return preflightWorkerReady;
-      preflightWorker = new Worker("preflight_pyodide_worker.js?v=pyodide-20261026");
+      // Content hash from the served index.html; the fixed tag is the
+      // fallback for a shell that predates it.
+      const workerV = (window.MA_ASSET_V && window.MA_ASSET_V.worker)
+        || "pyodide-20260624";
+      preflightWorker = new Worker("preflight_pyodide_worker.js?v="
+        + encodeURIComponent(workerV));
       preflightWorkerReady = (async () => {
         const r = await fetch(`${API}/preflight/pysrc`);
         if (!r.ok) throw new Error("pysrc " + r.status);
@@ -7377,69 +7770,6 @@ createApp({
       };
       return map[stage] || stage || "";
     }
-    // Mirror of the backend _prepend_print_prefs for the in-browser path: the
-    // prefs prepend lives in main.py (the I/O shell), not the shared core, so
-    // the local worker path applies it here before upload.
-    function _prependPrintPrefs(text) {
-      if (!preflight.bedMesh && !preflight.camera && !preflight.flowCal) return text || "";
-      const line = "SET_PRINT_PREFERENCES BED_LEVEL=" + (preflight.bedMesh ? 1 : 0)
-        + " FLOW_CALIBRATE=" + (preflight.flowCal ? 1 : 0)
-        + " TIME_LAPSE_CAMERA=" + (preflight.camera ? 1 : 0)
-        + " FORCE=1";
-      let body = (text || "").replace(
-        /^(\s*SET_PRINT_PREFERENCES\b.*)$/gim, "; multiACE disabled: $1");
-      if (preflight.flowCal) body = _relocateFlowCal(body);
-      return "; multiACE preflight: print preferences\n" + line + "\n" + body;
-    }
-    // Mirror of main.py _flow_cal_block: comment out the slicer's
-    // SM_PRINT_FLOW_CALIBRATE lines (they sit before the auto-load block, heads
-    // still empty) and re-emit one "T<h> A0 + FLOW_CALIBRATE" pair per physical
-    // head the processed file prints with, right behind the auto-load block,
-    // ending with the start gcode's own tool re-selected. The bare pair instead
-    // of the stock wrapper: the wrapper skips heads stock believes unused, and
-    // stock derives that from the slicer header's per-logical-T grams, which no
-    // longer matches the physical heads after our remap. No auto-load block
-    // (nothing to anchor on) -> file unchanged = stock placement.
-    function _relocateFlowCal(text) {
-      const lines = (text || "").split("\n");
-      const tRe = /^\s*T(\d+)\s*(?:;.*)?$/;
-      let endIdx = -1, initial = null;
-      const heads = new Set();
-      for (let i = 0; i < lines.length; i++) {
-        const m = tRe.exec(lines[i]);
-        if (m) {
-          const h = parseInt(m[1], 10);
-          if (h >= 0 && h <= 3) {
-            heads.add(h);
-            if (endIdx < 0) initial = h;
-          }
-          continue;
-        }
-        if (endIdx < 0 && /^\s*;\s*multiACE auto-load: end\b/.test(lines[i])) endIdx = i;
-      }
-      if (endIdx < 0 || heads.size === 0) return text || "";
-      if (initial === null) initial = Math.min(...heads);
-      const block = ["; multiACE preflight: flow calibration (moved behind the auto-load, heads loaded)"];
-      // Start tool LAST: the block ends with the head the start line needs
-      // already in the gripper, so the closing re-select is a no-op instead
-      // of one more tool change.
-      const order = [...heads].filter(h => h !== initial).sort((a, b) => a - b);
-      if (heads.has(initial)) order.push(initial);
-      for (const h of order) {
-        block.push("T" + h + " A0");
-        block.push("FLOW_CALIBRATE EXTRUDER=" + h);
-      }
-      block.push("T" + initial);
-      block.push("; multiACE preflight: flow calibration end");
-      const out = [];
-      for (let i = 0; i < lines.length; i++) {
-        let l = lines[i];
-        if (/^\s*SM_PRINT_FLOW_CALIBRATE\b/i.test(l)) l = "; multiACE moved: " + l.replace(/^\s+/, "");
-        out.push(l);
-        if (i === endIdx) out.push(...block);
-      }
-      return out.join("\n");
-    }
     // New design: the plans become comparison cards; one is selected, only
     // its table shows and a single footer button prints it. Default is the
     // first plan (as loaded), the same one the classic view lists first.
@@ -7464,6 +7794,10 @@ createApp({
     }
     function pfPlanFlush(p) {
       return preflight.report && preflight.report.head_mode ? headPlanFlushG(p) : null;
+    }
+    // Background swaps of a head-mode plan (bg_ok / unloads), null without.
+    function pfPlanBg(p) {
+      return preflight.report && preflight.report.head_mode ? headPlanBg(p) : null;
     }
     function pfSelected() {
       const list = pfPlanList();
@@ -7536,6 +7870,11 @@ createApp({
         const live = await loadLiveSlotsForPreflight();
         payload.liveSlots = live.live_slots;
         payload.headCtx   = live.head_ctx;
+        // The worker writes the print-preference line (and moves the flow
+        // calibration) with the same preflight_core pass the printer uses.
+        payload.printPrefs = {bedMesh: !!preflight.bedMesh,
+                              camera: !!preflight.camera,
+                              flowCal: !!preflight.flowCal};
         const j = await runPreflightWorker("rewrite", payload, msg => {
           preflight.progress = {
             percent: Number(msg.percent || 0),
@@ -7545,9 +7884,7 @@ createApp({
         const fd = new FormData();
         fd.append("root", "gcodes");
         fd.append("print", "true");
-        fd.append("file",
-          new Blob([_prependPrintPrefs(j.text)], {type: "application/octet-stream"}),
-          rep.filename || preflightFile.name);
+        fd.append("file", j.blob, rep.filename || preflightFile.name);
         const r = await fetch("/server/files/upload", {method: "POST", body: fd});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) {
@@ -8314,7 +8651,7 @@ createApp({
       })));
     }
     function fmtDuration(sec) {
-      if (!sec || sec < 0) return "–";
+      if (!sec || sec < 0) return "-";
       if (sec < 120) return `${Math.round(sec)} s`;
       const m = Math.round(sec / 60);
       return m < 60 ? `${m} min`
@@ -8333,7 +8670,7 @@ createApp({
         const slots = l.slots.map(e => {
           const hasAce = e.ace != null && e.slot != null;
           const where = hasAce
-            ? `ACE ${dispIdx(e.ace)} / ${dispIdx(e.slot)}`
+            ? `MMU ${dispIdx(e.ace)} / ${dispIdx(e.slot)}`
             : t("ui.history.reprint_feeder");
           const sp = hasAce ? spoolForSlot(e.ace, e.slot) : spoolForHead(Number(l.head));
           const now = sp ? t("ui.history.reprint_now", {spool: spoolTitle(sp)})
@@ -8422,9 +8759,10 @@ createApp({
       calibrationVerifyMoving, calibrationVerifyActive, calibrationRouteKnown,
       calibrationRouteAnchors, calibrationRouteOccupied,
       calibrationVerifyBlockedReason, calibrationStartBlockedReason,
-      calibrationTabStatus, CALIBRATION_TAB,
+      calibrationTabStatus, CALIBRATION_TAB, ORCA_SECTION,
       calibrationStatus, calibrationRecovery, calibrationMeasureStep,
       calibrationVerifyStep, calibrationResultCase, calibrationNothingToSave,
+      calibrationVerifyOutsideTolerance,
       calibrationOwnValueSlots, calibrationSlotBadge,
       calibrationTipPositionMm, calibrationTipSegment,
       calibrationTipSegmentPercent, calibrationTipLabel,
@@ -8452,10 +8790,10 @@ createApp({
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
       panelMini, fullUiHref, uiTheme, uiThemeChoice, uiLight, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,
-      slotTitle, switchAce, loadSlot, slotIsEmpty, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, aceCfwTitle, visibleAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
+      slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
-      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
+      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,
@@ -8482,7 +8820,8 @@ createApp({
       isPrinting,
       dryerCfg, dryStart, dryStop, dryPanelOpen, toggleDryPanel, aceDrying,
       snapshots, selectedSnapshot, snapshotPreview, saveSnapshot, loadSnapshot, deleteSnapshot,
-      config, configLog, configLoadError, showRawConfig, configForm, rebootNeeded,
+      config, configLog, configLoadError, showRawConfig, toggleRawConfig, configForm, rebootNeeded,
+      printerRebootNeeded, restartNotice, restartOffered, restartNow, notifWantsReboot,
       aceHeadsRightSide,
       loadConfig, saveConfigForm, saveConfigRaw, setMode,
       tipform, loadTipform, tipformAddRow, tipformRemoveRow, saveTipform, tipformRestartPending, tipformNameOptions,
@@ -8498,7 +8837,7 @@ createApp({
       headTargets, headTargetOptions, headEffectiveTargetId, headTargetLabel,
       headTargetColor, chipBg, headTargetLabelById, onHeadTargetChange, headSwapsDisplay,
       hmDropOpen, hmDdToggle, hmDdClose, hmDdPick,
-      pfPlanSel, pfPlanList, pfPlanFeasible, pfPlanSwaps, pfPlanFlush, pfSelected, pfRecommended, pfPlanTitle, pfGoLabel, pfPrintSelected,
+      pfPlanSel, pfPlanList, pfPlanFeasible, pfPlanSwaps, pfPlanFlush, pfPlanBg, pfSelected, pfRecommended, pfPlanTitle, pfGoLabel, pfPrintSelected,
       headFeasible, headPlanFeasible, headPlanSwaps, headPlanBg, headPlanFlushG, headPlanBgLabel, headSlicerHex,
       headSlicerMat, headProposalLabel,
       headMaxCopies, headCopiesEffective, headCopyPlan, headCopyList, copySlotLabel, setPreflightCopies,

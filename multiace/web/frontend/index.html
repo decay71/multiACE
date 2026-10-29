@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#15bdc6">
-  <title>mUlt1ACE</title>
+  <title>mUlt1ACE+</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="stylesheet" href="style.css">
@@ -43,7 +43,7 @@
   </script>
 </head>
 <body>
-<div id="ma-splash" aria-hidden="true"><div class="ma-logo">m<span>U</span>lt<span>1</span>ACE</div><div class="ma-spin"></div></div>
+<div id="ma-splash" aria-hidden="true"><div class="ma-logo">m<span>U</span>lt<span>1</span>ACE<span>+</span></div><div class="ma-spin"></div></div>
 <script>
   // Backstop independent of app.js: if the app never got far enough to
   // drop the splash (Vue missing, setup threw), say so instead of spinning.
@@ -97,7 +97,7 @@
     </div>
     <template v-if="panelAce">
       <div class="panel-head">
-        <span>ACE {{ dispIdx(panelAce.idx) }}</span>
+        <span>MMU {{ dispIdx(panelAce.idx) }}</span>
         <span class="panel-temp">
           <span v-if="panelAce.connected === false" class="ace-offline-text"
                 :title="panelAce.connect_error || null">{{ t('ui.common.offline') }}</span>
@@ -305,7 +305,7 @@
   </div>
 
   <header v-if="!panelMode">
-    <h1>m<span class="hl">U</span>lt<span class="hl">1</span>ACE
+    <h1>m<span class="hl">U</span>lt<span class="hl">1</span>ACE<span class="hl">+</span>
       <small>{{ version }}</small>
       <small v-if="printerName" class="printer-tag"
              :title="t('ui.common.firmware') + ' ' + printerFw">· {{ printerName }}</small>
@@ -340,7 +340,13 @@
             :aria-current="tab===it.key ? 'page' : null"
             @click="tab=it.key">{{ it.label }}</button>
   </div>
-  <div v-if="rebootNeeded && !panelMode" class="reboot-banner">{{ t('ui.common.please_restart') }}</div>
+  <div v-if="(rebootNeeded || printerRebootNeeded || restartNotice) && !panelMode" class="reboot-banner">
+    <template v-if="restartNotice">{{ restartNotice }}</template>
+    <template v-else>
+      {{ printerRebootNeeded ? t('ui.config.update_done_reboot') : t('ui.common.please_restart') }}
+      <button v-if="restartOffered" class="restart-now" @click="restartNow('printer')">{{ t('ui.restart.printer_btn') }}</button>
+    </template>
+  </div>
   <div v-if="state.preflight_inbox?.pending && !panelMode" class="inbox-banner">
     <span>{{ t('ui.inbox.banner', {name: state.preflight_inbox?.name}) }}</span>
     <span v-if="!inboxCanStart" class="inbox-wait">{{ t('ui.inbox.waiting') }}</span>
@@ -356,7 +362,7 @@
         <span class="pill" :class="'state-' + (state.printer_state || 'idle')">
           {{ t('ui.dashboard.status_pill') }}: <strong>{{ state.printer_state || '-' }}</strong>
         </span>
-        <span class="pill">{{ t('ui.dashboard.active_pill') }}: <strong>ACE {{ dispIdx(state.active_device) }}</strong></span>
+        <span class="pill">{{ t('ui.dashboard.active_pill') }}: <strong>MMU {{ dispIdx(state.active_device) }}</strong></span>
         <span class="pill">{{ t('ui.dashboard.mode_pill') }}: <strong>{{ state.mode || '-' }}</strong></span>
       </div>
       <div ref="wiringContainerEl" class="ace-th-wrap">
@@ -381,20 +387,24 @@
           <!-- connected === false (explicit): the unit is not connected and
                everything below is its LAST known state, so the card is
                dimmed and says offline. null = older backend, shown as before. -->
-          <article v-for="ace in visibleAces" :key="ace.idx" class="ace-card"
+          <!-- Head mode: a connected ACE no head is wired to shows dimmed
+               and inert behind a "not assigned" tag. -->
+          <article v-for="ace in gridAces" :key="ace.idx" class="ace-card"
                    :class="{primary: ace.idx === state.active_device,
-                            clickable: ace.idx !== state.active_device && ace.connected !== false,
-                            offline: ace.connected === false}"
-                   @click="ace.idx !== state.active_device && ace.connected !== false && switchAce(ace.idx)">
+                            clickable: ace.idx !== state.active_device && ace.connected !== false && !ace._unwired,
+                            offline: ace.connected === false,
+                            unwired: ace._unwired}"
+                   @click="!ace._unwired && ace.idx !== state.active_device && ace.connected !== false && switchAce(ace.idx)">
+            <div v-if="ace._unwired" class="unwired-tag">{{ t('ui.dashboard.unwired_tag') }}</div>
             <h2>
-              <span class="ace-name">ACE {{ dispIdx(ace.idx) }}
+              <span class="ace-name">MMU {{ dispIdx(ace.idx) }}<span v-if="ace.unit_name" class="ace-unit-name" :title="ace.unit_name">· {{ ace.unit_name }}</span>
                 <!-- Firmware rides in the TOOLTIP, not in the visible text: the header is a tight three-column
                      grid, and the version pushed the middle block until
                      "%rH" wrapped. It stays readable on hover and is
                      spelled out in the updater dropdown, where it is
                      actionable. -->
-                <span class="ace-proto" v-if="ace.protocol"
-                      :title="aceProtoTitle(ace)">({{ ace.protocol.toUpperCase() }})</span>
+                <span class="ace-proto" v-if="ace.kind || ace.protocol"
+                      :title="aceProtoTitle(ace)">({{ unitDriverLabel(ace) }})</span>
                 <span class="ace-cfw" v-if="ace.community_fw"
                       :title="aceCfwTitle(ace)">CFW</span>
                 <small v-if="ace.idx === state.active_device">{{ t('ui.common.active') }}</small>
@@ -411,7 +421,7 @@
                 </template>
               </span>
               <span class="ace-card-actions" @click.stop>
-                <button class="ace-dry-btn"
+                <button class="ace-dry-btn" v-if="aceHasDryer(ace)"
                         :class="{active: dryPanelOpen(ace.idx), running: aceDrying(ace)}"
                         @click="toggleDryPanel(ace.idx)"
                         :title="t('ui.dashboard.dryer')">☀</button>
@@ -442,6 +452,7 @@
                   <em v-if="slot.tag_format && !slot.material && slot.state !== 'empty'" class="slot-fmt">{{ tagFormatLabel(slot.tag_format) }}</em>
                   <em v-if="slot.material">{{ slot.material }}</em>
                   <em v-else-if="slot.state === 'empty'" class="empty-label">{{ t('ui.common.empty') }}</em>
+                  <em v-else-if="slot.state === 'nosensor'" class="empty-label">{{ t('ui.common.no_sensor') }}</em>
                   <!-- UID-only read: the chip id takes the identity line, like the material does for RFID. -->
                   <em v-else-if="slot.uid" class="slot-uid" :title="slot.uid">{{ slot.uid }}</em>
                   <em v-else-if="slot.state !== 'unknown'">{{ slot.state }}</em>
@@ -479,7 +490,7 @@
               </div>
             </div>
             <transition name="dry-fade">
-              <div v-if="dryPanelOpen(ace.idx)" class="dry-panel" @click.stop>
+              <div v-if="dryPanelOpen(ace.idx) && aceHasDryer(ace)" class="dry-panel" @click.stop>
                 <div class="dry-row">
                   <!-- ONE drying temperature per unit: the manual Start below
                        and auto-dry both use it, so it lives on the printer
@@ -502,7 +513,7 @@
                 <!-- Humidity control, ACE 2: it has the reading, so it owns
                      the thresholds. An invalid pair frames BOTH fields red
                      and is not sent (autoDryPairInvalid). -->
-                <div class="dry-row auto-dry" v-if="ace.auto_dry && ace.protocol === 'v2'">
+                <div class="dry-row auto-dry" v-if="ace.auto_dry && ace.protocol === 'v2' && aceHasDryer(ace)">
                   <label class="config-inline-check">
                     <input type="checkbox" :checked="ace.auto_dry.enabled"
                            @change="autoDryEnable(ace.idx, $event, ace.auto_dry)">
@@ -527,7 +538,7 @@
                      FOLLOWS one ACE 2 - picked here, with its own drying
                      temperature and its own run-on time (a Pro is sealed
                      worse, so it keeps going after its master is done). -->
-                <div class="dry-row auto-dry" v-if="ace.auto_dry && ace.protocol !== 'v2'">
+                <div class="dry-row auto-dry" v-if="ace.auto_dry && ace.protocol !== 'v2' && aceHasDryer(ace)">
                   <label class="config-inline-check">
                     <!-- No master picked = nothing could ever start this unit,
                          so the box stays out of reach until one is chosen
@@ -544,7 +555,7 @@
                             @change="autoDrySetMaster(ace.idx, $event)">
                       <option :value="-1">{{ t('ui.dashboard.auto_dry_no_master') }}</option>
                       <option v-for="m in autoDryMasters()" :key="m" :value="m">
-                        ACE {{ m + 1 }}</option>
+                        MMU {{ m + 1 }}</option>
                     </select>
                   </label>
                   <label :title="t('ui.dashboard.auto_dry_add_hint')">{{ t('ui.dashboard.auto_dry_add') }}
@@ -608,7 +619,7 @@
                    class="toolhead-card"
                    :class="{empty: !t_.module_exist, present: t_.head_source_known && !t_.load_failed, 'load-failed': t_.load_failed, unknown: !t_.head_source_known && t_.filament_at_extruder && !t_.manual && !t_.feeder, manual: t_.manual, feeder: t_.feeder, 'feeder-empty': t_.feeder && !t_.filament_detected, 'op-loading': toolheadOps[t_.idx] === 'loading', 'op-unloading': toolheadOps[t_.idx] === 'unloading', 'nt-head': state.mode === 'head', 'nt-set-open': !!thSettingsOpen[t_.idx]}">
             <h2>T{{ dispIdx(t_.idx) }}<em v-if="uiTheme === 'new' && state.mode === 'head' && t_.module_exist"
-                class="nt-th-tag" :class="{'nt-tag-feeder': t_.feeder}">{{ t_.feeder ? t('ui.dashboard.feeder') : 'ACE ' + dispIdx(headAceOf(t_.idx)) }}</em>
+                class="nt-th-tag" :class="{'nt-tag-feeder': t_.feeder}">{{ t_.feeder ? t('ui.dashboard.feeder') : 'MMU ' + dispIdx(headAceOf(t_.idx)) }}</em>
               <small v-if="!t_.module_exist">{{ t('ui.common.offline') }}</small>
               <!-- Feeder AND manual heads carry the big feeder-tile instead
                    of this dot (same colour twice reads as two facts). The
@@ -648,7 +659,7 @@
               <span class="muted">{{ toolheadOps[t_.idx] === 'loading' ? t('ui.dashboard.load') : t('ui.dashboard.unload') }}…</span>
             </p>
             <p class="meta" v-else-if="t_.head_source_known">
-              <span v-if="t_.ace != null && t_.slot != null">ACE {{ dispIdx(t_.ace) }} / Slot {{ dispIdx(t_.slot) }}</span>
+              <span v-if="t_.ace != null && t_.slot != null">MMU {{ dispIdx(t_.ace) }} / Slot {{ dispIdx(t_.slot) }}</span>
               <span v-if="t_.material && !t_.load_failed" class="th-meta-mat"> · {{ t_.material }}</span>
               <span v-if="t_.load_failed" class="error-inline"
                     :title="t('ui.dashboard.load_failed_hint')"> · {{ t('ui.dashboard.load_failed') }}</span>
@@ -718,7 +729,7 @@
                           :class="{active: Number(headAceOf(t_.idx)) === Number(o.value)}"
                           :title="o.label"
                           :disabled="o.disabled || t_.head_source_known || t_.filament_at_extruder"
-                          @click.prevent="Number(headAceOf(t_.idx)) !== Number(o.value) && setHeadAce(t_.idx, o.value)">ACE {{ dispIdx(o.value) }}</button>
+                          @click.prevent="Number(headAceOf(t_.idx)) !== Number(o.value) && setHeadAce(t_.idx, o.value)">MMU {{ dispIdx(o.value) }}</button>
                 </span>
                 <select v-if="uiTheme !== 'new'" :value="headAceOf(t_.idx)"
                         :disabled="t_.head_source_known || t_.filament_at_extruder"
@@ -757,7 +768,7 @@
               T{{ dispIdx(t_.idx) }}: {{ t('ui.dashboard.feeder') }}
             </template>
             <template v-else>
-              T{{ dispIdx(t_.idx) }}: ACE {{ dispIdx(t_.ace) }}/{{ dispIdx(t_.slot) }}
+              T{{ dispIdx(t_.idx) }}: MMU {{ dispIdx(t_.ace) }}/{{ dispIdx(t_.slot) }}
             </template>
             <em v-if="t_.material">{{ t_.material }}</em>
           </span>
@@ -780,7 +791,7 @@
         <div class='calibration-workspace'>
           <div class='calibration-route-summary'>
             <div>
-              <strong>ACE {{ dispIdx(calibrationUi.ace) }} · Slot {{ dispIdx(calibrationUi.slot) }}
+              <strong>MMU {{ dispIdx(calibrationUi.ace) }} · Slot {{ dispIdx(calibrationUi.slot) }}
                 → T{{ dispIdx(calibrationUi.head) }}</strong>
               <small>{{ calibrationTipLabel }}</small>
             </div>
@@ -792,7 +803,7 @@
                         unknown: calibrationTipPositionMm == null}'
                :style='{"--route-cols": calibrationRouteGrid}'
                :title='calibrationTipLabel' :aria-label='calibrationTipLabel'>
-            <span><strong>ACE {{ dispIdx(calibrationUi.ace) }} · S{{ dispIdx(calibrationUi.slot) }}</strong>{{ t('ui.calibration.park_sub') }}</span>
+            <span><strong>MMU {{ dispIdx(calibrationUi.ace) }} · S{{ dispIdx(calibrationUi.slot) }}</strong>{{ t('ui.calibration.park_sub') }}</span>
             <div class='calibration-route-tube'>
               <b v-if='calibrationTipSegment === `ace`' class='calibration-tip-marker'
                  :style='{"--tip": `${calibrationTipSegmentPercent}%`}'>
@@ -919,8 +930,8 @@
                             :class='{selected: Number(calibrationUi.ace) === Number(ace.idx)}'
                             :disabled='calibrationRouteLocked || !!calibrationUi.busy'
                             @click='calibrationSelectAce(ace.idx)'>
-                      <strong>ACE {{ dispIdx(ace.idx) }}</strong>
-                      <small>{{ ace.protocol === 'v2'
+                      <strong>MMU {{ dispIdx(ace.idx) }}</strong>
+                      <small>{{ aceHasDecoder(ace)
                         ? t('ui.calibration.unit_v2') : t('ui.calibration.unit_v1') }}</small>
                     </button>
                   </div>
@@ -978,7 +989,7 @@
                       <tr v-for='level in calibrationSavedLevels' :key='level.src'
                           :class='{unset: !level.set, "in-use": level.inUse}'>
                         <td>{{ level.name }}<span v-if='level.inUse' class='in-use-tag'>{{ t('ui.calibration.values_in_use') }}</span></td>
-                        <td v-for='(value, i) in level.values' :key='i'>{{ value ?? '–' }}</td>
+                        <td v-for='(value, i) in level.values' :key='i'>{{ value ?? '-' }}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -1151,7 +1162,7 @@
                   <template v-else-if='calibrationMeasureStep === 2'>
                     <div class='calibration-metrics'>
                       <div><small>{{ t('ui.calibration.m_toolhead') }}</small><strong>{{ state.calibration.load_length_mm }} mm</strong>
-                        <span>{{ state.calibration.protocol === 'v2'
+                        <span>{{ (state.calibration.has_decoder ?? state.calibration.protocol === 'v2')
                           ? t('ui.calibration.src_encoder') : t('ui.calibration.src_time') }}</span></div>
                       <div><small>{{ t('ui.calibration.pulled_back') }}</small><strong>{{ state.calibration.commanded_retract_mm }} mm</strong>
                         <span>{{ t('ui.calibration.pulled_back_sub') }}</span></div>
@@ -1299,9 +1310,9 @@
                   <p v-else class='calibration-notice'>{{ t('ui.calibration.v_paused') }}</p>
 
                   <p v-if='state.calibration.verify_feed_delta_mm != null && calibrationVerifyStep > 1'
-                     :class='state.calibration.verify_remeasured_mm ? `calibration-warning` : `muted`'>
-                    {{ state.calibration.verify_remeasured_mm
-                      ? t('ui.calibration.v_remeasured', {mm: (state.calibration.verify_feed_delta_mm > 0 ? '+' : '') + state.calibration.verify_feed_delta_mm, load: state.calibration.load_length_mm})
+                     :class='calibrationVerifyOutsideTolerance ? `calibration-warning` : `muted`'>
+                    {{ calibrationVerifyOutsideTolerance
+                      ? t('ui.calibration.v_within_margin', {mm: (state.calibration.verify_feed_delta_mm > 0 ? '+' : '') + state.calibration.verify_feed_delta_mm})
                       : t('ui.calibration.v_confirmed', {mm: (state.calibration.verify_feed_delta_mm >= 0 ? '+' : '') + state.calibration.verify_feed_delta_mm}) }}
                   </p>
 
@@ -1454,7 +1465,7 @@
                     {{ t('ui.calibration.r_measured', {
                       load: state.calibration.load_length_mm,
                       swap: state.calibration.swap_retract_length_mm,
-                      src: state.calibration.protocol === 'v2'
+                      src: (state.calibration.has_decoder ?? state.calibration.protocol === 'v2')
                         ? t('ui.calibration.src_encoder') : t('ui.calibration.src_time')}) }}
                   </p>
 
@@ -1640,7 +1651,7 @@
           <p v-if="printCtlError" class="error small">{{ printCtlError }}</p>
           <p v-if="printCtlNotice" class="muted small">{{ printCtlNotice }}</p>
           <div class="pc-status">
-            <span class="pill">{{ printCtl.state || '–' }}</span>
+            <span class="pill">{{ printCtl.state || '-' }}</span>
             <span v-if="printCtl.progress" class="pill">{{ printCtl.progress }} %</span>
             <span v-if="printCtl.filename" class="muted small pc-file">{{ printCtl.filename }}</span>
             <span v-if="printCtl.message" class="muted small">{{ printCtl.message }}</span>
@@ -1680,8 +1691,8 @@
 
           <div class="pc-row pc-temps">
             <span>{{ t('ui.control.nozzle') }}</span>
-            <b>{{ printCtl.nozzle.temp !== null ? Math.round(printCtl.nozzle.temp) : '–' }}
-               / {{ printCtl.nozzle.target !== null ? Math.round(printCtl.nozzle.target) : '–' }} °C</b>
+            <b>{{ printCtl.nozzle.temp !== null ? Math.round(printCtl.nozzle.temp) : '-' }}
+               / {{ printCtl.nozzle.target !== null ? Math.round(printCtl.nozzle.target) : '-' }} °C</b>
             <input type="number" class="pc-temp-in"
                    min="0" :max="printCtlLimits.nozzle.max"
                    :placeholder="t('ui.control.target')"
@@ -1692,8 +1703,8 @@
           </div>
           <div class="pc-row pc-temps">
             <span>{{ t('ui.control.bed') }}</span>
-            <b>{{ printCtl.bed.temp !== null ? Math.round(printCtl.bed.temp) : '–' }}
-               / {{ printCtl.bed.target !== null ? Math.round(printCtl.bed.target) : '–' }} °C</b>
+            <b>{{ printCtl.bed.temp !== null ? Math.round(printCtl.bed.temp) : '-' }}
+               / {{ printCtl.bed.target !== null ? Math.round(printCtl.bed.target) : '-' }} °C</b>
             <input type="number" class="pc-temp-in"
                    min="0" :max="printCtlLimits.bed.max"
                    :placeholder="t('ui.control.target')"
@@ -1705,7 +1716,7 @@
 
           <div class="pc-row pc-temps" v-if="printCtl.enclosure">
             <span>{{ t('ui.control.chamber') }}</span>
-            <b>{{ printCtl.enclosure.temp !== null ? Math.round(printCtl.enclosure.temp) : '–' }} °C</b>
+            <b>{{ printCtl.enclosure.temp !== null ? Math.round(printCtl.enclosure.temp) : '-' }} °C</b>
           </div>
 
           <div class="pc-row pc-light" :class="{on: printCtl.light > 0}" v-if="printCtl.light !== null">
@@ -1858,11 +1869,11 @@
                 <td>
                   <span v-for="c in historyColors(row)" :key="'hc-'+c.head"
                         class="swatch" :style="{background: c.color}"
-                        :title="'T' + c.th + ' · ACE ' + c.ace + ' / slot ' + c.slot"></span>
+                        :title="'T' + c.th + ' · MMU ' + c.ace + ' / slot ' + c.slot"></span>
                 </td>
-                <td>{{ row.multiace && row.multiace.toolchanges != null ? row.multiace.toolchanges : '–' }}</td>
-                <td>{{ row.filament_used ? Math.round(row.filament_used / 1000) + ' m' : '–' }}</td>
-                <td><span class="pill">{{ row.status || '–' }}</span></td>
+                <td>{{ row.multiace && row.multiace.toolchanges != null ? row.multiace.toolchanges : '-' }}</td>
+                <td>{{ row.filament_used ? Math.round(row.filament_used / 1000) + ' m' : '-' }}</td>
+                <td><span class="pill">{{ row.status || '-' }}</span></td>
                 <td>
                   <button v-if="row.filename" class="reprint-btn"
                           :disabled="isPrinting || history.reprinting !== ''"
@@ -1876,12 +1887,12 @@
               <tr v-if="history.detail === historyRowKey(row)" class="history-detail">
                 <td colspan="8">
                   <div v-if="row.multiace">
-                    <p v-if="row.multiace.plan || row.multiace.load_retries != null"><b>{{ t('ui.history.plan') }}:</b> {{ row.multiace.plan || '–' }}
+                    <p v-if="row.multiace.plan || row.multiace.load_retries != null"><b>{{ t('ui.history.plan') }}:</b> {{ row.multiace.plan || '-' }}
                        · <b>{{ t('ui.history.retries') }}:</b> {{ row.multiace.load_retries }}</p>
                     <table class="history-swaps" v-if="(row.multiace.swaps || []).length">
                       <tr v-for="(sw, i) in row.multiace.swaps" :key="'sw-'+i">
                         <td>{{ sw.kind }}</td>
-                        <td>T{{ sw.head }} · ACE {{ sw.ace }} / {{ sw.slot }}</td>
+                        <td>T{{ sw.head }} · MMU {{ sw.ace }} / {{ sw.slot }}</td>
                         <td>{{ Math.round(sw.seconds) }} s</td>
                       </tr>
                     </table>
@@ -2183,6 +2194,10 @@
       <p v-if="state.mode === 'head'" class="muted small">{{ t('ui.config.head_mode_hint') }}</p>
       </div>
       </div>
+      <!-- D11 Devices: the unit table. One row per place (MMU 1-4) and one
+           per detected unit without a place. The dropdown writes
+           ACE_UNIT_ASSIGN, "Forget" ACE_UNIT_FORGET; both take effect at the
+           next firmware restart, the hint row says so. -->
       <div class="nt-behave">
       <div class="nt-tile">
       <h3>{{ t('ui.config.confirm_commands') }}</h3>
@@ -2234,6 +2249,31 @@
       </div>
       </div>
 
+      <template v-if="ORCA_SECTION">
+      <h3>{{ t('ui.config.orca_profile') }}</h3>
+      <button type="button" @click="orcaProfile()">{{ t('ui.config.orca_profile_btn') }}</button>
+      <p class="muted small">{{ t('ui.config.orca_profile_hint') }}</p>
+      <div class="tool-map" v-if="virtualTools().length">
+        <p class="muted small">{{ t('ui.config.orca_tool_map_hint') }}</p>
+        <div class="tool-map-head">{{ t('ui.config.orca_tool_map_head') }}</div>
+        <div class="tool-map-groups">
+          <div class="tool-map-group" v-for="g in virtualToolGroups()" :key="g.ace">
+            <div class="tool-map-row" v-for="vt in g.tools" :key="vt.tool">
+              <span class="tool-map-name">{{ vt.tool + 1 }}</span>
+              <select class="tool-map-target" :value="vt.ace + ':' + vt.slot"
+                      :style="vt.color ? {background: vt.color, color: textOn(vt.color)} : {}"
+                      @change="setToolMapTarget(vt.tool, $event.target.value)">
+                <option v-for="o in toolTargetOptions(vt)" :key="o.value" :value="o.value"
+                        :style="o.color ? {background: o.color, color: textOn(o.color)} : {}">{{ o.label }}</option>
+              </select>
+              <button type="button" v-if="vt.mapped" class="tool-map-reset" @click="resetToolMap(vt.tool)" :title="t('ui.config.orca_tool_reset')">&#x21BA;</button>
+              <span v-else class="tool-map-reset"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      </template>
+
       <h3>{{ t('ui.config.fluidd_panel') }}</h3>
       <div class="row">
         <button @click="addFluiddCamera" :disabled="fluiddCamBusy">
@@ -2246,13 +2286,16 @@
       <h3>{{ t('ui.config.parameters') }}</h3>
       <div class="config-form">
         <div class="nt-pgroup nt-pg-ace">
-        <div class="config-row">
+        <!-- ace_device_count and v2_order left the form with D11: the unit
+             table (Devices above) is the expectation and the order; both
+             options are still read by the engine for existing configs. -->
+        <div class="config-row" v-if="false">
           <label>{{ t('ui.config.ace_count') }}</label>
           <select v-model.number="configForm.ace_device_count">
             <option v-for="n in [1,2,3,4]" :key="n" :value="n">{{ n }}</option>
           </select>
         </div>
-        <div class="config-row">
+        <div class="config-row" v-if="false">
           <label>{{ t('ui.config.ace2_order') }}</label>
           <select v-model="configForm.v2_order">
             <option value="first">{{ t('ui.config.ace2_before') }}</option>
@@ -2454,8 +2497,8 @@
       </div>
       <h3>{{ t('ui.config.per_ace') }}</h3>
       <div class="per-ace-grid">
-        <div class="per-ace-card" v-for="i in configForm.ace_device_count" :key="i-1">
-          <h4>ACE {{ dispIdx(i-1) }}</h4>
+        <div class="per-ace-card" v-for="i in perAceCount()" :key="i-1">
+          <h4>MMU {{ dispIdx(i-1) }}</h4>
           <div class="per-ace-row">
             <label>{{ t('ui.config.dryer_temp_override') }}
               <input type="number" v-model.number="configForm.perAce[i-1].dryer_temp"
@@ -2527,15 +2570,16 @@
       <div class="row nt-cfg-save">
         <button @click="loadConfig">{{ t('ui.common.reload') }}</button>
         <button @click="saveConfigForm" class="primary">{{ t('ui.config.save_restart') }}</button>
-        <button @click="showRawConfig = !showRawConfig">{{ showRawConfig ? t('ui.config.form_view') : t('ui.config.raw_view') }}</button>
+        <button @click="toggleRawConfig()">{{ showRawConfig ? t('ui.config.form_view') : t('ui.config.raw_view') }}</button>
       </div>
       <!-- Result AT the button: the config form is long, so the top reboot
            banner was only visible after scrolling up. The
            hint above it repeats the banner in warning colours - inside the
            grey log block the restart line went unnoticed. -->
-      <p v-if="rebootNeeded" class="config-restart-hint">⚠ {{ t('ui.common.please_restart') }}</p>
+      <p v-if="rebootNeeded" class="config-restart-hint">⚠ {{ t('ui.common.please_restart') }}
+        <button v-if="restartOffered" class="restart-now" @click="restartNow('printer')">{{ t('ui.restart.printer_btn') }}</button></p>
       <pre v-if="configLog" class="config-log-inline">{{ configLog }}</pre>
-      <details v-if="showRawConfig">
+      <details v-if="showRawConfig" id="raw-config">
         <summary>{{ t('ui.config.raw_editor') }}</summary>
         <textarea v-model="config.content" rows="30" spellcheck="false"></textarea>
         <!-- No "restart Klipper" option: it worked only sometimes (a bare
@@ -2607,7 +2651,8 @@
         </div>
         <p v-if="tipform.error" class="error">{{ tipform.error }}</p>
         <pre v-else-if="tipform.savedMsg" class="config-log-inline">{{ tipform.savedMsg }}</pre>
-        <p v-if="tipformRestartPending" class="tipform-pending">⚠ {{ t('ui.config.tipform_restart_pending') }}</p>
+        <p v-if="tipformRestartPending" class="tipform-pending">⚠ {{ t('ui.config.tipform_restart_pending') }}
+          <button v-if="restartOffered" class="restart-now" @click="restartNow('firmware')">{{ t('ui.restart.firmware_btn') }}</button></p>
         <p class="muted small">{{ t('ui.config.tipform_syntax') }}</p>
       </div>
       <p v-else class="muted small">{{ t('ui.config.tipform_unsupported') }}</p>
@@ -2663,6 +2708,86 @@ reboot</pre>
         </div>
         <pre v-if="updateState.log" class="update-log">{{ updateState.log }}</pre>
       </div>
+    </section>
+    <section v-show="tab==='devices'" class="nt-config-tab nt-devices-tab">
+      <div class="nt-devices">
+      <h3>{{ t('ui.config.devices') }}</h3>
+      <p class="muted small">{{ t('ui.config.devices_hint') }}</p>
+      <table class="devices-table" v-if="state.devices && state.devices.length">
+        <thead>
+          <tr>
+            <th>{{ t('ui.config.dev_place') }}</th>
+            <th>{{ t('ui.config.dev_driver') }}</th>
+            <th>{{ t('ui.config.dev_name') }}</th>
+            <th>{{ t('ui.config.dev_key') }}</th>
+            <th>{{ t('ui.config.dev_status') }}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="dev in state.devices" :key="(dev.place ?? 'x') + ':' + dev.key"
+              :class="{'dev-absent': dev.key && !dev.present, 'dev-free': !dev.key}">
+            <td>
+              <select v-if="dev.key" :value="dev.place ?? ''"
+                      :disabled="isPrinting"
+                      @change="assignUnit(dev.key, $event.target.value)">
+                <option value="">{{ t('ui.config.dev_none') }}</option>
+                <option v-for="n in [0,1,2,3]" :key="n" :value="n">MMU {{ dispIdx(n) }}</option>
+              </select>
+              <span v-else class="muted">MMU {{ dispIdx(dev.place) }} · {{ t('ui.config.dev_free') }}</span>
+            </td>
+            <td>{{ deviceDriver(dev) }}</td>
+            <td>
+              <input v-if="dev.key && dev.place !== null && dev.place !== undefined && dev.present"
+                     class="dev-name" type="text" maxlength="32"
+                     :value="devNameValue(dev)" :disabled="isPrinting"
+                     :placeholder="t('ui.config.dev_name_placeholder')"
+                     @input="devNameInput(dev, $event)"
+                     @change="devNameCommit(dev, $event)">
+              <span v-else>{{ dev.name }}</span>
+            </td>
+            <td class="dev-key" :title="dev.path">{{ dev.key }}<span v-if="dev.path" class="muted small"> · {{ dev.path }}</span></td>
+            <td>{{ dev.key ? deviceStatus(dev) : '' }}</td>
+            <td>
+              <button v-if="dev.key && dev.present && dev.connected && dev.place !== null && dev.place !== undefined"
+                      class="small" :disabled="isPrinting || state.locate_busy" @click="locateUnit(dev)">{{ t('ui.config.dev_locate') }}</button>
+              <button v-if="dev.key && !dev.present" class="small danger"
+                      :disabled="isPrinting" @click="forgetUnit(dev)">{{ t('ui.config.dev_forget') }}</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="muted small">{{ t('ui.config.dev_empty') }}</p>
+      <p v-if="state.units_restart_needed" class="restart-hint">
+        {{ t('ui.config.dev_restart_hint') }}
+        <button class="small" :disabled="isPrinting" @click="restartNow('firmware')">{{ t('ui.restart.firmware_btn') }}</button>
+      </p>
+      <template v-if="state.driver_switches && state.driver_switches.length">
+        <h3>{{ t('ui.config.drivers') }}</h3>
+        <p class="muted small">{{ t('ui.config.drivers_hint') }}</p>
+        <table class="devices-table drivers-table">
+          <tbody>
+            <tr v-for="drv in state.driver_switches" :key="drv.name"
+                :class="{'dev-absent': !drv.enabled}">
+              <td>
+                <label class="drv-switch">
+                  <input type="checkbox" :checked="drv.enabled"
+                         :disabled="isPrinting || driverOnlyActive(drv)"
+                         @change="driverToggle(drv, $event)">
+                  {{ drv.label }}
+                </label>
+              </td>
+              <td class="muted small">{{ driverNote(drv) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="driversRestartNeeded && !state.units_restart_needed" class="restart-hint">
+          {{ t('ui.config.driver_restart_hint') }}
+          <button class="small" :disabled="isPrinting" @click="restartNow('firmware')">{{ t('ui.restart.firmware_btn') }}</button>
+        </p>
+      </template>
+      </div>
+      <h3>{{ t('ui.config.acefw_title') }}</h3>
       <!-- ACE 2 firmware (OTA). Flash engine based on hakimio's updater -
            DEV-pending, ships only with his license OK. Testlauf = the
            identical chain (port release, version query, image parse)
@@ -2759,6 +2884,7 @@ reboot</pre>
                 >{{ acefwStatusText }}</span>
         </div>
       </div>
+      <p v-if="!acefwCandidates.length" class="muted small">{{ t('ui.config.acefw_none') }}</p>
     </section>
     <section v-for="p in plugins.items" :key="'sec-'+p.name"
              v-show="tab===('plugin:'+p.name)"
@@ -2808,6 +2934,8 @@ reboot</pre>
            :class="['notif-item', (n.level === 'warn') ? 'notif-warn' : '', (n.level === 'info') ? 'notif-info' : '']">
         <span class="notif-time">{{ notifTime(n) }}</span>
         <span class="notif-msg">{{ n.msg }}</span>
+        <button v-if="notifWantsReboot(n) && restartOffered" class="restart-now"
+                @click="restartNow('printer')">{{ t('ui.restart.printer_btn') }}</button>
         <button class="notif-dismiss" @click="dismissNotification(n.id)"
                 :title="t('ui.common.cancel')">×</button>
       </div>
@@ -3242,8 +3370,8 @@ reboot</pre>
         <tbody>
           <tr v-for="row in calibrationClearPlan.rows" :key="row.key">
             <td>{{ t('ui.calibration.' + row.label) }}<small>{{ row.config }}</small></td>
-            <td>{{ row.old ?? '–' }}</td>
-            <td :class="{changed: row.after !== row.old}">{{ row.after ?? '–' }}<small>{{ row.src === 'ace'
+            <td>{{ row.old ?? '-' }}</td>
+            <td :class="{changed: row.after !== row.old}">{{ row.after ?? '-' }}<small>{{ row.src === 'ace'
               ? t('ui.calibration.clear_src_ace', {ace: dispIdx(calibrationClearPlan.ace)})
               : t('ui.calibration.clear_src_default') }}</small></td>
           </tr>
@@ -3353,7 +3481,7 @@ reboot</pre>
                 {{ g.heads.map(h => dispIdx(h)).join(' + ') }}</b>
               <b v-else class="warn">{{ t('ui.preflight.forca_no_head') }}</b>
               <span v-if="forcaGroupAces(g)" class="muted small">
-                &middot; ACE {{ forcaGroupAces(g).join(' + ') }}</span>
+                &middot; MMU {{ forcaGroupAces(g).join(' + ') }}</span>
               <span v-if="g.dia" class="muted small">{{ g.dia }} mm</span>
               <span v-else class="muted small">
                 {{ t('ui.preflight.forca_no_head_hint') }}
@@ -3418,7 +3546,7 @@ reboot</pre>
                              v-for="u in unsetSlotsForT(c.t)"
                              :key="'fhu-'+c.t+'-'+u.ace+'-'+u.slot">
                           <span class="hm-dd-chip" style="background:var(--nt-nocolor, #444)"></span>
-                          <span>ACE {{ dispIdx(u.ace) }} Slot {{ dispIdx(u.slot) }}
+                          <span>MMU {{ dispIdx(u.ace) }} Slot {{ dispIdx(u.slot) }}
                             &middot; {{ t('ui.preflight.slot_not_set') }}</span>
                         </div>
                       </div>
@@ -3433,12 +3561,12 @@ reboot</pre>
                       <option v-for="opt in slicerSlotOptions(c.t)"
                               :key="'fo-'+c.t+'-'+slotKey(opt)"
                               :value="slotKey(opt)">
-                        ACE {{ dispIdx(opt.ace) }} / {{ dispIdx(opt.slot) }}
+                        MMU {{ dispIdx(opt.ace) }} / {{ dispIdx(opt.slot) }}
                         - {{ opt.name || opt.color }}
                       </option>
                       <option v-for="u in unsetSlotsForT(c.t)" disabled
                               :key="'fu-'+c.t+'-'+u.ace+'-'+u.slot">
-                        ACE {{ dispIdx(u.ace) }} / {{ dispIdx(u.slot) }}
+                        MMU {{ dispIdx(u.ace) }} / {{ dispIdx(u.slot) }}
                         - {{ t('ui.preflight.slot_not_set') }}
                       </option>
                     </select>
@@ -3500,7 +3628,7 @@ reboot</pre>
             <div class="preflight-swatch"
                  :style="{background: chipBg(s.color)}"></div>
             <div class="preflight-meta">
-              <div><strong>ACE {{ dispIdx(s.ace) }} · Slot {{ dispIdx(s.slot) }}</strong></div>
+              <div><strong>MMU {{ dispIdx(s.ace) }} · Slot {{ dispIdx(s.slot) }}</strong></div>
               <div class="muted small">{{ s.material || '?' }}</div>
               <div class="small">{{ s.name }}</div>
               <div class="muted small">{{ s.color || '?' }}<br>RGB({{ rgbDec(s.color) }})</div>
@@ -3542,10 +3670,15 @@ reboot</pre>
             <span v-if="pfPlanFeasible(p)" class="nt-pc-nums">
               <span><b>{{ pfPlanSwaps(p) }}</b><small>{{ t('ui.preflight.swaps_label') }}</small></span>
               <span v-if="pfPlanFlush(p) !== null"><b>{{ pfPlanFlush(p) }}<i>g</i></b><small>{{ t('ui.preflight.nt_contamination') }}</small></span>
+              <span v-if="pfPlanBg(p)"><b>{{ pfPlanBg(p).bg_ok }}<i>/{{ pfPlanBg(p).unloads }}</i></b><small>{{ t('ui.preflight.nt_bg_swaps') }}</small></span>
             </span>
             <span v-else class="nt-pc-off">{{ t('ui.preflight.not_feasible') }}</span>
           </button>
         </div>
+        <!-- The plan head carrying the full bg line is hidden in the new
+             design; repeat it for the selected plan under the cards. -->
+        <p v-if="uiTheme === 'new' && pfSelected() && pfPlanFeasible(pfSelected()) && pfPlanBg(pfSelected())"
+           class="muted small nt-pf-bg">{{ headPlanBgLabel(pfSelected()) }}</p>
         <template v-for="mode in ['slicer', 'optimize', 'layer']"
                   :key="'plan-' + mode">
           <div v-if="preflight.report.plans[mode]" class="preflight-plan"
@@ -3587,18 +3720,18 @@ reboot</pre>
                                 :key="'opt-'+m.t+'-'+slotKey(opt)"
                                 :value="slotKey(opt)"
                                 :style="{background: chipBg(opt.color), color: textOn(opt.color)}">
-                          ACE {{ dispIdx(opt.ace) }} Slot {{ dispIdx(opt.slot) }} · {{ opt.material || '?' }}
+                          MMU {{ dispIdx(opt.ace) }} Slot {{ dispIdx(opt.slot) }} · {{ opt.material || '?' }}
                         </option>
                         <option v-for="u in unsetSlotsForT(m.t)" disabled
                                 :key="'optu-'+m.t+'-'+u.ace+'-'+u.slot">
-                          ACE {{ dispIdx(u.ace) }} Slot {{ dispIdx(u.slot) }} · {{ t('ui.preflight.slot_not_set') }}
+                          MMU {{ dispIdx(u.ace) }} Slot {{ dispIdx(u.slot) }} · {{ t('ui.preflight.slot_not_set') }}
                         </option>
                       </select>
                     </template>
                     <template v-else>
                       <span class="preflight-dot"
                             :style="{background: chipBg(m.slot.color)}"></span>
-                      ACE {{ dispIdx(m.slot.ace) }} Slot {{ dispIdx(m.slot.slot) }}
+                      MMU {{ dispIdx(m.slot.ace) }} Slot {{ dispIdx(m.slot.slot) }}
                       <span class="muted small">· {{ m.slot.material || '?' }}</span>
                     </template>
                   </td>
@@ -3642,7 +3775,7 @@ reboot</pre>
           </h4>
           <h4 v-else>
             {{ t('ui.preflight.head_mode_title') }}
-            <span class="muted small">- {{ t('ui.preflight.feeder') }} + ACE {{ t('ui.preflight.head') }} {{ (preflight.report.ace_heads && preflight.report.ace_heads.length ? preflight.report.ace_heads : [preflight.report.ace_head]).map(h => 'T' + dispIdx(h)).join(', ') }}</span>
+            <span class="muted small">- {{ t('ui.preflight.feeder') }} + MMU {{ t('ui.preflight.head') }} {{ (preflight.report.ace_heads && preflight.report.ace_heads.length ? preflight.report.ace_heads : [preflight.report.ace_head]).map(h => 'T' + dispIdx(h)).join(', ') }}</span>
           </h4>
 
           <div class="nt-pf-top"><div class="nt-pf-col">
@@ -3708,10 +3841,15 @@ reboot</pre>
             <span v-if="pfPlanFeasible(p)" class="nt-pc-nums">
               <span><b>{{ pfPlanSwaps(p) }}</b><small>{{ t('ui.preflight.swaps_label') }}</small></span>
               <span v-if="pfPlanFlush(p) !== null"><b>{{ pfPlanFlush(p) }}<i>g</i></b><small>{{ t('ui.preflight.nt_contamination') }}</small></span>
+              <span v-if="pfPlanBg(p)"><b>{{ pfPlanBg(p).bg_ok }}<i>/{{ pfPlanBg(p).unloads }}</i></b><small>{{ t('ui.preflight.nt_bg_swaps') }}</small></span>
             </span>
             <span v-else class="nt-pc-off">{{ t('ui.preflight.not_feasible') }}</span>
           </button>
         </div>
+        <!-- The plan head carrying the full bg line is hidden in the new
+             design; repeat it for the selected plan under the cards. -->
+        <p v-if="uiTheme === 'new' && pfSelected() && pfPlanFeasible(pfSelected()) && pfPlanBg(pfSelected())"
+           class="muted small nt-pf-bg">{{ headPlanBgLabel(pfSelected()) }}</p>
           <template v-for="hp in ['loadout', 'optimize', 'layer', 'color']"
                     :key="'hplan-'+hp">
             <div v-if="preflight.report.plans[hp]" class="preflight-plan"
@@ -3779,7 +3917,7 @@ reboot</pre>
                                v-for="u in unsetSlotsForT(c.t)"
                                :key="'hmu-'+c.t+'-'+u.ace+'-'+u.slot">
                             <span class="hm-dd-chip" style="background:var(--nt-nocolor, #444)"></span>
-                            <span>ACE {{ dispIdx(u.ace) }} Slot {{ dispIdx(u.slot) }}
+                            <span>MMU {{ dispIdx(u.ace) }} Slot {{ dispIdx(u.slot) }}
                               &middot; {{ t('ui.preflight.slot_not_set') }}</span>
                           </div>
                         </div>

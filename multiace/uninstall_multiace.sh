@@ -116,9 +116,17 @@ rm -f "$EXTRAS_DIR/ace_tipform.py"
 rm -f "$EXTRAS_DIR/ace_bg_swap.py"
 rm -f "$EXTRAS_DIR/ace_rc522.py"
 rm -f "$EXTRAS_DIR/ace_gen1_tunnel.py"
+rm -f "$EXTRAS_DIR/ace_resistance.py"
+rm -f "$EXTRAS_DIR/ace_display.py"
+rm -f "$EXTRAS_DIR/ace_spool.py"
+rm -f "$EXTRAS_DIR/ace_swap.py"
+rm -f "$EXTRAS_DIR/ace_settings.py"
+rm -f "$EXTRAS_DIR/ace_unit.py"
+rm -f "$EXTRAS_DIR/ace_drivers.py"
 rm -f "$EXTRAS_DIR/ace_protocol.py"
 rm -f "$EXTRAS_DIR/ace_protocol_v1.py"
 rm -f "$EXTRAS_DIR/ace_protocol_v2.py"
+rm -f "$EXTRAS_DIR/ace_protocol_cfs.py"
 rm -f "$EXTRAS_DIR/filament_feed_ace.py"
 rm -f "$EXTRAS_DIR/filament_switch_sensor_ace.py"
 rm -f "$EXTRAS_DIR/filament_feed_pre_multiace.py"
@@ -147,6 +155,11 @@ PREWARM_INITD="/etc/init.d/S59multiace-prewarm"
 if [ -f "$PREWARM_INITD" ]; then
     rm -f "$PREWARM_INITD"
     log "  Prewarm init script removed: $PREWARM_INITD"
+fi
+if [ -f /etc/udev/rules.d/99-multiace-rs485.rules ]; then
+    rm -f /etc/udev/rules.d/99-multiace-rs485.rules
+    command -v udevadm >/dev/null 2>&1 && udevadm control --reload-rules 2>/dev/null || true
+    log "  udev rule removed: /etc/udev/rules.d/99-multiace-rs485.rules"
 fi
 rm -f /home/lava/multiace_update.sh
 rm -f /usr/local/bin/multiace_merge_cfg.py "${HOME_DIR}/bin/multiace_merge_cfg.py"

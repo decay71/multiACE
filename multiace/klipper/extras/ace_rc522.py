@@ -210,7 +210,7 @@ class AceTagReader:
                     'safety cap (corrupted depth accounting?)'
                     % (int(length), 'rollback' if mode else 'feed',
                        MOVE_MAX_MM))
-            logging.info('[multiACE] [rc522] ACE %d slot %d: move of %d '
+            logging.info('[multiACE] [rc522] MMU %d slot %d: move of %d '
                          'units refused (cap %d, mode %d)',
                          idx, slot, int(length), MOVE_MAX_MM, mode)
             return False
@@ -797,7 +797,7 @@ class AceTagReader:
         uid = self.uid_from_page0(pg)
         if not uid:
             logging.info('[multiACE] [rc522] UID read rejected (BCC '
-                         'mismatch) ACE %d slot %d: %s',
+                         'mismatch) MMU %d slot %d: %s',
                          idx, slot, bytes(pg[0:9]).hex())
         return uid
 
@@ -1452,7 +1452,10 @@ class AceTagReader:
                     ace._v2_store_filament_read(idx, slot, res, uid=uid1,
                                                 fmt=fmt)
                     self._note_uid(idx, slot, uid1)
-                    self._bind_uid(idx, slot, uid1, respond)
+                    # The ingest binds UID first, sku as fallback; an older
+                    # ace.py binds the sku only, then the UID binds here.
+                    if not hasattr(ace, '_spool_bind_tag_codes'):
+                        self._bind_uid(idx, slot, uid1, respond)
                 except Exception as e:
                     respond('rc522: post-write ingest failed (tag is '
                             'written): %s' % e)
@@ -1561,7 +1564,7 @@ class AceTagReader:
                 # decode the pages (the cascade artefact above). Decode
                 # the pages ourselves.
                 if sent and sent != uid:
-                    logging.info('[multiACE] [rc522] ACE %d slot %d: '
+                    logging.info('[multiACE] [rc522] MMU %d slot %d: '
                                  'firmware sentinel UID %s disagrees with '
                                  'the tunnel UID %s - tunnel wins (7 bytes, '
                                  'BCC-verified)', idx, slot, sent, uid)
@@ -1583,7 +1586,7 @@ class AceTagReader:
                     respond('rc522: firmware reported a truncated 7-byte '
                             'UID (%s, cascade level 1 only) - kept as a '
                             'partial key' % uid)
-                    logging.info('[multiACE] [rc522] ACE %d slot %d: '
+                    logging.info('[multiACE] [rc522] MMU %d slot %d: '
                                  'truncated cascade UID %s from the '
                                  'firmware sentinel, no own read possible '
                                  '(MIFARE) - partial key', idx, slot, uid)
@@ -1638,7 +1641,11 @@ class AceTagReader:
                     ace._v2_store_filament_read(idx, slot, res, uid=uid,
                                                 fmt=_fmt)
                     self._note_uid(idx, slot, uid)
-                    self._bind_uid(idx, slot, uid, respond, unbind=False)
+                    # Newer ace.py: the ingest already ran the UID (its
+                    # no-match line) after the sku bind.
+                    if not hasattr(ace, '_spool_bind_tag_codes'):
+                        self._bind_uid(idx, slot, uid, respond,
+                                       unbind=False)
                 return moved
         self._note_fmt(idx, slot, 'openspool' if (os and os.get('material'))
                        else ('unknown' if uid else ''))

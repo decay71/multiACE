@@ -70,6 +70,9 @@ DEFAULT_FUZZY = 30
 # of X and Y over the whole file = every T-index the print actually touches.
 _TOOLCHANGE_RE = re.compile(
     r"^;\s*Change Tool\s*(\d+)\s*->\s*Tool\s*(\d+)", re.MULTILINE)
+_BARE_T_RE = re.compile(r"^T(\d{1,2})\s*$")
+_FILAMENT_USED_G_RE = re.compile(r"^;\s*filament used \[g\]\s*=\s*([0-9., ]+)",
+                                 re.MULTILINE)
 
 # Lines worth keeping as the "plan proxy" - a tiny stand-in for the full body
 # that plan_loadout()/parse_toolchanges() can read without holding 100+ MB.
@@ -139,7 +142,24 @@ def parse_meta(pp, line_iter, with_header=False):
     slicer_types  = pp.parse_filament_types(meta_buf)
     num_aces      = pp.infer_num_aces(meta_buf)
     # Slicers declare a colour for every profile extruder even if unused; keep
-    # only the T-indices the print actually activates.
+    # only the T-indices the print actually activates. A single-tool print
+    # has no 'Change Tool' comment at all: then the bare T lines (the start
+    # gcode selects the initial tool) and the footer's per-tool usage decide,
+    # else every declared filament of a multi-plate project would count as
+    # required (a PETG-only plate was refused for the TPU of another plate).
+    if not used:
+        for pl in plan_lines:
+            m = _BARE_T_RE.match(pl)
+            if m:
+                used.add(int(m.group(1)))
+        m = _FILAMENT_USED_G_RE.search(meta_buf)
+        if m:
+            for i, v in enumerate(m.group(1).split(',')):
+                try:
+                    if float(v.strip()) > 0:
+                        used.add(i)
+                except ValueError:
+                    pass
     if used:
         slicer_colors = {t: c for t, c in slicer_colors.items() if t in used}
         slicer_types  = {t: m for t, m in slicer_types.items() if t in used}
@@ -596,11 +616,10 @@ def build_one_plan(pp, plan_name, result, mapping,
 # head-mode helpers (pure)                                                    #
 # --------------------------------------------------------------------------- #
 
-# Head-mode primitives the post-processor must provide. On a PAXX-bin upgrade a
-# stale post_process_virtual_toolheads.py can sit in printer_data/config/tools/
-# (the path the backend prefers) while the backend itself is fresh -> calling a
-# new head-mode function raises a bare AttributeError -> HTTP 500. Check up front
-# and raise a clear, actionable message instead.
+# Head-mode primitives the post-processor must provide. A post-processor older
+# than the backend (e.g. a leftover in printer_data/config/tools/ on an install
+# without the copy next to the backend) would raise a bare AttributeError ->
+# HTTP 500. Check up front and raise a clear, actionable message instead.
 _HEAD_MODE_PP_FUNCS = (
     "compute_head_mode_layout", "compute_head_mode_optimize",
     "head_mode_swap_count", "rewrite_head_mode_to_file")
@@ -611,9 +630,9 @@ def ensure_head_mode_support(pp):
         raise RuntimeError(
             "post-processor is outdated (missing head-mode support: "
             + ", ".join(missing)
-            + "). Re-run install_multiace.sh or reboot so the shipped "
-              "post_process_virtual_toolheads.py is refreshed in "
-              "printer_data/config/tools/.")
+            + "). Re-run install_multiace.sh so the shipped "
+              "post_process_virtual_toolheads.py is installed next to the "
+              "web backend.")
 
 
 def is_multi_ctx(head_ctx) -> bool:
@@ -1662,3 +1681,120 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
     pp.inject_auto_load_to_file(str(cur), str(nxt), stage_cb(75.0, 10.0))
     cur, nxt = nxt, cur
     return str(cur)
+
+
+# --- Print preferences (bed mesh / camera / flow calibration) ---------------
+# Shared by the printer backend and the in-browser (Pyodide) preflight, so the
+# two paths write the same file. Both stream: the browser runs this on files
+# of several hundred MB.
+
+FLOW_CAL_LINE_RE = re.compile(r"^\s*SM_PRINT_FLOW_CALIBRATE\b", re.IGNORECASE)
+AUTO_LOAD_END_RE = re.compile(r"^\s*;\s*multiACE auto-load: end\b")
+BARE_T_RE = re.compile(r"^\s*T(\d+)\s*(?:;.*)?$")
+
+def print_prefs_line(bed_mesh: bool, camera: bool,
+                      flow_cal: bool = False) -> str:
+    """Build the SET_PRINT_PREFERENCES line for the chosen preflight toggles.
+    FORCE=1 is required: the line is the first line of the uploaded file, which
+    already runs with print_stats.state == 'printing', and stock rejects a
+    non-forced preference change there (error 531). FORCE=1 bypasses that gate
+    (print_task_config.cmd_SET_PRINT_PREFERENCES); it still runs before the
+    start/bed-leveling steps so the flags are set in time.
+
+    FLOW_CALIBRATE: stock's "flow calibration" is the per-head pressure-
+    advance measurement (flow_calibrator.FLOW_CALIBRATE). With the flag on,
+    stock also IGNORES every SET_PRESSURE_ADVANCE from the slicer while
+    printing (kinematics/extruder.py); with it off, the slicer's own line
+    (Snapmaker Orca ships ADVANCE=0.02 as a placeholder) is what prints.
+    The touchscreen start dialog is the only stock place that turns it on,
+    and a web-started print never sees that dialog - so a preflight print
+    ran at PA 0.02 whatever the user had calibrated (issue #115: rough
+    top surfaces, "overextrusion"). The start gcode's own
+    SM_PRINT_FLOW_CALIBRATE lines sit BEFORE our auto-load block (heads
+    still empty -> runout pause 523), which is why the flag used to be
+    forced off; prepend_print_prefs moves the calibration behind the
+    block instead when the toggle is on."""
+    return ("SET_PRINT_PREFERENCES BED_LEVEL=%d FLOW_CALIBRATE=%d "
+            "TIME_LAPSE_CAMERA=%d FORCE=1"
+            % (1 if bed_mesh else 0, 1 if flow_cal else 0,
+               1 if camera else 0))
+
+def flow_cal_block(lines) -> tuple:
+    """(insert_index, block_lines) for the relocated flow calibration, or
+    (None, []) when the file has no auto-load block to anchor on (then the
+    slicer's lines stay where they are = stock placement).
+
+    One T<h> A0 + FLOW_CALIBRATE pair per PHYSICAL head the processed file
+    actually prints with (bare T lines), NOT the stock SM_PRINT_FLOW_
+    CALIBRATE wrapper: that wrapper skips heads stock believes unused, and
+    stock derives 'used' from the slicer header's per-LOGICAL-T grams via
+    its map table - which no longer matches the physical heads after our
+    remap (issue #115 file: head 0 printed but read as unused). The pair
+    is exactly what the wrapper runs internally (print_stats.py). Ends by
+    re-selecting the tool the start gcode had selected before the block,
+    mirroring stock's own re-select after its calibration, because the
+    prime line follows right after the block with the active tool."""
+    end_idx = None
+    initial = None
+    heads = set()
+    for i, line in enumerate(lines):
+        m = BARE_T_RE.match(line)
+        if m:
+            h = int(m.group(1))
+            if 0 <= h <= 3:
+                heads.add(h)
+                if end_idx is None:
+                    initial = h
+            continue
+        if end_idx is None and AUTO_LOAD_END_RE.match(line):
+            end_idx = i
+    if end_idx is None or not heads:
+        return None, []
+    if initial is None:
+        initial = min(heads)
+    block = ["; multiACE preflight: flow calibration (moved behind the "
+             "auto-load, heads loaded)\n"]
+    # Start tool LAST: the block ends with the head the start line needs
+    # already in the gripper, so the closing re-select is a no-op instead
+    # of one more tool change.
+    order = sorted(h for h in heads if h != initial) + \
+        ([initial] if initial in heads else [])
+    for h in order:
+        block.append("T%d A0\n" % h)
+        block.append("FLOW_CALIBRATE EXTRUDER=%d\n" % h)
+    block.append("T%d\n" % initial)
+    block.append("; multiACE preflight: flow calibration end\n")
+    return end_idx + 1, block
+
+def prepend_print_prefs(in_path: str, out_path: str,
+                         bed_mesh: bool = False, camera: bool = False,
+                         flow_cal: bool = False) -> None:
+    """Stream-copy in_path to out_path with the print-preference line
+    prepended at the very top (before the start gcode's calibration).
+    Any SET_PRINT_PREFERENCES the slicer already emits is commented out
+    so it can't override ours from further down the file. With flow_cal
+    the slicer's SM_PRINT_FLOW_CALIBRATE lines are commented out and the
+    calibration is re-emitted behind the auto-load block (see
+    flow_cal_block); the file is read twice for that (anchor + heads),
+    streamed both times, so memory does not grow with the file."""
+    ins_idx, block = None, []
+    if flow_cal:
+        with open(in_path, "r", encoding="utf-8", errors="replace") as src:
+            ins_idx, block = flow_cal_block(src)
+    with open(out_path, "w", encoding="utf-8", errors="replace") as out:
+        out.write("; multiACE preflight: print preferences\n")
+        out.write(print_prefs_line(bed_mesh, camera, flow_cal) + "\n")
+        with open(in_path, "r", encoding="utf-8", errors="replace") as src:
+            i = -1
+            for i, line in enumerate(src):
+                if ins_idx is not None and i == ins_idx:
+                    out.writelines(block)
+                if line.lstrip().upper().startswith("SET_PRINT_PREFERENCES"):
+                    out.write("; multiACE disabled: " + line.lstrip())
+                    continue
+                if ins_idx is not None and FLOW_CAL_LINE_RE.match(line):
+                    out.write("; multiACE moved: " + line.lstrip())
+                    continue
+                out.write(line)
+            if ins_idx is not None and ins_idx >= i + 1:
+                out.writelines(block)
