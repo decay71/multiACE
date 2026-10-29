@@ -1646,6 +1646,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # the load phase a genuinely empty head fails as a LOAD error, not a
         # runout, so nothing real is masked. Read by filament_switch_sensor_ace.
         self._runout_suppress_heads = set()
+        # Heads whose arrival swap waits for a running background op
+        # (_wait_bg_op). The bg engine leaves the runout suppression in
+        # place for them: the arrival loads the head right after.
+        self._bg_arrival_waiting = set()
         # Whether the CURRENT print's gcode carries multiACE loads (preflight
         # auto-load block and/or ACE_SWAP_HEAD lines). Sniffed once at print
         # start. When True, a never-loaded ACE-driven head must not block a

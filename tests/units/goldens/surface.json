@@ -154,6 +154,9 @@
     "AceBgSwap.cmd_ACE_BG_SWAP",
     "AceBgSwap.cmd_ACE_BG_UNLOAD"
    ],
+   "_bg_arrival_waiting": [
+    "AceBgSwap._unload_core"
+   ],
    "_bg_prime_deficit": [
     "AceBgSwap._load_core",
     "AceBgSwap._run_swap",

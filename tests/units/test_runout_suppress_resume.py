@@ -93,3 +93,60 @@ def test_bg_unload_lifts_suppression_for_a_head_picked_mid_retract():
                  and '_runout_suppress_heads.discard' in ast.unparse(n)
                  and 'get_extruder() is ext' in ast.unparse(n.test))
     assert '_is_actively_printing()' in ast.unparse(guard.test)
+
+
+def test_bg_unload_keeps_suppression_while_the_arrival_waits():
+    """A stamped bg swap's arrival T picks the head before its
+    ACE_SWAP_HEAD line, which then waits in _wait_bg_op and loads right
+    after the op. Lifting the suppression there fired a runout and paused
+    after every arrival whose pick fell into the bulk retract (HW
+    2026-10-29, six pauses in one print). The lift is skipped for a head
+    in _bg_arrival_waiting."""
+    import ast
+    import os
+    path = os.path.join(H.EXTRAS, 'ace_bg_swap.py')
+    tree = ast.parse(open(path, encoding='utf-8').read())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == '_unload_core')
+    guard = next(n for n in ast.walk(fn)
+                 if isinstance(n, ast.If)
+                 and '_runout_suppress_heads.discard' in ast.unparse(n)
+                 and 'get_extruder() is ext' in ast.unparse(n.test))
+    assert '_bg_arrival_waiting' in ast.unparse(guard.test)
+
+
+def test_wait_bg_op_marks_the_waiting_head():
+    import importlib
+    import types
+    H.load_ace()
+    SW = importlib.import_module(H.PKG + '.ace_swap')
+    seen = []
+
+    class Bg:
+        def __init__(self):
+            self.n = 0
+
+        def is_busy(self, head):
+            self.n += 1
+            seen.append(set(stub._bg_arrival_waiting))
+            return self.n < 3
+
+    class Reactor:
+        t = 0.
+
+        def monotonic(self):
+            return self.t
+
+        def pause(self, until):
+            self.t = until
+
+    bg = Bg()
+    stub = types.SimpleNamespace(
+        printer=types.SimpleNamespace(lookup_object=lambda *a: bg),
+        reactor=Reactor(), _bg_arrival_waiting=set(),
+        log_always=lambda *a: None, _disp=lambda h: h + 1,
+        _rearm_fa_after_bg_wait=lambda *a: None,
+        _bg_wait_park=lambda *a: None)
+    SW.SwapMixin._wait_bg_op(stub, 2)
+    assert seen[1] == {2}
+    assert stub._bg_arrival_waiting == set()

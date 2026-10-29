@@ -498,17 +498,24 @@ class SwapMixin:
         # 240s): a hung phase must FAIL inside the greenlet (clean inline
         # handover) before this wait gives up and aborts the print.
         deadline = self.reactor.monotonic() + 300.
-        while self.reactor.monotonic() < deadline:
-            try:
-                if not bg.is_busy(head):
-                    self.log_always('[multiACE] head %d: background unload '
-                                    'finished - continuing'
-                                    % self._disp(head))
-                    self._rearm_fa_after_bg_wait(head, rearm_target)
+        waiting = getattr(self, '_bg_arrival_waiting', None)
+        if waiting is not None:
+            waiting.add(head)
+        try:
+            while self.reactor.monotonic() < deadline:
+                try:
+                    if not bg.is_busy(head):
+                        self.log_always('[multiACE] head %d: background '
+                                        'unload finished - continuing'
+                                        % self._disp(head))
+                        self._rearm_fa_after_bg_wait(head, rearm_target)
+                        return
+                except Exception:
                     return
-            except Exception:
-                return
-            self.reactor.pause(self.reactor.monotonic() + 0.5)
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+        finally:
+            if waiting is not None:
+                waiting.discard(head)
         msg = ('[multiACE] head %d: background unload did not finish '
                'within 300s' % self._disp(head))
         if gcmd is not None:

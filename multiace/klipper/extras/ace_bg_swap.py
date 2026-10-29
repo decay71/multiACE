@@ -2255,16 +2255,20 @@ class AceBgSwap:
             # for this head are suppressed (step 0), so this can never PAUSE.
             self._set_state(head, 'BOOKKEEP')
             # Unless the head was PICKED during the bulk retract (the one
-            # phase that never aborts) and prints right now: then it prints
-            # empty, and the suppression would swallow the runout until the
-            # head's next arrival. Only a manual ACE_BG_UNLOAD/ACE_BG_SWAP
-            # without a following swap line gets here (a stamped bg swap's
-            # arrival line waits and loads). Lift the suppression first, so
-            # the empty mark below fires the runout pause now.
+            # phase that never aborts) and prints right now without an
+            # arrival swap: then it prints empty, and the suppression would
+            # swallow the runout until the head's next arrival. A stamped bg
+            # swap's arrival waits in _wait_bg_op and loads right after, so
+            # the suppression stays for it (lifting it there paused every
+            # print whose pick fell into the bulk retract). Only a manual
+            # ACE_BG_UNLOAD/ACE_BG_SWAP without a following swap line lifts
+            # it, so the empty mark below fires the runout pause now.
             try:
                 if (toolhead.get_extruder() is ext
                         and ace._is_actively_printing()
-                        and head in ace._runout_suppress_heads):
+                        and head in ace._runout_suppress_heads
+                        and head not in getattr(
+                            ace, '_bg_arrival_waiting', ())):
                     ace._runout_suppress_heads.discard(head)
                     self._say('head %d: picked during the bulk retract and '
                               'printing from an empty head - runout '
