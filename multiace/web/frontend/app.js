@@ -272,6 +272,9 @@ createApp({
       // Default TRUE, like the engine: the checkbox must not read as off
       // for the instant before the first state arrives.
       purge_matrix: true,
+      purge_scale: 100,
+      purge_floor: 0,
+      purge_cap: 0,
       // Default TRUE, like the engine, for the pre-first-state instant.
       pa_sync: true,
       rc522: false,
@@ -451,6 +454,9 @@ createApp({
       state.quad_first = !!s.quad_first;
       state.purge_matrix = (s.purge_matrix === undefined)
         ? true : !!s.purge_matrix;
+      state.purge_scale = Number(s.purge_scale || 100);
+      state.purge_floor = Number(s.purge_floor || 0);
+      state.purge_cap = Number(s.purge_cap || 0);
       state.pa_sync = (s.pa_sync === undefined) ? true : !!s.pa_sync;
       // RC522 tag read/write available - gates the picker's write button.
       state.rc522 = !!s.rc522;
@@ -4476,6 +4482,31 @@ createApp({
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({name: "ACE_SET_PURGE",
                                 args: {MATRIX: enable ? 1 : 0}}),
+        });
+        const j = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+        const res = String(j?.result || "");
+        if (/WARNING|failed/i.test(res)) setMacroLog(res);
+      } catch (e) {
+        setMacroLog(String(e?.message || e));
+      }
+      await reloadState();
+    }
+    // Purge scale (percent) and floor/cap (mm, 0 = off): the engine writes
+    // the ace.cfg line itself and applies it live, like the matrix toggle.
+    async function setPurgePolicy(arg, value) {
+      const lim = {SCALE: [25, 200], FLOOR: [0, 200], CAP: [0, 200]}[arg];
+      const v = Math.round(Number(value));
+      if (!lim || isNaN(v) || v < lim[0] || v > lim[1]) {
+        setMacroLog(t("ui.config.purge_policy_range", {min: lim[0], max: lim[1]}));
+        await reloadState();
+        return;
+      }
+      try {
+        const r = await fetch(`${API}/macro`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name: "ACE_SET_PURGE", args: {[arg]: v}}),
         });
         const j = await r.json().catch(() => null);
         if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
@@ -8865,7 +8896,7 @@ createApp({
       slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
-      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
+      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,

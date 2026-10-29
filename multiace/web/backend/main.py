@@ -859,6 +859,9 @@ def _parse_state(status: dict) -> dict:
         "airprint_detection": bool(ace.get("airprint_detection", False)),
         "quad_replenish": bool(ace.get("quad_replenish", False)),
         "purge_matrix": bool(ace.get("purge_matrix", True)),
+        "purge_scale": _int_or(ace.get("purge_scale", 100), 100),
+        "purge_floor": _int_or(ace.get("purge_floor", 0), 0),
+        "purge_cap": _int_or(ace.get("purge_cap", 0), 0),
         # Multifilament-Optimierung: targets per slicer colour (1 = off).
         # An older ace.py has no field -> 1, today's behaviour.
         "preflight_max_copies": _int_or(ace.get("preflight_max_copies", 1), 1),
@@ -4652,6 +4655,7 @@ _SWAP_COST_KEYS = (
     "feed_speed", "retract_speed", "load_length", "retract_length",
     "swap_retract_length", "seat_overshoot_length", "swap_anti_ooze_retract",
     "swap_purge_length", "swap_purge_min", "swap_purge_max",
+    "swap_purge_scale", "swap_purge_floor", "swap_purge_cap",
     "filament_diameter",
 )
 _BG_LOAD_ENABLED_RE = re.compile(

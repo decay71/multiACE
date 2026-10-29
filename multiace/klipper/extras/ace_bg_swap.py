@@ -2634,6 +2634,9 @@ class AceBgSwap:
             # Per-pair PURGE= from the stamp wins (see cmd_ACE_BG_SWAP);
             # fallback = the global override/config knob, as before.
             if purge is not None:
+                _policy = getattr(ace, 'apply_purge_policy', None)
+                if _policy is not None:
+                    purge = _policy(purge)
                 prime_target = float(purge) + BG_LOAD_PRIME_EXTRA
             else:
                 prime_target = (float(ace.get_purge_length() or 0) or 80.) \

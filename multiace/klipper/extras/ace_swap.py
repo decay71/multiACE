@@ -103,10 +103,33 @@ class SwapMixin:
     def get_purge_length(self):
         """Flush LENGTH for the stock INNER_FLUSH_FILAMENT. A per-swap
         override (multiACE Pro) wins, else the swap_purge_length config
-        value. 0 means 'use the stock default' (caller omits LENGTH=)."""
-        if self._purge_length_override is not None:
-            return self._purge_length_override
-        return self.swap_purge_length
+        value. 0 means 'use the stock default' (caller omits LENGTH=).
+
+        The purge policy (swap_purge_scale percent, then swap_purge_floor
+        and swap_purge_cap in mm, 0 = off) applies to the resolved length.
+        With the policy at its defaults the result is unchanged. A policy
+        on a 0 (stock default) length works on the stock 80 mm and returns
+        a real length, so the caller then passes LENGTH=."""
+        base = (self._purge_length_override
+                if self._purge_length_override is not None
+                else self.swap_purge_length)
+        return self.apply_purge_policy(base)
+
+    def apply_purge_policy(self, length):
+        """Scale, floor and cap a resolved flush length (mm). Unchanged
+        while the policy sits at its defaults; a 0 (stock default) length
+        then stays 0."""
+        scale = getattr(self, 'swap_purge_scale', 100)
+        floor = getattr(self, 'swap_purge_floor', 0)
+        cap = getattr(self, 'swap_purge_cap', 0)
+        if scale == 100 and not floor and not cap:
+            return length
+        value = (length or 80) * scale / 100.0
+        if floor:
+            value = max(value, floor)
+        if cap:
+            value = min(value, cap)
+        return int(min(round(value), 200))
 
     def _restore_pos_for_pause(self, saved_pos):
 

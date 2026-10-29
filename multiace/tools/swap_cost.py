@@ -106,6 +106,18 @@ PURGE_MAX_MM = 150.0
 #: (ace_bg_swap.BG_LOAD_PRIME_EXTRA), so it uses that much more filament.
 BG_LOAD_PRIME_EXTRA_MM = 40.0
 
+#: A background swap that its head's arrival catches before it has finished:
+#: the engine aborts it when the arrival comes this early in its heat-up
+#: (hardware test on #186: aborted under ~25 s, waited from ~30 s), so the
+#: arrival loads inline and the whole inline cost is paid.
+BG_EARLY_ABORT_S = 25.0
+
+#: Bounds of the engine's purge scale in percent (ace.py clamps the same).
+PURGE_SCALE_MIN_PCT = 25.0
+PURGE_SCALE_MAX_PCT = 200.0
+#: INNER_FLUSH_FILAMENT's LENGTH never exceeds this (swap_purge_length maxval).
+PURGE_LENGTH_MAX_MM = 200.0
+
 #: What the stock INNER_FLUSH_FILAMENT macro (fluidd.cfg) purges when
 #: nothing tells it otherwise - `ACE_SWAP_HEAD`/`get_purge_length()` omit
 #: LENGTH= and the macro's own `params.LENGTH | default(80.0)` applies.
@@ -462,6 +474,12 @@ class SwapCostModel(object):
         #: ACE_SET_PURGE MATRIX=0 - ignore the slicer's flush-matrix stamps
         #: and purge the fixed length again.
         self.purge_matrix = bool(p.get("purge_matrix", True))
+        #: The engine's purge policy (ace.py get_purge_length): a percent
+        #: scale on the resolved length, then an optional floor and cap in
+        #: mm (0 = off). Same names as the [ace] settings.
+        self.swap_purge_scale = float(p.get("swap_purge_scale", 100) or 100)
+        self.swap_purge_floor = float(p.get("swap_purge_floor", 0) or 0)
+        self.swap_purge_cap = float(p.get("swap_purge_cap", 0) or 0)
         self.filament_diameter = float(
             p.get("filament_diameter", DEFAULT_DIAMETER_MM)
             or DEFAULT_DIAMETER_MM)
@@ -577,6 +595,33 @@ class SwapCostModel(object):
         return self._mechanical_seconds(kind, ace, slot) \
             + self._constant_seconds(kind)
 
+    def bg_swap_seconds(self, ace=None, slot=None, window_min=None):
+        """Critical-path seconds of a background swap given the minutes its
+        head sat parked, excluding purge.
+
+        A background swap only saves what fits in the window. The work it
+        moves off the critical path is the inline cost minus the handover
+        (`need`). A longer window than that pays the plain handover; a
+        shorter one makes the arrival wait for the rest (ACE_BG_WAIT); one
+        under BG_EARLY_ABORT_S is aborted and the arrival swaps inline. An
+        unknown window (no M73 time) counts as a fit, the same way the
+        rewrite stamps it. A measured median wins over all of this.
+        """
+        base = self.swap_seconds("cross_ace_bg", ace, slot)
+        measured = self.calibration.get("cross_ace_bg")
+        if (isinstance(measured, dict)
+                and int(measured.get("n", 0) or 0) >= self.min_calibration_samples
+                and measured.get("median_s") is not None):
+            return base
+        if window_min is None:
+            return base
+        inline = self.swap_seconds("cross_ace_inline", ace, slot)
+        window_s = max(0.0, float(window_min)) * 60.0
+        if window_s < BG_EARLY_ABORT_S:
+            return inline
+        need = max(0.0, inline - base)
+        return min(inline, base + max(0.0, need - window_s))
+
     def bg_window_minutes(self, ace=None, slot=None):
         """How much idle time a background swap actually needs, in minutes.
 
@@ -599,15 +644,32 @@ class SwapCostModel(object):
         this pair (ignored when `purge_matrix` is off), else
         `swap_purge_length` when above its 0 default, else the stock
         80 mm. Only the stamp is clamped (to `swap_purge_min` /
-        `swap_purge_max`, as the post-processor does); the other two are
-        used as set. Purge itself stays the slicer's business: the stamp
-        comes from its flush matrix.
+        `swap_purge_max`, as the post-processor does). The result then goes
+        through the engine's purge policy (scale, floor, cap). The base
+        length stays the slicer's business: the stamp comes from its flush
+        matrix.
         """
         if stamp_mm and self.purge_matrix:
-            return self.clamp_purge_mm(stamp_mm)
-        if self.swap_purge_length > 0:
-            return self.swap_purge_length
-        return STOCK_FLUSH_DEFAULT_MM
+            base = self.clamp_purge_mm(stamp_mm)
+        elif self.swap_purge_length > 0:
+            base = self.swap_purge_length
+        else:
+            base = STOCK_FLUSH_DEFAULT_MM
+        return self.apply_purge_policy(base)
+
+    def apply_purge_policy(self, length_mm):
+        """The engine's scale and floor/cap on a resolved purge length (see
+        ace.py get_purge_length): percent scale first, then the floor, then
+        the cap, then never above INNER_FLUSH_FILAMENT's own limit."""
+        value = float(length_mm or 0.0)
+        scale = min(max(self.swap_purge_scale, PURGE_SCALE_MIN_PCT),
+                    PURGE_SCALE_MAX_PCT)
+        value *= scale / 100.0
+        if self.swap_purge_floor > 0:
+            value = max(value, self.swap_purge_floor)
+        if self.swap_purge_cap > 0:
+            value = min(value, self.swap_purge_cap)
+        return min(value, PURGE_LENGTH_MAX_MM)
 
     def clamp_purge_mm(self, requested_mm):
         """Clamp a flush-matrix stamp to the range the post-processor uses."""

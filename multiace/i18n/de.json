@@ -411,7 +411,12 @@
       "driver_pending_off": "aus nach Neustart",
       "driver_restart_hint": "Ein Treiber wurde umgeschaltet - Firmware neu starten, damit es gilt.",
       "dev_name_placeholder": "Name",
-      "acefw_none": "Keine Einheit verbunden, die geflasht werden kann."
+      "acefw_none": "Keine Einheit verbunden, die geflasht werden kann.",
+      "purge_scale": "Spülskalierung (%)",
+      "purge_floor": "Spül-Minimum (mm, 0 = aus)",
+      "purge_cap": "Spül-Maximum (mm, 0 = aus)",
+      "purge_policy_hint": "Skaliert jede Spüllänge eines Wechsels (Paar-Stempel, feste Länge oder Standard 80 mm) um den Prozentwert und hält sie dann zwischen Minimum und Maximum (0 = keine Grenze). Spülung anpassen ohne neu zu slicen. Wirkt sofort, kein Neustart.",
+      "purge_policy_range": "Der Wert muss zwischen {min} und {max} liegen."
     },
     "dialog": {
       "load_already_loaded_title": "T{slot} ist bereits geladen",

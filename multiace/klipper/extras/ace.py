@@ -739,6 +739,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # Lower it to reduce purge waste ("poop"). multiACE Pro can override
         # it per swap (e.g. per colour-pair) via ACE_SET_PURGE.
         self.swap_purge_length = config.getint('swap_purge_length', 0, minval=0, maxval=200)
+        # Purge policy applied to the RESOLVED length (the per-pair stamp,
+        # else swap_purge_length, else the stock 80) by get_purge_length:
+        # a percent scale, then an optional floor and cap in mm (0 = off).
+        # Write-through settings: ACE_SET_PURGE SCALE= / FLOOR= / CAP=
+        # edit the config line and apply live.
+        self.swap_purge_scale = config.getint('swap_purge_scale', 100, minval=25, maxval=200)
+        self.swap_purge_floor = config.getint('swap_purge_floor', 0, minval=0, maxval=200)
+        self.swap_purge_cap = config.getint('swap_purge_cap', 0, minval=0, maxval=200)
 
         self.seat_overshoot_length = config.getint('seat_overshoot_length', 0, minval=0, maxval=100)
         self.swap_default_temp = config.getint('swap_default_temp', 250, minval=180, maxval=300)
@@ -17170,6 +17178,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         '[multiACE] Set the swap/load flush length (mm) for the next '
         'flush(es). Usage: ACE_SET_PURGE LENGTH=<mm>  or  ACE_SET_PURGE '
         'RESET=1 to fall back to the swap_purge_length config value. '
+        'SCALE=<25-200> (percent), FLOOR=<mm> and CAP=<mm> (0 = off) '
+        'rescale and bound every resolved flush length; they write the '
+        'swap_purge_scale / swap_purge_floor / swap_purge_cap config '
+        'lines (write-through). '
         'MATRIX=0|1 ignores/honors the per-pair LENGTH stamps the '
         'preflight writes from the slicer flush matrix - MATRIX=0 = '
         'fixed swap_purge_length for every flush. Writes the purge_matrix '
@@ -17178,7 +17190,35 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         'Intended for multiACE Pro to set per-colour-pair purge from the '
         'slicer. LENGTH=0 = use the stock default (80mm).')
 
+    def _set_purge_policy(self, gcmd):
+        """SCALE= / FLOOR= / CAP= of ACE_SET_PURGE: apply in RAM, then
+        write the config line. A failed write is reported, the RAM value
+        stays applied for this session."""
+        for arg, attr, lo, hi in (('SCALE', 'swap_purge_scale', 25, 200),
+                                  ('FLOOR', 'swap_purge_floor', 0, 200),
+                                  ('CAP', 'swap_purge_cap', 0, 200)):
+            val = gcmd.get_int(arg, None, minval=lo, maxval=hi)
+            if val is None:
+                continue
+            setattr(self, attr, val)
+            err = self._cfg_write_ace_option(attr, str(val))
+            msg = '[multiACE] %s set to %d' % (attr, val)
+            if err is not None:
+                msg += (' - WARNING: config write failed (%s), applied '
+                        'for this session only' % err)
+            self.log_always(msg)
+            logging.info(msg)
+        floor, cap = self.swap_purge_floor, self.swap_purge_cap
+        if floor and cap and floor > cap:
+            self.log_always('[multiACE] swap_purge_floor %d is above '
+                            'swap_purge_cap %d - the cap wins'
+                            % (floor, cap))
+
     def cmd_ACE_SET_PURGE(self, gcmd):
+        policy = [a for a in ('SCALE', 'FLOOR', 'CAP')
+                  if gcmd.get(a, None) is not None]
+        if policy:
+            self._set_purge_policy(gcmd)
         matrix = gcmd.get_int('MATRIX', None, minval=0, maxval=1)
         if matrix is not None:
             persist = gcmd.get_int('PERSIST', 1, minval=0, maxval=1)
@@ -17229,9 +17269,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return
         length = gcmd.get_int('LENGTH', None, minval=0, maxval=200)
         if length is None:
-            if matrix is None:
+            if matrix is None and not policy:
                 raise gcmd.error(
-                    'ACE_SET_PURGE needs LENGTH=<mm>, RESET=1 or MATRIX=0|1')
+                    'ACE_SET_PURGE needs LENGTH=<mm>, RESET=1, MATRIX=0|1 '
+                    'or SCALE=/FLOOR=/CAP=')
             return
         if not self.purge_matrix:
             # Stamped files carry one LENGTH per swap - QUIET ignore
@@ -21638,6 +21679,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                                False)),
             'quad_replenish': bool(getattr(self, 'quad_replenish', False)),
             'purge_matrix': bool(getattr(self, 'purge_matrix', True)),
+            'purge_scale': int(getattr(self, 'swap_purge_scale', 100)),
+            'purge_floor': int(getattr(self, 'swap_purge_floor', 0)),
+            'purge_cap': int(getattr(self, 'swap_purge_cap', 0)),
             'pa_sync': bool(getattr(self, 'pa_sync', True)),
             # RC522 tag read/write available on at least one unit (ACE2-Open
             # firmware); gates the web tag settings.

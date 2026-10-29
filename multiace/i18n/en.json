@@ -410,7 +410,12 @@
       "driver_pending_off": "off after restart",
       "driver_restart_hint": "A driver was switched - restart the firmware to apply it.",
       "dev_name_placeholder": "name",
-      "acefw_none": "No unit connected that can be flashed."
+      "acefw_none": "No unit connected that can be flashed.",
+      "purge_scale": "Purge scale (%)",
+      "purge_floor": "Purge minimum (mm, 0 = off)",
+      "purge_cap": "Purge maximum (mm, 0 = off)",
+      "purge_policy_hint": "Rescales every swap purge length (the per-pair stamp, the fixed length or the stock 80 mm) by the percent, then keeps it between the minimum and maximum (0 = no limit). Tune the purge without re-slicing. Applies live, no restart.",
+      "purge_policy_range": "Value must be between {min} and {max}."
     },
     "dialog": {
       "load_already_loaded_title": "T{slot} is already loaded",
