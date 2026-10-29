@@ -19,7 +19,7 @@
  *   <- {type:"rewrite", jobId, file, liveSlots, headCtx, mode, remapOverride,
  *                        headAssignment, headPlan, headCopies,
  *                        printPrefs:{bedMesh, camera, flowCal}}
- *   -> {type:"rewrite-done", jobId, blob}               (+ {type:"progress"})
+ *   -> {type:"rewrite-done", jobId, blob, usedT}             (+ {type:"progress"})
  *   <- {type:"estimate", jobId, plan, mapping, targetIds, copyIds}
  *   -> {type:"estimate-done", jobId, result}    ({estimate, timeline} for the
  *                        edited mapping, or null when there is no estimate)
@@ -274,6 +274,7 @@ async function doRewrite(jobId, msg) {
 
   progress(jobId, "rewrite", 10);
   let outBlob;
+  let usedT = [];
   try {
   const finalPath = py.runPython(`
 _live_slots = json.loads(_live)
@@ -303,6 +304,10 @@ if _pf["bed_mesh"] or _pf["camera"] or _pf["flow_cal"]:
     _final = _other
 _final
 `);
+    // Which T-indices the rewritten file activates: the print queue records
+    // the slots it draws from. Streamed from the file, no copy in memory.
+    usedT = JSON.parse(py.runPython(
+      "json.dumps(sorted(_core.used_tool_indices_file(_final)))"));
     // The stage the pipeline did not end on is dead weight: drop it before
     // the result is copied out.
     for (const p of ["/preflight/a.gcode", "/preflight/b.gcode"]) {
@@ -316,7 +321,7 @@ _final
     try { py.FS.unlink("/preflight/b.gcode"); } catch (e) {}
   }
   progress(jobId, "done", 100);
-  return outBlob;
+  return {blob: outBlob, usedT};
 }
 
 self.onmessage = async (ev) => {
@@ -350,8 +355,8 @@ self.onmessage = async (ev) => {
     }
     if (msg.type === "rewrite") {
       await ensureInit(msg);
-      const blob = await doRewrite(jobId, msg);
-      self.postMessage({type: "rewrite-done", jobId, blob});
+      const {blob, usedT} = await doRewrite(jobId, msg);
+      self.postMessage({type: "rewrite-done", jobId, blob, usedT});
       return;
     }
     if (msg.type === "clear") {

@@ -2353,3 +2353,17 @@ body:has(.panel) .overlay .dialog {
 .fav-meta .swatch { display: inline-block; width: .9rem; height: .9rem;
   border-radius: 50%; border: 1px solid rgba(128,128,128,.5); }
 .fav-card .reprint-btn { align-self: flex-start; margin-top: auto; }
+/* Print queue: staged files waiting to be started. */
+.queue-list { display: flex; flex-direction: column; gap: .7rem; margin-top: .6rem; }
+.queue-item { display: flex; gap: 1rem; justify-content: space-between; flex-wrap: wrap;
+  border: 1px solid var(--border, #444); border-radius: 8px; padding: .7rem .9rem; }
+.queue-item.stale { border-color: #c9892b; }
+.queue-main { display: flex; flex-direction: column; gap: .3rem; min-width: 0; flex: 1 1 260px; }
+.queue-name { overflow-wrap: anywhere; }
+.queue-slots { display: flex; flex-wrap: wrap; gap: .6rem; }
+.queue-slot { display: inline-flex; align-items: center; gap: .3rem; }
+.queue-slot .swatch { display: inline-block; width: .9rem; height: .9rem;
+  border-radius: 50%; border: 1px solid rgba(128,128,128,.5); }
+.queue-warn { color: #e6a700; margin: 0; }
+.queue-changes { margin: 0; padding-left: 1.1rem; }
+.queue-actions { display: flex; gap: .5rem; align-items: flex-start; }

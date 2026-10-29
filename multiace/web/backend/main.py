@@ -30,6 +30,7 @@ import re
 import shutil
 import sys
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional
@@ -1521,7 +1522,8 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                                   head_assignment: dict | None = None,
                                   head_plan: str = "loadout",
                                   flow_cal: bool = False,
-                                  head_copies: dict | None = None) -> None:
+                                  head_copies: dict | None = None,
+                                  queue: bool = False) -> None:
     state = _PREFLIGHT_JOBS[job_id]
     pp = _load_post_processor()
     src = _PREFLIGHT_DIR / (token + ".gcode")
@@ -1583,9 +1585,16 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
             cur, nxt = nxt, cur
 
         _set_stage(state, "upload", 85.0)
+        upload_name = safe_name
+        payload = {"root": "gcodes", "print": "true"}
+        if queue:
+            # Staged, not started: parked under its own folder with a unique
+            # name, so two preparations of the same file never overwrite
+            # each other.
+            upload_name = f"{uuid.uuid4().hex[:12]}_{safe_name}"
+            payload = {"root": "gcodes", "path": _QUEUE_DIR, "print": "false"}
         with open(cur, "rb") as fh:
-            files = {"file": (safe_name, fh, "application/octet-stream")}
-            payload = {"root": "gcodes", "print": "true"}
+            files = {"file": (upload_name, fh, "application/octet-stream")}
             try:
                 async with httpx.AsyncClient(timeout=600.0) as client:
                     r = await client.post(
@@ -1598,6 +1607,17 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                                    f"{e.response.text}")
             except httpx.HTTPError as e:
                 raise RuntimeError(f"moonraker: {e}")
+
+        if queue:
+            used_t = None
+            if mode != "head":
+                used_t = sorted(await asyncio.to_thread(
+                    preflight_core.used_tool_indices_file, str(cur)))
+            try:
+                await _queue_enqueue(safe_name, f"{_QUEUE_DIR}/{upload_name}",
+                                     mode, used_t)
+            except HTTPException as e:
+                raise RuntimeError(str(e.detail))
 
         _set_stage(state, "done", 100.0)
         state["filename"] = safe_name
@@ -1643,6 +1663,8 @@ class _PreflightPrint(BaseModel):
     # head choice matches the previewed swap count. None (older frontend)
     # -> the pipeline detects them from the loaded slots itself.
     head_copies: dict[str, list[str]] | None = None
+    # Stage the rewritten file in the print queue instead of starting it.
+    queue: bool = False
 
 @app.post("/api/preflight/print")
 async def preflight_print(req: _PreflightPrint) -> dict:
@@ -1675,7 +1697,7 @@ async def preflight_print(req: _PreflightPrint) -> dict:
     asyncio.create_task(_run_preflight_pipeline(
         job_id, req.token, req.mode, safe_name, req.bed_mesh, req.camera,
         req.remap, req.head_assignment, head_plan, req.flow_cal,
-        req.head_copies))
+        req.head_copies, req.queue))
     return {"job_id": job_id, "filename": safe_name, "mode": req.mode}
 
 @app.get("/api/preflight/print/status")
@@ -6500,6 +6522,155 @@ async def history_favorite_toggle(request: Request,
     favs = _require_history().toggle_favorite(
         MULTIACE_DATA_DIR, key, req.on, req.filename, req.start_time)
     return {"favorites": favs}
+# ---------------------------------------------------------------------------
+# Print queue
+#
+# Files that preflight already rewrote for the loadout of the moment, parked
+# on the printer and started later. Not a job queue: launching one starts
+# that single file. Moonraker's own job queue is not used; it knows nothing
+# about the loadout the file was prepared for. See job_history.py.
+# ---------------------------------------------------------------------------
+
+_QUEUE_DIR = "multiace_queue"
+_mock_queue: list = []
+
+
+class _QueueAdd(BaseModel):
+    filename: str
+    path: str
+    mode: str
+    # T-indices (ace*4 + slot) the file activates, from the rewrite. None
+    # (head mode, where T means a head) snapshots every identified slot.
+    used_t: list[int] | None = None
+
+
+def _queue_path_ok(path: str) -> bool:
+    return (path.startswith(_QUEUE_DIR + "/") and ".." not in path
+            and "\\" not in path and len(path) > len(_QUEUE_DIR) + 1)
+
+
+def _queue_entry(filename: str, path: str, mode: str,
+                 used_t: list[int] | None, live: list[dict]) -> dict:
+    """A queue record with the identity of the slots the file uses."""
+    if used_t is None:
+        used = list(live)
+    else:
+        want = {(int(t) // 4, int(t) % 4) for t in used_t}
+        used = [s for s in live if (s["ace"], s["slot"]) in want]
+    return {"id": uuid.uuid4().hex[:12], "filename": filename, "path": path,
+            "mode": mode, "ts": time.time(),
+            "slots": [{k: s[k] for k in ("ace", "slot", "material", "color")}
+                      for s in used]}
+
+
+async def _queue_enqueue(filename: str, path: str, mode: str,
+                         used_t: list[int] | None) -> dict:
+    entry = _queue_entry(filename, path, mode, used_t,
+                         await _live_slots_async())
+    if not _require_history().add_queue_entry(MULTIACE_DATA_DIR, entry):
+        await _queue_delete_file(path)
+        raise HTTPException(status_code=409,
+                            detail="queue is full or could not be saved")
+    return entry
+
+
+async def _queue_delete_file(path: str) -> None:
+    """Best effort: a file that is already gone is not an error."""
+    if not _queue_path_ok(path):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.delete(f"{MOONRAKER_URL}/server/files/gcodes/{path}")
+    except httpx.HTTPError:
+        pass
+
+
+async def _queue_with_changes(entries: list[dict]) -> list[dict]:
+    """Each entry with the slots that no longer match (None when the
+    printer cannot be read, so the UI shows 'unknown' rather than 'ok')."""
+    hist = _require_history()
+    try:
+        live = await _live_slots_async()
+    except Exception:
+        live = None
+    return [{**e, "changes": (None if live is None
+                              else hist.loadout_changes(e.get("slots"), live))}
+            for e in entries]
+
+
+@app.get("/api/queue")
+async def queue_list(request: Request) -> dict:
+    if _mock_enabled(request):
+        return {"queue": await _queue_with_changes(list(_mock_queue)),
+                "mock": True}
+    entries = _require_history().load_queue(MULTIACE_DATA_DIR)
+    return {"queue": await _queue_with_changes(entries)}
+
+
+@app.post("/api/queue")
+async def queue_add(request: Request, req: _QueueAdd) -> dict:
+    """Register a file the browser already uploaded to the queue folder
+    (the in-browser rewrite path); the server path stages its own."""
+    if req.mode not in ("slicer", "optimize", "layer", "head"):
+        raise HTTPException(status_code=400, detail="invalid mode")
+    if not _queue_path_ok(req.path):
+        raise HTTPException(status_code=400, detail="invalid queue path")
+    if _mock_enabled(request):
+        entry = _queue_entry(req.filename, req.path, req.mode, req.used_t,
+                             await _live_slots_async())
+        _mock_queue.append(entry)
+        return {"ok": True, "entry": entry, "mock": True}
+    entry = await _queue_enqueue(req.filename, req.path, req.mode, req.used_t)
+    return {"ok": True, "entry": entry}
+
+
+@app.post("/api/queue/{queue_id}/launch")
+async def queue_launch(request: Request, queue_id: str) -> dict:
+    """Start one staged file, after checking again that the spools in the
+    slots it uses are still the ones it was prepared for. A mismatch is a
+    409 listing the slots; the entry stays so the user can fix the slot or
+    prepare the file again."""
+    hist = _require_history()
+    mock = _mock_enabled(request)
+    entries = list(_mock_queue) if mock else hist.load_queue(MULTIACE_DATA_DIR)
+    entry = next((e for e in entries if e.get("id") == queue_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="queue entry not found")
+    changes = hist.loadout_changes(entry.get("slots"),
+                                   await _live_slots_async())
+    if changes:
+        raise HTTPException(status_code=409, detail={
+            "message": "loadout changed since this file was prepared",
+            "changes": changes})
+    if mock:
+        _mock_queue[:] = [e for e in _mock_queue if e["id"] != queue_id]
+        return {"ok": True, "filename": entry["filename"], "mock": True}
+    try:
+        ps = ((await _mr_get("/printer/objects/query?print_stats"))
+              .get("result", {}).get("status", {}).get("print_stats", {}))
+        if ps.get("state") in ("printing", "paused"):
+            raise HTTPException(status_code=409, detail={
+                "message": "a print is already running", "changes": []})
+        await _mr_post("/printer/print/start", {"filename": entry["path"]})
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code,
+                            detail=f"moonraker: {e.response.text}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"moonraker: {e}")
+    hist.remove_queue_entry(MULTIACE_DATA_DIR, queue_id)
+    return {"ok": True, "filename": entry["filename"]}
+
+
+@app.delete("/api/queue/{queue_id}")
+async def queue_remove(request: Request, queue_id: str) -> dict:
+    if _mock_enabled(request):
+        _mock_queue[:] = [e for e in _mock_queue if e["id"] != queue_id]
+        return {"ok": True, "mock": True}
+    gone = _require_history().remove_queue_entry(MULTIACE_DATA_DIR, queue_id)
+    if gone is None:
+        raise HTTPException(status_code=404, detail="queue entry not found")
+    await _queue_delete_file(gone.get("path") or "")
+    return {"ok": True}
 
 
 @app.get("/api/history/{job_id}")

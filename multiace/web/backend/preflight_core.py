@@ -236,6 +236,26 @@ def used_tool_indices(pp, gcode: str) -> set:
     return used
 
 
+def used_tool_indices_file(path: str) -> set:
+    """used_tool_indices for a file on disk, streamed line by line so a
+    large rewritten file is never held in memory. Used by the print queue
+    to know which slots a prepared file draws from."""
+    used: set = set()
+    bare: set = set()
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line.startswith(";"):
+                m = _TOOLCHANGE_RE.match(line)
+                if m:
+                    used.add(int(m.group(1)))
+                    used.add(int(m.group(2)))
+            elif line[:1] == "T":
+                m = _BARE_T_RE.match(line)
+                if m:
+                    bare.add(int(m.group(1)))
+    return used or bare
+
+
 # --------------------------------------------------------------------------- #
 # mapping / plan helpers (pure)                                               #
 # --------------------------------------------------------------------------- #
