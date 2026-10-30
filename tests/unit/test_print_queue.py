@@ -94,25 +94,32 @@ def q(live, monkeypatch):  # noqa: F811
     return main, c, state
 
 
-def _add(c, used_t=(0, 5), name="a.gcode", path="multiace_queue/x_a.gcode",
-         mode="slicer"):
-    return c.post("/api/queue", json={"filename": name, "path": path,
-                                      "mode": mode, "used_t": list(used_t)})
+def _add(c, used_slots=((0, 0), (1, 1)), name="a.gcode",
+         path="multiace_queue/x_a.gcode", mode="slicer"):
+    return c.post("/api/queue", json={
+        "filename": name, "path": path, "mode": mode,
+        "used_slots": [list(p) for p in used_slots]})
 
 
 class TestQueueApi:
     def test_add_snapshots_only_the_used_slots(self, q):
         _, c, _ = q
-        r = _add(c)  # T0 = ace0/slot0, T5 = ace1/slot1 (empty -> dropped)
+        r = _add(c)  # ace0/slot0 is loaded, ace1/slot1 is empty -> dropped
         assert r.status_code == 200
         slots = r.json()["entry"]["slots"]
         assert [(s["ace"], s["slot"]) for s in slots] == [(0, 0)]
 
-    def test_head_mode_snapshots_every_identified_slot(self, q):
+    def test_head_mode_uses_the_slots_of_its_swap_lines_too(self, q):
+        _, c, _ = q
+        r = _add(c, used_slots=[(0, 1)], name="h.gcode", mode="head",
+                 path="multiace_queue/x_h.gcode")
+        assert [(s["ace"], s["slot"]) for s in r.json()["entry"]["slots"]
+                ] == [(0, 1)]
+
+    def test_no_slot_list_snapshots_every_identified_slot(self, q):
         _, c, _ = q
         r = c.post("/api/queue", json={"filename": "h.gcode", "mode": "head",
-                                       "path": "multiace_queue/x_h.gcode",
-                                       "used_t": None})
+                                       "path": "multiace_queue/x_h.gcode"})
         assert len(r.json()["entry"]["slots"]) == 3
 
     def test_list_reports_no_changes_while_the_loadout_matches(self, q):
@@ -181,16 +188,34 @@ class TestQueueApi:
         assert "queue" in c.get("/api/queue").json()
 
 
-class TestUsedToolIndicesFile:
-    def test_reads_every_tool_of_the_toolchange_comments(self, tmp_path):
+class TestUsedAceSlotsFile:
+    def _slots(self, tmp_path, text):
         from multiace.web.backend import preflight_core as pc
         f = tmp_path / "a.gcode"
-        f.write_text("; Change Tool 0 -> Tool 5\nG1 X1\n"
-                     "; Change Tool 5 -> Tool 9\n", encoding="utf-8")
-        assert pc.used_tool_indices_file(str(f)) == {0, 5, 9}
+        f.write_text(text, encoding="utf-8")
+        return pc.used_ace_slots_file(str(f))
 
-    def test_falls_back_to_bare_t_lines(self, tmp_path):
-        from multiace.web.backend import preflight_core as pc
-        f = tmp_path / "a.gcode"
-        f.write_text("T3\nG1 X1\nT3\n", encoding="utf-8")
-        assert pc.used_tool_indices_file(str(f)) == {3}
+    def test_reads_ace_and_slot_of_the_swap_lines(self, tmp_path):
+        assert self._slots(tmp_path, (
+            "ACE_SWAP_HEAD HEAD=0 ACE=0 SLOT=0 INITIAL=1\n"
+            "G1 X1\n"
+            "ACE_SWAP_HEAD HEAD=1 ACE=1 SLOT=2 ANTI_OOZE=0.5\n"
+            "ACE_BG_SWAP HEAD=2 ACE=0 SLOT=3 ANTI_OOZE=0 QUIET=1\n"
+        )) == [[0, 0], [0, 3], [1, 2]]
+
+    def test_the_slicers_tool_numbers_are_not_slots(self, tmp_path):
+        # T5 would have meant ace1/slot1 under the old T // 4 reading; the
+        # rewrite keeps the slicer's own numbers in these comments.
+        assert self._slots(tmp_path, (
+            "; Change Tool 0 -> Tool 5\n"
+            "T5\n"
+            "ACE_SWAP_HEAD HEAD=0 ACE=0 SLOT=2\n")) == [[0, 2]]
+
+    def test_skipped_swaps_are_comments_and_do_not_count(self, tmp_path):
+        assert self._slots(tmp_path, (
+            "ACE_SWAP_HEAD HEAD=0 ACE=0 SLOT=0\n"
+            "; ACE_SWAP_HEAD HEAD=0 ACE=1 SLOT=1  ; skipped (already loaded)\n"
+        )) == [[0, 0]]
+
+    def test_a_file_without_swaps_has_no_slots(self, tmp_path):
+        assert self._slots(tmp_path, "T0\nG1 X1\n") == []

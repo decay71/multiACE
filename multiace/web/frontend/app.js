@@ -7984,7 +7984,7 @@ createApp({
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({filename: baseName,
                                   path: QUEUE_DIR + "/" + stagedName, mode,
-                                  used_t: mode === "head" ? null : (j.usedT || [])}),
+                                  used_slots: j.usedSlots || []}),
           });
           if (!qr.ok) {
             const qj = await qr.json().catch(() => ({}));

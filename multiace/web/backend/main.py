@@ -1609,13 +1609,11 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                 raise RuntimeError(f"moonraker: {e}")
 
         if queue:
-            used_t = None
-            if mode != "head":
-                used_t = sorted(await asyncio.to_thread(
-                    preflight_core.used_tool_indices_file, str(cur)))
+            used_slots = await asyncio.to_thread(
+                preflight_core.used_ace_slots_file, str(cur))
             try:
                 await _queue_enqueue(safe_name, f"{_QUEUE_DIR}/{upload_name}",
-                                     mode, used_t)
+                                     mode, used_slots)
             except HTTPException as e:
                 raise RuntimeError(str(e.detail))
 
@@ -6539,9 +6537,9 @@ class _QueueAdd(BaseModel):
     filename: str
     path: str
     mode: str
-    # T-indices (ace*4 + slot) the file activates, from the rewrite. None
-    # (head mode, where T means a head) snapshots every identified slot.
-    used_t: list[int] | None = None
+    # [ace, slot] pairs the rewritten file swaps in (the ACE= / SLOT= of its
+    # swap lines). None snapshots every identified slot.
+    used_slots: list[list[int]] | None = None
 
 
 def _queue_path_ok(path: str) -> bool:
@@ -6550,12 +6548,12 @@ def _queue_path_ok(path: str) -> bool:
 
 
 def _queue_entry(filename: str, path: str, mode: str,
-                 used_t: list[int] | None, live: list[dict]) -> dict:
+                 used_slots: list[list[int]] | None, live: list[dict]) -> dict:
     """A queue record with the identity of the slots the file uses."""
-    if used_t is None:
+    if used_slots is None:
         used = list(live)
     else:
-        want = {(int(t) // 4, int(t) % 4) for t in used_t}
+        want = {(int(p[0]), int(p[1])) for p in used_slots if len(p) == 2}
         used = [s for s in live if (s["ace"], s["slot"]) in want]
     return {"id": uuid.uuid4().hex[:12], "filename": filename, "path": path,
             "mode": mode, "ts": time.time(),
@@ -6564,8 +6562,8 @@ def _queue_entry(filename: str, path: str, mode: str,
 
 
 async def _queue_enqueue(filename: str, path: str, mode: str,
-                         used_t: list[int] | None) -> dict:
-    entry = _queue_entry(filename, path, mode, used_t,
+                         used_slots: list[list[int]] | None) -> dict:
+    entry = _queue_entry(filename, path, mode, used_slots,
                          await _live_slots_async())
     if not _require_history().add_queue_entry(MULTIACE_DATA_DIR, entry):
         await _queue_delete_file(path)
@@ -6616,11 +6614,11 @@ async def queue_add(request: Request, req: _QueueAdd) -> dict:
     if not _queue_path_ok(req.path):
         raise HTTPException(status_code=400, detail="invalid queue path")
     if _mock_enabled(request):
-        entry = _queue_entry(req.filename, req.path, req.mode, req.used_t,
+        entry = _queue_entry(req.filename, req.path, req.mode, req.used_slots,
                              await _live_slots_async())
         _mock_queue.append(entry)
         return {"ok": True, "entry": entry, "mock": True}
-    entry = await _queue_enqueue(req.filename, req.path, req.mode, req.used_t)
+    entry = await _queue_enqueue(req.filename, req.path, req.mode, req.used_slots)
     return {"ok": True, "entry": entry}
 
 
