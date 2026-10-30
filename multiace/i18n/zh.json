@@ -307,7 +307,8 @@
       "est_colour": "颜色",
       "est_print": "打印",
       "est_sum": "合计",
-      "est_assumptions": "假设"
+      "est_assumptions": "假设",
+      "thumbnail_alt": "切片预览"
     },
     "queue": {
       "send_all_tooltip": "将所有排队命令发送到打印机（之后可以关闭界面）",

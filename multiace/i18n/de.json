@@ -628,7 +628,8 @@
       "est_colour": "Farbe",
       "est_print": "Druck",
       "est_sum": "Gesamt",
-      "est_assumptions": "Annahmen"
+      "est_assumptions": "Annahmen",
+      "thumbnail_alt": "Slicer-Vorschau"
     },
     "queue": {
       "clear_errors": "Fehler löschen",

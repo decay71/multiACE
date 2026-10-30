@@ -3529,6 +3529,10 @@ reboot</pre>
         </div>
       </div>
       <template v-if="preflight.report">
+        <img v-if="preflight.report.thumbnail" class="pf-thumb"
+             :src="'data:' + preflight.report.thumbnail.mime + ';base64,' + preflight.report.thumbnail.b64"
+             :width="preflight.report.thumbnail.w" :height="preflight.report.thumbnail.h"
+             :alt="t('ui.preflight.thumbnail_alt')">
         <div class="preflight-prefs">
           <label><input type="checkbox" v-model="preflight.bedMesh"> {{ t('ui.preflight.pref_bed_mesh') }}</label>
           <label><input type="checkbox" v-model="preflight.camera"> {{ t('ui.preflight.pref_camera') }}</label>
