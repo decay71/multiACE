@@ -150,3 +150,18 @@ def test_wait_bg_op_marks_the_waiting_head():
     SW.SwapMixin._wait_bg_op(stub, 2)
     assert seen[1] == {2}
     assert stub._bg_arrival_waiting == set()
+
+
+def test_bg_unload_counts_only_the_net_retract_of_the_pull():
+    """The cold-pull unwinds were subtracted in full from the swap length,
+    although the forward pushes of the pull (stock 57+3 mm, a pre-prime,
+    custom tables) took part of that back. The tip then stayed ~100 mm
+    short of the hub and the next load hit NO TRANSPORT (HW 2026-10-29/30).
+    Only the net extruder retract may count."""
+    import os
+    path = os.path.join(H.EXTRAS, 'ace_bg_swap.py')
+    src = open(path, encoding='utf-8').read()
+    i_sum = src.index('net_move += dist')
+    i_cap = src.index('reclaimed = min(reclaimed, max(0., -net_move))')
+    i_rest = src.index('rest = max(0, full - int(reclaimed))')
+    assert i_sum < i_cap < i_rest

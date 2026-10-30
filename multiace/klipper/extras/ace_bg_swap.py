@@ -2006,6 +2006,7 @@ class AceBgSwap:
             # (a V2 just BRAKES otherwise -> gear clicking).
             # After the pull the unwind completion is confirmed device-truth.
             reclaimed = 0.
+            net_move = 0.      # sum of every extruder move of the pull
             fwd_assist = False
             _fan_warned = False
             for tok in seq:
@@ -2067,6 +2068,7 @@ class AceBgSwap:
                     continue
                 dist, feedrate = float(tok[1]), float(tok[2])
                 speed = feedrate / 60.
+                net_move += dist
                 if dist < 0.:
                     ln = int(round(-dist))
                     if ln < 3:
@@ -2131,8 +2133,17 @@ class AceBgSwap:
                 self._ace_send(ace, ace_idx, {
                     'method': 'stop_feed_assist', 'params': {'index': slot}})
                 ace._feed_assist_per_ace[ace_idx] = -1
-            self._say('head %d: cold-pull done (%d mm confirmed reclaimed '
-                      'at MMU)' % (self._dh(head), int(reclaimed)))
+            # The unwinds only move the tip back as far as the pull does in
+            # net: the forward pushes (purge, pre-prime, table moves) took
+            # back part of it, and an unwind beyond the net retract just
+            # takes up bowden slack. Only the net retract counts against
+            # the swap length, else the tip stays short of the hub
+            # (HW 2026-10-30: 150 counted, ~50 net, NO TRANSPORT).
+            unwound = reclaimed
+            reclaimed = min(reclaimed, max(0., -net_move))
+            self._say('head %d: cold-pull done (%d mm unwound at MMU, '
+                      '%d mm net retract counted)'
+                      % (self._dh(head), int(unwound), int(reclaimed)))
 
             # 4. Heater back to the slicer's intent (stock does M104 S0
             # right after the pull; 0 only when nobody asked for more).
