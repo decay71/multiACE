@@ -2379,17 +2379,17 @@
              stock 80 mm). The preflight estimate follows. -->
         <div class="config-row">
           <label>{{ t('ui.config.purge_scale') }}</label>
-          <input type="number" :value="state.purge_scale" min="25" max="200" step="5"
+          <input type="number" :value="purgePolicyValue('SCALE', state.purge_scale)" @input="purgePolicyInput('SCALE', $event)" min="25" max="200" step="5"
                  @change="setPurgePolicy('SCALE', $event.target.value)">
         </div>
         <div class="config-row">
           <label>{{ t('ui.config.purge_floor') }}</label>
-          <input type="number" :value="state.purge_floor" min="0" max="200" step="1" placeholder="0"
+          <input type="number" :value="purgePolicyValue('FLOOR', state.purge_floor)" @input="purgePolicyInput('FLOOR', $event)" min="0" max="200" step="1" placeholder="0"
                  @change="setPurgePolicy('FLOOR', $event.target.value)">
         </div>
         <div class="config-row">
           <label>{{ t('ui.config.purge_cap') }}</label>
-          <input type="number" :value="state.purge_cap" min="0" max="200" step="1" placeholder="0"
+          <input type="number" :value="purgePolicyValue('CAP', state.purge_cap)" @input="purgePolicyInput('CAP', $event)" min="0" max="200" step="1" placeholder="0"
                  @change="setPurgePolicy('CAP', $event.target.value)">
         </div>
         <p class="muted small config-row-hint">{{ t('ui.config.purge_policy_hint') }}</p>

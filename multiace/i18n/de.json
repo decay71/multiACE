@@ -415,7 +415,7 @@
       "purge_scale": "Spülskalierung (%)",
       "purge_floor": "Spül-Minimum (mm, 0 = aus)",
       "purge_cap": "Spül-Maximum (mm, 0 = aus)",
-      "purge_policy_hint": "Skaliert jede Spüllänge eines Wechsels (Paar-Stempel, feste Länge oder Standard 80 mm) um den Prozentwert und hält sie dann zwischen Minimum und Maximum (0 = keine Grenze). Spülung anpassen ohne neu zu slicen. Wirkt sofort, kein Neustart.",
+      "purge_policy_hint": "Skaliert jede Spüllänge eines Wechsels (Paar-Stempel, feste Länge oder Standard 80 mm) um den Prozentwert und hält sie dann zwischen Minimum und Maximum (0 = keine Grenze). Nie unter 40 mm. Spülung anpassen ohne neu zu slicen. Wirkt sofort, kein Neustart.",
       "purge_policy_range": "Der Wert muss zwischen {min} und {max} liegen."
     },
     "dialog": {

@@ -660,8 +660,14 @@ class SwapCostModel(object):
     def apply_purge_policy(self, length_mm):
         """The engine's scale and floor/cap on a resolved purge length (see
         ace.py get_purge_length): percent scale first, then the floor, then
-        the cap, then never above INNER_FLUSH_FILAMENT's own limit."""
+        the cap, then never below PURGE_MIN_MM (the engine's hard minimum)
+        nor above INNER_FLUSH_FILAMENT's own limit."""
         value = float(length_mm or 0.0)
+        if (self.swap_purge_scale == 100 and not self.swap_purge_floor
+                and not self.swap_purge_cap):
+            # Policy at its defaults: the engine leaves the length alone
+            # (a fixed swap_purge_length below 40 stays what it is).
+            return min(value, PURGE_LENGTH_MAX_MM)
         scale = min(max(self.swap_purge_scale, PURGE_SCALE_MIN_PCT),
                     PURGE_SCALE_MAX_PCT)
         value *= scale / 100.0
@@ -669,7 +675,7 @@ class SwapCostModel(object):
             value = max(value, self.swap_purge_floor)
         if self.swap_purge_cap > 0:
             value = min(value, self.swap_purge_cap)
-        return min(value, PURGE_LENGTH_MAX_MM)
+        return min(max(value, PURGE_MIN_MM), PURGE_LENGTH_MAX_MM)
 
     def clamp_purge_mm(self, requested_mm):
         """Clamp a flush-matrix stamp to the range the post-processor uses."""

@@ -414,7 +414,7 @@
       "purge_scale": "Purge scale (%)",
       "purge_floor": "Purge minimum (mm, 0 = off)",
       "purge_cap": "Purge maximum (mm, 0 = off)",
-      "purge_policy_hint": "Rescales every swap purge length (the per-pair stamp, the fixed length or the stock 80 mm) by the percent, then keeps it between the minimum and maximum (0 = no limit). Tune the purge without re-slicing. Applies live, no restart.",
+      "purge_policy_hint": "Rescales every swap purge length (the per-pair stamp, the fixed length or the stock 80 mm) by the percent, then keeps it between the minimum and maximum (0 = no limit). Never below 40 mm. Tune the purge without re-slicing. Applies live, no restart.",
       "purge_policy_range": "Value must be between {min} and {max}."
     },
     "dialog": {

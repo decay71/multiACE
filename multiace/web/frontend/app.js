@@ -4494,7 +4494,26 @@ createApp({
     }
     // Purge scale (percent) and floor/cap (mm, 0 = off): the engine writes
     // the ace.cfg line itself and applies it live, like the matrix toggle.
+    // The inputs are bound to polled printer state, so a refresh landing
+    // mid-edit would overwrite what is being typed. Same edit buffer as the
+    // auto-dry fields: while a field is being edited the buffer wins, and it
+    // is released only after the state refresh that follows the send.
+    const purgePolicyEdit = reactive({});
+    function purgePolicyValue(arg, live) {
+      return (arg in purgePolicyEdit) ? purgePolicyEdit[arg] : live;
+    }
+    function purgePolicyInput(arg, ev) {
+      purgePolicyEdit[arg] = ev.target.value;
+    }
     async function setPurgePolicy(arg, value) {
+      purgePolicyEdit[arg] = value;
+      try {
+        await _sendPurgePolicy(arg, value);
+      } finally {
+        delete purgePolicyEdit[arg];
+      }
+    }
+    async function _sendPurgePolicy(arg, value) {
       const lim = {SCALE: [25, 200], FLOOR: [0, 200], CAP: [0, 200]}[arg];
       const v = Math.round(Number(value));
       if (!lim || isNaN(v) || v < lim[0] || v > lim[1]) {
@@ -8896,7 +8915,7 @@ createApp({
       slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
-      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
+      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,

@@ -47,12 +47,26 @@ class TestModelPurgePolicy:
         m = _model(swap_purge_floor=120, swap_purge_cap=90)
         assert m.resolve_swap_purge_mm() == 90
 
+    def test_never_below_40_mm_whatever_scale_floor_or_cap_say(self):
+        assert _model(swap_purge_scale=25).resolve_swap_purge_mm(
+            stamp_mm=40) == 40
+        assert _model(swap_purge_scale=25, swap_purge_cap=10
+                      ).resolve_swap_purge_mm(stamp_mm=100) == 40
+        assert _model(swap_purge_cap=20).resolve_swap_purge_mm() == 40
+
+    def test_floor_is_an_extra_minimum_above_40(self):
+        m = _model(swap_purge_scale=25, swap_purge_floor=55)
+        assert m.resolve_swap_purge_mm(stamp_mm=40) == 55
+
+    def test_a_fixed_length_below_40_is_untouched_at_the_defaults(self):
+        assert _model(swap_purge_length=25).resolve_swap_purge_mm() == 25
+
     def test_never_above_the_flush_macro_limit(self):
         m = _model(swap_purge_length=200, swap_purge_scale=200)
         assert m.resolve_swap_purge_mm() == sc.PURGE_LENGTH_MAX_MM
 
     def test_the_scale_is_kept_inside_its_range(self):
-        assert _model(swap_purge_scale=1).resolve_swap_purge_mm() == 20
+        assert _model(swap_purge_scale=1).resolve_swap_purge_mm() == 40
         assert _model(swap_purge_scale=900).resolve_swap_purge_mm() == 160
 
     def test_estimate_grams_follow_the_policy(self):
@@ -86,6 +100,23 @@ class TestEnginePurgePolicy:
         engine.swap_purge_scale = 50
         assert engine.get_purge_length() == 40
 
+    def test_never_below_40_mm_once_a_policy_is_set(self, engine):
+        engine._purge_length_override = 40
+        engine.swap_purge_scale = 25
+        assert engine.get_purge_length() == 40
+        engine.swap_purge_cap = 15
+        assert engine.get_purge_length() == 40
+
+    def test_floor_raises_the_minimum_above_40(self, engine):
+        engine._purge_length_override = 40
+        engine.swap_purge_scale = 25
+        engine.swap_purge_floor = 55
+        assert engine.get_purge_length() == 55
+
+    def test_a_fixed_length_below_40_is_untouched_at_the_defaults(self, engine):
+        engine.swap_purge_length = 25
+        assert engine.get_purge_length() == 25
+
     def test_the_stamp_override_goes_through_the_policy(self, engine):
         engine._purge_length_override = 100
         engine.swap_purge_scale = 150
@@ -94,7 +125,8 @@ class TestEnginePurgePolicy:
 
     def test_engine_and_model_agree(self, engine):
         for scale, floor, cap, stamp in [(50, 0, 0, 0), (130, 70, 0, 60),
-                                         (200, 0, 110, 80), (25, 50, 0, 0)]:
+                                         (200, 0, 110, 80), (25, 50, 0, 0), (25, 0, 0, 40),
+                                         (100, 0, 20, 0)]:
             engine.swap_purge_scale = scale
             engine.swap_purge_floor = floor
             engine.swap_purge_cap = cap
@@ -167,3 +199,45 @@ class TestTimelineUsesTheWindow:
         m = _model()
         assert self._bg_seconds(20) == pytest.approx(
             m.swap_seconds("cross_ace_bg"), abs=0.1)
+
+
+class TestPurgePolicyCommand:
+    """ACE_SET_PURGE SCALE=/FLOOR=/CAP=: ranged by hand, errors name the
+    option, and nothing is applied when any value is bad."""
+
+    @pytest.fixture
+    def ace(self):
+        import types
+        from multiace.klipper.extras import ace as ace_mod
+        cls = next(v for v in vars(ace_mod).values()
+                   if isinstance(v, type) and hasattr(v, "_set_purge_policy"))
+        a = object.__new__(cls)
+        a.swap_purge_scale, a.swap_purge_floor, a.swap_purge_cap = 100, 0, 0
+        a.log_always = lambda m: None
+        a._cfg_write_ace_option = lambda k, v: None
+        a._ace_error = lambda gcmd, text, code=0, **kw: ValueError(text)
+        a._said = types.SimpleNamespace()
+        return a
+
+    @staticmethod
+    def _gcmd(**params):
+        class G:
+            def get(self, name, default=None):
+                return params.get(name, default)
+        return G()
+
+    def test_a_good_value_is_applied(self, ace):
+        ace._set_purge_policy(self._gcmd(SCALE="60", FLOOR="45"))
+        assert (ace.swap_purge_scale, ace.swap_purge_floor) == (60, 45)
+
+    @pytest.mark.parametrize("arg,val", [("SCALE", "10"), ("SCALE", "300"),
+                                         ("FLOOR", "-1"), ("CAP", "250"),
+                                         ("CAP", "abc")])
+    def test_a_bad_value_is_refused_by_name(self, ace, arg, val):
+        with pytest.raises(ValueError, match=arg):
+            ace._set_purge_policy(self._gcmd(**{arg: val}))
+
+    def test_a_bad_value_leaves_the_good_ones_unapplied(self, ace):
+        with pytest.raises(ValueError, match="CAP"):
+            ace._set_purge_policy(self._gcmd(SCALE="60", CAP="999"))
+        assert ace.swap_purge_scale == 100

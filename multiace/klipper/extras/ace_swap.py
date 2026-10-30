@@ -25,6 +25,9 @@ from .ace_resistance import RESISTANCE_PAUSE_STRIKES
 # starts, so commanded push = anti_ooze + PICK_CHECK_FLOW_PUSH, and the
 # cushion is retracted back afterwards (anti-ooze contract stays intact).
 PICK_CHECK_FLOW_PUSH = 10.
+#: Smallest flush the purge policy may produce (mm), same as the post-
+#: processor's stamp minimum.
+PURGE_HARD_MIN_MM = 40
 PICK_CHECK_PUSH_FEEDRATE = 400     # mm/min, = the phase3 extrude feedrate
 PICK_CHECK_COIL_SAMPLES = 5        # phase3 non-soft sampling: 5 x 0.5 s
 PICK_CHECK_COIL_INTERVAL = 0.5
@@ -118,7 +121,10 @@ class SwapMixin:
     def apply_purge_policy(self, length):
         """Scale, floor and cap a resolved flush length (mm). Unchanged
         while the policy sits at its defaults; a 0 (stock default) length
-        then stays 0."""
+        then stays 0. Once the policy is active the result is never below
+        PURGE_HARD_MIN_MM (the melt zone has to stay clear and the flow
+        check valid), whatever scale, floor or cap say; FLOOR only raises
+        the minimum further."""
         scale = getattr(self, 'swap_purge_scale', 100)
         floor = getattr(self, 'swap_purge_floor', 0)
         cap = getattr(self, 'swap_purge_cap', 0)
@@ -129,6 +135,7 @@ class SwapMixin:
             value = max(value, floor)
         if cap:
             value = min(value, cap)
+        value = max(value, PURGE_HARD_MIN_MM)
         return int(min(round(value), 200))
 
     def _restore_pos_for_pause(self, saved_pos):

@@ -17194,10 +17194,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         """SCALE= / FLOOR= / CAP= of ACE_SET_PURGE: apply in RAM, then
         write the config line. A failed write is reported, the RAM value
         stays applied for this session."""
-        for arg, attr, lo, hi in (('SCALE', 'swap_purge_scale', 25, 200),
-                                  ('FLOOR', 'swap_purge_floor', 0, 200),
-                                  ('CAP', 'swap_purge_cap', 0, 200)):
-            val = gcmd.get_int(arg, None, minval=lo, maxval=hi)
+        # Ranges are checked by hand (see _gcode_num) and ALL values before
+        # any is applied, so a bad CAP cannot leave SCALE half set, and the
+        # error names the option instead of Klipper's bare "System error".
+        vals = [(attr, self._gcode_num(gcmd, arg, lo, hi, int))
+                for arg, attr, lo, hi in (
+                    ('SCALE', 'swap_purge_scale', 25, 200),
+                    ('FLOOR', 'swap_purge_floor', 0, 200),
+                    ('CAP', 'swap_purge_cap', 0, 200))]
+        for attr, val in vals:
             if val is None:
                 continue
             setattr(self, attr, val)
