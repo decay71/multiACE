@@ -1867,6 +1867,8 @@
                           :title="isFavorite(row) ? t('ui.history.favorite_remove') : t('ui.history.favorite_add')"
                           :aria-pressed="isFavorite(row)"
                           @click.stop="toggleFavorite(row)">{{ isFavorite(row) ? '★' : '☆' }}</button>
+                  <img v-if="row.filename" class="row-thumb" loading="lazy" alt=""
+                       :src="thumbUrl(row.filename)" @error="hideBrokenThumb">
                   {{ row.filename }}
                   <span v-if="row.ambiguous" class="muted small"
                         :title="t('ui.history.ambiguous_hint')">· {{ t('ui.history.ambiguous') }}</span>
@@ -1937,6 +1939,8 @@
       </p>
       <div class="fav-grid">
         <div v-for="c in favoriteCards" :key="c.key" class="fav-card" :class="{gone: c.gone}">
+          <img v-if="c.row.filename && !c.gone" class="fav-thumb" loading="lazy" alt=""
+               :src="thumbUrl(c.row.filename)" @error="hideBrokenThumb">
           <div class="fav-head">
             <b class="fav-name" :title="c.row.filename">{{ c.row.filename }}</b>
             <button type="button" class="fav-btn on" :disabled="history.favBusy"

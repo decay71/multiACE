@@ -2373,3 +2373,9 @@ body:has(.panel) .overlay .dialog {
 .pf-thumb { float: right; max-width: 96px; max-height: 96px; width: auto; height: auto;
            object-fit: contain; margin: 0 0 6px 10px; border-radius: 6px;
            border: 1px solid var(--border); background: var(--bg-elev, transparent); }
+
+/* Print preview thumbnails in History rows and Favorites cards */
+.row-thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 4px;
+             vertical-align: middle; margin-right: 6px; background: var(--border); }
+.fav-thumb { display: block; width: 100%; height: 110px; object-fit: contain;
+             border-radius: 6px; margin-bottom: 6px; background: var(--border); }
