@@ -12,7 +12,7 @@ createApp({
     const CALIBRATION_TAB = true;
     // Orca profile section in Config (profile download + tool map).
     const ORCA_SECTION = true;
-    const _validTabs = new Set(["dashboard", "control", "history", "favorites", "spools", "config", "devices"]);
+    const _validTabs = new Set(["dashboard", "control", "history", "queue", "favorites", "spools", "config", "devices"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
     const _storedTab = localStorage.getItem("multiace.tab");
     const _isPluginTab = (s) => typeof s === "string" && s.startsWith("plugin:");
@@ -65,6 +65,8 @@ createApp({
       items.push({key: "control", group: "printhub", label: t("ui.tabs.control")});
       items.push({key: "history", group: "printhub",
                   label: t("ui.tabs.history")});
+      items.push({key: "queue", group: "printhub",
+                  label: t("ui.tabs.queue")});
       items.push({key: "favorites", group: "printhub",
                   label: t("ui.tabs.favorites")});
       items.push({key: "spools", label: t("ui.tabs.spools")});
@@ -7946,22 +7948,24 @@ createApp({
       return t(preflight.report.head_mode ? "ui.preflight.head_go_" + p
                                          : "ui.preflight.go_" + p);
     }
-    function pfPrintSelected() {
+    function pfPrintSelected(queue) {
       const p = pfSelected();
       if (!p || !pfPlanFeasible(p)) return;
-      if (preflight.report.head_mode) startPreflightPrint("head", p);
-      else startPreflightPrint(p);
+      if (preflight.report.head_mode) startPreflightPrint("head", p, !!queue);
+      else startPreflightPrint(p, undefined, !!queue);
     }
-    async function startPreflightPrint(mode, headPlan) {
+    // queue=true stages the rewritten file in the print queue instead of
+    // starting it (see the Queue tab).
+    async function startPreflightPrint(mode, headPlan, queue) {
       if (preflight.busy || preflight.sending) return;
       const rep = preflight.report;
       if (!rep) return;
-      if (rep.local) { await _startLocalPreflightPrint(mode, headPlan); return; }
-      await _startServerPreflightPrint(mode, headPlan);
+      if (rep.local) { await _startLocalPreflightPrint(mode, headPlan, queue); return; }
+      await _startServerPreflightPrint(mode, headPlan, queue);
     }
 
     // Browser path: rewrite in the worker, upload straight to Moonraker.
-    async function _startLocalPreflightPrint(mode, headPlan) {
+    async function _startLocalPreflightPrint(mode, headPlan, queue) {
       const rep = preflight.report;
       if (!rep || !preflightFile || !preflightJobId) return;
       preflight.sending = (mode === "head") ? (headPlan || "loadout") : mode;
@@ -8006,9 +8010,14 @@ createApp({
         });
         preflight.progress = {percent: 90, stage: "upload", running: true};
         const fd = new FormData();
+        const baseName = rep.filename || preflightFile.name;
+        const stagedName = queue
+          ? Math.random().toString(16).slice(2, 14).padEnd(12, "0") + "_" + baseName
+          : baseName;
         fd.append("root", "gcodes");
-        fd.append("print", "true");
-        fd.append("file", j.blob, rep.filename || preflightFile.name);
+        if (queue) fd.append("path", QUEUE_DIR);
+        fd.append("print", queue ? "false" : "true");
+        fd.append("file", j.blob, stagedName);
         const r = await fetch("/server/files/upload", {method: "POST", body: fd});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) {
@@ -8016,11 +8025,31 @@ createApp({
             || `${r.status} ${r.statusText}`;
           throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
         }
+        if (queue) {
+          // The file is on the printer; the server records which slots it
+          // uses and what is in them now. If that fails the staged file is
+          // removed again rather than left behind unlisted.
+          const qr = await fetch(`${API}/queue`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({filename: baseName,
+                                  path: QUEUE_DIR + "/" + stagedName, mode,
+                                  used_slots: j.usedSlots || []}),
+          });
+          if (!qr.ok) {
+            const qj = await qr.json().catch(() => ({}));
+            try { await fetch(`/server/files/gcodes/${QUEUE_DIR}/${encodeURIComponent(stagedName)}`,
+                              {method: "DELETE"}); } catch (_) {}
+            throw new Error(qj.detail || `${qr.status} ${qr.statusText}`);
+          }
+          pq.loaded = false;
+        }
         preflight.progress = {percent: 100, stage: "done", running: true};
         const elapsed = Date.now() - startedAt;
         const wait = Math.max(0, MIN_VISIBLE_MS - elapsed);
         if (wait > 0) await new Promise(res => setTimeout(res, wait));
-        setMacroLog(t("ui.upload.started", {name: rep.filename || preflightFile.name}));
+        setMacroLog(queue ? t("ui.queue.staged", {name: baseName})
+                          : t("ui.upload.started", {name: baseName}));
         closePreflight();
       } catch (e) {
         preflight.error = e.message || String(e);
@@ -8030,7 +8059,7 @@ createApp({
       }
     }
 
-    async function _startServerPreflightPrint(mode, headPlan) {
+    async function _startServerPreflightPrint(mode, headPlan, queue) {
       const rep = preflight.report;
       if (!rep || !rep.token) return;
       // For head mode the button identity is the head plan (loadout/optimize/
@@ -8045,7 +8074,7 @@ createApp({
       try {
         const body = {token: rep.token, mode,
                       bed_mesh: !!preflight.bedMesh, camera: !!preflight.camera,
-                      flow_cal: !!preflight.flowCal};
+                      flow_cal: !!preflight.flowCal, queue: !!queue};
         if (mode === "slicer") {
           // Send the (possibly user-edited) slot assignment verbatim so the
           // print matches the preview exactly. Only entries differing from
@@ -8120,7 +8149,9 @@ createApp({
         if (wait > 0) {
           await new Promise(res => setTimeout(res, wait));
         }
-        setMacroLog(t("ui.upload.started", {name: rep.filename}));
+        if (queue) pq.loaded = false;
+        setMacroLog(queue ? t("ui.queue.staged", {name: rep.filename})
+                          : t("ui.upload.started", {name: rep.filename}));
         closePreflight();
       } catch (e) {
         preflight.error = e.message || String(e);
@@ -8938,6 +8969,92 @@ createApp({
     });
     if (tab.value === "history") { loadHistory(); loadFavorites(); }
     if (tab.value === "favorites") loadFavoritesTab();
+    // =================================================================
+    // Print queue
+    //
+    // Files preflight already rewrote for the loadout of the moment, parked
+    // on the printer. Launching one starts that single file; the server
+    // checks the slots it uses again first. Not Moonraker's job queue.
+    // =================================================================
+    const QUEUE_DIR = "multiace_queue";
+    const pq = reactive({
+      loaded: false, busy: false, error: "", items: [], launching: "",
+      blocked: null,
+    });
+    async function loadQueue() {
+      pq.busy = true;
+      try {
+        const r = await fetch(`${API}/queue`);
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `${r.status}`);
+        pq.items = j.queue || [];
+        pq.loaded = true;
+        pq.error = "";
+      } catch (e) {
+        pq.error = e.message || String(e);
+      } finally {
+        pq.busy = false;
+      }
+    }
+    function queueSlotLabel(sl) {
+      return `MMU ${dispIdx(sl.ace)} / ${dispIdx(sl.slot)}`;
+    }
+    function queueColor(c) {
+      const h = String(c || "").replace(/^#/, "");
+      return h ? "#" + h : "#666";
+    }
+    function queueChangeText(ch) {
+      const fmt = (x) => x ? `${x.material || "?"} #${x.color || "?"}` : t("ui.queue.slot_empty");
+      return `${queueSlotLabel(ch)}: ${fmt(ch.expected)} → ${fmt(ch.now)}`;
+    }
+    async function launchQueued(item) {
+      if (!item || pq.launching) return;
+      pq.launching = item.id;
+      pq.error = "";
+      pq.blocked = null;
+      try {
+        const r = await fetch(`${API}/queue/${encodeURIComponent(item.id)}/launch`,
+                              {method: "POST"});
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 409 && j.detail && typeof j.detail === "object") {
+          pq.blocked = {id: item.id, message: j.detail.message,
+                                changes: j.detail.changes || []};
+          await loadQueue();
+          return;
+        }
+        if (!r.ok) throw new Error(
+          (j.detail && j.detail.message) || j.detail || `${r.status}`);
+        setMacroLog(t("ui.upload.started", {name: item.filename}));
+        await loadQueue();
+      } catch (e) {
+        pq.error = e.message || String(e);
+      } finally {
+        pq.launching = "";
+      }
+    }
+    function removeQueued(item) {
+      confirm({
+        title: t("ui.queue.remove_title"),
+        message: `<p><b>${escapeHtml(item.filename)}</b></p>` +
+                 `<p>${escapeHtml(t("ui.queue.remove_msg"))}</p>`,
+        okLabel: t("ui.queue.remove"),
+        onOk: async () => {
+          try {
+            const r = await fetch(`${API}/queue/${encodeURIComponent(item.id)}`,
+                                  {method: "DELETE"});
+            if (!r.ok) {
+              const j = await r.json().catch(() => ({}));
+              throw new Error(j.detail || `${r.status}`);
+            }
+          } catch (e) {
+            pq.error = e.message || String(e);
+          }
+          await loadQueue();
+        },
+      });
+    }
+    watch(tab, (v) => { if (v === "queue") loadQueue(); });
+    if (tab.value === "queue") loadQueue();
 
     onUnmounted(() => {
       document.removeEventListener("click", closeHistoryInfo);
@@ -8954,6 +9071,7 @@ createApp({
       history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
       fmtDuration, reprintJob, historyColumnInfo, swapKindLabel,
       isFavorite, toggleFavorite, favKey, favoriteCards, loadFavoritesTab,
+      pq, loadQueue, launchQueued, removeQueued, queueSlotLabel, queueColor, queueChangeText,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,

@@ -68,6 +68,7 @@
       "print_hub": "Print Hub",
       "history": "History",
       "favorites": "Favorites",
+      "queue": "Queue",
       "dashboard": "Dashboard",
       "dry": "Dry",
       "config": "Config",
@@ -1016,6 +1017,24 @@
       "offline": "(offline)",
       "sending": "sending request…",
       "starting": "starting"
+    },
+    "queue": {
+      "title": "Print queue",
+      "hint": "Files already prepared for the loadout of that moment. Launching starts that single file, after the slots it uses are checked again. Nothing starts on its own.",
+      "empty": "Nothing queued. Use \"Add to queue\" in the preflight dialog to prepare a file now and print it later.",
+      "add": "Add to queue",
+      "add_hint": "Prepare the file now and keep it in the queue instead of printing it.",
+      "staged": "Queued: {name}",
+      "staged_at": "Prepared {time}",
+      "ready": "Loadout matches - ready to launch.",
+      "changed": "The loadout changed since this file was prepared. Restore these spools or prepare the file again:",
+      "unknown": "The printer could not be read, so the loadout is not checked yet.",
+      "slot_empty": "empty",
+      "launch": "Launch",
+      "remove": "Remove",
+      "remove_title": "Remove from queue?",
+      "remove_msg": "The prepared file is deleted from the printer.",
+      "busy": "A print is running."
     },
     "history": {
       "title": "Print history",

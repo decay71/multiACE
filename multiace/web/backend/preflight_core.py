@@ -236,6 +236,28 @@ def used_tool_indices(pp, gcode: str) -> set:
     return used
 
 
+_ACE_SLOT_RE = re.compile(
+    r"^ACE_(?:SWAP_HEAD|BG_SWAP)\s+HEAD=\d+\s+ACE=(\d+)\s+SLOT=(\d+)")
+
+
+def used_ace_slots_file(path: str) -> list:
+    """The (ace, slot) pairs a rewritten file draws filament from, as a
+    sorted [[ace, slot], ...]: the ACE= / SLOT= of its ACE_SWAP_HEAD and
+    ACE_BG_SWAP lines. Not the slicer's T numbers - the rewrite keeps those
+    in its '; Change Tool' comments on purpose and they say nothing about
+    which physical slot is used. Streamed line by line, and commented-out
+    swaps (the skipped 'already loaded' ones) do not count. Used by the
+    print queue to know which spools a prepared file depends on."""
+    used: set = set()
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line[:4] == "ACE_":
+                m = _ACE_SLOT_RE.match(line)
+                if m:
+                    used.add((int(m.group(1)), int(m.group(2))))
+    return [list(p) for p in sorted(used)]
+
+
 # --------------------------------------------------------------------------- #
 # mapping / plan helpers (pure)                                               #
 # --------------------------------------------------------------------------- #

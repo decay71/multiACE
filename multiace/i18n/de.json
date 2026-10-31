@@ -69,6 +69,7 @@
       "print_hub": "Print Hub",
       "history": "Verlauf",
       "favorites": "Favoriten",
+      "queue": "Warteschlange",
       "dashboard": "Übersicht",
       "dry": "Trocknen",
       "config": "Konfiguration",
@@ -1017,6 +1018,24 @@
       "offline": "(offline)",
       "sending": "Anfrage wird gesendet…",
       "starting": "startet"
+    },
+    "queue": {
+      "title": "Druckwarteschlange",
+      "hint": "Dateien, die bereits für die damalige Bestückung vorbereitet wurden. Starten druckt genau diese eine Datei, nachdem die benutzten Slots erneut geprüft wurden. Nichts startet von selbst.",
+      "empty": "Nichts in der Warteschlange. Mit \"In Warteschlange\" im Preflight-Dialog bereitest du eine Datei jetzt vor und druckst sie später.",
+      "add": "In Warteschlange",
+      "add_hint": "Datei jetzt vorbereiten und in der Warteschlange behalten, statt zu drucken.",
+      "staged": "In Warteschlange: {name}",
+      "staged_at": "Vorbereitet {time}",
+      "ready": "Bestückung stimmt - startbereit.",
+      "changed": "Die Bestückung hat sich seit der Vorbereitung geändert. Stelle diese Spulen wieder her oder bereite die Datei neu vor:",
+      "unknown": "Der Drucker konnte nicht gelesen werden, die Bestückung ist noch nicht geprüft.",
+      "slot_empty": "leer",
+      "launch": "Starten",
+      "remove": "Entfernen",
+      "remove_title": "Aus Warteschlange entfernen?",
+      "remove_msg": "Die vorbereitete Datei wird vom Drucker gelöscht.",
+      "busy": "Ein Druck läuft."
     },
     "history": {
       "title": "Druckverlauf",

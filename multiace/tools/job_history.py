@@ -486,3 +486,101 @@ def toggle_favorite(data_dir, key, on, filename=None, start_time=None):
         favs = favs[:MAX_FAVORITES]
     write_favorites(data_dir, favs)
     return favs
+
+
+# ---------------------------------------------------------------------------
+# Print queue
+# ---------------------------------------------------------------------------
+#
+# A queue entry is a file that preflight already rewrote for the loadout
+# of that moment and left on the printer, not started. It is NOT a job
+# queue: launching one starts that single file, nothing advances on its
+# own, and Moonraker's own queue is not involved. It exists because the
+# rewrite is only valid for the spools it was prepared against, so the
+# entry remembers material and colour of every slot the file uses, and a
+# launch is refused if any of them has changed since.
+
+#: Bounded like the other multiACE data files - each entry also keeps a
+#: gcode file on the printer's storage, so the cap is deliberately small.
+MAX_QUEUE = 25
+
+
+def _queue_path(data_dir):
+    return os.path.join(data_dir, "queue.json")
+
+
+def load_queue(data_dir):
+    """Every staged entry, oldest first. A missing or corrupt file reads
+    as an empty queue, like load_favorites."""
+    try:
+        with open(_queue_path(data_dir), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    items = (data or {}).get("queue") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [e for e in items if isinstance(e, dict) and e.get("id")]
+
+
+def write_queue(data_dir, entries):
+    """Atomic tmp+os.replace, same as write_favorites."""
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        tmp = _queue_path(data_dir) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"queue": entries}, f, indent=2, sort_keys=True)
+        os.replace(tmp, _queue_path(data_dir))
+        return True
+    except Exception:
+        return False
+
+
+def add_queue_entry(data_dir, entry):
+    """Append one entry. Returns False when the queue is full or the
+    write failed; the caller then has a file on the printer to clean up."""
+    entries = load_queue(data_dir)
+    if len(entries) >= MAX_QUEUE:
+        return False
+    entries.append(entry)
+    return write_queue(data_dir, entries)
+
+
+def remove_queue_entry(data_dir, queue_id):
+    """Drop one entry; returns it (so the caller can delete its file), or
+    None if it was not there."""
+    entries = load_queue(data_dir)
+    gone = [e for e in entries if e.get("id") == queue_id]
+    if not gone:
+        return None
+    write_queue(data_dir, [e for e in entries if e.get("id") != queue_id])
+    return gone[0]
+
+
+def _norm_color(c):
+    return str(c or "").strip().lstrip("#").lower()[:6]
+
+
+def loadout_changes(expected, live_slots):
+    """The slots whose spool is no longer the one the file was prepared
+    for. `expected` is the entry's snapshot ({ace, slot, material,
+    color}); `live_slots` is the printer's identified slots in the same
+    shape. A slot that is empty or unidentified now counts as changed."""
+    live = {(s.get("ace"), s.get("slot")): s for s in (live_slots or [])}
+    out = []
+    for e in (expected or []):
+        key = (e.get("ace"), e.get("slot"))
+        now = live.get(key)
+        want = {"material": e.get("material") or "",
+                "color": _norm_color(e.get("color"))}
+        if now is None:
+            out.append({"ace": key[0], "slot": key[1],
+                        "expected": want, "now": None})
+            continue
+        have = {"material": (now.get("material") or "").strip(),
+                "color": _norm_color(now.get("color"))}
+        if (want["material"].lower() != have["material"].lower()
+                or want["color"] != have["color"]):
+            out.append({"ace": key[0], "slot": key[1],
+                        "expected": want, "now": have})
+    return out

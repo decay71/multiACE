@@ -1960,6 +1960,58 @@
             {{ history.reprinting === historyRowKey(c.row)
                ? t('ui.preflight.sending') : t('ui.history.reprint') }}
           </button>
+    <!-- QUEUE: files preflight already rewrote, waiting to be started. Not
+         a job queue: Launch starts that one file, after the slots it uses
+         are checked against what is loaded now. -->
+    <section v-show="tab==='queue'" class="queue-tab">
+      <div class="row">
+        <h3>{{ t('ui.queue.title') }}</h3>
+        <button @click="loadQueue" :disabled="pq.busy">
+          {{ pq.busy ? t('ui.common.saving') : t('ui.common.reload') }}
+        </button>
+      </div>
+      <p class="muted small">{{ t('ui.queue.hint') }}</p>
+      <p v-if="pq.error" class="error">{{ pq.error }}</p>
+      <p v-if="pq.loaded && !pq.items.length" class="muted">
+        {{ t('ui.queue.empty') }}
+      </p>
+      <div class="queue-list">
+        <div v-for="it in pq.items" :key="it.id" class="queue-item"
+             :class="{stale: it.changes && it.changes.length}">
+          <div class="queue-main">
+            <b class="queue-name" :title="it.filename">{{ it.filename }}</b>
+            <div class="muted small">
+              {{ t('ui.queue.staged_at', {time: new Date((it.ts || 0) * 1000).toLocaleString()}) }}
+            </div>
+            <div class="queue-slots">
+              <span v-for="sl in it.slots" :key="it.id + '-' + sl.ace + '-' + sl.slot"
+                    class="queue-slot" :title="queueSlotLabel(sl) + ' · ' + sl.material">
+                <span class="swatch" :style="{background: queueColor(sl.color)}"></span>
+                <span class="small">{{ queueSlotLabel(sl) }}</span>
+              </span>
+            </div>
+            <p v-if="it.changes && it.changes.length" class="queue-warn small">
+              {{ t('ui.queue.changed') }}
+            </p>
+            <ul v-if="it.changes && it.changes.length" class="queue-changes small">
+              <li v-for="ch in it.changes" :key="'ch-' + ch.ace + '-' + ch.slot">
+                {{ queueChangeText(ch) }}</li>
+            </ul>
+            <p v-else-if="it.changes === null" class="muted small">{{ t('ui.queue.unknown') }}</p>
+            <p v-else class="ok small">{{ t('ui.queue.ready') }}</p>
+            <p v-if="pq.blocked && pq.blocked.id === it.id && !(it.changes && it.changes.length)"
+               class="queue-warn small">{{ pq.blocked.message }}</p>
+          </div>
+          <div class="queue-actions">
+            <button class="primary"
+                    :disabled="isPrinting || pq.launching !== '' || (it.changes && it.changes.length > 0)"
+                    :title="isPrinting ? t('ui.queue.busy') : ''"
+                    @click="launchQueued(it)">
+              {{ pq.launching === it.id ? t('ui.preflight.sending') : t('ui.queue.launch') }}
+            </button>
+            <button :disabled="pq.launching !== ''" @click="removeQueued(it)">
+              {{ t('ui.queue.remove') }}</button>
+          </div>
         </div>
       </div>
     </section>
@@ -4149,6 +4201,10 @@ reboot</pre>
       <div class="row nt-dlg-foot nt-pf-foot">
         <button class="nt-cancel-r" @click="closePreflight"
                 :disabled="preflight.sending !== ''">{{ t('ui.common.cancel') }}</button>
+        <button v-if="uiTheme === 'new' && pfSelected()" class="nt-queue-add"
+                :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
+                :title="t('ui.queue.add_hint')"
+                @click="pfPrintSelected(true)">{{ t('ui.queue.add') }}</button>
         <button v-if="uiTheme === 'new' && pfSelected()" class="primary nt-main"
                 :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
                 @click="pfPrintSelected()">{{ pfGoLabel() }}</button>
