@@ -363,6 +363,8 @@
       "date_info": "打印开始的时间。",
       "file_info": "已打印的 G-code 文件。",
       "duration_info": "打印总时长，由 Moonraker 测得。",
+      "estimate_line": "预估 {est}",
+      "estimate_hint": "该文件从预检发送时的预估时长，以及实际打印时间与之的偏差（仅限已完成的打印）。",
       "colors_info": "使用的耗材颜色，每个工具头一个色块。悬停色块可查看其所在的 MMU 与槽位。",
       "swaps_info": "打印期间 multiACE 执行的换色次数。",
       "filament_info": "消耗的耗材长度，单位为米。",

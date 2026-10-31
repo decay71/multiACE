@@ -1067,6 +1067,8 @@
       "date_info": "When the print started.",
       "file_info": "G-code file that was printed.",
       "duration_info": "Total time of the print, as measured by Moonraker.",
+      "estimate_line": "est. {est}",
+      "estimate_hint": "The estimate this file was sent with from preflight, and how far the real print time was from it (completed prints only).",
       "colors_info": "Filament colours used, one swatch per tool head. Hover a swatch for the MMU and slot it was loaded from.",
       "swaps_info": "Number of tool changes multiACE performed during the print.",
       "filament_info": "Filament length consumed, in metres.",

@@ -386,3 +386,68 @@ class TestFavorites:
         blocked.write_text("x", encoding="utf-8")
         assert jh.write_favorites(str(blocked / "sub"),
                                   [{"key": "a"}]) is False
+
+
+class TestEstimates:
+    def _row(self, start, status="completed", **kw):
+        return dict({"filename": "a.gcode", "start_time": start,
+                     "status": status, "duration": 4000,
+                     "print_duration": 3780}, **kw)
+
+    def test_record_keeps_the_basename_and_numbers(self, tmp_path):
+        e = jh.record_estimate(str(tmp_path), "queue/dir/a.gcode", "3600",
+                               "3000", ts=100.0)
+        assert e == {"filename": "a.gcode", "total_s": 3600.0,
+                     "base_s": 3000.0, "ts": 100.0}
+        assert jh.load_estimates(str(tmp_path)) == [e]
+
+    @pytest.mark.parametrize("total", [0, -5, None, "x"])
+    def test_nothing_usable_is_not_stored(self, tmp_path, total):
+        assert jh.record_estimate(str(tmp_path), "a.gcode", total) is None
+        assert jh.load_estimates(str(tmp_path)) == []
+
+    def test_the_file_is_bounded(self, tmp_path):
+        for i in range(jh.MAX_ESTIMATES + 5):
+            jh.record_estimate(str(tmp_path), "a.gcode", 60, ts=float(i))
+        got = jh.load_estimates(str(tmp_path))
+        assert len(got) == jh.MAX_ESTIMATES
+        assert got[-1]["ts"] == float(jh.MAX_ESTIMATES + 4)
+
+    def test_a_corrupt_file_reads_as_none(self, tmp_path):
+        (tmp_path / "estimates.json").write_text("{nope", encoding="utf-8")
+        assert jh.load_estimates(str(tmp_path)) == []
+
+    def test_the_latest_estimate_before_the_start_wins(self):
+        ests = [{"filename": "a.gcode", "total_s": 100, "ts": 10.0},
+                {"filename": "a.gcode", "total_s": 200, "ts": 50.0},
+                {"filename": "a.gcode", "total_s": 300, "ts": 900.0}]
+        row = jh.attach_estimates([self._row(60.0)], ests)[0]
+        assert row["estimate"]["total_s"] == 200
+
+    def test_an_estimate_filed_after_the_start_is_not_used(self):
+        ests = [{"filename": "a.gcode", "total_s": 300, "ts": 900.0}]
+        row = jh.attach_estimates([self._row(60.0)], ests)[0]
+        assert "estimate" not in row
+
+    def test_another_file_gets_nothing(self):
+        ests = [{"filename": "b.gcode", "total_s": 300, "ts": 1.0}]
+        assert "estimate" not in jh.attach_estimates([self._row(60.0)], ests)[0]
+
+    def test_a_queued_path_matches_by_basename(self):
+        ests = [{"filename": "a.gcode", "total_s": 300, "ts": 1.0}]
+        row = self._row(60.0, filename="multiace_queue/abc_a.gcode")
+        row["filename"] = "multiace_queue/a.gcode"
+        assert "estimate" in jh.attach_estimates([row], ests)[0]
+
+    def test_accuracy_only_for_completed_prints(self):
+        ests = [{"filename": "a.gcode", "total_s": 3600, "ts": 1.0}]
+        done, cancelled = jh.attach_estimates(
+            [self._row(60.0), self._row(60.0, status="cancelled")], ests)
+        assert done["accuracy"]["error_pct"] == 5.0
+        assert cancelled["estimate"]["total_s"] == 3600
+        assert "accuracy" not in cancelled
+
+    def test_accuracy_falls_back_to_the_total_duration(self):
+        ests = [{"filename": "a.gcode", "total_s": 4000, "ts": 1.0}]
+        row = self._row(60.0, print_duration=None)
+        assert jh.attach_estimates([row], ests)[0]["accuracy"]["error_pct"] == 0.0

@@ -63,6 +63,10 @@ def _favorites_path(data_dir):
     return os.path.join(data_dir, "favorites.json")
 
 
+def _estimates_path(data_dir):
+    return os.path.join(data_dir, "estimates.json")
+
+
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
@@ -420,6 +424,109 @@ def estimate_accuracy(record):
         "error_s":     actual - predicted,
         "error_pct":   round(100.0 * (actual - predicted) / predicted, 1),
     }
+
+
+# ---------------------------------------------------------------------------
+# Estimates sent with a print
+# ---------------------------------------------------------------------------
+#
+# The estimate a print was sent with lives only in the browser at preflight
+# time, and the record ace.py writes when the print ends does not carry it.
+# Rather than add a hook to the print path, the web backend remembers it by
+# file name when the print is sent or queued and joins it back onto the
+# History row by start time. Moonraker still supplies the real duration.
+
+#: Bounded like the other multiACE data files.
+MAX_ESTIMATES = 200
+
+#: A print counts as started after its estimate was filed. Allow for the
+#: clock of the browser's request against Moonraker's start_time.
+ESTIMATE_SLACK_S = 120.0
+
+
+def load_estimates(data_dir):
+    """Every remembered estimate, oldest first. A missing or corrupt file
+    reads as none, like load_favorites."""
+    try:
+        with open(_estimates_path(data_dir), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    items = (data or {}).get("estimates") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    out = [e for e in items if isinstance(e, dict) and e.get("filename")
+           and e.get("total_s")]
+    out.sort(key=lambda e: float(e.get("ts") or 0.0))
+    return out
+
+
+def record_estimate(data_dir, filename, total_s, base_s=None, ts=None):
+    """Remember the estimate a file was sent with. Returns the entry, or
+    None when there is nothing usable to remember (an estimate invented
+    from a missing number would be worse than none) or it could not be
+    written."""
+    try:
+        total = float(total_s)
+    except (TypeError, ValueError):
+        return None
+    name = _basename(filename)
+    if not name or not total > 0:
+        return None
+    try:
+        base = float(base_s) if base_s is not None else None
+    except (TypeError, ValueError):
+        base = None
+    entry = {"filename": name, "total_s": total, "base_s": base,
+             "ts": float(ts) if ts is not None else time.time()}
+    items = load_estimates(data_dir) + [entry]
+    items = items[-MAX_ESTIMATES:]
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        tmp = _estimates_path(data_dir) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"estimates": items}, f, indent=2, sort_keys=True)
+        os.replace(tmp, _estimates_path(data_dir))
+    except Exception:
+        return None
+    return entry
+
+
+def attach_estimates(rows, estimates):
+    """Add `estimate` and `accuracy` to every History row that has a
+    remembered estimate: the latest one filed for that file name before
+    the job started. Rows are changed in place and returned.
+
+    `accuracy` only exists for a completed job - one that was cancelled or
+    failed ran for a different length of time than it was estimated for.
+    It compares against Moonraker's print_duration (the time spent
+    printing) when there is one, else the job's duration.
+    """
+    by_name = {}
+    for e in estimates or []:
+        by_name.setdefault(_basename(e.get("filename")), []).append(e)
+    for row in rows or []:
+        cands = by_name.get(_basename(row.get("filename")))
+        start = row.get("start_time")
+        if not cands or start is None:
+            continue
+        try:
+            start = float(start)
+        except (TypeError, ValueError):
+            continue
+        fitting = [e for e in cands
+                   if float(e.get("ts") or 0.0) <= start + ESTIMATE_SLACK_S]
+        if not fitting:
+            continue
+        est = max(fitting, key=lambda e: float(e.get("ts") or 0.0))
+        row["estimate"] = {"total_s": est.get("total_s"),
+                           "base_s": est.get("base_s")}
+        if row.get("status") == "completed":
+            row["accuracy"] = estimate_accuracy({
+                "estimate": row["estimate"],
+                "duration": row.get("print_duration") or row.get("duration"),
+            })
+    return rows
 
 
 # ---------------------------------------------------------------------------
