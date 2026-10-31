@@ -427,6 +427,9 @@ AUTO_DRY_INTERVAL = 60.0
 # this only bounds the case where we stop asking (restart, unplugged unit),
 # so the ACE cannot keep heating on its own forever.
 AUTO_DRY_MAX_MINUTES = 600
+# A cycle we booked that the device reports as not running for this long,
+# while the reading still asks for drying, is released (see _auto_dry_tick).
+AUTO_DRY_STALE_S = 300.
 # Soft start. Starting the ACE 2 dryer straight at a high
 # target can trip a ptc_error inside the ACE firmware; the heater then stays
 # blocked until the unit is power cycled. The threshold is unit-specific -
@@ -1191,6 +1194,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # backstop with no stop path left.
         self._auto_dry_follow_until = {}
         self._auto_dry_seen = {}
+        # idx -> reactor time since when an owned cycle reads as not running.
+        self._auto_dry_stale_since = {}
         # Pushed external humidity (ACE_SET_HUMIDITY): idx -> {'rh', 'temp',
         # 'ts', 'ttl'}. Monotonic ts, and the store deliberately dies with
         # the process - a reading that outlived a Klipper restart has no age
@@ -15542,6 +15547,27 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                     else 'internal',
                                     drying, ours,
                                     cfg['rh_start'], cfg['rh_end']))
+                # A booked cycle the device is not running ended without us
+                # (ACE power cycle, firmware flash, device backstop). The
+                # booking survives restarts, and with it set neither branch
+                # below fires, so the unit never dries again. Once it has
+                # read as not running for AUTO_DRY_STALE_S while the reading
+                # still asks for drying, drop the booking: the start branch
+                # below then starts a fresh cycle in the same tick, so a
+                # misread dryer state only restarts the cycle, it never
+                # leaves one running without an owner.
+                if ours and not drying and rh >= float(cfg['rh_start']):
+                    since = self._auto_dry_stale_since.setdefault(
+                        idx, eventtime)
+                    if eventtime - since >= AUTO_DRY_STALE_S:
+                        self._auto_dry_stale_since.pop(idx, None)
+                        self._auto_dry_ramp.pop(idx, None)
+                        self._auto_dry_release(
+                            idx, 'device not drying for %.0f s'
+                                 % (eventtime - since))
+                        ours = False
+                else:
+                    self._auto_dry_stale_since.pop(idx, None)
                 # OUR OWN bookkeeping decides, not the device status. The
                 # reported dryer state falls back to 'stop' whenever the
                 # status frame carries no dryer block or an unmapped state
