@@ -2358,6 +2358,8 @@ body:has(.panel) .overlay .dialog {
 .queue-item { display: flex; gap: 1rem; justify-content: space-between; flex-wrap: wrap;
   border: 1px solid var(--border, #444); border-radius: 8px; padding: .7rem .9rem; }
 .queue-item.stale { border-color: #c9892b; }
+.queue-thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 6px;
+  flex: 0 0 auto; background: var(--border); }
 .queue-main { display: flex; flex-direction: column; gap: .3rem; min-width: 0; flex: 1 1 260px; }
 .queue-name { overflow-wrap: anywhere; }
 .queue-slots { display: flex; flex-wrap: wrap; gap: .6rem; }

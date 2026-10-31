@@ -1985,6 +1985,8 @@
       <div class="queue-list">
         <div v-for="it in pq.items" :key="it.id" class="queue-item"
              :class="{stale: it.changes && it.changes.length}">
+          <img v-if="it.path" class="queue-thumb" loading="lazy" alt=""
+               :src="thumbUrl(it.path)" @error="hideBrokenThumb">
           <div class="queue-main">
             <b class="queue-name" :title="it.filename">{{ it.filename }}</b>
             <div class="muted small">
