@@ -189,6 +189,9 @@
    "_wt_persist": [
     "AceBgSwap.cmd_ACE_BG_SET_HEAD"
    ],
+   "apply_purge_policy": [
+    "AceBgSwap._load_core"
+   ],
    "heat_foreign_since": [
     "AceBgSwap._release_heat"
    ],
@@ -218,6 +221,10 @@
    ],
    "tipform_unload_temp_for": [
     "AceBgSwap.is_wait_eligible"
+   ],
+   "unload_cut_macro": [
+    "AceBgSwap.cmd_ACE_BG_SWAP",
+    "AceBgSwap.cmd_ACE_BG_UNLOAD"
    ],
    "unload_gpio": [
     "AceBgSwap._unload_core"
