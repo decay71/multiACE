@@ -1306,6 +1306,9 @@ class AceBgSwap:
                                        for h in sorted(self._busy)))
         if getattr(ace, '_ace_mode', 'multi') != 'head':
             return _refuse('v0 requires head mode (1:1 MMU per head)')
+        if getattr(ace, 'unload_cut_macro', ''):
+            return _refuse('unload_cut_macro is set - a parked head cannot '
+                           'reach the cutter, the swap runs inline')
         if not ace.head_uses_ace(head):
             return _refuse('head %d is not MMU-driven' % self._dh(head))
         if getattr(ace, '_swap_in_progress', False):
@@ -1437,6 +1440,9 @@ class AceBgSwap:
                                        for h in sorted(self._busy)))
         if getattr(ace, '_ace_mode', 'multi') != 'head':
             return _refuse('requires head mode (1:1 MMU per head)')
+        if getattr(ace, 'unload_cut_macro', ''):
+            return _refuse('unload_cut_macro is set - a parked head cannot '
+                           'reach the cutter, the swap runs inline')
         if not ace.head_uses_ace(head):
             return _refuse('head %d is not MMU-driven' % self._dh(head))
         if getattr(ace, '_swap_in_progress', False):

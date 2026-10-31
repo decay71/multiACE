@@ -752,6 +752,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.swap_purge_cap = config.getint('swap_purge_cap', 0, minval=0, maxval=200)
 
         self.seat_overshoot_length = config.getint('seat_overshoot_length', 0, minval=0, maxval=100)
+        # Name of a gcode macro that cuts the filament at the toolhead (a
+        # cutter mod). Set: every inline unload calls it instead of the tip
+        # forming, then retracts as usual; background unloads are refused
+        # (a parked head cannot reach the cutter). Empty = off.
+        self.unload_cut_macro = (config.get('unload_cut_macro', '') or '').strip()
         self.swap_default_temp = config.getint('swap_default_temp', 250, minval=180, maxval=300)
 
         self.swap_retract_length = config.getint('swap_retract_length', 0, minval=0, maxval=2000)
@@ -4440,6 +4445,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
     def _handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
+        cut = getattr(self, 'unload_cut_macro', '')
+        if cut:
+            if self.printer.lookup_object('gcode_macro %s' % cut,
+                                          None) is None:
+                self.log_warn('[multiACE] unload_cut_macro %s is not '
+                              'defined - every unload will fail' % cut)
+                logging.warning('[multiACE] unload_cut_macro %s is not '
+                                'defined' % cut)
+            else:
+                logging.info('[multiACE] unloads cut via %s (tip forming '
+                             'and background unloads off)' % cut)
 
         # Settings write-through migration: fold the
         # legacy ace__* settings twins into their config lines, then
@@ -17952,6 +17968,16 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
     def _run_tipform(self, head, temp, soft, nozzle_diameter):
         self._check_calibration_unload_cancel()
+        cut = getattr(self, 'unload_cut_macro', '')
+        if cut:
+            # A cutter replaces the tip forming entirely; the macro owns
+            # its moves and temperatures, the retract loop follows as usual.
+            logging.info('[multiACE] head %d: unload cut via %s'
+                         % (self._disp(head), cut))
+            self.gcode.run_script_from_command(
+                '%s HEAD=%d\r\n' % (cut, head))
+            self._check_calibration_unload_cancel()
+            return
         # Inline tip form: the stock INNER_FILAMENT_UNLOAD macro, OR the
         # same FRAME with a per-material pull table replacing only the
         # CONTROL_RETRACT_ACTION move step ([ace_tipform] mode: custom).
