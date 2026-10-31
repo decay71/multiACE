@@ -67,7 +67,8 @@ MULTIACE_BUNDLE_SHA1 = "d575769"
 # not give for these files. The same list in the repo is
 # tests/units/tools/modules.py core_files(); module_lists.py keeps both equal.
 CORE_FILES = (
-    'ace.py', 'ace_bg_swap.py', 'ace_display.py', 'ace_drivers.py',
+    'ace.py', 'ace_bg_swap.py', 'ace_bus_v2.py', 'ace_display.py',
+    'ace_drivers.py',
     'ace_gen1_tunnel.py', 'ace_macro_layout.py',
     'ace_protocol.py', 'ace_protocol_cfs.py', 'ace_protocol_v1.py',
     'ace_protocol_v2.py',
@@ -1295,6 +1296,13 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._v2_extra_usb_ids = self._parse_v2_extra_usb_ids(
             config.get('v2_extra_usb_ids', ''))
         AceProtocolV2.EXTRA_USB_IDS = self._v2_extra_usb_ids
+        # Opt-in: several ACE 2 units daisy-chained on one cable
+        # (ace_bus_v2.py). Read unconditionally.
+        self._v2_chain = config.getboolean('v2_chain', False)
+        AceProtocolV2.CHAIN = self._v2_chain
+        if self._v2_chain:
+            logging.info('[multiACE] V2 daisy chain enabled (opt-in): every '
+                         'ACE 2 cable is driven as a bus')
         # USB ids a CFS dongle may carry (the CFS driver probes each such
         # port before it claims it). Read unconditionally.
         cfs_ids = self._parse_v2_extra_usb_ids(
@@ -3983,7 +3991,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                      'discovery (%s)' % (path, excluded[real_path]))
                     continue
                 if protocol_cls is AceProtocolV2:
-                    if real_path not in active_paths:
+                    if AceProtocolV2.is_bus_path(path):
+                        pass                # a unit on a verified bus
+                    elif real_path not in active_paths:
                         official = AceProtocolV2.is_official_usb_path(path)
                         real_dev = os.path.basename(real_path)
                         usb_ids = AceProtocolV2._read_usb_ids(real_dev)
@@ -4011,6 +4021,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._excluded_ace_present = excluded_ace
 
         if (self._enable_ace_v2 and self._v2_probe_generic_usb
+                and not self._v2_chain
                 and self._is_printer_idle_for_generic_probe()):
             known_paths = set(discovered_by_protocol.get(
                 AceProtocolV1, ()))
@@ -4949,6 +4960,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         for idx in list(self._serials.keys()):
             try:
                 self._disconnect_from(idx)
+            except Exception:
+                pass
+        if self._v2_chain:
+            try:
+                from . import ace_bus_v2
+                ace_bus_v2.stop_all()
             except Exception:
                 pass
         self._queue = None

@@ -44,6 +44,7 @@ jobs:
             multiace/klipper/extras/ace_swap.py \
             multiace/klipper/extras/ace_settings.py \
             multiace/klipper/extras/ace_unit.py \
+            multiace/klipper/extras/ace_bus_v2.py \
             multiace/klipper/extras/ace_drivers.py \
             multiace/klipper/extras/ace_protocol_cfs.py \
             multiace/web/backend/i18n_path.py \
