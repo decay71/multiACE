@@ -1972,15 +1972,15 @@
          are checked against what is loaded now. -->
     <section v-show="tab==='queue'" class="queue-tab">
       <div class="row">
-        <h3>{{ t('ui.queue.title') }}</h3>
+        <h3>{{ t('ui.printqueue.title') }}</h3>
         <button @click="loadQueue" :disabled="pq.busy">
           {{ pq.busy ? t('ui.common.saving') : t('ui.common.reload') }}
         </button>
       </div>
-      <p class="muted small">{{ t('ui.queue.hint') }}</p>
+      <p class="muted small">{{ t('ui.printqueue.hint') }}</p>
       <p v-if="pq.error" class="error">{{ pq.error }}</p>
       <p v-if="pq.loaded && !pq.items.length" class="muted">
-        {{ t('ui.queue.empty') }}
+        {{ t('ui.printqueue.empty') }}
       </p>
       <div class="queue-list">
         <div v-for="it in pq.items" :key="it.id" class="queue-item"
@@ -1990,7 +1990,7 @@
           <div class="queue-main">
             <b class="queue-name" :title="it.filename">{{ it.filename }}</b>
             <div class="muted small">
-              {{ t('ui.queue.staged_at', {time: new Date((it.ts || 0) * 1000).toLocaleString()}) }}
+              {{ t('ui.printqueue.staged_at', {time: new Date((it.ts || 0) * 1000).toLocaleString()}) }}
             </div>
             <div class="queue-slots">
               <span v-for="sl in it.slots" :key="it.id + '-' + sl.ace + '-' + sl.slot"
@@ -2000,26 +2000,26 @@
               </span>
             </div>
             <p v-if="it.changes && it.changes.length" class="queue-warn small">
-              {{ t('ui.queue.changed') }}
+              {{ t('ui.printqueue.changed') }}
             </p>
             <ul v-if="it.changes && it.changes.length" class="queue-changes small">
               <li v-for="ch in it.changes" :key="'ch-' + ch.ace + '-' + ch.slot">
                 {{ queueChangeText(ch) }}</li>
             </ul>
-            <p v-else-if="it.changes === null" class="muted small">{{ t('ui.queue.unknown') }}</p>
-            <p v-else class="ok small">{{ t('ui.queue.ready') }}</p>
+            <p v-else-if="it.changes === null" class="muted small">{{ t('ui.printqueue.unknown') }}</p>
+            <p v-else class="ok small">{{ t('ui.printqueue.ready') }}</p>
             <p v-if="pq.blocked && pq.blocked.id === it.id && !(it.changes && it.changes.length)"
                class="queue-warn small">{{ pq.blocked.message }}</p>
           </div>
           <div class="queue-actions">
             <button class="primary"
                     :disabled="isPrinting || pq.launching !== '' || (it.changes && it.changes.length > 0)"
-                    :title="isPrinting ? t('ui.queue.busy') : ''"
+                    :title="isPrinting ? t('ui.printqueue.busy') : ''"
                     @click="launchQueued(it)">
-              {{ pq.launching === it.id ? t('ui.preflight.sending') : t('ui.queue.launch') }}
+              {{ pq.launching === it.id ? t('ui.preflight.sending') : t('ui.printqueue.launch') }}
             </button>
             <button :disabled="pq.launching !== ''" @click="removeQueued(it)">
-              {{ t('ui.queue.remove') }}</button>
+              {{ t('ui.printqueue.remove') }}</button>
           </div>
         </div>
       </div>
@@ -4211,13 +4211,140 @@ reboot</pre>
           </template>
         </template>
       </template>
+      <!-- G-CODE PREVIEW: parsed and rendered entirely in
+           the browser, from the file already selected - no upload, no
+           Moonraker, no printer required. Colours by the SLICER's tool
+           index (the file's own colours), so it answers "does this file
+           look right at all", not "what will multiACE's plan actually
+           print" - the swim-lane timeline above answers that one. -->
+      <div class="row" v-if="preflight.report">
+        <button @click="gpreview.open ? closeGcodePreview() : openGcodePreview()"
+                :disabled="gpreview.busy">
+          {{ gpreview.busy ? t('ui.common.saving')
+             : (gpreview.open ? t('ui.gpreview.hide') : t('ui.gpreview.show')) }}
+        </button>
+        <span v-if="gpreview.busy" class="muted small">{{ gpreview.progress }}%</span>
+        <span v-if="gpreview.error" class="error small">{{ gpreview.error }}</span>
+      </div>
+      <div v-if="gpreview.open" class="gpreview-pane"
+           :class="{maximized: gpreview.maximized}">
+        <!-- The viewer proper. Orbit / pan / zoom live on the canvas
+             itself (pointer events, mouse and touch alike); the vertical
+             dual slider on the right is the layer RANGE. -->
+        <div class="gpreview-stage">
+          <canvas ref="gpreviewCanvasEl" class="gpreview-canvas"></canvas>
+          <div class="gpreview-layers">
+            <span class="gpreview-layer-label num">
+              {{ gpreview.layerLo + 1 }}–{{ gpreview.layerHi + 1 }}
+              / {{ gpreview.totalLayers }}
+            </span>
+            <div class="gpreview-layer-sliders">
+              <input type="range" class="gpreview-vrange" orient="vertical"
+                     :aria-label="t('ui.gpreview.layer_top')"
+                     min="0" :max="Math.max(0, gpreview.totalLayers - 1)"
+                     :value="gpreview.layerHi"
+                     @input="gpreviewSetLayerHi($event.target.value)">
+              <input type="range" class="gpreview-vrange" orient="vertical"
+                     :aria-label="t('ui.gpreview.layer_bottom')"
+                     min="0" :max="Math.max(0, gpreview.totalLayers - 1)"
+                     :value="gpreview.layerLo"
+                     @input="gpreviewSetLayerLo($event.target.value)">
+            </div>
+          </div>
+          <div class="gpreview-presets">
+            <button @click="gpreviewPreset('iso')" :title="t('ui.gpreview.view_iso')">◨</button>
+            <button @click="gpreviewPreset('top')" :title="t('ui.gpreview.view_top')">▣</button>
+            <button @click="gpreviewPreset('front')" :title="t('ui.gpreview.view_front')">▤</button>
+            <button @click="gpreviewToggleMax"
+                    :title="gpreview.maximized ? t('ui.gpreview.restore') : t('ui.gpreview.maximize')">
+              {{ gpreview.maximized ? '⤡' : '⤢' }}
+            </button>
+          </div>
+        </div>
+        <!-- Sequential-move scrub within the top visible layer. -->
+        <div class="gpreview-controls">
+          <button @click="gpreviewTogglePlay">
+            {{ gpreview.playing ? t('ui.gpreview.pause') : t('ui.gpreview.play') }}
+          </button>
+          <input type="range" min="0" :max="gpreview.moveMax"
+                 v-model.number="gpreview.move" class="gpreview-slider"
+                 :aria-label="t('ui.gpreview.move')">
+          <span class="gpreview-layer-label num">
+            {{ t('ui.gpreview.move') }} {{ gpreview.move }} / {{ gpreview.moveMax }}
+          </span>
+          <select v-model="gpreview.viewType" class="gpreview-view">
+            <option value="filament">{{ t('ui.gpreview.view_filament') }}</option>
+            <option value="feature">{{ t('ui.gpreview.view_feature') }}</option>
+            <option value="speed">{{ t('ui.gpreview.view_speed') }}</option>
+            <option value="width">{{ t('ui.gpreview.view_width') }}</option>
+            <option value="height">{{ t('ui.gpreview.view_height') }}</option>
+          </select>
+          <select v-model="gpreview.lod" class="gpreview-view"
+                  :title="t('ui.gpreview.lod_hint')">
+            <option value="auto">{{ t('ui.gpreview.lod_auto') }} ({{ gpreviewLod }})</option>
+            <option value="ribbon">{{ t('ui.gpreview.lod_ribbon') }}</option>
+            <option value="solid">{{ t('ui.gpreview.lod_solid') }}</option>
+          </select>
+          <label class="gpreview-toggle">
+            <input type="checkbox" v-model="gpreview.showTravel">
+            {{ t('ui.gpreview.show_travel') }}
+          </label>
+          <label class="gpreview-toggle">
+            <input type="checkbox" v-model="gpreview.showToolchanges">
+            {{ t('ui.gpreview.show_toolchanges') }}
+          </label>
+          <label class="gpreview-toggle">
+            <input type="checkbox" v-model="gpreview.showPlate">
+            {{ t('ui.gpreview.show_plate') }}
+          </label>
+        </div>
+        <!-- LEGEND ROWS NAME THE HARDWARE. Not "Tool 2" but
+             "T2 · ACE 1 / slot 3 · PLA Silver" - the preview answers a
+             question the slicer cannot: which spool, in which bay, prints
+             this part. Hovering a row isolates that filament in the view. -->
+        <div class="gpreview-legend" v-if="gpreview.viewType === 'filament'">
+          <span v-for="row in gpreviewLegend" :key="'gpl-'+row.t"
+                class="gpreview-legend-item"
+                :class="{infeasible: !row.feasible, dim: gpreview.isolate !== null && gpreview.isolate !== row.t}"
+                @mouseenter="gpreviewIsolate(row.t)"
+                @mouseleave="gpreviewIsolate(null)"
+                :title="row.feasible ? '' : t('ui.gpreview.infeasible_hint')">
+            <i class="swatch" :style="{background: row.color}"></i>
+            {{ row.label }}
+            <b v-if="!row.feasible" class="gpreview-warn">!</b>
+          </span>
+        </div>
+        <div class="gpreview-legend" v-else-if="gpreview.viewType === 'feature'">
+          <span v-for="row in gpreviewFeatureLegend" :key="'gpf-'+row.r"
+                class="gpreview-legend-item">
+            <i class="swatch" :style="{background: row.color}"></i>{{ row.label }}
+          </span>
+        </div>
+        <div class="gpreview-legend" v-else>
+          <span class="gpreview-legend-item">
+            <i class="gpreview-ramp"></i>
+            {{ t('ui.gpreview.ramp_hint') }}
+          </span>
+        </div>
+        <p class="gpreview-note muted small">
+          <span class="num">{{ gpreview.segments }}</span>
+          {{ t('ui.gpreview.segments_shown') }}
+          <template v-if="gpreview.mode === '2d'">
+            · {{ t('ui.gpreview.no_webgl') }}
+          </template>
+          <template v-if="gpreview.decimated">
+            · <span class="gpreview-warn">{{ t('ui.gpreview.decimated', {
+                  dropped: gpreview.decimated.dropped }) }}</span>
+          </template>
+        </p>
+      </div>
       <div class="row nt-dlg-foot nt-pf-foot">
         <button class="nt-cancel-r" @click="closePreflight"
                 :disabled="preflight.sending !== ''">{{ t('ui.common.cancel') }}</button>
         <button v-if="uiTheme === 'new' && pfSelected()" class="nt-queue-add"
                 :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
-                :title="t('ui.queue.add_hint')"
-                @click="pfPrintSelected(true)">{{ t('ui.queue.add') }}</button>
+                :title="t('ui.printqueue.add_hint')"
+                @click="pfPrintSelected(true)">{{ t('ui.printqueue.add') }}</button>
         <button v-if="uiTheme === 'new' && pfSelected()" class="primary nt-main"
                 :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
                 @click="pfPrintSelected()">{{ pfGoLabel() }}</button>
@@ -4229,6 +4356,7 @@ reboot</pre>
      internet at the browser: the CDN reference left the page as a bare,
      unmounted HTML skeleton whenever unpkg.com was unreachable. -->
 <script src="vendor/vue.global.prod.js"></script>
+<script src="gcode_preview.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
