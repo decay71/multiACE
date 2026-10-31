@@ -1303,6 +1303,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if self._v2_chain:
             logging.info('[multiACE] V2 daisy chain enabled (opt-in): every '
                          'ACE 2 cable is driven as a bus')
+            # Enumerate in the bus threads while Klipper connects its MCUs.
+            try:
+                from . import ace_bus_v2
+                ace_bus_v2.start(AceProtocolV2._scan_v2_serial_paths())
+            except Exception:
+                logging.exception('[multiACE] V2 chain: bus start failed')
         # USB ids a CFS dongle may carry (the CFS driver probes each such
         # port before it claims it). Read unconditionally.
         cfs_ids = self._parse_v2_extra_usb_ids(
@@ -3742,6 +3748,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             out[os.path.realpath(path)] = '[ace] exclude_ports'
         return out
 
+    def _wait_chain_first_scan(self):
+        """V2 chain: give each bus its first enumeration before the startup
+        scan, so a cold start sees every unit at once. Yields to the reactor
+        (never blocks it), at most ace_bus_v2.FIRST_SCAN_WAIT_S, once per
+        startup; usually zero because the buses start at config load."""
+        from . import ace_bus_v2
+        cables = AceProtocolV2._scan_v2_serial_paths()
+        deadline = self.reactor.monotonic() + ace_bus_v2.FIRST_SCAN_WAIT_S
+        while (ace_bus_v2.first_scan_pending(cables)
+               and self.reactor.monotonic() < deadline):
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+
     def _expected_ace_count(self):
         """ace_device_count minus the excluded ports the last scan saw
         present as ACE hardware. An ACE handed to another driver is still
@@ -4795,6 +4813,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 else:
                     legacy += 1
         want_legacy = min(MAX_ACE_UNITS, keyed + legacy) if legacy else 0
+        if self._v2_chain:
+            self._wait_chain_first_scan()
         self._refresh_ace_devices('startup')
 
         table_known = self._startup_table_existed

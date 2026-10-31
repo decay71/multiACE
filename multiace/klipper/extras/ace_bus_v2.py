@@ -85,9 +85,9 @@ LOST_PROBE_SLOW_S = 5.0    # ... and this often once it has been gone 10 s
 REOPEN_S = 1.0             # retry interval for a failed cable
 MAX_UNITS = 4              # multiACE places four units
 OPEN_WAIT_S = 3.0          # open_unit(): wait for a unit to (re)appear
-FIRST_SCAN_WAIT_S = 2.5    # first discover() of a NEW bus: wait this long
-                           # (once per process) for its first enumeration,
-                           # so a cold start does not soft-fail and restart
+FIRST_SCAN_WAIT_S = 2.5    # longest a caller should wait (yielding) for
+                           # the first enumeration of a new bus; this
+                           # module itself never blocks a caller on it
 INTERNAL_SEQ = 0xF000      # start of the bus's own sequence numbers
 
 # Virtual path = <cable path>@<uid hex>. Not '#' or ';': the path ends up
@@ -600,18 +600,28 @@ def bus_for(cable, serial_factory=None):
         return bus
 
 
+def start(cable_paths):
+    """Start a bus on each cable now (enumeration runs in the bus thread),
+    so it is usually done by the time the first discover_units() comes."""
+    for cable in cable_paths:
+        bus_for(cable)
+
+
+def first_scan_pending(cable_paths):
+    """Cables whose bus has not finished its first enumeration yet. Callers
+    on the Klipper reactor poll this with reactor.pause() instead of
+    blocking on it."""
+    return [c for c in cable_paths if not bus_for(c).first_scan_done.is_set()]
+
+
 def discover_units(cable_paths):
-    """Virtual paths of the units currently on these cables. A bus seen for
-    the first time in this process gets one bounded wait for its first
-    enumeration (FIRST_SCAN_WAIT_S); every later call returns at once. A
-    bus lives as long as the process, so a Klipper restart finds its units
-    addressed and present immediately."""
+    """Virtual paths of the units currently on these cables. Never blocks:
+    a bus still enumerating simply reports what it has so far, and later
+    scans pick up the rest. A bus lives as long as the process, so a
+    Klipper restart finds its units addressed and present immediately."""
     out = []
     for cable in cable_paths:
-        bus = bus_for(cable)
-        if not bus.first_scan_done.is_set():
-            bus.first_scan_done.wait(FIRST_SCAN_WAIT_S)
-        out += bus.present_paths()
+        out += bus_for(cable).present_paths()
     return out
 
 

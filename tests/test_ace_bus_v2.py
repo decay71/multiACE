@@ -275,6 +275,20 @@ class BusTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 port.read(1)
 
+    def test_discover_never_blocks_the_caller(self):
+        # decay71 #189 point 1: discovery runs on the Klipper reactor, so
+        # it must return at once even while a new bus is still enumerating.
+        cable = '/dev/serial/by-path/fake-cable-new'
+        chain = FakeChain(FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y'))
+        bus = B.bus_for(cable, serial_factory=lambda path: chain)
+        self.buses.append(bus)
+        self.addCleanup(B._buses.pop, cable, None)
+        t0 = time.monotonic()
+        B.discover_units([cable])
+        self.assertLess(time.monotonic() - t0, 0.05)
+        self.assertTrue(self.wait_for(lambda: not B.first_scan_pending([cable])))
+        self.assertEqual(len(B.discover_units([cable])), 2)
+
 
 def _raises_eio(fn):
     try:
