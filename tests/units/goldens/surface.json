@@ -222,7 +222,7 @@
    "tipform_unload_temp_for": [
     "AceBgSwap.is_wait_eligible"
    ],
-   "unload_cut_macro": [
+   "unload_cut_macro_for": [
     "AceBgSwap.cmd_ACE_BG_SWAP",
     "AceBgSwap.cmd_ACE_BG_UNLOAD"
    ],

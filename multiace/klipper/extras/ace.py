@@ -757,6 +757,16 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # forming, then retracts as usual; background unloads are refused
         # (a parked head cannot reach the cutter). Empty = off.
         self.unload_cut_macro = (config.get('unload_cut_macro', '') or '').strip()
+        # Heads that carry a cutter, in display numbering ("1,2"); empty =
+        # every head. Heads not listed keep the normal tip forming.
+        _cut_heads = config.get('unload_cut_heads', '') or ''
+        try:
+            self.unload_cut_heads = set(
+                int(x) for x in _cut_heads.replace(',', ' ').split())
+        except ValueError:
+            raise config.error(
+                "unload_cut_heads must be head numbers like '1,2', got %r"
+                % _cut_heads)
         self.swap_default_temp = config.getint('swap_default_temp', 250, minval=180, maxval=300)
 
         self.swap_retract_length = config.getint('swap_retract_length', 0, minval=0, maxval=2000)
@@ -4454,8 +4464,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 logging.warning('[multiACE] unload_cut_macro %s is not '
                                 'defined' % cut)
             else:
-                logging.info('[multiACE] unloads cut via %s (tip forming '
-                             'and background unloads off)' % cut)
+                logging.info('[multiACE] unloads cut via %s on head(s) %s '
+                             '(tip forming and background unloads off there)'
+                             % (cut, ', '.join(str(h) for h in
+                                               sorted(self.unload_cut_heads))
+                                or 'all'))
 
         # Settings write-through migration: fold the
         # legacy ace__* settings twins into their config lines, then
@@ -17966,9 +17979,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return True
         return str(resp.get('msg', '')).strip().upper() == 'FORBIDDEN'
 
+    def unload_cut_macro_for(self, head):
+        """The cut macro for this head, or '' when it has no cutter (no
+        macro set, or the head is not in unload_cut_heads)."""
+        cut = getattr(self, 'unload_cut_macro', '')
+        heads = getattr(self, 'unload_cut_heads', None)
+        if not cut or (heads and self._disp(head) not in heads):
+            return ''
+        return cut
+
     def _run_tipform(self, head, temp, soft, nozzle_diameter):
         self._check_calibration_unload_cancel()
-        cut = getattr(self, 'unload_cut_macro', '')
+        cut = self.unload_cut_macro_for(head)
         if cut:
             # A cutter replaces the tip forming entirely; the macro owns
             # its moves and temperatures, the retract loop follows as usual.
