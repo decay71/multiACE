@@ -4962,12 +4962,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 self._disconnect_from(idx)
             except Exception:
                 pass
-        if self._v2_chain:
-            try:
-                from . import ace_bus_v2
-                ace_bus_v2.stop_all()
-            except Exception:
-                pass
+        # A daisy-chain bus (ace_bus_v2) is NOT stopped here: a Klipper
+        # restart stays in this process, and the bus keeps its units
+        # addressed across it, so the restarted host finds them at once.
         self._queue = None
 
     def get_load_length(self, ace_idx, slot):

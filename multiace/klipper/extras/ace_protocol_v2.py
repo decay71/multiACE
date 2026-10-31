@@ -230,7 +230,7 @@ class AceProtocolV2(AceProtocol):
     EXTRA_USB_IDS = ()
     # Opt-in daisy chain, set from ace.py from [ace] v2_chain. When on, every
     # ACE 2 cable is driven by a bus (ace_bus_v2.py) and each unit on it is
-    # one virtual path '<cable>#<uid>'. Off: one port per unit, as before.
+    # one virtual path '<cable>@<uid>'. Off: one port per unit, as before.
     CHAIN = False
     SERIAL_KWARGS = {
         'timeout': 0.1,
@@ -262,8 +262,8 @@ class AceProtocolV2(AceProtocol):
 
     @staticmethod
     def is_bus_path(path):
-        """True for a unit on a daisy-chain bus ('<cable>#<uid>')."""
-        return AceProtocolV2.CHAIN and '#' in str(path or '')
+        """True for a unit on a daisy-chain bus ('<cable>@<uid>')."""
+        return AceProtocolV2.CHAIN and '@' in str(path or '')
 
     @classmethod
     def discover_usb_serial_candidates(cls):

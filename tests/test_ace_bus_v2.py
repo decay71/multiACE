@@ -287,11 +287,19 @@ def _raises_eio(fn):
 class PathTest(unittest.TestCase):
 
     def test_virtual_path_round_trip(self):
-        path = '/dev/serial/by-path/cable#%s' % B.uid_hex(UID_A)
+        path = '/dev/serial/by-path/cable@%s' % B.uid_hex(UID_A)
         self.assertTrue(B.is_bus_path(path))
         self.assertEqual(B.split_path(path),
                          ('/dev/serial/by-path/cable', B.uid_hex(UID_A)))
         self.assertEqual(B.uid_key_for(path), 'uid:' + B.uid_hex(UID_A))
+
+    def test_virtual_path_survives_gcode(self):
+        # multiACE saves the active device path with SAVE_VARIABLE: the path
+        # must not contain a G-code comment character.
+        bus_path = '/dev/serial/by-path/platform-fed00000.usb-usb-0:1.3:1.0'
+        path = '%s%s%s' % (bus_path, B.SEP, B.uid_hex(UID_A))
+        self.assertNotIn('#', path)
+        self.assertNotIn(';', path)
 
 
 if __name__ == '__main__':

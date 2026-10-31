@@ -85,9 +85,15 @@ LOST_PROBE_SLOW_S = 5.0    # ... and this often once it has been gone 10 s
 REOPEN_S = 1.0             # retry interval for a failed cable
 MAX_UNITS = 4              # multiACE places four units
 OPEN_WAIT_S = 3.0          # open_unit(): wait for a unit to (re)appear
+FIRST_SCAN_WAIT_S = 2.5    # first discover() of a NEW bus: wait this long
+                           # (once per process) for its first enumeration,
+                           # so a cold start does not soft-fail and restart
 INTERNAL_SEQ = 0xF000      # start of the bus's own sequence numbers
 
-SEP = '#'                  # virtual path = <cable path>#<uid hex>
+# Virtual path = <cable path>@<uid hex>. Not '#' or ';': the path ends up
+# in G-code (SAVE_VARIABLE of the active device), where both start a
+# comment and would cut the value off.
+SEP = '@'
 
 _buses = {}
 _buses_lock = threading.Lock()
@@ -272,6 +278,7 @@ class V2Bus(object):
         # handed to the host (a host id may reach any value, so no range).
         self._own_seqs = collections.deque(maxlen=64)
         self._last_scan = 0.0
+        self.first_scan_done = threading.Event()
         self._thread = threading.Thread(
             target=self._run, name='multiACE-v2bus', daemon=True)
         self._thread.start()
@@ -502,6 +509,12 @@ class V2Bus(object):
             return unit
 
     def _scan(self):
+        try:
+            self._scan_once()
+        finally:
+            self.first_scan_done.set()
+
+    def _scan_once(self):
         self._last_scan = time.monotonic()
         uids = self._discover_burst()
         if not uids:
@@ -588,12 +601,17 @@ def bus_for(cable, serial_factory=None):
 
 
 def discover_units(cable_paths):
-    """Virtual paths of the units currently on these cables. Never blocks:
-    a new bus enumerates on its own thread and its units show up on a later
-    scan (multiACE's startup wait and idle rescan cover that)."""
+    """Virtual paths of the units currently on these cables. A bus seen for
+    the first time in this process gets one bounded wait for its first
+    enumeration (FIRST_SCAN_WAIT_S); every later call returns at once. A
+    bus lives as long as the process, so a Klipper restart finds its units
+    addressed and present immediately."""
     out = []
     for cable in cable_paths:
-        out += bus_for(cable).present_paths()
+        bus = bus_for(cable)
+        if not bus.first_scan_done.is_set():
+            bus.first_scan_done.wait(FIRST_SCAN_WAIT_S)
+        out += bus.present_paths()
     return out
 
 
