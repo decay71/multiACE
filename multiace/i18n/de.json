@@ -1020,7 +1020,7 @@
       "sending": "Anfrage wird gesendet…",
       "starting": "startet"
     },
-    "queue": {
+    "printqueue": {
       "title": "Druckwarteschlange",
       "hint": "Dateien, die bereits für die damalige Bestückung vorbereitet wurden. Starten druckt genau diese eine Datei, nachdem die benutzten Slots erneut geprüft wurden. Nichts startet von selbst.",
       "empty": "Nichts in der Warteschlange. Mit \"In Warteschlange\" im Preflight-Dialog bereitest du eine Datei jetzt vor und druckst sie später.",

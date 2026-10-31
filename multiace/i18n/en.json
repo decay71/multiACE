@@ -1019,7 +1019,7 @@
       "sending": "sending request…",
       "starting": "starting"
     },
-    "queue": {
+    "printqueue": {
       "title": "Print queue",
       "hint": "Files already prepared for the loadout of that moment. Launching starts that single file, after the slots it uses are checked again. Nothing starts on its own.",
       "empty": "Nothing queued. Use \"Add to queue\" in the preflight dialog to prepare a file now and print it later.",

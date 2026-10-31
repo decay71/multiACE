@@ -8048,7 +8048,7 @@ createApp({
         const elapsed = Date.now() - startedAt;
         const wait = Math.max(0, MIN_VISIBLE_MS - elapsed);
         if (wait > 0) await new Promise(res => setTimeout(res, wait));
-        setMacroLog(queue ? t("ui.queue.staged", {name: baseName})
+        setMacroLog(queue ? t("ui.printqueue.staged", {name: baseName})
                           : t("ui.upload.started", {name: baseName}));
         closePreflight();
       } catch (e) {
@@ -8150,7 +8150,7 @@ createApp({
           await new Promise(res => setTimeout(res, wait));
         }
         if (queue) pq.loaded = false;
-        setMacroLog(queue ? t("ui.queue.staged", {name: rep.filename})
+        setMacroLog(queue ? t("ui.printqueue.staged", {name: rep.filename})
                           : t("ui.upload.started", {name: rep.filename}));
         closePreflight();
       } catch (e) {
@@ -9011,7 +9011,7 @@ createApp({
       return h ? "#" + h : "#666";
     }
     function queueChangeText(ch) {
-      const fmt = (x) => x ? `${x.material || "?"} #${x.color || "?"}` : t("ui.queue.slot_empty");
+      const fmt = (x) => x ? `${x.material || "?"} #${x.color || "?"}` : t("ui.printqueue.slot_empty");
       return `${queueSlotLabel(ch)}: ${fmt(ch.expected)} → ${fmt(ch.now)}`;
     }
     async function launchQueued(item) {
@@ -9041,10 +9041,10 @@ createApp({
     }
     function removeQueued(item) {
       confirm({
-        title: t("ui.queue.remove_title"),
+        title: t("ui.printqueue.remove_title"),
         message: `<p><b>${escapeHtml(item.filename)}</b></p>` +
-                 `<p>${escapeHtml(t("ui.queue.remove_msg"))}</p>`,
-        okLabel: t("ui.queue.remove"),
+                 `<p>${escapeHtml(t("ui.printqueue.remove_msg"))}</p>`,
+        okLabel: t("ui.printqueue.remove"),
         onOk: async () => {
           try {
             const r = await fetch(`${API}/queue/${encodeURIComponent(item.id)}`,
