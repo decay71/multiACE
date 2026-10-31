@@ -3452,6 +3452,23 @@ reboot</pre>
       </div>
     </div>
   </div>
+  <!-- Config: what a save is about to change. Raised before the form or the
+       raw editor writes anything. -->
+  <div v-if="cfgDiff.show" class="overlay overlay-top" @click.self="cancelConfigDiff">
+    <div class="dialog nt-confirm cfgdiff-dialog" role="dialog" aria-modal="true"
+         aria-labelledby="cfgdiff-title">
+      <h3 id="cfgdiff-title">{{ t('ui.config.diff_title') }}</h3>
+      <p class="small">{{ t('ui.config.diff_summary', {added: cfgDiff.added, removed: cfgDiff.removed}) }}</p>
+      <pre class="cfgdiff"><span v-for="(r, i) in cfgDiff.rows" :key="i" class="cfgdiff-row"
+        :class="{add: r.t === '+', del: r.t === '-', gap: r.t === '~'}"
+        ><i>{{ r.t === '~' ? '' : r.t }}</i>{{ r.text }}
+</span></pre>
+      <div class="row nt-dlg-foot">
+        <button class="nt-cancel-r" @click="cancelConfigDiff">{{ t('ui.common.cancel') }}</button>
+        <button class="primary nt-main" @click="okConfigDiff">{{ t('ui.config.diff_save') }}</button>
+      </div>
+    </div>
+  </div>
   <div v-if="confirmDialog.show" class="overlay overlay-top" @click.self="cancelConfirm">
     <div class="dialog nt-confirm">
       <h3>{{ confirmDialog.title }}</h3>

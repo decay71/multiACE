@@ -5740,8 +5740,11 @@ createApp({
       if (cb) cb();
     }
     function confirmSync(msg) { return window.confirm(msg); }
+    // `disk` is the text as last read from or written to the printer, the
+    // baseline the diff is drawn against (`content` also carries unsaved
+    // edits from the raw editor).
     const config = reactive({path: "", content: "", params: {},
-                             sha1: ""});
+                             sha1: "", disk: ""});
     const configLog = ref("");
     const configLoadError = ref("");
     const showRawConfig = ref(false);
@@ -6222,6 +6225,7 @@ createApp({
         const j = await r.json();
         config.path = j.path || "";
         config.content = j.content || "";
+        config.disk = config.content;
         config.params = j.params || {};
         // Revision token for the lost-update guard (see saveConfigForm).
         config.sha1 = j.sha1 || "";
@@ -6230,7 +6234,97 @@ createApp({
         configLoadError.value = t("ui.log.config_load_failed", {error: e});
       }
     }
-    async function saveConfigForm() {
+    // ---- config diff ------------------------------------------------------
+    // Both saves show what is about to change before anything is written.
+    // Line based, with a few lines of context; a config is small enough for
+    // a plain LCS once the shared head and tail are cut off.
+    const CFG_DIFF_CONTEXT = 3;
+    const CFG_DIFF_MAX_CELLS = 4e6;
+    function diffLines(oldText, newText) {
+      const a = String(oldText).split("\n"), b = String(newText).split("\n");
+      let head = 0;
+      while (head < a.length && head < b.length && a[head] === b[head]) head++;
+      let tail = 0;
+      while (tail < a.length - head && tail < b.length - head
+             && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+      const am = a.slice(head, a.length - tail), bm = b.slice(head, b.length - tail);
+      const ops = [];
+      for (let i = 0; i < head; i++) ops.push([" ", a[i]]);
+      if (am.length * bm.length > CFG_DIFF_MAX_CELLS) {
+        // Too different for the table: show it as one removal and one add.
+        for (const l of am) ops.push(["-", l]);
+        for (const l of bm) ops.push(["+", l]);
+      } else {
+        const n = am.length, m = bm.length, w = m + 1;
+        const lcs = new Uint32Array((n + 1) * w);
+        for (let i = n - 1; i >= 0; i--) {
+          for (let j = m - 1; j >= 0; j--) {
+            lcs[i * w + j] = am[i] === bm[j] ? lcs[(i + 1) * w + j + 1] + 1
+              : Math.max(lcs[(i + 1) * w + j], lcs[i * w + j + 1]);
+          }
+        }
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+          if (am[i] === bm[j]) { ops.push([" ", am[i]]); i++; j++; }
+          else if (lcs[(i + 1) * w + j] >= lcs[i * w + j + 1]) { ops.push(["-", am[i++]]); }
+          else { ops.push(["+", bm[j++]]); }
+        }
+        while (i < n) ops.push(["-", am[i++]]);
+        while (j < m) ops.push(["+", bm[j++]]);
+      }
+      for (let i = a.length - tail; i < a.length; i++) ops.push([" ", a[i]]);
+      // Keep the changes and CFG_DIFF_CONTEXT lines around them.
+      const keep = new Array(ops.length).fill(false);
+      let added = 0, removed = 0;
+      ops.forEach((op, i) => {
+        if (op[0] === " ") return;
+        if (op[0] === "+") added++; else removed++;
+        for (let k = Math.max(0, i - CFG_DIFF_CONTEXT);
+             k <= Math.min(ops.length - 1, i + CFG_DIFF_CONTEXT); k++) keep[k] = true;
+      });
+      const rows = [];
+      let gap = false;
+      ops.forEach((op, i) => {
+        if (!keep[i]) { gap = rows.length > 0; return; }
+        if (gap) { rows.push({t: "~", text: "..."}); gap = false; }
+        rows.push({t: op[0], text: op[1]});
+      });
+      return {rows, added, removed};
+    }
+    const cfgDiff = reactive({show: false, rows: [], added: 0, removed: 0,
+                              _onOk: null});
+    // Show the change, then run `onOk` if it is confirmed. Nothing to show
+    // means nothing to write.
+    function reviewConfigChange(oldText, newText, onOk) {
+      if (oldText === newText) {
+        configLog.value = t("ui.config.diff_none");
+        return;
+      }
+      const d = diffLines(oldText, newText);
+      cfgDiff.rows = d.rows;
+      cfgDiff.added = d.added;
+      cfgDiff.removed = d.removed;
+      cfgDiff._onOk = onOk;
+      cfgDiff.show = true;
+    }
+    function okConfigDiff() {
+      const cb = cfgDiff._onOk;
+      cfgDiff.show = false;
+      cfgDiff._onOk = null;
+      if (cb) cb();
+    }
+    function cancelConfigDiff() {
+      cfgDiff.show = false;
+      cfgDiff._onOk = null;
+    }
+    function saveConfigForm() {
+      reviewConfigChange(config.disk, formToCfgContent(config.content),
+                         _saveConfigForm);
+    }
+    function saveConfigRaw() {
+      reviewConfigChange(config.disk, config.content, _saveConfigRaw);
+    }
+    async function _saveConfigForm() {
       configLog.value = t("ui.common.saving");
       try {
         // LOST-UPDATE GUARD: the form PATCHES the browser's cached copy of
@@ -6274,12 +6368,13 @@ createApp({
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
         const j = await r.json();
         config.content = newContent;
+        config.disk = newContent;
         config.sha1 = j.sha1 || "";
         rebootNeeded.value = true;
         configLog.value = `✓ ${j.path}\nBackup: ${j.backup}\n${t("ui.common.please_restart")}`;
       } catch (e) { configLog.value = `${t("ui.common.error")}: ${e}`; }
     }
-    async function saveConfigRaw() {
+    async function _saveConfigRaw() {
       configLog.value = t("ui.log.saving_raw");
       try {
         // Same guard as the form save, but NO auto-retry: the raw editor's
@@ -6303,6 +6398,7 @@ createApp({
         }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
         const j = await r.json();
+        config.disk = config.content;
         config.sha1 = j.sha1 || "";
         rebootNeeded.value = true;
         configLog.value = `✓ ${j.path}\nBackup: ${j.backup}\n${t("ui.common.please_restart")}`;
@@ -9151,6 +9247,7 @@ createApp({
       dryerCfg, dryStart, dryStop, dryPanelOpen, toggleDryPanel, aceDrying,
       snapshots, selectedSnapshot, snapshotPreview, saveSnapshot, loadSnapshot, deleteSnapshot,
       config, configLog, configLoadError, showRawConfig, toggleRawConfig, configForm, rebootNeeded,
+      cfgDiff, okConfigDiff, cancelConfigDiff,
       printerRebootNeeded, restartNotice, restartOffered, restartNow, notifWantsReboot,
       aceHeadsRightSide,
       loadConfig, saveConfigForm, saveConfigRaw, setMode,
