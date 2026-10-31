@@ -8891,6 +8891,13 @@ createApp({
     // Favorites. A star is stored on the printer (not in the browser), keyed
     // by Moonraker's job id, or by the multiACE record id when Moonraker has
     // none. Rows that carry neither (ambiguous matches) cannot be starred.
+    // Preview image of a print file, served by the backend from Moonraker's
+    // metadata scan (404 when the file has none - the <img> hides itself).
+    function thumbUrl(filename) {
+      return filename ? API + "/thumbnail?path=" + encodeURIComponent(filename) : "";
+    }
+    function hideBrokenThumb(ev) { ev.target.style.display = "none"; }
+
     function favKey(row) {
       if (!row) return "";
       if (row.job_id) return "mr:" + row.job_id;
@@ -9070,7 +9077,7 @@ createApp({
     return {
       history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
       fmtDuration, reprintJob, historyColumnInfo, swapKindLabel,
-      isFavorite, toggleFavorite, favKey, favoriteCards, loadFavoritesTab,
+      thumbUrl, hideBrokenThumb, isFavorite, toggleFavorite, favKey, favoriteCards, loadFavoritesTab,
       pq, loadQueue, launchQueued, removeQueued, queueSlotLabel, queueColor, queueChangeText,
       subText,
       sourceLabel,

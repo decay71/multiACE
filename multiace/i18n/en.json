@@ -627,7 +627,8 @@
       "est_colour": "Colour",
       "est_print": "Print",
       "est_sum": "Total",
-      "est_assumptions": "Assumptions"
+      "est_assumptions": "Assumptions",
+      "thumbnail_alt": "Slicer preview"
     },
     "queue": {
       "clear_errors": "Clear errors",

@@ -30,6 +30,7 @@ import re
 import shutil
 import sys
 import time
+import urllib.parse
 import uuid
 from collections import deque
 from pathlib import Path
@@ -6472,6 +6473,65 @@ async def history_reprint(request: Request, req: _ReprintRequest) -> dict:
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"moonraker: {e}")
     return {"ok": True, "filename": filename}
+
+
+# Thumbnail of a gcode file as Moonraker's metadata scan found it. One
+# endpoint for every list that shows a file (History, Favorites, Queue), so
+# the browser never has to reach Moonraker itself.
+THUMB_WANT_PX = 96
+_THUMB_TYPES = {".png": "image/png", ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg"}
+
+
+def _pick_thumbnail(thumbs: list) -> dict | None:
+    """The smallest image that still fills THUMB_WANT_PX, else the largest."""
+    usable = [t for t in thumbs or []
+              if isinstance(t, dict) and t.get("relative_path")
+              and os.path.splitext(str(t["relative_path"]))[1].lower()
+              in _THUMB_TYPES]
+    if not usable:
+        return None
+    big = [t for t in usable if (t.get("width") or 0) >= THUMB_WANT_PX]
+    if big:
+        return min(big, key=lambda t: t.get("width") or 0)
+    return max(usable, key=lambda t: t.get("width") or 0)
+
+
+@app.get("/api/thumbnail")
+async def file_thumbnail(request: Request, path: str) -> Response:
+    """The preview image of `path` (relative to the gcodes root)."""
+    parts = [x for x in (path or "").replace("\\", "/").split("/") if x]
+    if not parts or any(x in (".", "..") for x in parts):
+        raise HTTPException(status_code=400, detail="bad path")
+    if _mock_enabled(request):
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="96" '
+               'height="96"><rect width="96" height="96" fill="#3a6ea5"/>'
+               '<circle cx="48" cy="48" r="26" fill="#e8b44c"/></svg>')
+        return Response(content=svg, media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"})
+    rel = "/".join(parts)
+    try:
+        meta = await _mr_get("/server/files/metadata?filename="
+                             + urllib.parse.quote(rel, safe="/"))
+    except httpx.HTTPError:
+        raise HTTPException(status_code=404, detail="no metadata")
+    thumb = _pick_thumbnail(((meta.get("result") or {}).get("thumbnails")))
+    if thumb is None:
+        raise HTTPException(status_code=404, detail="no thumbnail")
+    # relative_path is relative to the folder of the gcode file.
+    img_rel = "/".join(parts[:-1] + [x for x in
+                                    str(thumb["relative_path"]).split("/")
+                                    if x and x != ".."])
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{MOONRAKER_URL}/server/files/gcodes/"
+                                 + urllib.parse.quote(img_rel, safe="/"))
+            r.raise_for_status()
+    except httpx.HTTPError:
+        raise HTTPException(status_code=404, detail="no thumbnail")
+    ext = os.path.splitext(img_rel)[1].lower()
+    return Response(content=r.content, media_type=_THUMB_TYPES[ext],
+                    headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.get("/api/history/stats/swaps")
