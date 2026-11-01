@@ -2,8 +2,10 @@
 the real methods on stubs.
 
 One record per print, written once at its end; the slots that fed a head are
-collected from head_source assignments; print_stats:start on RESUME must not
-open a second record; nothing may raise into Klipper.
+collected from head_source assignments, but only for heads that printed (the
+job's extruder activations, plus the head already active at the start when it
+extruded); print_stats:start on RESUME must not open a second record; nothing
+may raise into Klipper.
 """
 import importlib
 import json
@@ -53,6 +55,19 @@ class PrintStats:
         return dict(self.status)
 
 
+class Extruder:
+    def __init__(self, index):
+        self.extruder_index = index
+
+
+class Toolhead:
+    def __init__(self):
+        self.index = 0
+
+    def get_extruder(self):
+        return Extruder(self.index)
+
+
 class Printer:
     def __init__(self, ps):
         self.ps = ps
@@ -69,6 +84,7 @@ def ace(tmp_path, monkeypatch):
     a.reactor = Reactor()
     a.ps = PrintStats()
     a.printer = Printer(a.ps)
+    a.toolhead = Toolhead()
     a._web_dir = str(tmp_path / 'multiace_web')
     a.paths = {'config_dir': str(tmp_path), 'printer_data': str(tmp_path)}
     a._job = None
@@ -88,12 +104,20 @@ def _src(ace_index, slot, color):
     return {'ace_index': ace_index, 'slot': slot, 'color': color}
 
 
+def _activate(ace, head):
+    """What Klipper's extruder:activate_extruder event does to the job."""
+    ace.toolhead.index = head
+    ace._job_note_active()
+
+
 def test_one_record_with_every_slot_that_fed_a_head(ace, tmp_path):
     ace._head_source[0] = _src(0, 0, 'FF0000')
     ace._job_note_start()
     ace._job_snapshot_sources()
+    ace.ps.status['filament_used'] = 500.0           # head 0 printed first
     ace._head_source[0] = _src(0, 2, '#00FF00')      # swapped mid-print
     ace._head_source[1] = _src(1, 3, '0000FF')
+    _activate(ace, 1)
     ace.ps.status['state'] = 'complete'
     ace._job_note_end()
     assert _records(tmp_path) == []                  # nothing while/at stop
@@ -112,6 +136,7 @@ def test_resume_does_not_open_a_second_record(ace, tmp_path):
     ace._job_note_start()
     first = ace._job
     ace._head_source[0] = _src(0, 1, 'FFFFFF')
+    ace.ps.status['filament_used'] = 10.0
     ace._job_note_start()                            # RESUME, same file
     assert ace._job is first
     ace.ps.status['state'] = 'cancelled'
@@ -136,10 +161,67 @@ def test_failed_load_is_not_recorded_until_confirmed(ace, tmp_path):
     ace._job_snapshot_sources()
     assert ace._job['loadout'] == {}
     failed['load_failed'] = False                    # confirmed later
+    ace.ps.status['filament_used'] = 10.0
     ace._job_note_end()
     ace.reactor.run()
     (rec,) = _records(tmp_path)
     assert rec['assignment']['0'][0]['slot'] == 3
+
+
+def test_a_head_that_only_stayed_loaded_is_not_recorded(ace, tmp_path):
+    # Head 2 is left loaded from an earlier print and never extrudes; head 0
+    # is active at the start but the print switches to head 3 straight away.
+    ace._head_source[0] = _src(0, 0, 'AAAAAA')
+    ace._head_source[2] = _src(1, 1, 'BBBBBB')
+    ace._head_source[3] = _src(3, 0, 'CCCCCC')
+    ace._job_note_start()                            # head 0 active, no filament
+    ace._job_snapshot_sources()
+    _activate(ace, 3)
+    ace.ps.status['filament_used'] = 800.0
+    ace._head_source[3] = _src(3, 3, 'DDDDDD')       # swapped mid-print
+    _activate(ace, 3)
+    ace.ps.status['state'] = 'complete'
+    ace._job_note_end()
+    ace.reactor.run()
+    (rec,) = _records(tmp_path)
+    assert sorted(rec['assignment']) == ['3']
+    assert [x['slot'] for x in rec['assignment']['3']] == [0, 3]
+
+
+def test_the_head_active_at_the_start_counts_when_it_extruded(ace, tmp_path):
+    ace._head_source[0] = _src(0, 0, 'AAAAAA')
+    ace._head_source[1] = _src(0, 1, 'BBBBBB')
+    ace._job_note_start()                            # head 0 active
+    ace._job_snapshot_sources()
+    ace.ps.status['filament_used'] = 300.0           # head 0 printed...
+    _activate(ace, 1)                                # ...then switched
+    ace._job_note_end()
+    ace.reactor.run()
+    (rec,) = _records(tmp_path)
+    assert sorted(rec['assignment']) == ['0', '1']
+
+
+def test_a_print_that_never_switched_credits_the_start_head(ace, tmp_path):
+    ace._head_source[0] = _src(0, 0, 'AAAAAA')
+    ace._head_source[1] = _src(0, 1, 'BBBBBB')       # loaded, idle
+    ace._job_note_start()
+    ace._job_snapshot_sources()
+    ace.ps.status['filament_used'] = 5.0             # tiny, but it printed
+    ace._job_note_end()
+    ace.reactor.run()
+    (rec,) = _records(tmp_path)
+    assert sorted(rec['assignment']) == ['0']
+
+
+def test_a_print_that_extruded_nothing_records_no_heads(ace, tmp_path):
+    ace._head_source[0] = _src(0, 0, 'AAAAAA')
+    ace._job_note_start()
+    ace._job_snapshot_sources()
+    ace.ps.status['state'] = 'cancelled'
+    ace._job_note_end()
+    ace.reactor.run()
+    (rec,) = _records(tmp_path)
+    assert rec['assignment'] == {}
 
 
 def test_finds_job_history_in_the_web_backend_first(ace, tmp_path):
