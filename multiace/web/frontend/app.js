@@ -1527,9 +1527,11 @@ createApp({
         target.retract_length = v.retract;
       }
       calibrationUi.busy = 'apply';
-      await saveConfigForm();
+      // Written straight away, not through the Save button's review: this
+      // flow has confirmed in its own UI already.
+      await _saveConfigForm();
       calibrationUi.busy = '';
-      // saveConfigForm reports through configLog: a line starting with the
+      // _saveConfigForm reports through configLog: a line starting with the
       // check mark is the only success it writes. It overwrites the log
       // first, so an earlier save's identical line cannot pass for this one.
       calibrationUi.saved = String(configLog.value || '').startsWith('✓');
@@ -1705,7 +1707,7 @@ createApp({
       }
       calibrationUi.busy = busy;
       calibrationUi.error = '';
-      await saveConfigForm();
+      await _saveConfigForm();
       calibrationUi.busy = '';
       const ok = String(configLog.value || '').startsWith('✓');
       if (!ok) {
@@ -6292,40 +6294,51 @@ createApp({
       return {rows, added, removed};
     }
     const cfgDiff = reactive({show: false, rows: [], added: 0, removed: 0,
-                              _onOk: null});
-    // Show the change, then run `onOk` if it is confirmed. Nothing to show
-    // means nothing to write.
-    function reviewConfigChange(oldText, newText, onOk) {
-      if (oldText === newText) {
-        configLog.value = t("ui.config.diff_none");
-        return;
+                              _resolve: null});
+    // Show the change. Resolves true when it is confirmed, false when it is
+    // cancelled or there is nothing to show (nothing to write).
+    function reviewConfigChange(oldText, newText) {
+      return new Promise((resolve) => {
+        if (oldText === newText) {
+          configLog.value = t("ui.config.diff_none");
+          resolve(false);
+          return;
+        }
+        if (cfgDiff._resolve) cfgDiff._resolve(false);
+        const d = diffLines(oldText, newText);
+        cfgDiff.rows = d.rows;
+        cfgDiff.added = d.added;
+        cfgDiff.removed = d.removed;
+        cfgDiff._resolve = resolve;
+        cfgDiff.show = true;
+      });
+    }
+    function _closeConfigDiff(answer) {
+      const resolve = cfgDiff._resolve;
+      cfgDiff.show = false;
+      cfgDiff._resolve = null;
+      if (resolve) resolve(answer);
+    }
+    function okConfigDiff() { _closeConfigDiff(true); }
+    function cancelConfigDiff() { _closeConfigDiff(false); }
+    // The Save buttons. They resolve once the save has finished, or the
+    // review was cancelled, never while the dialog is still open.
+    async function saveConfigForm() {
+      if (await reviewConfigChange(config.disk, formToCfgContent(config.content))) {
+        await _saveConfigForm();
       }
-      const d = diffLines(oldText, newText);
-      cfgDiff.rows = d.rows;
-      cfgDiff.added = d.added;
-      cfgDiff.removed = d.removed;
-      cfgDiff._onOk = onOk;
-      cfgDiff.show = true;
     }
-    function okConfigDiff() {
-      const cb = cfgDiff._onOk;
-      cfgDiff.show = false;
-      cfgDiff._onOk = null;
-      if (cb) cb();
+    async function saveConfigRaw() {
+      if (await reviewConfigChange(config.disk, config.content)) {
+        await _saveConfigRaw();
+      }
     }
-    function cancelConfigDiff() {
-      cfgDiff.show = false;
-      cfgDiff._onOk = null;
-    }
-    function saveConfigForm() {
-      reviewConfigChange(config.disk, formToCfgContent(config.content),
-                         _saveConfigForm);
-    }
-    function saveConfigRaw() {
-      reviewConfigChange(config.disk, config.content, _saveConfigRaw);
-    }
-    // `fresh` is the file as the server returned it on a 409, once the user
-    // has been shown the diff against it and confirmed.
+    // Writes the form. The caller has confirmed already (the Save button's
+    // dialog, or the calibration tab's own UI), so there is no review here
+    // except on a 409, where the form values land on a file somebody else
+    // changed. `fresh` is that file once its diff has been confirmed. Always
+    // resolves after the write is done or has failed, and leaves the result
+    // in configLog: a line starting with the check mark is the only success.
     async function _saveConfigForm(fresh = null) {
       configLog.value = t("ui.common.saving");
       try {
@@ -6361,8 +6374,19 @@ createApp({
           const next = {content: cur.content, sha1: cur.sha1 || ""};
           config.disk = next.content;
           configLog.value = t("ui.log.config_conflict_merged");
-          reviewConfigChange(next.content, formToCfgContent(next.content),
-                             () => _saveConfigForm(next));
+          const merged = formToCfgContent(next.content);
+          if (merged === next.content) {
+            // Whoever changed the file already wrote these values.
+            config.content = next.content;
+            config.sha1 = next.sha1;
+            configLog.value = `✓ ${config.path}\n${t("ui.config.diff_none")}`;
+            return;
+          }
+          if (!await reviewConfigChange(next.content, merged)) {
+            configLog.value = t("ui.config.diff_cancelled");
+            return;
+          }
+          await _saveConfigForm(next);
           return;
         }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);

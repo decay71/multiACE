@@ -340,6 +340,7 @@
       "diff_summary": "{added} hinzugefügt, {removed} entfernt",
       "diff_save": "Änderungen speichern",
       "diff_none": "Keine Änderungen zu speichern.",
+      "diff_cancelled": "Speichern abgebrochen. Die Datei hatte sich auf dem Drucker geändert; es wurde nichts geschrieben.",
       "seat_overshoot": "Seat-Press-Länge (mm, 0 = aus)",
       "spool_mode": "Spulen-Modus",
       "spool_mode_hint": "Lokal: Tabelle und Zählung auf dem Drucker. Spoolman: multiACE setzt Identitäten und meldet Verbrauch an Spoolman. SpoolLink (paxx): SpoolLink setzt und zählt - multiACE bindet und zeigt nur; von Hand gefütterte Köpfe werden dort nicht gezählt. Wechsel lokal ↔ Spoolman löst alle Spulen-Bindungen.",

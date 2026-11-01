@@ -339,6 +339,7 @@
       "diff_summary": "{added} added, {removed} removed",
       "diff_save": "Save these changes",
       "diff_none": "No changes to save.",
+      "diff_cancelled": "Save cancelled. The file had changed on the printer; nothing was written.",
       "seat_overshoot": "Seat press length (mm, 0 = off)",
       "spool_mode": "Spool mode",
       "spool_mode_hint": "Local: table and counting on the printer. Spoolman: multiACE sets identities and reports usage to Spoolman. SpoolLink (paxx): SpoolLink sets and counts - multiACE only binds and displays; hand-fed heads are not counted there. Switching local ↔ Spoolman drops all spool bindings.",
