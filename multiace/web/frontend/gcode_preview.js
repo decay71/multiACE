@@ -35,7 +35,12 @@ const MultiAceGcodePreview = (() => {
 
   function ensureWorker() {
     if (!worker) {
-      worker = new Worker("gcode_preview_worker.js?v=3");
+      // Content hash of the worker, injected into index.html by the
+      // backend (same path as the preflight worker), so an update is never
+      // masked by a cached copy of the old one. The fixed tag is the
+      // fallback for a shell that predates it.
+      const v = (window.MA_ASSET_V && window.MA_ASSET_V.gpreview) || "dev";
+      worker = new Worker("gcode_preview_worker.js?v=" + encodeURIComponent(v));
     }
     return worker;
   }
@@ -43,6 +48,19 @@ const MultiAceGcodePreview = (() => {
   // One parse in flight at a time - a second call while the first is still
   // running would cross-talk on the shared worker's onmessage handler.
   let inFlight = null;
+  let abortInFlight = null;
+
+  // Stop the parse that is running, if any: the worker is terminated (a
+  // 300 MB parse is not left burning CPU for a preview nobody is looking
+  // at) and the pending promise rejects. The next parse starts a new one.
+  function cancel() {
+    if (!inFlight) return;
+    if (worker) { worker.terminate(); worker = null; }
+    const abort = abortInFlight;
+    inFlight = null;
+    abortInFlight = null;
+    if (abort) abort(new Error("cancelled"));
+  }
 
   function parse(file, {onProgress} = {}) {
     if (inFlight) {
@@ -50,6 +68,7 @@ const MultiAceGcodePreview = (() => {
     }
     const w = ensureWorker();
     inFlight = new Promise((resolve, reject) => {
+      abortInFlight = reject;
       const onMsg = (ev) => {
         const msg = ev.data || {};
         if (msg.type === "progress") {
@@ -58,6 +77,7 @@ const MultiAceGcodePreview = (() => {
         }
         w.removeEventListener("message", onMsg);
         inFlight = null;
+        abortInFlight = null;
         if (msg.type === "done") resolve(msg.data);
         else reject(new Error(msg.message || "parse failed"));
       };
@@ -956,5 +976,5 @@ void main() {
     }
   }
 
-  return {parse, Renderer, ROLE_COLORS, VIEW_TYPES, MAX_FILE_BYTES};
+  return {parse, cancel, Renderer, ROLE_COLORS, VIEW_TYPES, MAX_FILE_BYTES};
 })();

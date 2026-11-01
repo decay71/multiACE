@@ -6784,7 +6784,8 @@ async def history_clear() -> dict:
 # a 304 with no body - unnoticeable on a LAN. The shell and the assets
 # index.html loads; icons and manifest keep StaticFiles' defaults.
 _SHELL_PATHS = {"/", "/index.html", "/app.js", "/style.css", "/style-new.css",
-                "/vendor/vue.global.prod.js", "/preflight_pyodide_worker.js"}
+                "/vendor/vue.global.prod.js", "/preflight_pyodide_worker.js",
+                "/gcode_preview.js", "/gcode_preview_worker.js"}
 
 # Assets index.html loads with a content-hash query (?v=<md5>). A cache
 # entry stored before no-cache existed is heuristically fresh and never
@@ -6792,10 +6793,11 @@ _SHELL_PATHS = {"/", "/index.html", "/app.js", "/style.css", "/style-new.css",
 # (StaticFiles' ETag is then the size alone) - a new URL per content is
 # the only key no old entry can hit.
 _SHELL_ASSETS = ("app.js", "vendor/vue.global.prod.js", "style.css",
-                 "style-new.css", "preflight_pyodide_worker.js")
+                 "style-new.css", "preflight_pyodide_worker.js",
+                 "gcode_preview.js", "gcode_preview_worker.js")
 _SHELL_REF_RE = re.compile(
     r'\b(src|href)="(app\.js|vendor/vue\.global\.prod\.js|style\.css|'
-    r'style-new\.css)"')
+    r'style-new\.css|gcode_preview\.js)"')
 _asset_hash_cache: dict = {}
 _shell_html_cache: dict = {}
 
@@ -6852,7 +6854,8 @@ def _render_shell() -> str | None:
     html = _SHELL_REF_RE.sub(_ref, html)
     inject = ("<script>window.MA_ASSET_V = "
               + json.dumps({"worker": hashes.get(
-                  "preflight_pyodide_worker.js", "")})
+                  "preflight_pyodide_worker.js", ""),
+                  "gpreview": hashes.get("gcode_preview_worker.js", "")})
               + ";</script>\n")
     html = html.replace("</head>", inject + "</head>", 1)
     _shell_html_cache.update(key=ckey, html=html)

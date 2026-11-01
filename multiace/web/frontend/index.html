@@ -4220,7 +4220,7 @@ reboot</pre>
       <div class="row" v-if="preflight.report">
         <button @click="gpreview.open ? closeGcodePreview() : openGcodePreview()"
                 :disabled="gpreview.busy">
-          {{ gpreview.busy ? t('ui.common.saving')
+          {{ gpreview.busy ? t('ui.gpreview.parsing')
              : (gpreview.open ? t('ui.gpreview.hide') : t('ui.gpreview.show')) }}
         </button>
         <span v-if="gpreview.busy" class="muted small">{{ gpreview.progress }}%</span>

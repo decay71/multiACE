@@ -1095,6 +1095,7 @@
       }
     },
     "gpreview": {
+      "parsing": "Datei wird gelesen...",
       "show": "Vorschau anzeigen",
       "hide": "Vorschau ausblenden",
       "play": "Abspielen",

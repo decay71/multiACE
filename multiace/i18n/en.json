@@ -1094,6 +1094,7 @@
       }
     },
     "gpreview": {
+      "parsing": "Reading the file...",
       "show": "Show preview",
       "hide": "Hide preview",
       "play": "Play",

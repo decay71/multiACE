@@ -7838,6 +7838,10 @@ createApp({
     const gpreviewCanvasEl = ref(null);
     let gpreviewData = null;
     let gpreviewRenderer = null;
+    // Bumped by every open and every close, so a parse that finishes after
+    // the pane was closed (or the preflight with it) is dropped instead of
+    // building a renderer on a canvas that is gone.
+    let gpreviewGen = 0;
     let gpreviewTimer = null;
     let gpreviewResizeObs = null;
     let gpreviewRaf = 0;
@@ -7971,12 +7975,15 @@ createApp({
           max: Math.round(MultiAceGcodePreview.MAX_FILE_BYTES / 1048576)});
         return;
       }
+      const gen = ++gpreviewGen;
       gpreview.busy = true;
       gpreview.progress = 0;
       try {
-        gpreviewData = await MultiAceGcodePreview.parse(preflightFile, {
-          onProgress: (pct) => { gpreview.progress = pct; },
+        const parsed = await MultiAceGcodePreview.parse(preflightFile, {
+          onProgress: (pct) => { if (gen === gpreviewGen) gpreview.progress = pct; },
         });
+        if (gen !== gpreviewGen) return;
+        gpreviewData = parsed;
         if (!gpreviewData.segmentCount) {
           throw new Error(t("ui.gpreview.no_extrusion"));
         }
@@ -7989,6 +7996,7 @@ createApp({
         gpreview.layerHi = Math.max(0, gpreview.totalLayers - 1);
         gpreview.open = true;
         await nextTick();
+        if (gen !== gpreviewGen) return;
         gpreviewRenderer = new MultiAceGcodePreview.Renderer(gpreviewCanvasEl.value);
         gpreview.mode = gpreviewRenderer.mode;
         gpreviewRenderer.setData(gpreviewData, _gpreviewColorForT);
@@ -8007,13 +8015,17 @@ createApp({
           gpreviewResizeObs.observe(gpreviewCanvasEl.value);
         }
       } catch (e) {
-        gpreview.error = e.message || String(e);
+        if (gen === gpreviewGen) gpreview.error = e.message || String(e);
       } finally {
-        gpreview.busy = false;
+        if (gen === gpreviewGen) gpreview.busy = false;
       }
     }
 
     function closeGcodePreview() {
+      gpreviewGen++;
+      MultiAceGcodePreview.cancel();
+      gpreview.busy = false;
+      gpreview.progress = 0;
       gpreview.open = false;
       gpreview.playing = false;
       gpreview.maximized = false;
