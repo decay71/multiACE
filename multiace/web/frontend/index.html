@@ -1873,7 +1873,13 @@
                   <span v-if="row.ambiguous" class="muted small"
                         :title="t('ui.history.ambiguous_hint')">· {{ t('ui.history.ambiguous') }}</span>
                 </td>
-                <td>{{ fmtDuration(row.duration) }}</td>
+                <td>{{ fmtDuration(row.duration) }}
+                  <div v-if="row.estimate" class="muted small history-est"
+                       :title="t('ui.history.estimate_hint')">
+                    {{ t('ui.history.estimate_line', {est: fmtDuration(row.estimate.total_s)}) }}<template
+                      v-if="row.accuracy"> · {{ row.accuracy.error_pct > 0 ? '+' : '' }}{{ row.accuracy.error_pct }}%</template>
+                  </div>
+                </td>
                 <td>
                   <span v-for="c in historyColors(row)" :key="'hc-'+c.head"
                         class="swatch" :style="{background: c.color}"

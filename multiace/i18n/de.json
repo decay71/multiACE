@@ -1068,6 +1068,8 @@
       "date_info": "Wann der Druck gestartet wurde.",
       "file_info": "Gedruckte G-Code-Datei.",
       "duration_info": "Gesamtdauer des Drucks, von Moonraker gemessen.",
+      "estimate_line": "Schätzung {est}",
+      "estimate_hint": "Die Schätzung, mit der diese Datei aus dem Preflight gesendet wurde, und die Abweichung der echten Druckzeit davon (nur abgeschlossene Drucke).",
       "colors_info": "Verwendete Filamentfarben, ein Farbfeld pro Werkzeugkopf. Mit der Maus über ein Farbfeld fahren, um MMU und Slot zu sehen.",
       "swaps_info": "Anzahl der Werkzeugwechsel, die multiACE während des Drucks ausgeführt hat.",
       "filament_info": "Verbrauchte Filamentlänge in Metern.",

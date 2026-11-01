@@ -6447,7 +6447,26 @@ async def history_list(request: Request, limit: int = 50) -> dict:
     hist = _require_history()
     records = hist.load_records(MULTIACE_DATA_DIR, limit=limit)
     jobs = hist.join_history(await _moonraker_history(limit), records)
+    hist.attach_estimates(jobs, hist.load_estimates(MULTIACE_DATA_DIR))
     return {"jobs": jobs[:limit]}
+
+
+class _EstimateNote(BaseModel):
+    filename: str
+    total_s: float
+    base_s: float | None = None
+
+
+@app.post("/api/history/estimate")
+async def history_note_estimate(request: Request, req: _EstimateNote) -> dict:
+    """Remember the estimate a file is being sent (or queued) with, so
+    History can show it next to the real duration once the print ends.
+    Best effort: the browser ignores a failure here."""
+    if _mock_enabled(request):
+        return {"ok": True, "mock": True}
+    entry = _require_history().record_estimate(
+        MULTIACE_DATA_DIR, req.filename, req.total_s, req.base_s)
+    return {"ok": entry is not None}
 
 
 class _ReprintRequest(BaseModel):

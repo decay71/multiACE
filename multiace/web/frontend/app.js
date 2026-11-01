@@ -7964,6 +7964,25 @@ createApp({
       await _startServerPreflightPrint(mode, headPlan, queue);
     }
 
+    // Hand the backend the estimate this file is being sent with, so History
+    // can show it next to the real duration once the print has run. Best
+    // effort and awaited only so it lands before the print can start: a
+    // failure here never stops the print.
+    async function noteEstimate(mode, headPlan) {
+      try {
+        const rep = preflight.report;
+        const est = pfEst(mode === "head" ? (headPlan || "loadout") : mode);
+        const name = rep && (rep.filename || (preflightFile && preflightFile.name));
+        if (!name || !est || !(Number(est.total_s) > 0)) return;
+        await fetch(`${API}/history/estimate`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({filename: name, total_s: Number(est.total_s),
+                                base_s: est.base_s == null ? null : Number(est.base_s)}),
+        });
+      } catch (_) {}
+    }
+
     // Browser path: rewrite in the worker, upload straight to Moonraker.
     async function _startLocalPreflightPrint(mode, headPlan, queue) {
       const rep = preflight.report;
@@ -8009,6 +8028,7 @@ createApp({
             stage:   String(msg.stage || ""), running: true};
         });
         preflight.progress = {percent: 90, stage: "upload", running: true};
+        await noteEstimate(mode, headPlan);
         const fd = new FormData();
         const baseName = rep.filename || preflightFile.name;
         const stagedName = queue
@@ -8109,6 +8129,7 @@ createApp({
             body.head_copies = proposalCopyIds(hp);
           }
         }
+        await noteEstimate(mode, headPlan);
         const r = await fetch(`${API}/preflight/print`, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
