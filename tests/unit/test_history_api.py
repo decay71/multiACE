@@ -191,3 +191,35 @@ class TestLibraryLookup:
         monkeypatch.setattr(main, "__file__", str(tmp_path / "main.py"))
         monkeypatch.setattr(main, "_job_history_mod", None)
         assert Path(main._require_history().__file__) == tmp_path / "job_history.py"
+
+
+class TestEstimateNotes:
+    def test_a_noted_estimate_lands_on_the_matching_row(self, live,
+                                                       monkeypatch):
+        main, c, data = live
+        r = c.post("/api/history/estimate", json={
+            "filename": "a.gcode", "total_s": 3600, "base_s": 3000})
+        assert r.json() == {"ok": True}
+        ts = main._require_history().load_estimates(str(data))[0]["ts"]
+
+        async def fake(limit):
+            return [{"job_id": "1", "filename": "a.gcode",
+                     "start_time": ts + 5, "status": "completed",
+                     "total_duration": 4000, "print_duration": 3780}]
+        monkeypatch.setattr(main, "_moonraker_history", fake)
+        row = c.get("/api/history").json()["jobs"][0]
+        assert row["estimate"] == {"total_s": 3600.0, "base_s": 3000.0}
+        assert row["accuracy"]["actual_s"] == 3780
+        assert row["accuracy"]["error_pct"] == 5.0
+
+    def test_an_unusable_estimate_is_not_stored(self, live):
+        main, c, data = live
+        r = c.post("/api/history/estimate",
+                   json={"filename": "a.gcode", "total_s": 0})
+        assert r.json() == {"ok": False}
+        assert main._require_history().load_estimates(str(data)) == []
+
+    def test_mock_mode_stores_nothing(self, mock_client):
+        r = mock_client.post("/api/history/estimate",
+                             json={"filename": "a.gcode", "total_s": 60})
+        assert r.json()["mock"] is True

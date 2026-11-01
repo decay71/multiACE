@@ -14,6 +14,9 @@
       "filament_used": 12000,
       "ambiguous": false,
       "id": "mock-job-0",
+      "estimate": {"total_s": 18270, "base_s": 15830},
+      "accuracy": {"predicted_s": 18270.0, "actual_s": 18240.0,
+                   "error_s": -30.0, "error_pct": -0.2},
       "meta": {
         "estimated_time": 18270,
         "layer_count": 412,
