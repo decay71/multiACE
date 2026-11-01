@@ -491,7 +491,7 @@
       "config_load_failed": "Config laden fehlgeschlagen: {error}",
       "klipper_restart_requested": "Klipper-Neustart angefordert.",
       "saving_raw": "Speichere (roh)…",
-      "config_conflict_merged": "Config hatte sich auf dem Drucker geändert - deine Einstellungen wurden auf den aktuellen Stand angewendet.",
+      "config_conflict_merged": "Config hatte sich auf dem Drucker geändert. Deine Einstellungen wurden auf den aktuellen Stand angewendet - Änderungen prüfen und erneut speichern.",
       "config_conflict_raw": "Config hat sich seit dem Laden geändert. Config-Tab neu laden (dein Text wurde NICHT gespeichert) und Änderung erneut eintragen.",
       "config_conflict_failed": "Config hat sich geändert, automatisches Übernehmen fehlgeschlagen - Config-Tab neu laden"
     },

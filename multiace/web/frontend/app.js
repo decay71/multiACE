@@ -6324,20 +6324,22 @@ createApp({
     function saveConfigRaw() {
       reviewConfigChange(config.disk, config.content, _saveConfigRaw);
     }
-    async function _saveConfigForm() {
+    // `fresh` is the file as the server returned it on a 409, once the user
+    // has been shown the diff against it and confirmed.
+    async function _saveConfigForm(fresh = null) {
       configLog.value = t("ui.common.saving");
       try {
         // LOST-UPDATE GUARD: the form PATCHES the browser's cached copy of
         // the file, so a tab that loaded an older revision would silently
         // write it back (e.g. revert a cfg repaired via SSH). We send the
-        // sha1 we loaded; on 409 the server
-        // returns the CURRENT content and we re-apply the form values on top
-        // of it and retry once, so the user's edit lands without clobbering
-        // whatever else changed on disk meanwhile.
-        let base = config.content;
-        let sha1 = config.sha1;
-        let newContent = formToCfgContent(base);
-        let r = await fetch(`${API}/config`, {
+        // sha1 we loaded; on 409 the server returns the CURRENT content, the
+        // form values are re-applied on top of it and the diff against that
+        // content is shown again - what gets written is always what was just
+        // reviewed, so a change made by someone else is never saved unseen.
+        const base = fresh ? fresh.content : config.content;
+        const sha1 = fresh ? fresh.sha1 : config.sha1;
+        const newContent = formToCfgContent(base);
+        const r = await fetch(`${API}/config`, {
           method: "PUT",
           headers: {"Content-Type": "application/json"},
           // Do NOT auto-restart Klipper: a bare Klipper restart applies most
@@ -6349,21 +6351,19 @@ createApp({
                                 base_sha1: sha1}),
         });
         if (r.status === 409) {
-          let fresh = null;
-          try { fresh = JSON.parse((await r.json()).detail); } catch (e) { fresh = null; }
-          if (!fresh || typeof fresh.content !== "string") {
+          let cur = null;
+          try { cur = JSON.parse((await r.json()).detail); } catch (e) { cur = null; }
+          // A second conflict right after confirming is not retried again:
+          // the file is changing under us, so reload and start over.
+          if (fresh || !cur || typeof cur.content !== "string") {
             throw new Error(`HTTP 409 ${t("ui.log.config_conflict_failed")}`);
           }
-          base = fresh.content;
-          sha1 = fresh.sha1 || "";
-          newContent = formToCfgContent(base);
-          r = await fetch(`${API}/config`, {
-            method: "PUT",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({content: newContent, restart_klipper: false,
-                                  base_sha1: sha1}),
-          });
+          const next = {content: cur.content, sha1: cur.sha1 || ""};
+          config.disk = next.content;
           configLog.value = t("ui.log.config_conflict_merged");
+          reviewConfigChange(next.content, formToCfgContent(next.content),
+                             () => _saveConfigForm(next));
+          return;
         }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
         const j = await r.json();
