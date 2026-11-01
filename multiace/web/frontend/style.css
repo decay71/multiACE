@@ -2381,3 +2381,75 @@ body:has(.panel) .overlay .dialog {
              vertical-align: middle; margin-right: 6px; background: var(--border); }
 .fav-thumb { display: block; width: 100%; height: 110px; object-fit: contain;
              border-radius: 6px; margin-bottom: 6px; background: var(--border); }
+
+/* G-code preview (3D viewer in the preflight dialog) */
+/* --- G-code preview (plan section 7) ---------------------------------- */
+/* Parsed and rendered entirely client-side (gcode_preview.js +
+   gcode_preview_worker.js) - no upload, no printer required. WebGL2 with
+   a Canvas2D top-down fallback; the note under the legend says which. */
+.gpreview-pane { margin: .5rem 0; }
+/* A 3D view in a strip is not worth having, and the preflight dialog is
+   already 96vw - so the pane can take the screen when you ask it to. */
+.gpreview-pane.maximized {
+  position: fixed; inset: 0; z-index: 120; margin: 0;
+  background: var(--ink-900); padding: .6rem;
+  display: flex; flex-direction: column;
+}
+.gpreview-pane.maximized .gpreview-stage { flex: 1; min-height: 0; }
+.gpreview-pane.maximized .gpreview-canvas { height: 100%; }
+.gpreview-stage { position: relative; }
+.gpreview-canvas { width: 100%; height: 50vh; display: block;
+                   border: 1px solid var(--border); border-radius: 4px;
+                   background: #0c0c0e;
+                   /* Orbit / pan / pinch are ours; the browser must not
+                      steal the gesture to scroll the dialog. */
+                   touch-action: none; cursor: grab; }
+.gpreview-canvas:active { cursor: grabbing; }
+/* Vertical layer RANGE, on the right edge - Orca's arrangement, and a
+   range beats a single layer for spotting where a colour starts and
+   stops. Two handles rather than one, because that is the question. */
+.gpreview-layers {
+  position: absolute; top: .5rem; right: .5rem; bottom: .5rem;
+  display: flex; flex-direction: column; align-items: center; gap: .4rem;
+  padding: .4rem .35rem; border-radius: 6px;
+  background: rgba(18, 20, 22, .72); border: 1px solid var(--line);
+}
+.gpreview-layer-sliders { flex: 1; display: flex; gap: .1rem; min-height: 0; }
+.gpreview-vrange {
+  writing-mode: vertical-lr; direction: rtl;
+  -webkit-appearance: slider-vertical; appearance: slider-vertical;
+  width: 1.1rem; height: 100%; accent-color: var(--accent);
+}
+.gpreview-presets {
+  position: absolute; top: .5rem; left: .5rem;
+  display: flex; gap: .25rem;
+}
+.gpreview-presets button {
+  padding: .2rem .5rem; font-size: .9rem; line-height: 1;
+  background: rgba(18, 20, 22, .72);
+}
+.gpreview-controls { display: flex; align-items: center; gap: .6rem;
+                     flex-wrap: wrap; margin: .4rem 0; }
+.gpreview-slider { flex: 1; min-width: 8rem; accent-color: var(--accent); }
+.gpreview-view { font-size: .85rem; }
+.gpreview-layer-label { min-width: 5.5rem; font-size: .8rem; }
+.gpreview-toggle { display: flex; align-items: center; gap: .3rem;
+                   font-size: .85rem; white-space: nowrap; }
+.gpreview-legend { display: flex; gap: .8rem; flex-wrap: wrap;
+                   font-size: .8rem; }
+.gpreview-legend-item { display: flex; align-items: center; gap: .3rem;
+                        cursor: default; transition: opacity .12s ease; }
+.gpreview-legend-item.dim { opacity: .35; }
+/* A swap the loaded spools cannot serve. The markers in the 3D view are
+   coloured to match, so the preview shows WHERE the print will fail
+   before it starts. */
+.gpreview-legend-item.infeasible { color: var(--error); }
+.gpreview-warn { color: var(--error); font-weight: 700; }
+.gpreview-ramp {
+  display: inline-block; width: 90px; height: 10px; border-radius: 2px;
+  background: linear-gradient(to right, #00f, #0ff, #0f0, #ff0, #f00);
+}
+.gpreview-note { margin: .3rem 0 0; }
+@media (prefers-reduced-motion: reduce) {
+  .gpreview-legend-item { transition: none; }
+}
