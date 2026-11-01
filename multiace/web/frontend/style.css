@@ -2453,3 +2453,16 @@ body:has(.panel) .overlay .dialog {
 @media (prefers-reduced-motion: reduce) {
   .gpreview-legend-item { transition: none; }
 }
+
+/* Config diff dialog */
+.cfgdiff-dialog { width: 96vw; max-width: 900px; max-height: 90vh;
+                  display: flex; flex-direction: column; }
+.cfgdiff { margin: 0 0 .8rem; padding: .4rem 0; overflow: auto; flex: 1 1 auto;
+           min-height: 4rem; border: 1px solid var(--border); border-radius: 4px;
+           background: var(--bg); font-size: .8rem; line-height: 1.35; }
+.cfgdiff-row { display: block; padding: 0 .6rem 0 0; white-space: pre; }
+.cfgdiff-row i { display: inline-block; width: 1.6rem; text-align: center;
+                 font-style: normal; color: var(--muted); }
+.cfgdiff-row.add { background: color-mix(in srgb, var(--ok) 18%, transparent); }
+.cfgdiff-row.del { background: color-mix(in srgb, var(--error) 22%, transparent); }
+.cfgdiff-row.gap { color: var(--muted); }

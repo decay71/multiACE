@@ -1527,9 +1527,11 @@ createApp({
         target.retract_length = v.retract;
       }
       calibrationUi.busy = 'apply';
-      await saveConfigForm();
+      // Written straight away, not through the Save button's review: this
+      // flow has confirmed in its own UI already.
+      await _saveConfigForm();
       calibrationUi.busy = '';
-      // saveConfigForm reports through configLog: a line starting with the
+      // _saveConfigForm reports through configLog: a line starting with the
       // check mark is the only success it writes. It overwrites the log
       // first, so an earlier save's identical line cannot pass for this one.
       calibrationUi.saved = String(configLog.value || '').startsWith('✓');
@@ -1705,7 +1707,7 @@ createApp({
       }
       calibrationUi.busy = busy;
       calibrationUi.error = '';
-      await saveConfigForm();
+      await _saveConfigForm();
       calibrationUi.busy = '';
       const ok = String(configLog.value || '').startsWith('✓');
       if (!ok) {
@@ -5740,8 +5742,11 @@ createApp({
       if (cb) cb();
     }
     function confirmSync(msg) { return window.confirm(msg); }
+    // `disk` is the text as last read from or written to the printer, the
+    // baseline the diff is drawn against (`content` also carries unsaved
+    // edits from the raw editor).
     const config = reactive({path: "", content: "", params: {},
-                             sha1: ""});
+                             sha1: "", disk: ""});
     const configLog = ref("");
     const configLoadError = ref("");
     const showRawConfig = ref(false);
@@ -6222,6 +6227,7 @@ createApp({
         const j = await r.json();
         config.path = j.path || "";
         config.content = j.content || "";
+        config.disk = config.content;
         config.params = j.params || {};
         // Revision token for the lost-update guard (see saveConfigForm).
         config.sha1 = j.sha1 || "";
@@ -6230,20 +6236,123 @@ createApp({
         configLoadError.value = t("ui.log.config_load_failed", {error: e});
       }
     }
+    // ---- config diff ------------------------------------------------------
+    // Both saves show what is about to change before anything is written.
+    // Line based, with a few lines of context; a config is small enough for
+    // a plain LCS once the shared head and tail are cut off.
+    const CFG_DIFF_CONTEXT = 3;
+    const CFG_DIFF_MAX_CELLS = 4e6;
+    function diffLines(oldText, newText) {
+      const a = String(oldText).split("\n"), b = String(newText).split("\n");
+      let head = 0;
+      while (head < a.length && head < b.length && a[head] === b[head]) head++;
+      let tail = 0;
+      while (tail < a.length - head && tail < b.length - head
+             && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+      const am = a.slice(head, a.length - tail), bm = b.slice(head, b.length - tail);
+      const ops = [];
+      for (let i = 0; i < head; i++) ops.push([" ", a[i]]);
+      if (am.length * bm.length > CFG_DIFF_MAX_CELLS) {
+        // Too different for the table: show it as one removal and one add.
+        for (const l of am) ops.push(["-", l]);
+        for (const l of bm) ops.push(["+", l]);
+      } else {
+        const n = am.length, m = bm.length, w = m + 1;
+        const lcs = new Uint32Array((n + 1) * w);
+        for (let i = n - 1; i >= 0; i--) {
+          for (let j = m - 1; j >= 0; j--) {
+            lcs[i * w + j] = am[i] === bm[j] ? lcs[(i + 1) * w + j + 1] + 1
+              : Math.max(lcs[(i + 1) * w + j], lcs[i * w + j + 1]);
+          }
+        }
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+          if (am[i] === bm[j]) { ops.push([" ", am[i]]); i++; j++; }
+          else if (lcs[(i + 1) * w + j] >= lcs[i * w + j + 1]) { ops.push(["-", am[i++]]); }
+          else { ops.push(["+", bm[j++]]); }
+        }
+        while (i < n) ops.push(["-", am[i++]]);
+        while (j < m) ops.push(["+", bm[j++]]);
+      }
+      for (let i = a.length - tail; i < a.length; i++) ops.push([" ", a[i]]);
+      // Keep the changes and CFG_DIFF_CONTEXT lines around them.
+      const keep = new Array(ops.length).fill(false);
+      let added = 0, removed = 0;
+      ops.forEach((op, i) => {
+        if (op[0] === " ") return;
+        if (op[0] === "+") added++; else removed++;
+        for (let k = Math.max(0, i - CFG_DIFF_CONTEXT);
+             k <= Math.min(ops.length - 1, i + CFG_DIFF_CONTEXT); k++) keep[k] = true;
+      });
+      const rows = [];
+      let gap = false;
+      ops.forEach((op, i) => {
+        if (!keep[i]) { gap = rows.length > 0; return; }
+        if (gap) { rows.push({t: "~", text: "..."}); gap = false; }
+        rows.push({t: op[0], text: op[1]});
+      });
+      return {rows, added, removed};
+    }
+    const cfgDiff = reactive({show: false, rows: [], added: 0, removed: 0,
+                              _resolve: null});
+    // Show the change. Resolves true when it is confirmed, false when it is
+    // cancelled or there is nothing to show (nothing to write).
+    function reviewConfigChange(oldText, newText) {
+      return new Promise((resolve) => {
+        if (oldText === newText) {
+          configLog.value = t("ui.config.diff_none");
+          resolve(false);
+          return;
+        }
+        if (cfgDiff._resolve) cfgDiff._resolve(false);
+        const d = diffLines(oldText, newText);
+        cfgDiff.rows = d.rows;
+        cfgDiff.added = d.added;
+        cfgDiff.removed = d.removed;
+        cfgDiff._resolve = resolve;
+        cfgDiff.show = true;
+      });
+    }
+    function _closeConfigDiff(answer) {
+      const resolve = cfgDiff._resolve;
+      cfgDiff.show = false;
+      cfgDiff._resolve = null;
+      if (resolve) resolve(answer);
+    }
+    function okConfigDiff() { _closeConfigDiff(true); }
+    function cancelConfigDiff() { _closeConfigDiff(false); }
+    // The Save buttons. They resolve once the save has finished, or the
+    // review was cancelled, never while the dialog is still open.
     async function saveConfigForm() {
+      if (await reviewConfigChange(config.disk, formToCfgContent(config.content))) {
+        await _saveConfigForm();
+      }
+    }
+    async function saveConfigRaw() {
+      if (await reviewConfigChange(config.disk, config.content)) {
+        await _saveConfigRaw();
+      }
+    }
+    // Writes the form. The caller has confirmed already (the Save button's
+    // dialog, or the calibration tab's own UI), so there is no review here
+    // except on a 409, where the form values land on a file somebody else
+    // changed. `fresh` is that file once its diff has been confirmed. Always
+    // resolves after the write is done or has failed, and leaves the result
+    // in configLog: a line starting with the check mark is the only success.
+    async function _saveConfigForm(fresh = null) {
       configLog.value = t("ui.common.saving");
       try {
         // LOST-UPDATE GUARD: the form PATCHES the browser's cached copy of
         // the file, so a tab that loaded an older revision would silently
         // write it back (e.g. revert a cfg repaired via SSH). We send the
-        // sha1 we loaded; on 409 the server
-        // returns the CURRENT content and we re-apply the form values on top
-        // of it and retry once, so the user's edit lands without clobbering
-        // whatever else changed on disk meanwhile.
-        let base = config.content;
-        let sha1 = config.sha1;
-        let newContent = formToCfgContent(base);
-        let r = await fetch(`${API}/config`, {
+        // sha1 we loaded; on 409 the server returns the CURRENT content, the
+        // form values are re-applied on top of it and the diff against that
+        // content is shown again - what gets written is always what was just
+        // reviewed, so a change made by someone else is never saved unseen.
+        const base = fresh ? fresh.content : config.content;
+        const sha1 = fresh ? fresh.sha1 : config.sha1;
+        const newContent = formToCfgContent(base);
+        const r = await fetch(`${API}/config`, {
           method: "PUT",
           headers: {"Content-Type": "application/json"},
           // Do NOT auto-restart Klipper: a bare Klipper restart applies most
@@ -6255,31 +6364,41 @@ createApp({
                                 base_sha1: sha1}),
         });
         if (r.status === 409) {
-          let fresh = null;
-          try { fresh = JSON.parse((await r.json()).detail); } catch (e) { fresh = null; }
-          if (!fresh || typeof fresh.content !== "string") {
+          let cur = null;
+          try { cur = JSON.parse((await r.json()).detail); } catch (e) { cur = null; }
+          // A second conflict right after confirming is not retried again:
+          // the file is changing under us, so reload and start over.
+          if (fresh || !cur || typeof cur.content !== "string") {
             throw new Error(`HTTP 409 ${t("ui.log.config_conflict_failed")}`);
           }
-          base = fresh.content;
-          sha1 = fresh.sha1 || "";
-          newContent = formToCfgContent(base);
-          r = await fetch(`${API}/config`, {
-            method: "PUT",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({content: newContent, restart_klipper: false,
-                                  base_sha1: sha1}),
-          });
+          const next = {content: cur.content, sha1: cur.sha1 || ""};
+          config.disk = next.content;
           configLog.value = t("ui.log.config_conflict_merged");
+          const merged = formToCfgContent(next.content);
+          if (merged === next.content) {
+            // Whoever changed the file already wrote these values.
+            config.content = next.content;
+            config.sha1 = next.sha1;
+            configLog.value = `✓ ${config.path}\n${t("ui.config.diff_none")}`;
+            return;
+          }
+          if (!await reviewConfigChange(next.content, merged)) {
+            configLog.value = t("ui.config.diff_cancelled");
+            return;
+          }
+          await _saveConfigForm(next);
+          return;
         }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
         const j = await r.json();
         config.content = newContent;
+        config.disk = newContent;
         config.sha1 = j.sha1 || "";
         rebootNeeded.value = true;
         configLog.value = `✓ ${j.path}\nBackup: ${j.backup}\n${t("ui.common.please_restart")}`;
       } catch (e) { configLog.value = `${t("ui.common.error")}: ${e}`; }
     }
-    async function saveConfigRaw() {
+    async function _saveConfigRaw() {
       configLog.value = t("ui.log.saving_raw");
       try {
         // Same guard as the form save, but NO auto-retry: the raw editor's
@@ -6303,6 +6422,7 @@ createApp({
         }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
         const j = await r.json();
+        config.disk = config.content;
         config.sha1 = j.sha1 || "";
         rebootNeeded.value = true;
         configLog.value = `✓ ${j.path}\nBackup: ${j.backup}\n${t("ui.common.please_restart")}`;
@@ -9436,6 +9556,7 @@ createApp({
       dryerCfg, dryStart, dryStop, dryPanelOpen, toggleDryPanel, aceDrying,
       snapshots, selectedSnapshot, snapshotPreview, saveSnapshot, loadSnapshot, deleteSnapshot,
       config, configLog, configLoadError, showRawConfig, toggleRawConfig, configForm, rebootNeeded,
+      cfgDiff, okConfigDiff, cancelConfigDiff,
       printerRebootNeeded, restartNotice, restartOffered, restartNow, notifWantsReboot,
       aceHeadsRightSide,
       loadConfig, saveConfigForm, saveConfigRaw, setMode,
