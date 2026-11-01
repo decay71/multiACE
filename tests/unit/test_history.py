@@ -439,6 +439,22 @@ class TestEstimates:
         row["filename"] = "multiace_queue/a.gcode"
         assert "estimate" in jh.attach_estimates([row], ests)[0]
 
+    def test_a_staged_queue_name_matches_the_plain_name(self):
+        ests = [{"filename": "a.gcode", "total_s": 300, "ts": 1.0}]
+        row = self._row(60.0, filename="multiace_queue/0123456789ab_a.gcode")
+        assert jh.attach_estimates([row], ests)[0]["estimate"]["total_s"] == 300
+
+    def test_an_estimate_filed_under_a_staged_name_matches_too(self, tmp_path):
+        e = jh.record_estimate(str(tmp_path), "0123456789ab_a.gcode", 300,
+                               ts=1.0)
+        assert e["filename"] == "a.gcode"
+        assert "estimate" in jh.attach_estimates([self._row(60.0)], [e])[0]
+
+    def test_only_a_twelve_hex_prefix_is_dropped(self):
+        ests = [{"filename": "a.gcode", "total_s": 300, "ts": 1.0}]
+        row = self._row(60.0, filename="0123456789a_a.gcode")
+        assert "estimate" not in jh.attach_estimates([row], ests)[0]
+
     def test_accuracy_only_for_completed_prints(self):
         ests = [{"filename": "a.gcode", "total_s": 3600, "ts": 1.0}]
         done, cancelled = jh.attach_estimates(

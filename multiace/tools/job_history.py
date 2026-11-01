@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 
 #: Bounded on purpose - this lives on the printer's flash.
@@ -444,6 +445,16 @@ MAX_ESTIMATES = 200
 ESTIMATE_SLACK_S = 120.0
 
 
+#: The print queue stages a file as "<12 hex>_<name>" (both upload paths), and
+#: that is the name Moonraker's history then carries. Estimates are filed
+#: under the plain name, so matching drops the prefix on both sides.
+_STAGED_PREFIX_RE = re.compile(r"^[0-9a-f]{12}_")
+
+
+def _estimate_key(name):
+    return _STAGED_PREFIX_RE.sub("", _basename(name))
+
+
 def load_estimates(data_dir):
     """Every remembered estimate, oldest first. A missing or corrupt file
     reads as none, like load_favorites."""
@@ -470,7 +481,7 @@ def record_estimate(data_dir, filename, total_s, base_s=None, ts=None):
         total = float(total_s)
     except (TypeError, ValueError):
         return None
-    name = _basename(filename)
+    name = _estimate_key(filename)
     if not name or not total > 0:
         return None
     try:
@@ -504,9 +515,9 @@ def attach_estimates(rows, estimates):
     """
     by_name = {}
     for e in estimates or []:
-        by_name.setdefault(_basename(e.get("filename")), []).append(e)
+        by_name.setdefault(_estimate_key(e.get("filename")), []).append(e)
     for row in rows or []:
-        cands = by_name.get(_basename(row.get("filename")))
+        cands = by_name.get(_estimate_key(row.get("filename")))
         start = row.get("start_time")
         if not cands or start is None:
             continue
