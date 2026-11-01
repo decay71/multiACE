@@ -1399,6 +1399,13 @@ ANTI_OOZE_NO_UNRETRACT = 1.0
 # window then costs at most the inline swap it replaces, so every tool
 # change on a bg head is stamped.
 BG_UNLOAD_MIN_WINDOW_MIN = 0
+# Below this window (minutes, M73 resolution) a stamped swap loads only as
+# far as the toolhead sensor (LOAD=transport): the unload and the bowden
+# feed fit a short stay, the grip and the ~25 s prime do not, and a prime
+# the pick cuts short leaves the arrival to finish it anyway. From here on
+# the full background load. Files without M73 stamp the full load, as
+# before. 0 turns the downgrade off.
+BG_FULL_LOAD_MIN_WINDOW_MIN = 2
 
 # Bg-aware loadout scoring (compute_head_mode_optimize) + report estimate
 # (head_mode_bg_stats). Measured stall per swap on a real print: a full
@@ -2238,11 +2245,15 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                         body_tools[nxt_j])
                                     fout.write(
                                         'ACE_BG_SWAP HEAD=%d ACE=%d '
-                                        'SLOT=%d ANTI_OOZE=%s%s QUIET=1\n'
+                                        'SLOT=%d ANTI_OOZE=%s%s%s QUIET=1\n'
                                         % (ae_rel[0], nxt[0], nxt[1],
                                            _fmt_anti_ooze(ao),
                                            (' PURGE=%d' % _bgp)
-                                           if _bgp is not None else ''))
+                                           if _bgp is not None else '',
+                                           ' LOAD=transport'
+                                           if (window is not None
+                                               and window < BG_FULL_LOAD_MIN_WINDOW_MIN)
+                                           else ''))
                                     bg_waiting_heads.add(ae_rel[0])
 
                     ae = ace_entry_at(bt_idx)
