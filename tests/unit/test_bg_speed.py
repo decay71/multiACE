@@ -437,7 +437,11 @@ def _simulate(soft=False, **knobs):
     bg._heat_claims, bg._heat_start_time, bg._pull_start_time = {}, {}, {}
     bg._last_end = {}
     bg.prime_speed = knobs.get('prime_speed', BG.BG_LOAD_PRIME_SPEED_DEFAULT)
-    bg.prime_extra = knobs.get('prime_extra', BG.BG_LOAD_PRIME_EXTRA)
+    bg.prime_extra = knobs.get('extra', BG.BG_LOAD_PRIME_EXTRA)
+    bg.burst_prime = knobs.get('burst', False)
+    bg.bin_warn_mm = knobs.get('warn', 0.)
+    bg._bin = {'since': 0., 'swaps': 0, 'heads': {}}
+    bg._bin_op, bg._bin_warned = {}, False
     bg.pull_early_start = knobs.get('early', BG.BG_PULL_EARLY_START_C)
     bg.pull_push = knobs.get('push', 0.)
     bg.gcode = types.SimpleNamespace(respond_raw=lambda m: None)

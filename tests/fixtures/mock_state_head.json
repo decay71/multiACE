@@ -390,7 +390,17 @@
     "enabled_heads": [
       0
     ],
-    "busy": []
+    "busy": [],
+    "burst_prime": false,
+    "bin": {
+      "mm": 2860.0,
+      "g": 8.6,
+      "swaps": 18,
+      "since": 1793000000.0,
+      "heads": {"0": 2860.0},
+      "warn_mm": 4000.0,
+      "warn": false
+    }
   },
   "tipform": {
     "available": true,

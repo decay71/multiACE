@@ -204,8 +204,14 @@
    "load_retry": [
     "AceBgSwap._load_core"
    ],
+   "log_warn": [
+    "AceBgSwap._bin_add"
+   ],
    "note_seat_press_span": [
     "AceBgSwap._load_core"
+   ],
+   "save_variable": [
+    "AceBgSwap._bin_save"
    ],
    "seat_overshoot_length": [
     "AceBgSwap._load_core"

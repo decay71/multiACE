@@ -647,6 +647,9 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .config-inline-check { display: inline-flex; align-items: center; gap: .4rem; }
 .config-inline-check input { width: auto; }
 .config-row-hint { margin: -.2rem 0 .6rem 0; }
+.bg-bin-line { flex: 1 1 auto; font-size: .85rem; }
+.bg-bin-line.warn, .bg-bin-full { color: var(--warn); font-weight: 600; }
+.bg-bin-reset { margin-left: .5rem; white-space: nowrap; }
 /* Group separator inside the parameter form (transport | dryer | spoolman). */
 .config-sep { border-top: 1px solid var(--border); margin: 1rem 0 .9rem 0; }
 /* Colour swatches (picker dialog + spool form). Own padding/size, since the

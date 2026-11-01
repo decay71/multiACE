@@ -953,11 +953,16 @@ def _parse_state(status: dict) -> dict:
         # Background-swap module ([ace_bg_swap]). Klipper answers {} for an
         # unregistered object (webhooks QueryStatusHelper), so a printer
         # without the section reports available=False here - no error path.
+        # burst_prime / bin only exist on an engine that has them (and the
+        # block stays exactly as before without the module).
         "bg_swap": {
             "available":     bool(bg.get("version")),
             "version":       bg.get("version"),
             "enabled_heads": bg.get("enabled_heads", []) or [],
             "busy":          bg.get("busy", []) or [],
+            **({"burst_prime": bool(bg.get("burst_prime", False)),
+                "bin": bg.get("bin") or {}}
+               if bg.get("version") and "bin" in bg else {}),
         },
         # Per-material tip forming ([ace_tipform]) - the LIVE state (what
         # Klipper currently runs). The cfg may differ until a restart; the

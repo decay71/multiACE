@@ -2391,7 +2391,7 @@
         uiTheme === 'new' ? t('ui.config.nt_stock_first_short') : t('ui.config.stock_first_hint') }}</p>
       </div>
       <div class="nt-tile">
-      <h3>{{ t('ui.config.pickup_cleaning') }}</h3>
+      <h3>{{ t('ui.config.bg_swaps') }}</h3>
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="state.pickup_cleaning"
                @change="setPickupCleaning($event.target.checked)">
@@ -2399,6 +2399,29 @@
       </label>
       <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.pickup_cleaning_hint') : null">{{
         uiTheme === 'new' ? t('ui.config.nt_pickup_cleaning_short') : t('ui.config.pickup_cleaning_hint') }}</p>
+      <!-- The background swaps push the cold-pull and the prime out of the
+           parked nozzle into the bin under the dock. Only where the engine
+           reports a counter (an older engine has neither). -->
+      <template v-if="state.bg_swap && state.bg_swap.available && state.bg_swap.bin">
+      <label class="pickup-clean-toggle">
+        <input type="checkbox" :checked="state.bg_swap.burst_prime"
+               @change="setBgBurst($event.target.checked)">
+        {{ t('ui.config.bg_burst_label') }}
+      </label>
+      <p class="muted small">{{ t('ui.config.bg_burst_hint') }}</p>
+      <div class="config-row">
+        <label>{{ t('ui.config.bg_bin') }}</label>
+        <span class="bg-bin-line" :class="{warn: state.bg_swap.bin.warn}">{{ bgBinLine() }}</span>
+        <button class="bg-bin-reset" @click="resetBgBin()">{{ t('ui.config.bg_bin_reset') }}</button>
+      </div>
+      <div class="config-row">
+        <label>{{ t('ui.config.bg_bin_warn') }}</label>
+        <input type="number" :value="bgBinWarnG()" min="0" max="2000" step="1" placeholder="0"
+               @change="setBgBinWarn($event.target.value)">
+      </div>
+      <p v-if="state.bg_swap.bin.warn" class="bg-bin-full small config-row-hint">{{ t('ui.config.bg_bin_full') }}</p>
+      <p class="muted small config-row-hint">{{ t('ui.config.bg_bin_hint') }}</p>
+      </template>
       </div>
       </div>
 

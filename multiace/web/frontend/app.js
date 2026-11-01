@@ -4506,6 +4506,49 @@ createApp({
       } catch (_) {}
       reloadState();
     }
+    // Background swaps: the burst purge toggle and the purge bin counter
+    // (Config tab, next to the purge settings). All three go through the
+    // engine's write-through commands - live, no Save/restart.
+    const BG_BIN_G_PER_MM = 0.003;   // 1.75 mm PLA, same as the engine
+    async function _bgCmd(name, args) {
+      try {
+        const r = await fetch(`${API}/macro`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name, args}),
+        });
+        const j = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+        const res = String(j?.result || "");
+        if (/WARNING|failed/i.test(res)) setMacroLog(res);
+      } catch (e) {
+        setMacroLog(String(e?.message || e));
+      }
+      await reloadState();
+    }
+    function setBgBurst(enable) {
+      return _bgCmd("ACE_BG_SET_BURST", {ENABLE: enable ? 1 : 0});
+    }
+    function bgBinLine() {
+      const b = (state.bg_swap || {}).bin;
+      if (!b || !b.mm) return t("ui.config.bg_bin_none");
+      return t("ui.config.bg_bin_line", {
+        g: Math.round(b.g), m: (b.mm / 1000).toFixed(1), swaps: b.swaps,
+        since: b.since ? new Date(b.since * 1000).toLocaleDateString() : "-"});
+    }
+    function bgBinWarnG() {
+      const w = ((state.bg_swap || {}).bin || {}).warn_mm;
+      return w ? Math.round(w * BG_BIN_G_PER_MM) : 0;
+    }
+    function setBgBinWarn(grams) {
+      const g = Math.max(0, Number(grams) || 0);
+      return _bgCmd("ACE_BG_BIN",
+                    {WARN: g > 0 ? Math.round(g / BG_BIN_G_PER_MM) : 0});
+    }
+    function resetBgBin() {
+      if (!window.confirm(t("ui.config.bg_bin_reset_confirm"))) return;
+      return _bgCmd("ACE_BG_BIN", {RESET: 1});
+    }
     // Per-pair purge stamps of the preflight: off = the engine ignores the
     // LENGTH stamps and purges the fixed length again, also on files that
     // already carry them. Write-through setter - live, no Save/restart.
@@ -9826,7 +9869,7 @@ createApp({
       slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setRememberFilament, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
-      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
+      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setBgBurst, bgBinLine, bgBinWarnG, setBgBinWarn, resetBgBin, setPurgePolicy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,

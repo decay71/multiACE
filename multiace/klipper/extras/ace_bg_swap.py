@@ -38,6 +38,7 @@
 # ace.py coupling is the optional _wait_bg_op lookup.
 
 import logging
+import time
 import chelper
 from . import force_move
 
@@ -101,6 +102,23 @@ BG_CHAIN_LEAD = 0.35
 # which is the default until this has run on hardware (10 saves ~2.5 s).
 BG_PULL_EARLY_START_C = 0.
 BG_PULL_HEAT_RATE_MIN = 2.0     # C/s, conservative (measured ~2.5)
+# Dock waste: everything the bg ops push out of a parked nozzle (the cold-pull
+# push and the prime) lands in the bin under the dock. Tracked in mm of
+# filament; 1.75 mm PLA is ~3 g per metre.
+BG_BIN_G_PER_MM = 0.003
+BG_BIN_WARN_MM = 4000.         # ~12 g, about 25 swaps; 0 = no warning
+BG_BIN_VAR = 'ace__bg_bin'
+# Burst purge ([ace_bg_swap] burst_prime, toggle in the Config tab): the prime
+# is pushed as short fast bursts with a small retract and a pause between
+# them, so the purge falls as separate blobs instead of one slow string that
+# piles up on the nozzle. Every burst pushes BURST_BACK more than it keeps
+# and pulls it back, so the net travel (and the end state the anti-ooze
+# retract builds on) is the same as a plain prime. Costs ~1 s per burst (~12 s on a 120 mm prime).
+BG_BURST_MM = 10.
+BG_BURST_SPEED = 10.           # mm/s
+BG_BURST_BACK = 2.
+BG_BURST_BACK_SPEED = 25.
+BG_BURST_PAUSE = 0.8           # s
 # Deferred ACE_BG_SWAP requests (a QUIET stamp that finds another bg op
 # running is held and started when it ends instead of being dropped).
 BG_DEFER_MAX_AGE_S = 600.
@@ -352,6 +370,16 @@ class AceBgSwap:
         # arrival then swaps inline, as before). Off until tried on
         # hardware.
         self.swap_queue = config.getboolean('swap_queue', False)
+        # burst_prime: the prime as bursts (see BG_BURST_*). Live toggle
+        # ACE_BG_SET_BURST / Config tab.
+        self.burst_prime = config.getboolean('burst_prime', False)
+        # bin_warn_mm: dock waste (mm of filament since the bin was
+        # emptied) at which the UI and the log warn; 0 = never.
+        self.bin_warn_mm = config.getfloat(
+            'bin_warn_mm', BG_BIN_WARN_MM, minval=0.)
+        self._bin = {'since': 0., 'swaps': 0, 'heads': {}}
+        self._bin_op = {}
+        self._bin_warned = False
         self._deferred = []
         self.enabled_heads = set()
         for tok in heads_raw.replace(',', ' ').split():
@@ -381,6 +409,8 @@ class AceBgSwap:
                 logging.info('[multiACE] [bg-unload] enabled heads restored '
                              'from ace__bg_heads: %s'
                              % (sorted(restored) or 'NONE'))
+        if save_vars is not None:
+            self._bin_restore(save_vars.allVariables.get(BG_BIN_VAR))
         # Surfaced in ace.py's startup banner (bg-swap visibility line).
         self.version = BG_SWAP_VERSION
         # {head: state string} - IDLE/HEAT/PULL/RETRACT/DONE/FAILED:<reason>
@@ -417,6 +447,11 @@ class AceBgSwap:
                                     desc=self.cmd_ACE_BG_MOVE_help)
         self.gcode.register_command('ACE_BG_SET_HEAD', self.cmd_ACE_BG_SET_HEAD,
                                     desc=self.cmd_ACE_BG_SET_HEAD_help)
+        self.gcode.register_command('ACE_BG_BIN', self.cmd_ACE_BG_BIN,
+                                    desc=self.cmd_ACE_BG_BIN_help)
+        self.gcode.register_command('ACE_BG_SET_BURST',
+                                    self.cmd_ACE_BG_SET_BURST,
+                                    desc=self.cmd_ACE_BG_SET_BURST_help)
 
         self.gcode.register_command('ACE_BG_SWAP', self.cmd_ACE_BG_SWAP,
                                     desc=self.cmd_ACE_BG_SWAP_help)
@@ -443,6 +478,8 @@ class AceBgSwap:
             'state': {str(h): str(v) for h, v in self.state.items()},
             'debug': bool(self.debug),
             'arrival_wait': bool(self.arrival_wait),
+            'burst_prime': bool(self.burst_prime),
+            'bin': self._bin_status(),
         }
 
     cmd_ACE_BG_SET_HEAD_help = (
@@ -781,11 +818,149 @@ class AceBgSwap:
                 self.reactor.monotonic()) < end - lead:
             self._pause(0.05)
 
+    # -- dock waste (the purge bin under the docks) --------------------------
+    def _bin_restore(self, saved):
+        """Load the persisted counters (plain literals only)."""
+        try:
+            heads = {}
+            for k, v in (saved.get('heads') or {}).items():
+                heads[str(int(k))] = max(0., float(v))
+            self._bin = {'since': float(saved.get('since') or 0.),
+                         'swaps': int(saved.get('swaps') or 0),
+                         'heads': heads}
+        except Exception:
+            self._bin = {'since': 0., 'swaps': 0, 'heads': {}}
+
+    def _bin_total(self):
+        return sum(self._bin['heads'].values())
+
+    def _bin_add(self, head, mm):
+        """Book `mm` of filament pushed out of head's nozzle into the bin.
+        In memory at once (the UI shows it live); written by _bin_save at
+        the end of the op."""
+        mm = float(mm)
+        if mm <= 0.:
+            return
+        key = str(int(head))
+        if not self._bin['since']:
+            self._bin['since'] = time.time()
+        self._bin['heads'][key] = self._bin['heads'].get(key, 0.) + mm
+        self._bin_op[head] = self._bin_op.get(head, 0.) + mm
+        warn = float(getattr(self, 'bin_warn_mm', 0.) or 0.)
+        if (warn > 0. and not self._bin_warned
+                and self._bin_total() >= warn):
+            self._bin_warned = True
+            msg = ('purge bin: ~%.0f g (%.1f m) pushed through the docks '
+                   'since it was emptied - check the pile under the nozzles, '
+                   'then ACE_BG_BIN RESET=1'
+                   % (self._bin_total() * BG_BIN_G_PER_MM,
+                      self._bin_total() / 1000.))
+            ace = self.printer.lookup_object('ace', None)
+            warn_fn = getattr(ace, 'log_warn', None)
+            if warn_fn is not None:
+                try:
+                    warn_fn(msg)
+                    return
+                except Exception:
+                    pass
+            self._say(msg)
+
+    def _bin_save(self):
+        ace = self.printer.lookup_object('ace', None)
+        data = {'since': round(self._bin['since'], 1),
+                'swaps': int(self._bin['swaps']),
+                'heads': {k: round(v, 1)
+                          for k, v in self._bin['heads'].items()}}
+        save = getattr(ace, 'save_variable', None)
+        try:
+            if save is not None:
+                save(BG_BIN_VAR, data, write=True)
+            else:
+                sv = self.printer.lookup_object('save_variables', None)
+                if sv is not None:
+                    sv.allVariables[BG_BIN_VAR] = data
+        except Exception as e:
+            logging.info('[multiACE] [bg-bin] counters not persisted: %s' % e)
+
+    def _bin_status(self):
+        total = self._bin_total()
+        warn = float(getattr(self, 'bin_warn_mm', 0.) or 0.)
+        # Every key of get_status MUST be a str (see there).
+        return {
+            'mm': round(total, 1),
+            'g': round(total * BG_BIN_G_PER_MM, 1),
+            'swaps': int(self._bin['swaps']),
+            'since': round(self._bin['since'], 1),
+            'heads': {str(k): round(v, 1)
+                      for k, v in self._bin['heads'].items()},
+            'warn_mm': warn,
+            'warn': bool(warn > 0. and total >= warn),
+        }
+
+    cmd_ACE_BG_BIN_help = (
+        '[multiACE] Purge bin counter: the filament the background swaps '
+        'push out of the parked nozzles into the bin. ACE_BG_BIN prints it; '
+        'RESET=1 after emptying the bin; WARN=<mm> sets the warning level '
+        '(0 = off, write-through to [ace_bg_swap] bin_warn_mm, PERSIST=0 = '
+        'until restart).')
+
+    def cmd_ACE_BG_BIN(self, gcmd):
+        if gcmd.get_int('RESET', 0, minval=0, maxval=1):
+            self._bin = {'since': 0., 'swaps': 0, 'heads': {}}
+            self._bin_op = {}
+            self._bin_warned = False
+            self._bin_save()
+            gcmd.respond_info('[bg-bin] counters reset')
+        warn = gcmd.get_float('WARN', None, minval=0., maxval=1000000.)
+        if warn is not None:
+            self.bin_warn_mm = warn
+            self._bin_warned = bool(warn > 0.
+                                    and self._bin_total() >= warn)
+            ace = self.printer.lookup_object('ace', None)
+            persist = getattr(ace, '_wt_persist', None)
+            sfx = ''
+            if persist is not None:
+                sfx = persist(gcmd, 'bin_warn_mm', '%g' % warn, None,
+                              section='ace_bg_swap')
+            gcmd.respond_info('[bg-bin] warning level %s%s'
+                              % ('off' if warn <= 0. else '%g mm' % warn,
+                                 sfx))
+        st = self._bin_status()
+        gcmd.respond_info(
+            '[bg-bin] %.1f m (~%.0f g) in %d swaps since %s; per head %s'
+            % (st['mm'] / 1000., st['g'], st['swaps'],
+               (time.strftime('%Y-%m-%d %H:%M', time.localtime(st['since']))
+                if st['since'] else 'the start'),
+               ', '.join('%s: %.0f mm' % (self._dh(int(k)), v)
+                         for k, v in sorted(st['heads'].items())) or '-'))
+
+    cmd_ACE_BG_SET_BURST_help = (
+        '[multiACE] Burst purge for the background prime (ENABLE=0|1): the '
+        'prime is pushed as short bursts with a pause so the waste falls as '
+        'blobs instead of piling up under the nozzle. Live + write-through '
+        '([ace_bg_swap] burst_prime; PERSIST=0 = until restart).')
+
+    def cmd_ACE_BG_SET_BURST(self, gcmd):
+        enable = bool(gcmd.get_int('ENABLE', minval=0, maxval=1))
+        self.burst_prime = enable
+        ace = self.printer.lookup_object('ace', None)
+        persist = getattr(ace, '_wt_persist', None)
+        sfx = ''
+        if persist is not None:
+            sfx = persist(gcmd, 'burst_prime', 'true' if enable else 'false',
+                          None, section='ace_bg_swap')
+        gcmd.respond_info('[bg-swap] burst purge %s%s'
+                          % ('ON' if enable else 'off', sfx))
+
     def _finish(self, head):
-        """An op on `head` is over: release it and start the next deferred
-        request, if one is waiting."""
+        """An op on `head` is over: release it, book the swap into the bin
+        counter and start the next deferred request, if one is waiting."""
         self._busy.discard(head)
         self._pick_pending.discard(head)
+        op = getattr(self, '_bin_op', None)
+        if op and op.pop(head, 0.) > 0.:
+            self._bin['swaps'] += 1
+            self._bin_save()
         if self._deferred:
             self.reactor.register_async_callback(
                 lambda et: self._run_deferred())
@@ -2390,6 +2565,7 @@ class AceBgSwap:
                     _s, end, _en = self.queue_move(ext, dist, speed,
                                                       CHOREO_ACCEL)
                     pl['end'] = end
+                    self._bin_add(head, dist)
                 logging.info('[multiACE] [bg-pull] head %d token %d/%d '
                              '%+.1f mm @%.0f: +%.1f s'
                              % (head, _ti + 1, len(seq), dist, feedrate,
@@ -2916,14 +3092,15 @@ class AceBgSwap:
             # arrival pick-check tops that up, see _bg_prime_deficit).
             # Per-pair PURGE= from the stamp wins (see cmd_ACE_BG_SWAP);
             # fallback = the global override/config knob, as before.
+            _extra = float(getattr(self, 'prime_extra', BG_LOAD_PRIME_EXTRA))
             if purge is not None:
                 _policy = getattr(ace, 'apply_purge_policy', None)
                 if _policy is not None:
                     purge = _policy(purge)
-                prime_target = float(purge) + self.prime_extra
+                prime_target = float(purge) + _extra
             else:
                 prime_target = (float(ace.get_purge_length() or 0) or 80.) \
-                    + self.prime_extra
+                    + _extra
             primed = 0.
             ooze_done = False
 
@@ -3086,6 +3263,10 @@ class AceBgSwap:
                         _prime_speed = float(_tps) / 60.
                 except Exception:
                     pass
+            # Burst purge (Config tab toggle): see BG_BURST_*. A burst is
+            # not chained - it is settled and followed by a pause, which
+            # is the point of it.
+            _burst = bool(getattr(self, 'burst_prime', False))
             _pend = None
             while primed < prime_target - 1e-6:
                 if _pend is not None:
@@ -3097,10 +3278,24 @@ class AceBgSwap:
                     cut_short = True
                     break
                 self._check_docked(toolhead, ext, head)
-                seg = min(BG_LOAD_PRIME_CHUNK, prime_target - primed)
-                _s, _pend, _en = self.queue_move(ext, seg, _prime_speed,
-                                                 CHOREO_ACCEL)
+                if _burst:
+                    # Push the burst PLUS what the retract takes back, so
+                    # the net travel is `seg` like a plain chunk.
+                    seg = min(BG_BURST_MM, prime_target - primed)
+                    self.queue_move(ext, seg + BG_BURST_BACK,
+                                    BG_BURST_SPEED, CHOREO_ACCEL)
+                    _s, _bend, _en = self.queue_move(
+                        ext, -BG_BURST_BACK, BG_BURST_BACK_SPEED,
+                        CHOREO_ACCEL)
+                    self._wait_move(toolhead, _bend)
+                    if primed + seg < prime_target - 1e-6:
+                        self._pause(BG_BURST_PAUSE)
+                else:
+                    seg = min(BG_LOAD_PRIME_CHUNK, prime_target - primed)
+                    _s, _pend, _en = self.queue_move(
+                        ext, seg, _prime_speed, CHOREO_ACCEL)
                 primed += seg
+                self._bin_add(head, seg)
                 # Spool book-keeping: these are stealth moves on our OWN
                 # trapq, so the extruder axis the ace.py sampler watches
                 # never sees them - book the purge explicitly or a bg swap
