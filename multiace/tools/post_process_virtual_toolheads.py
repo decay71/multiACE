@@ -1404,8 +1404,11 @@ BG_UNLOAD_MIN_WINDOW_MIN = 0
 # feed fit a short stay, the grip and the ~25 s prime do not, and a prime
 # the pick cuts short leaves the arrival to finish it anyway. From here on
 # the full background load. Files without M73 stamp the full load, as
-# before. 0 turns the downgrade off.
-BG_FULL_LOAD_MIN_WINDOW_MIN = 2
+# before. 0 (the default) turns the downgrade off: ACE_BG_WAIT decides at
+# runtime whether the arrival waits for or aborts a bg swap, so the
+# preflight does not guess from the window. Raise it (e.g. 2) to stamp
+# LOAD=transport on short parked windows.
+BG_FULL_LOAD_MIN_WINDOW_MIN = 0
 
 # Bg-aware loadout scoring (compute_head_mode_optimize) + report estimate
 # (head_mode_bg_stats). Measured stall per swap on a real print: a full

@@ -3075,6 +3075,16 @@ class AceBgSwap:
             _prime_speed = (BG_LOAD_PRIME_SPEED if soft else
                             float(getattr(self, 'prime_speed',
                                           BG_LOAD_PRIME_SPEED_DEFAULT)))
+            if not soft:
+                # [ace_tipform] bgprimespeed: (mm/min, like every move
+                # token) beats the config key for this material/vendor.
+                try:
+                    _tpf = getattr(ace, 'tipform_bg_prime_speed_for', None)
+                    _tps = _tpf(head, soft=False) if _tpf is not None else None
+                    if _tps:
+                        _prime_speed = float(_tps) / 60.
+                except Exception:
+                    pass
             _pend = None
             while primed < prime_target - 1e-6:
                 if _pend is not None:

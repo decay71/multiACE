@@ -365,14 +365,24 @@ def test_a_long_window_stamps_the_full_load(pp, tmp_path):
     assert 'LOAD=' not in lines[0] and lines[0].endswith('QUIET=1')
 
 
-def test_a_short_window_stamps_transport(pp, tmp_path):
-    assert pp.BG_FULL_LOAD_MIN_WINDOW_MIN == 2
+def test_no_load_stamp_by_default(pp, tmp_path):
+    # ACE_BG_WAIT decides at runtime; the preflight does not guess from
+    # the window unless the threshold is raised.
+    assert pp.BG_FULL_LOAD_MIN_WINDOW_MIN == 0
+    lines = _stamps(pp, tmp_path, 1)
+    assert len(lines) == 1
+    assert 'LOAD=' not in lines[0] and lines[0].endswith('QUIET=1')
+
+
+def test_a_short_window_stamps_transport_when_asked(pp, tmp_path, monkeypatch):
+    monkeypatch.setattr(pp, 'BG_FULL_LOAD_MIN_WINDOW_MIN', 2)
     lines = _stamps(pp, tmp_path, 1)
     assert len(lines) == 1
     assert 'LOAD=transport' in lines[0] and lines[0].endswith('QUIET=1')
 
 
-def test_the_threshold_is_the_first_full_minute(pp, tmp_path):
+def test_the_threshold_is_the_first_full_minute(pp, tmp_path, monkeypatch):
+    monkeypatch.setattr(pp, 'BG_FULL_LOAD_MIN_WINDOW_MIN', 2)
     assert 'LOAD=' not in _stamps(pp, tmp_path, 2)[0]
 
 
@@ -418,12 +428,16 @@ def _simulate(soft=False, **knobs):
         _retract_with_decoder_span=lambda i, s, fn: (fn(), (10000, 1, 0, 1))[1],
         book_spool_use=lambda *a: None, _is_actively_printing=lambda: True,
         _is_empty_status=lambda st: False, log_warn=lambda m: None)
+    if 'tip_f' in knobs:        # [ace_tipform] bgprimespeed: (mm/min)
+        ace.tipform_bg_prime_speed_for = lambda head, soft=False: (
+            knobs['tip_f'])
     bg = object.__new__(BG.AceBgSwap)
     bg.reactor = clk
     bg.state, bg._busy, bg._pick_pending = {}, set([1]), set()
     bg._heat_claims, bg._heat_start_time, bg._pull_start_time = {}, {}, {}
     bg._last_end = {}
     bg.prime_speed = knobs.get('prime_speed', BG.BG_LOAD_PRIME_SPEED_DEFAULT)
+    bg.prime_extra = knobs.get('prime_extra', BG.BG_LOAD_PRIME_EXTRA)
     bg.pull_early_start = knobs.get('early', BG.BG_PULL_EARLY_START_C)
     bg.pull_push = knobs.get('push', 0.)
     bg.gcode = types.SimpleNamespace(respond_raw=lambda m: None)
@@ -539,3 +553,18 @@ def test_soft_filament_primes_at_the_slow_speed():
     soft = _simulate(soft=True, prime_speed=6.)
     prime = lambda r: r[3] - r[2]['LD_PRIME']
     assert prime(soft) - prime(fast) > 8           # 120 mm at 4 instead of 6
+
+
+def test_the_tipform_prime_speed_beats_the_config_key():
+    prime = lambda r: r[3] - r[2]['LD_PRIME']
+    base = _simulate()                              # 4 mm/s
+    tip = _simulate(tip_f=360.)                     # 6 mm/s from the table
+    assert prime(base) - prime(tip) > 8
+    # the same speed as the config key gives the same prime
+    assert abs(prime(tip) - prime(_simulate(prime_speed=6.))) < 0.3
+
+
+def test_the_tipform_prime_speed_never_speeds_up_soft_filament():
+    prime = lambda r: r[3] - r[2]['LD_PRIME']
+    assert abs(prime(_simulate(soft=True, tip_f=360.))
+               - prime(_simulate(soft=True))) < 0.3

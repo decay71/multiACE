@@ -104,7 +104,8 @@ class TestTimeline:
                 for m in ("full", "transport", "none")]
         assert secs[0] < secs[1] < secs[2]
 
-    def test_a_short_window_is_costed_as_transport(self, model):
+    def test_a_short_window_is_costed_as_transport(self, model, monkeypatch):
+        monkeypatch.setattr(pp, "BG_FULL_LOAD_MIN_WINDOW_MIN", 2)
         short = _bg(model, pp.BG_FULL_LOAD_MIN_WINDOW_MIN - 0.5,
                     bg_load_mode="full")
         assert short["load_mode"] == "transport"
@@ -114,7 +115,15 @@ class TestTimeline:
                     bg_load_mode="full")
         assert long_["load_mode"] == "full" and long_["purge_inline"] is False
 
-    def test_a_short_window_never_raises_a_lighter_configured_mode(self, model):
+    def test_a_short_window_stays_full_by_default(self, model):
+        # no LOAD= stamp is emitted by default, so none is costed
+        assert pp.BG_FULL_LOAD_MIN_WINDOW_MIN == 0
+        e = _bg(model, 1, bg_load_mode="full")
+        assert e["load_mode"] == "full" and e["purge_inline"] is False
+
+    def test_a_short_window_never_raises_a_lighter_configured_mode(
+            self, model, monkeypatch):
+        monkeypatch.setattr(pp, "BG_FULL_LOAD_MIN_WINDOW_MIN", 2)
         e = _bg(model, pp.BG_FULL_LOAD_MIN_WINDOW_MIN - 0.5,
                 bg_load_mode="none")
         assert e["load_mode"] == "none"
