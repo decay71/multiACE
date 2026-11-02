@@ -216,6 +216,26 @@ class BusTest(unittest.TestCase):
         self.assertEqual(B.uid_of(reply['payload']), UID_B)
         self.assertEqual(len(bus.present_paths()), 2)
 
+    def test_dropped_address_is_restored_before_loss(self):
+        # Seen on hardware: when one chained unit loses power, the other one
+        # can drop back to address 0 on its own. A missed reply must trigger
+        # a scan at address 0 straight away, so the unit gets its address
+        # back before it is reported lost (mid-print that would pause).
+        a, b = FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y')
+        bus = self.make_bus(FakeChain(a, b))
+        self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 2))
+        lost = []
+        real = bus._mark_lost
+        bus._mark_lost = lambda unit: (lost.append(unit.uid), real(unit))
+        before = a.addr
+        with mock.patch.object(B, 'RESCAN_S', 30.0):   # no scheduled rescue
+            a.reboot()
+            self.assertTrue(self.wait_for(lambda: a.addr == before,
+                                          timeout=2.0))
+            time.sleep(0.5)
+        self.assertEqual(lost, [])
+        self.assertEqual(len(bus.present_paths()), 2)
+
     def test_unit_gone_raises_on_its_port_only(self):
         a, b = FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y')
         bus = self.make_bus(FakeChain(a, b))
@@ -230,6 +250,31 @@ class BusTest(unittest.TestCase):
             bus.unit_for(B.uid_hex(UID_A)))])
         b.powered = True
         self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 2))
+
+    def test_presence_check_follows_the_bus(self):
+        # multiACE's background reconnect waits for the device to be there
+        # before reopening it. A virtual path is no file, so it must ask the
+        # bus (found on hardware: a unit off for more than ~10 s never came
+        # back without a Klipper restart).
+        from extras.ace_protocol_v2 import AceProtocolV2
+        cable = '/dev/serial/by-path/fake-cable-presence'
+        a, b = FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y')
+        chain = FakeChain(a, b)
+        bus = B.bus_for(cable, serial_factory=lambda path: chain)
+        self.buses.append(bus)
+        self.addCleanup(B._buses.pop, cable, None)
+        self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 2))
+        path_b = bus.virtual_path(bus.unit_for(B.uid_hex(UID_B)))
+        with mock.patch.object(AceProtocolV2, 'CHAIN', True):
+            self.assertTrue(AceProtocolV2.device_present(path_b))
+            b.powered = False
+            self.assertTrue(self.wait_for(
+                lambda: not AceProtocolV2.device_present(path_b)))
+            b.powered = True
+            self.assertTrue(self.wait_for(
+                lambda: AceProtocolV2.device_present(path_b)))
+            self.assertFalse(AceProtocolV2.device_present(
+                '/dev/serial/by-path/no-such-cable@00000000-00000000-00000000'))
 
     def test_slow_unit_is_not_lost(self):
         a, b = FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y')

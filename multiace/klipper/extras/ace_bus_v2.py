@@ -454,6 +454,12 @@ class V2Bus(object):
             unit.misses += 1
             if unit.present and unit.misses >= LOST_AFTER_MISSES:
                 self._mark_lost(unit)
+            elif unit.present and self.addressed:
+                # A unit can drop back to address 0 without rebooting (seen
+                # when another unit on the chain loses power). Look there
+                # now, not at the next RESCAN_S, so it gets its address back
+                # before it misses enough replies to be reported lost.
+                self._last_scan = 0.0
             return
         if not unit.present:
             logging.info('[multiACE] v2 bus %s: unit %s answering again at '
@@ -623,6 +629,19 @@ def discover_units(cable_paths):
     for cable in cable_paths:
         out += bus_for(cable).present_paths()
     return out
+
+
+def unit_present(path):
+    """Whether the unit behind this virtual path answers on its bus now.
+    The stand-in for os.path.exists(): a virtual path is no device file.
+    Never creates a bus."""
+    cable, hexuid = split_path(path)
+    with _buses_lock:
+        bus = _buses.get(cable)
+    if bus is None or not bus.alive:
+        return False
+    unit = bus.unit_for(hexuid)
+    return bool(unit is not None and unit.present)
 
 
 def open_unit(path):

@@ -8369,7 +8369,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             except Exception:
                 timers.pop(idx, None)
                 return self.reactor.NEVER
-            if not os.path.exists(path):
+            if not AceProtocolV2.device_present(path):
                 return nxt
             self._reconnecting_per_ace[idx] = True
             try:

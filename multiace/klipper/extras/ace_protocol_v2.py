@@ -265,6 +265,16 @@ class AceProtocolV2(AceProtocol):
         """True for a unit on a daisy-chain bus ('<cable>@<uid>')."""
         return AceProtocolV2.CHAIN and '@' in str(path or '')
 
+    @staticmethod
+    def device_present(path):
+        """Whether the device behind path is there to be opened: the device
+        file for a normal port, the unit answering on its bus for a chain
+        path (which is no file, so os.path.exists() is always False)."""
+        if AceProtocolV2.is_bus_path(path):
+            from . import ace_bus_v2
+            return ace_bus_v2.unit_present(path)
+        return os.path.exists(str(path))
+
     @classmethod
     def discover_usb_serial_candidates(cls):
         """Return USB serial paths eligible for an explicit generic probe.
