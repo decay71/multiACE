@@ -378,6 +378,9 @@ def _parse_state(status: dict) -> dict:
     fr = status.get("filament_feed right", {}) or {}
     bg = status.get("ace_bg_swap", {}) or {}
     tf = status.get("ace_tipform", {}) or {}
+    # Opt-in (default OFF = the old behaviour: a slot that stays empty drops
+    # its hand-set label). An older ace.py has no field -> off.
+    remember_filament = bool(ace.get("remember_filament", False))
 
     device_count = int(ace.get("device_count", 1))
     active_device = int(ace.get("active_device", 0))
@@ -514,12 +517,20 @@ def _parse_state(status: dict) -> dict:
                 if _pending is None:
                     _eject_pending_since[(i, s)] = _now
                 elif _now - _pending >= EJECT_DEBOUNCE_S:
-                    if _drop_override_if_present(i, s):
+                    if not remember_filament and _drop_override_if_present(i, s):
                         overrides_dirty = True
                     _eject_pending_since.pop((i, s), None)
             else:
                 _eject_pending_since.pop((i, s), None)
             rfid_status = sd.get("rfid", 0)
+            # A fresh successful chip read always wins over a kept label:
+            # without this a hand-set label left in place by "remember
+            # last filament" would shadow a genuinely different, RFID-
+            # tagged spool put into the same slot later.
+            if rfid_status == 2 and _last_rfid_status.get((i, s)) != 2:
+                if _drop_override_if_present(i, s):
+                    overrides_dirty = True
+            _last_rfid_status[(i, s)] = rfid_status
             rfid_data = None
             if rfid_status == 2:
                 rfid_data = {
@@ -874,6 +885,8 @@ def _parse_state(status: dict) -> dict:
                      else {}),
         # Default TRUE like the engine; an older ace.py has no field.
         "pa_sync": bool(ace.get("pa_sync", True)),
+        # Opt-in switch, default OFF; an older ace.py has no field.
+        "remember_filament": remember_filament,
         # RC522 tag read/write enabled - gates the picker "write to tag" button.
         "rc522": bool(ace.get("rc522", False)),
         # D11 Devices list (engine, additive since 1.30b): every place of
@@ -5431,6 +5444,9 @@ def _drop_override_if_present(ace: int, slot: int) -> bool:
 
 EJECT_DEBOUNCE_S = 0.5
 _eject_pending_since: dict[tuple[int, int], float] = {}
+# Last RFID read state per slot: a read that BECOMES successful (2) drops a
+# kept hand-set label (see the remember-last-filament note in _parse_state).
+_last_rfid_status: dict[tuple[int, int], int] = {}
 
 def _override_for(ace: int, slot: int) -> dict | None:
     """Return the override dict for this (ace, slot) if any meaningful

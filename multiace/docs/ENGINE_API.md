@@ -83,6 +83,7 @@ values on the wire.
 | Command | Parameters | Effect |
 |---------|-----------|--------|
 | `ACE_SET_PURGE` | `LENGTH=mm` \| `RESET=1` \| `MATRIX=0|1 [PERSIST=0]` | Set the swap/load flush length for upcoming flush(es). `LENGTH` is 0-200 mm; `LENGTH=0` = stock default (80 mm). `RESET=1` reverts to the `swap_purge_length` config value. `MATRIX=0|1` ignores/honors per-pair `LENGTH` stamps and WRITES the `purge_matrix` config line (write-through); with `PERSIST=0` the change is RAM-only and the config value returns at restart. Settings whose RAM value deviates from their config line are listed in the status field `settings_volatile`. Intended for per-colour-pair purge fed from the slicer. Every settings setter (`ACE_SET_PICKUP_CLEANING`, `ACE_SET_AIRPRINT_DETECTION`, `ACE_SET_QUAD_REPLENISH`, `ACE_SET_CONFIRM_COMMANDS`, `ACE_SET_SPOOLMAN`, `MULTIACE_SET_LANGUAGE`, `ACE_BG_SET_HEAD`) follows the same write-through contract: it edits its config line and accepts `PERSIST=0`. |
+| `ACE_SET_REMEMBER_FILAMENT` | `ENABLE=0\|1 [PERSIST=0]` | Keep a slot's hand-set colour/material label and its spool binding when it goes empty, so putting filament back needs no re-entry. Default off (= today's behaviour: both are dropped once the slot has been empty for 0.5 s). A freshly read RFID chip always replaces a kept label. Write-through to the `[ace]` `remember_filament` line (no save variable); `PERSIST=0` = until restart. |
 
 ### Per-head mode
 

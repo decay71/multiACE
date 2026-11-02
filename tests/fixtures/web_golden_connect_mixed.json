@@ -439,6 +439,7 @@
  "quad_first": true,
  "quad_replenish": false,
  "rc522": false,
+ "remember_filament": false,
  "save_variables": {},
  "spool_binding": {},
  "spool_mode": "local",
