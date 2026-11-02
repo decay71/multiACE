@@ -519,15 +519,25 @@ def _parse_state(status: dict) -> dict:
                 elif _now - _pending >= EJECT_DEBOUNCE_S:
                     if not remember_filament and _drop_override_if_present(i, s):
                         overrides_dirty = True
+                    if remember_filament:
+                        # the kept label's spool is gone: a tagged spool
+                        # read here next is a refill (see below)
+                        _kept_slot_emptied.add((i, s))
                     _eject_pending_since.pop((i, s), None)
             else:
                 _eject_pending_since.pop((i, s), None)
             rfid_status = sd.get("rfid", 0)
-            # A fresh successful chip read always wins over a kept label:
-            # without this a hand-set label left in place by "remember
-            # last filament" would shadow a genuinely different, RFID-
-            # tagged spool put into the same slot later.
-            if rfid_status == 2 and _last_rfid_status.get((i, s)) != 2:
+            # "Remember last filament" only: a chip read wins over the kept
+            # label when the slot was seen EMPTY since (a refill with a
+            # tagged spool, which would otherwise be shadowed by the old
+            # label). Not on any 0 -> 2 change: after a backend restart or a
+            # unit reconnect the first read of an unchanged spool looks like
+            # one, and would drop a label the user set by hand to correct
+            # the chip. Off: gate == 0 already dropped the label.
+            if (remember_filament and rfid_status == 2
+                    and _last_rfid_status.get((i, s)) != 2
+                    and (i, s) in _kept_slot_emptied):
+                _kept_slot_emptied.discard((i, s))
                 if _drop_override_if_present(i, s):
                     overrides_dirty = True
             _last_rfid_status[(i, s)] = rfid_status
@@ -5444,9 +5454,11 @@ def _drop_override_if_present(ace: int, slot: int) -> bool:
 
 EJECT_DEBOUNCE_S = 0.5
 _eject_pending_since: dict[tuple[int, int], float] = {}
-# Last RFID read state per slot: a read that BECOMES successful (2) drops a
+# Last RFID read state per slot, and the slots seen empty since their label
+# was set: only a read that becomes successful (2) on such a slot drops the
 # kept hand-set label (see the remember-last-filament note in _parse_state).
 _last_rfid_status: dict[tuple[int, int], int] = {}
+_kept_slot_emptied: set[tuple[int, int]] = set()
 
 def _override_for(ace: int, slot: int) -> dict | None:
     """Return the override dict for this (ace, slot) if any meaningful
@@ -5498,6 +5510,7 @@ async def set_slot_override(req: SlotOverride) -> dict:
     }
     old = _slot_overrides.get(key)
     _slot_overrides[key] = new
+    _kept_slot_emptied.discard((req.ace, req.slot))     # a fresh label
     _trace.info("override SET via picker POST MMU %d / slot %d: %s -> %s",
                 req.ace, req.slot, old, new)
     _save_overrides_to_disk()

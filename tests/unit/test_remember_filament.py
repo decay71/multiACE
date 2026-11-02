@@ -132,6 +132,7 @@ def web(monkeypatch, tmp_path):
     mod._slot_overrides.clear()
     mod._eject_pending_since.clear()
     mod._last_rfid_status.clear()
+    mod._kept_slot_emptied.clear()
     mod._overrides_mtime = 0.0
     return mod
 
@@ -193,3 +194,35 @@ def test_a_label_on_a_slot_that_keeps_its_tag_is_not_dropped_again(
     web._slot_overrides["0_1"] = {"material": "ABS", "color": "00ff00"}
     web._parse_state(_status(web, True, gate1=1, rfid1=2))     # same read
     assert web._override_for(0, 1) is not None
+
+
+def test_a_restart_does_not_drop_a_hand_set_label(web):
+    # first poll after a restart / reconnect: the tag reads 2 for the first
+    # time, but the slot was never seen empty
+    web._parse_state(_status(web, True, gate1=1, rfid1=2))
+    assert web._override_for(0, 1)["material"] == "PETG"
+
+
+def test_a_label_set_after_the_refill_survives_a_restart(web, monkeypatch):
+    _poll_twice(web, monkeypatch, _status(web, remember=True))     # emptied
+    web._parse_state(_status(web, True, gate1=1, rfid1=2))         # refill
+    assert web._override_for(0, 1) is None
+    web._slot_overrides["0_1"] = {"material": "ABS", "color": "00ff00"}
+    web._last_rfid_status.clear()                                  # restart
+    web._parse_state(_status(web, True, gate1=1, rfid1=2))
+    assert web._override_for(0, 1)["material"] == "ABS"
+
+
+def test_a_label_set_by_hand_while_empty_is_not_dropped_by_a_later_label(
+        web, monkeypatch):
+    _poll_twice(web, monkeypatch, _status(web, remember=True))     # emptied
+    import asyncio
+    req = web.SlotOverride(ace=0, slot=1, material="ABS", color="00ff00")
+    asyncio.run(web.set_slot_override(req))
+    web._parse_state(_status(web, True, gate1=1, rfid1=2))
+    assert web._override_for(0, 1)["material"] == "ABS"
+
+
+def test_with_remember_off_a_read_never_drops_a_label(web):
+    web._parse_state(_status(web, False, gate1=1, rfid1=2))
+    assert web._override_for(0, 1)["material"] == "PETG"
