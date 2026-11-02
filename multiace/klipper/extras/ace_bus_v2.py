@@ -278,6 +278,8 @@ class V2Bus(object):
         # handed to the host (a host id may reach any value, so no range).
         self._own_seqs = collections.deque(maxlen=64)
         self._last_scan = 0.0
+        self._next_reopen = 0.0     # earliest next try to open the cable
+        self._open_failures = 0     # failed opens in the current outage
         self.first_scan_done = threading.Event()
         self._thread = threading.Thread(
             target=self._run, name='multiACE-v2bus', daemon=True)
@@ -340,10 +342,17 @@ class V2Bus(object):
     # ---- bus thread ---------------------------------------------------------
     def _run(self):
         while not self._stop.is_set():
-            if not self.alive and not self._reopen():
-                self._wake.wait(REOPEN_S)
-                self._wake.clear()
-                continue
+            if not self.alive:
+                # Paced by the clock, not by wake-ups: open_unit() wakes the
+                # bus every 0.1 s while multiACE waits for a unit.
+                now = time.monotonic()
+                if now >= self._next_reopen and not self._reopen():
+                    self._next_reopen = now + REOPEN_S
+                if not self.alive:
+                    self._wake.wait(max(0.01, self._next_reopen
+                                        - time.monotonic()))
+                    self._wake.clear()
+                    continue
             try:
                 self._step()
             except Exception as e:
@@ -355,12 +364,20 @@ class V2Bus(object):
         try:
             self.ser = self._serial_factory(self.path)
         except Exception as e:
-            logging.info('[multiACE] v2 bus %s: cannot open (%s)', self.path, e)
+            if not self._open_failures:      # once per outage, not per try
+                logging.info('[multiACE] v2 bus %s: cannot open (%s) - '
+                             'retrying every %.0f s', self.path, e, REOPEN_S)
+            self._open_failures += 1
             return False
         self.alive = True
         self._rxbuf = bytearray()
         self._last_scan = 0.0
-        logging.info('[multiACE] v2 bus %s opened', self.path)
+        if self._open_failures:
+            logging.info('[multiACE] v2 bus %s opened again after %d failed '
+                         'tries', self.path, self._open_failures)
+        else:
+            logging.info('[multiACE] v2 bus %s opened', self.path)
+        self._open_failures = 0
         return True
 
     def _fail_bus(self):

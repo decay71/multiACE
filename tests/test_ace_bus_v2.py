@@ -323,6 +323,45 @@ class BusTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 port.read(1)
 
+    def test_unplugged_cable_is_retried_at_reopen_pace_and_logged_once(self):
+        # Found on hardware: while multiACE waited in open_unit() (which
+        # wakes the bus every 0.1 s), the bus retried the missing cable on
+        # every wake-up and logged each try - 100 lines in 6 s.
+        a, b = FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y')
+        chain = FakeChain(a, b)
+        state = {'plugged': True, 'opens': 0}
+        def factory(path):
+            state['opens'] += 1
+            if not state['plugged']:
+                raise OSError(errno.ENOENT, 'No such file or directory')
+            chain.fail = False
+            return chain
+        with mock.patch.object(B, 'REOPEN_S', 0.5):
+            bus = B.V2Bus('/dev/serial/by-path/fake-unplug',
+                          serial_factory=factory)
+            self.buses.append(bus)
+            self.assertTrue(self.wait_for(
+                lambda: len(bus.present_paths()) == 2))
+            with self.assertLogs(level='INFO') as logs:
+                state['plugged'] = False
+                chain.fail = True
+                self.assertTrue(self.wait_for(lambda: not bus.alive))
+                before = state['opens']
+                waiter = threading.Thread(
+                    target=lambda: _raises_eio(lambda: bus.open_unit(
+                        B.uid_hex(UID_A), wait=1.5)))
+                waiter.start()
+                time.sleep(1.5)
+                tries = state['opens'] - before
+                state['plugged'] = True
+                waiter.join()
+                self.assertTrue(self.wait_for(
+                    lambda: len(bus.present_paths()) == 2))
+        self.assertLessEqual(tries, 5)        # ~1.5 s / 0.5 s, not 15
+        cannot = [m for m in logs.output if 'cannot open' in m]
+        self.assertEqual(len(cannot), 1)
+        self.assertTrue(any('opened again' in m for m in logs.output))
+
     def test_discover_never_blocks_the_caller(self):
         # decay71 #189 point 1: discovery runs on the Klipper reactor, so
         # it must return at once even while a new bus is still enumerating.
