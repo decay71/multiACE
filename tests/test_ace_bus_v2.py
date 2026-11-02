@@ -22,6 +22,9 @@ from extras.ace_protocol_v2 import pb_decode, pb_uint32  # noqa: E402
 
 UID_A = (111111111, 222222, 333333333)
 UID_B = (444444444, 555555, 666666666)
+UID_C = (777777777, 888888, 999999999)
+UID_D = (121212121, 343434, 565656565)
+UID_E = (787878787, 909090, 101010101)
 
 FAST = dict(KEEPALIVE_S=0.2, REPLY_TIMEOUT_S=0.3, PROBE_TIMEOUT_S=0.1,
             DISCOVER_WAIT_S=0.05, RESCAN_S=0.5, LOST_PROBE_S=0.2,
@@ -333,6 +336,184 @@ class BusTest(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 0.05)
         self.assertTrue(self.wait_for(lambda: not B.first_scan_pending([cable])))
         self.assertEqual(len(B.discover_units([cable])), 2)
+
+
+
+class ManyUnitsAndCablesTest(unittest.TestCase):
+    """More than two units on one cable, and more than one cable."""
+
+    def setUp(self):
+        patcher = mock.patch.multiple(B, **FAST)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.buses = []
+
+    def tearDown(self):
+        for bus in self.buses:
+            bus.stop()
+
+    def make_bus(self, chain, cable='/dev/serial/by-path/fake-cable'):
+        bus = B.V2Bus(cable, serial_factory=lambda path: chain)
+        self.buses.append(bus)
+        return bus
+
+    def register_bus(self, chain, cable):
+        """A bus in the module registry, as discover_units() finds it."""
+        bus = B.bus_for(cable, serial_factory=lambda path: chain)
+        self.buses.append(bus)
+        self.addCleanup(B._buses.pop, cable, None)
+        return bus
+
+    def wait_for(self, pred, timeout=6.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def assert_routes(self, bus, uids, seq0):
+        """Each unit's port reaches that unit and no other."""
+        ports = {uid: bus.open_unit(B.uid_hex(uid)) for uid in uids}
+        for round_ in range(3):
+            for i, uid in enumerate(uids):
+                seq = seq0 + round_ * 10 + i
+                reply = ask(ports[uid], seq, B.CMD_DISCOVER)
+                self.assertIsNotNone(reply, 'no reply for %r' % (uid,))
+                self.assertEqual(B.uid_of(reply['payload']), uid)
+                self.assertEqual(reply['addr'], 0x80)
+        return ports
+
+    # ---- one cable, three and four units --------------------------------
+    def test_three_units_get_distinct_addresses_and_route(self):
+        units = [FakeUnit(u, 'x') for u in (UID_A, UID_B, UID_C)]
+        bus = self.make_bus(FakeChain(*units))
+        self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 3))
+        self.assertEqual(sorted(u.addr for u in units), [1, 2, 3])
+        self.assert_routes(bus, [UID_A, UID_B, UID_C], 600)
+
+    def test_four_units_fill_the_bus_and_a_fifth_is_ignored(self):
+        units = [FakeUnit(u, 'x')
+                 for u in (UID_A, UID_B, UID_C, UID_D, UID_E)]
+        bus = self.make_bus(FakeChain(*units))
+        self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 4))
+        time.sleep(B.RESCAN_S * 2)           # later scans change nothing
+        self.assertEqual(len(bus.present_paths()), 4)
+        addressed = sorted(u.addr for u in units if u.addr)
+        self.assertEqual(addressed, [1, 2, 3, 4])
+        ignored = [u for u in units if not u.addr]
+        self.assertEqual(len(ignored), 1)
+        known = [u.uid for u in units if u.addr]
+        self.assert_routes(bus, known, 700)
+
+    def test_four_units_keep_their_addresses_while_idle(self):
+        units = [FakeUnit(u, 'x') for u in (UID_A, UID_B, UID_C, UID_D)]
+        bus = self.make_bus(FakeChain(*units))
+        self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 4))
+        addrs = [u.addr for u in units]
+        time.sleep(EXPIRY * 3)
+        self.assertEqual([u.addr for u in units], addrs)
+        self.assertEqual(len(bus.present_paths()), 4)
+
+    def test_middle_unit_off_leaves_the_others_working(self):
+        a, b, c = (FakeUnit(u, 'x') for u in (UID_A, UID_B, UID_C))
+        bus = self.make_bus(FakeChain(a, b, c))
+        self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 3))
+        ports = self.assert_routes(bus, [UID_A, UID_B, UID_C], 800)
+        b.powered = False
+        self.assertTrue(self.wait_for(
+            lambda: _raises_eio(lambda: ports[UID_B].read(1))))
+        for i, uid in enumerate((UID_A, UID_C)):
+            reply = ask(ports[uid], 850 + i, B.CMD_DISCOVER)
+            self.assertEqual(B.uid_of(reply['payload']), uid)
+        self.assertEqual(len(bus.present_paths()), 2)
+        b.powered = True
+        b.reboot()                           # a power cycle loses the address
+        self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 3))
+        self.assertEqual(sorted(u.addr for u in (a, b, c)), [1, 2, 3])
+        self.assert_routes(bus, [UID_A, UID_B, UID_C], 870)
+
+    def test_two_units_drop_to_address_0_together(self):
+        # The hardware case with more units: one unit unpowered, the others
+        # fall back to address 0. Both get their address back by uid.
+        units = [FakeUnit(u, 'x') for u in (UID_A, UID_B, UID_C)]
+        bus = self.make_bus(FakeChain(*units))
+        self.assertTrue(self.wait_for(lambda: len(bus.present_paths()) == 3))
+        before = {u.uid: u.addr for u in units}
+        units[0].reboot()
+        units[2].reboot()
+        self.assertTrue(self.wait_for(
+            lambda: {u.uid: u.addr for u in units} == before))
+        self.assertEqual(len(bus.present_paths()), 3)
+        self.assert_routes(bus, [UID_A, UID_B, UID_C], 900)
+
+    # ---- two cables -----------------------------------------------------
+    def test_two_cables_are_separate_buses(self):
+        cable1 = '/dev/serial/by-path/fake-usb-1'
+        cable2 = '/dev/serial/by-path/fake-usb-2'
+        a, b = FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y')
+        c, d = FakeUnit(UID_C, 'x'), FakeUnit(UID_D, 'y')
+        bus1 = self.register_bus(FakeChain(a, b), cable1)
+        bus2 = self.register_bus(FakeChain(c, d), cable2)
+        self.assertTrue(self.wait_for(
+            lambda: len(B.discover_units([cable1, cable2])) == 4))
+        paths = B.discover_units([cable1, cable2])
+        self.assertEqual(sorted(p.rpartition(B.SEP)[0] for p in paths),
+                         [cable1, cable1, cable2, cable2])
+        # addresses are per cable: each bus numbers its own units from 1
+        self.assertEqual(sorted((a.addr, b.addr)), [1, 2])
+        self.assertEqual(sorted((c.addr, d.addr)), [1, 2])
+        for path in paths:
+            uid_hex = B.split_path(path)[1]
+            port = B.open_unit(path)
+            reply = ask(port, 1000 + paths.index(path), B.CMD_DISCOVER)
+            self.assertEqual(B.uid_hex(B.uid_of(reply['payload'])), uid_hex)
+        self.assertIsNot(bus1, bus2)
+
+    def test_cable_failure_stays_on_its_cable(self):
+        cable1 = '/dev/serial/by-path/fake-usb-1'
+        cable2 = '/dev/serial/by-path/fake-usb-2'
+        chain1 = FakeChain(FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y'))
+        chain2 = FakeChain(FakeUnit(UID_C, 'x'), FakeUnit(UID_D, 'y'))
+        bus1 = self.register_bus(chain1, cable1)
+        bus2 = self.register_bus(chain2, cable2)
+        self.assertTrue(self.wait_for(
+            lambda: len(B.discover_units([cable1, cable2])) == 4))
+        p1 = [bus1.open_unit(B.uid_hex(u)) for u in (UID_A, UID_B)]
+        p2 = self.assert_routes(bus2, [UID_C, UID_D], 1100)
+        chain1.fail = True
+        self.assertTrue(self.wait_for(lambda: not bus1.alive))
+        for port in p1:
+            self.assertTrue(_raises_eio(lambda: port.read(1)))
+        # the other cable does not notice
+        for i, uid in enumerate((UID_C, UID_D)):
+            reply = ask(p2[uid], 1150 + i, B.CMD_DISCOVER)
+            self.assertEqual(B.uid_of(reply['payload']), uid)
+        self.assertEqual(len(B.discover_units([cable2])), 2)
+        # and the failed cable comes back on its own
+        chain1.fail = False
+        self.assertTrue(self.wait_for(
+            lambda: len(B.discover_units([cable1])) == 2))
+
+    def test_unit_lost_on_one_cable_only(self):
+        cable1 = '/dev/serial/by-path/fake-usb-1'
+        cable2 = '/dev/serial/by-path/fake-usb-2'
+        a, b = FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y')
+        c, d = FakeUnit(UID_C, 'x'), FakeUnit(UID_D, 'y')
+        bus1 = self.register_bus(FakeChain(a, b), cable1)
+        self.register_bus(FakeChain(c, d), cable2)
+        self.assertTrue(self.wait_for(
+            lambda: len(B.discover_units([cable1, cable2])) == 4))
+        b.powered = False
+        self.assertTrue(self.wait_for(
+            lambda: len(B.discover_units([cable1])) == 1))
+        self.assertEqual(len(B.discover_units([cable2])), 2)
+        self.assertFalse(B.unit_present(
+            bus1.virtual_path(bus1.unit_for(B.uid_hex(UID_B)))))
+        b.powered = True
+        b.reboot()
+        self.assertTrue(self.wait_for(
+            lambda: len(B.discover_units([cable1, cable2])) == 4))
 
 
 def _raises_eio(fn):
