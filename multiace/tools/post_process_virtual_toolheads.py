@@ -1623,7 +1623,8 @@ BG_INITIAL_LOAD = True
 # auto-load block.
 # 6: stamped ACE_BG_WAIT arrival holds before toolchanges.
 # 7: flush_multiplier applied in both directions to the purge stamps.
-PP_FORMAT_VERSION = 7
+# 8: ACE_BG_SWAP LOAD=transport on short parked windows.
+PP_FORMAT_VERSION = 8
 
 # Written by both rewrites right after the pre-body tool select. A one-colour
 # export has no tool change in the body (Orca writes no change_filament_gcode

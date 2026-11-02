@@ -104,6 +104,23 @@ class TestPushShortened(object):
         assert BG.COLD_PULL_SOFT[0][0] > 0
 
 
+def test_the_speed_knobs_ship_off():
+    """The faster prime and the early pull start change what the hardware
+    does: they stay opt-in until they have run on a printer."""
+    assert BG.BG_PULL_EARLY_START_C == 0
+    assert BG.BG_LOAD_PRIME_SPEED_DEFAULT == BG.BG_LOAD_PRIME_SPEED == 4.
+
+
+def test_chaining_alone_is_already_shorter_than_the_old_engine():
+    """The shipped defaults still chain the moves (no settle gap per move,
+    no fixed pause per retract): the old engine takes 131 s in the
+    calibrated simulation, this ~108 s; with both opt-ins ~96 s."""
+    off = _simulate()
+    fast = _simulate(**FAST)
+    assert off[3] < 112
+    assert fast[3] < off[3] - 10
+
+
 # -- chained moves --------------------------------------------------------
 
 class Engine(object):
@@ -141,7 +158,7 @@ def test_prime_time_for_a_142mm_prime():
     chunks = 142 / BG.BG_LOAD_PRIME_CHUNK
     old = 142 / BG.BG_LOAD_PRIME_SPEED + chunks * (
         BG.MOVE_SETTLE + BG.SCHEDULE_DELAY + BG.SCHEDULE_EPS)
-    new = 142 / BG.BG_LOAD_PRIME_SPEED_DEFAULT + chunks * BG.SCHEDULE_EPS \
+    new = 142 / FAST['prime_speed'] + chunks * BG.SCHEDULE_EPS \
         + BG.MOVE_SETTLE
     assert old > 50 and new < 28
 
@@ -337,6 +354,11 @@ def _stamps(pp, tmp_path, window_min):
             if l.startswith('ACE_BG_SWAP')]
 
 
+def test_the_stamp_format_is_versioned(pp):
+    # 7: ACE_BG_SWAP LOAD=transport on short windows
+    assert pp.PP_FORMAT_VERSION >= 8
+
+
 def test_a_long_window_stamps_the_full_load(pp, tmp_path):
     lines = _stamps(pp, tmp_path, 5)
     assert len(lines) == 1
@@ -374,6 +396,9 @@ class _Heater(object):
         return self._cur(), self.target_temp
 
 
+FAST = dict(prime_speed=6., early=10.)     # the opt-in speed settings
+
+
 def _simulate(soft=False, **knobs):
     """Run the real _unload_core + _load_core of one swap on stubs: ACE
     calls cost 0.2 s, the stealth moves are timed like queue_move does.
@@ -398,8 +423,8 @@ def _simulate(soft=False, **knobs):
     bg.state, bg._busy, bg._pick_pending = {}, set([1]), set()
     bg._heat_claims, bg._heat_start_time, bg._pull_start_time = {}, {}, {}
     bg._last_end = {}
-    bg.prime_speed = knobs.get('prime_speed', 6.)
-    bg.pull_early_start = knobs.get('early', 10.)
+    bg.prime_speed = knobs.get('prime_speed', BG.BG_LOAD_PRIME_SPEED_DEFAULT)
+    bg.pull_early_start = knobs.get('early', BG.BG_PULL_EARLY_START_C)
     bg.pull_push = knobs.get('push', 0.)
     bg.gcode = types.SimpleNamespace(respond_raw=lambda m: None)
     bg.printer = types.SimpleNamespace(
@@ -456,7 +481,7 @@ def _simulate(soft=False, **knobs):
 def test_the_whole_swap_is_much_shorter_than_the_measured_one():
     # klippy.log, 12:20 swap: 146 s queued -> primed on the printer. The
     # same stubs run the OLD engine in ~120 s (20 s of it prime gaps).
-    bg, ev, marks, total, _ = _simulate()
+    bg, ev, marks, total, _ = _simulate(**FAST)
     assert total < 100
     primes = [e for e in ev if e[1] == 'MOVE +5.0']
     assert len(primes) == 24                       # 80 + 40 mm in 5 mm chunks
@@ -465,7 +490,7 @@ def test_the_whole_swap_is_much_shorter_than_the_measured_one():
 
 
 def test_the_pull_starts_before_the_heater_is_at_target():
-    bg, ev, marks, total, _ = _simulate()
+    bg, ev, marks, total, _ = _simulate(**FAST)
     first_move = next(t for t, e in ev if e.startswith('MOVE'))
     late = _simulate(early=0.)[1]
     late_move = next(t for t, e in late if e.startswith('MOVE'))
@@ -477,14 +502,14 @@ def test_the_pull_starts_before_the_heater_is_at_target():
 
 
 def test_the_soft_table_does_not_start_early():
-    bg, ev, marks, total, _ = _simulate(soft=True)
+    bg, ev, marks, total, _ = _simulate(soft=True, early=10.)
     first_move = next(t for t, e in ev if e.startswith('MOVE'))
     off = _simulate(soft=True, early=0.)[1]
     assert first_move == next(t for t, e in off if e.startswith('MOVE'))
 
 
 def test_early_start_can_be_switched_off():
-    on = next(t for t, e in _simulate()[1] if e.startswith('MOVE'))
+    on = next(t for t, e in _simulate(early=10.)[1] if e.startswith('MOVE'))
     off = next(t for t, e in _simulate(early=0.)[1] if e.startswith('MOVE'))
     assert off > on
 
@@ -510,7 +535,7 @@ def test_the_push_is_the_only_forward_motion_before_the_retracts():
 
 
 def test_soft_filament_primes_at_the_slow_speed():
-    fast = _simulate()
-    soft = _simulate(soft=True)
+    fast = _simulate(prime_speed=6.)
+    soft = _simulate(soft=True, prime_speed=6.)
     prime = lambda r: r[3] - r[2]['LD_PRIME']
     assert prime(soft) - prime(fast) > 8           # 120 mm at 4 instead of 6

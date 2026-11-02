@@ -83,10 +83,11 @@ BG_CAP_FALLBACK_V2 = ('has_slot_status_truth', 'no_freewheel',
 BG_LOAD_PRESS_RETRIES = 3
 BG_LOAD_PRESS_RETRY_DELAY = 2.0   # s between attempts (motor wind-down)
 BG_LOAD_PRIME_SPEED = 4.     # mm/s (prime falls through the open dock)
-# Default prime speed ([ace_bg_swap] prime_speed). 6 mm/s is ~14 mm^3/s of
-# 1.75 filament - inside what the hotend melts at the bg load temp for the
-# rigid materials; soft filament keeps the slow BG_LOAD_PRIME_SPEED.
-BG_LOAD_PRIME_SPEED_DEFAULT = 6.
+# Default prime speed ([ace_bg_swap] prime_speed): the old 4 mm/s - the
+# faster prime ships OFF until it has run on hardware. 6 mm/s (~14 mm^3/s of
+# 1.75 filament) saves ~12 s per swap; soft filament always keeps the slow
+# BG_LOAD_PRIME_SPEED.
+BG_LOAD_PRIME_SPEED_DEFAULT = BG_LOAD_PRIME_SPEED
 # Back-to-back stealth moves: the next one is queued this long BEFORE the
 # current one ends (must exceed SCHEDULE_DELAY + SCHEDULE_EPS, so it chains
 # on the previous end instead of on "now"). Replaces the per-move wait that
@@ -96,8 +97,9 @@ BG_CHAIN_LEAD = 0.35
 # The cold-pull may start this many degrees below its target: the push that
 # opens the table is slow (400 mm/min) and the nozzle is already melt-warm
 # (it printed a moment ago), the last degrees are reached during the push.
-# [ace_bg_swap] pull_early_start; 0 = wait for the full target as before.
-BG_PULL_EARLY_START_C = 10.
+# [ace_bg_swap] pull_early_start; 0 = wait for the full target as before,
+# which is the default until this has run on hardware (10 saves ~2.5 s).
+BG_PULL_EARLY_START_C = 0.
 BG_PULL_HEAT_RATE_MIN = 2.0     # C/s, conservative (measured ~2.5)
 # Deferred ACE_BG_SWAP requests (a QUIET stamp that finds another bg op
 # running is held and started when it ends instead of being dropped).
