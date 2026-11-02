@@ -2386,7 +2386,10 @@ body:has(.panel) .overlay .dialog {
   border-radius: 50%; border: 1px solid rgba(128,128,128,.5); }
 .queue-warn { color: #e6a700; margin: 0; }
 .queue-changes { margin: 0; padding-left: 1.1rem; }
-.queue-actions { display: flex; gap: .5rem; align-items: flex-start; }
+.queue-actions { display: flex; gap: .5rem; align-items: flex-start; flex-wrap: wrap; }
+.queue-eta { margin: 0; }
+.queue-preview-thumb { float: right; width: 96px; height: 96px; object-fit: cover;
+                       border-radius: 6px; margin: 0 0 .5rem .75rem; }
 
 
 /* Slicer preview from the gcode header, next to the preflight prefs */

@@ -188,6 +188,57 @@ class TestQueueApi:
         assert "queue" in c.get("/api/queue").json()
 
 
+class TestQueueEstimate:
+    """The estimate and swap count the preflight showed are kept with the
+    queued file, so the Queue tab can show them without opening it."""
+
+    def _post(self, c, **extra):
+        return c.post("/api/queue", json={
+            "filename": "a.gcode", "path": "multiace_queue/x_a.gcode",
+            "mode": "slicer", "used_slots": [[0, 0]], **extra})
+
+    def test_the_estimate_is_stored_and_listed(self, q):
+        _, c, _ = q
+        r = self._post(c, estimate={"total_s": 7260.4, "base_s": 6000},
+                       swaps=12)
+        assert r.json()["entry"]["estimate"] == {
+            "total_s": 7260.4, "base_s": 6000.0, "swaps": 12}
+        listed = c.get("/api/queue").json()["queue"][0]
+        assert listed["estimate"]["total_s"] == 7260.4
+
+    def test_an_older_client_without_it_still_queues(self, q):
+        _, c, _ = q
+        r = self._post(c)
+        assert r.status_code == 200
+        assert "estimate" not in r.json()["entry"]
+
+    @pytest.mark.parametrize("bad", [
+        {"total_s": "soon"}, {"total_s": -5}, {"total_s": 0},
+        {"total_s": True}, {"total_s": 1e12}, {"base_s": 100}, "text", [1]])
+    def test_junk_is_dropped_not_stored(self, q, bad):
+        _, c, _ = q
+        r = self._post(c, estimate=bad)
+        assert r.status_code == 200
+        assert "estimate" not in r.json()["entry"]
+
+    def test_base_without_a_total_is_dropped(self, q):
+        main, _, _ = q
+        assert main._queue_snapshot({"base_s": 100}, None) is None
+
+    def test_the_swap_count_alone_is_kept(self, q):
+        main, _, _ = q
+        assert main._queue_snapshot(None, 4) == {"swaps": 4}
+        assert main._queue_snapshot(None, -1) is None
+        assert main._queue_snapshot(None, True) is None
+
+    def test_listing_never_changes_the_queue(self, q):
+        _, c, _ = q
+        self._post(c, estimate={"total_s": 100}, swaps=1)
+        first = c.get("/api/queue").json()
+        again = c.get("/api/queue").json()
+        assert first == again and len(again["queue"]) == 1
+
+
 class TestUsedAceSlotsFile:
     def _slots(self, tmp_path, text):
         from multiace.web.backend import preflight_core as pc

@@ -8426,6 +8426,23 @@ createApp({
       if (preflight.report.head_mode) startPreflightPrint("head", p, !!queue);
       else startPreflightPrint(p, undefined, !!queue);
     }
+    // What the preview said about this file, kept with it when it is queued
+    // so the Queue tab can show the estimate and swap count without opening
+    // the file (the original is not kept, so it cannot be re-estimated).
+    function queueSnapshot(mode, headPlan) {
+      try {
+        const p = mode === "head" ? (headPlan || "loadout") : mode;
+        const out = {};
+        const est = pfEst(p);
+        if (est && Number(est.total_s) > 0) {
+          out.estimate = {total_s: Number(est.total_s),
+                          base_s: est.base_s == null ? null : Number(est.base_s)};
+        }
+        const sw = Number(pfPlanSwaps(p));
+        if (Number.isFinite(sw)) out.swaps = sw;
+        return out;
+      } catch (_) { return {}; }
+    }
     // queue=true stages the rewritten file in the print queue instead of
     // starting it (see the Queue tab).
     async function startPreflightPrint(mode, headPlan, queue) {
@@ -8526,7 +8543,8 @@ createApp({
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({filename: baseName,
                                   path: QUEUE_DIR + "/" + stagedName, mode,
-                                  used_slots: j.usedSlots || []}),
+                                  used_slots: j.usedSlots || [],
+                                  ...queueSnapshot(mode, headPlan)}),
           });
           if (!qr.ok) {
             const qj = await qr.json().catch(() => ({}));
@@ -8567,6 +8585,7 @@ createApp({
         const body = {token: rep.token, mode,
                       bed_mesh: !!preflight.bedMesh, camera: !!preflight.camera,
                       flow_cal: !!preflight.flowCal, queue: !!queue};
+        if (queue) Object.assign(body, queueSnapshot(mode, headPlan));
         if (mode === "slicer") {
           // Send the (possibly user-edited) slot assignment verbatim so the
           // print matches the preview exactly. Only entries differing from
@@ -9589,6 +9608,59 @@ createApp({
       const h = String(c || "").replace(/^#/, "");
       return h ? "#" + h : "#666";
     }
+    // Total estimated print time of a queued file, "" for one queued before
+    // the estimate was kept with it. A model estimate, like every other one.
+    function queueEta(it) {
+      const e = it && it.estimate;
+      return e && Number(e.total_s) > 0 ? fmtDuration(Number(e.total_s)) : "";
+    }
+    // Read-only look at a queued file: what the preflight said when it was
+    // queued plus the loadout it needs against what is loaded now. Works
+    // while a print runs, never starts or removes anything, and can be
+    // opened as often as wanted.
+    function previewQueued(item) {
+      if (!item) return;
+      const e = item.estimate;
+      const h = [];
+      if (item.path) {
+        h.push(`<img class="queue-preview-thumb" alt="" src="${escapeHtml(thumbUrl(item.path))}"` +
+               ` onerror="this.style.display='none'">`);
+      }
+      h.push(`<p><b>${escapeHtml(item.filename)}</b><br>` +
+             `<span class="muted small">${escapeHtml(t("ui.printqueue.staged_at",
+               {time: new Date((item.ts || 0) * 1000).toLocaleString()}))}</span></p>`);
+      if (e && Number(e.total_s) > 0) {
+        let line = `<b>${escapeHtml(fmtDuration(Number(e.total_s)))}</b>`;
+        if (Number(e.base_s) > 0 && Number(e.total_s) >= Number(e.base_s)) {
+          line += ` <span class="muted small">(${escapeHtml(t("ui.printqueue.preview_split", {
+            base: fmtDuration(Number(e.base_s)),
+            added: fmtDuration(Number(e.total_s) - Number(e.base_s))}))})</span>`;
+        }
+        h.push(`<p>${escapeHtml(t("ui.printqueue.preview_eta"))}: ${line}</p>`);
+      } else {
+        h.push(`<p class="muted small">${escapeHtml(t("ui.printqueue.preview_no_estimate"))}</p>`);
+      }
+      if (e && Number.isFinite(Number(e.swaps))) {
+        h.push(`<p>${escapeHtml(t("ui.printqueue.preview_swaps"))}: <b>${Number(e.swaps)}</b></p>`);
+      }
+      const changed = {};
+      for (const ch of (item.changes || [])) changed[ch.ace + "-" + ch.slot] = ch;
+      const rows = (item.slots || []).map(sl => {
+        const ch = changed[sl.ace + "-" + sl.slot];
+        const state = ch
+          ? `<span class="queue-warn small">${escapeHtml(queueChangeText(ch))}</span>`
+          : `<span class="ok small">${escapeHtml(t("ui.printqueue.preview_match"))}</span>`;
+        return `<li><span class="swatch" style="background:${escapeHtml(queueColor(sl.color))}"></span> ` +
+               `${escapeHtml(queueSlotLabel(sl))} · ${escapeHtml(sl.material || "?")} ${ch ? "" : state}` +
+               `${ch ? "<br>" + state : ""}</li>`;
+      });
+      h.push(`<p class="muted small">${escapeHtml(t("ui.printqueue.preview_loadout"))}</p>` +
+             (rows.length ? `<ul class="reprint-loadout">${rows.join("")}</ul>`
+                          : `<p class="muted small">${escapeHtml(t("ui.printqueue.preview_no_slots"))}</p>`));
+      h.push(`<p class="muted small">${escapeHtml(t("ui.printqueue.preview_note"))}</p>`);
+      confirm({title: t("ui.printqueue.preview_title"), message: h.join(""),
+               dismissOnly: true, okLabel: t("ui.common.ok"), onOk: () => {}});
+    }
     function queueChangeText(ch) {
       const fmt = (x) => x ? `${x.material || "?"} #${x.color || "?"}` : t("ui.printqueue.slot_empty");
       return `${queueSlotLabel(ch)}: ${fmt(ch.expected)} → ${fmt(ch.now)}`;
@@ -9661,7 +9733,7 @@ createApp({
       gpreviewSetLayerHi, gpreviewPreset, gpreviewIsolate, gpreviewToggleMax,
       gpreviewTogglePlay,
       thumbUrl, hideBrokenThumb, isFavorite, toggleFavorite, favKey, favoriteCards, loadFavoritesTab,
-      pq, loadQueue, launchQueued, removeQueued, queueSlotLabel, queueColor, queueChangeText,
+      pq, loadQueue, launchQueued, removeQueued, previewQueued, queueEta, queueSlotLabel, queueColor, queueChangeText,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,

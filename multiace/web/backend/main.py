@@ -1565,7 +1565,8 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                                   head_plan: str = "loadout",
                                   flow_cal: bool = False,
                                   head_copies: dict | None = None,
-                                  queue: bool = False) -> None:
+                                  queue: bool = False,
+                                  queue_snapshot: dict | None = None) -> None:
     state = _PREFLIGHT_JOBS[job_id]
     pp = _load_post_processor()
     src = _PREFLIGHT_DIR / (token + ".gcode")
@@ -1658,7 +1659,7 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                 preflight_core.used_ace_slots_file, str(cur))
             try:
                 await _queue_enqueue(safe_name, f"{_QUEUE_DIR}/{upload_name}",
-                                     mode, used_slots)
+                                     mode, used_slots, queue_snapshot)
             except HTTPException as e:
                 raise RuntimeError(str(e.detail))
 
@@ -1706,6 +1707,10 @@ class _PreflightPrint(BaseModel):
     # head choice matches the previewed swap count. None (older frontend)
     # -> the pipeline detects them from the loaded slots itself.
     head_copies: dict[str, list[str]] | None = None
+    # The estimate the preview showed, kept with a queued file (see
+    # _queue_snapshot). Ignored unless queue is set.
+    estimate: Any = None
+    swaps: Any = None
     # Stage the rewritten file in the print queue instead of starting it.
     queue: bool = False
 
@@ -1740,7 +1745,8 @@ async def preflight_print(req: _PreflightPrint) -> dict:
     asyncio.create_task(_run_preflight_pipeline(
         job_id, req.token, req.mode, safe_name, req.bed_mesh, req.camera,
         req.remap, req.head_assignment, head_plan, req.flow_cal,
-        req.head_copies, req.queue))
+        req.head_copies, req.queue,
+        _queue_snapshot(req.estimate, req.swaps) if req.queue else None))
     return {"job_id": job_id, "filename": safe_name, "mode": req.mode}
 
 @app.get("/api/preflight/print/status")
@@ -6734,6 +6740,28 @@ class _QueueAdd(BaseModel):
     # [ace, slot] pairs the rewritten file swaps in (the ACE= / SLOT= of its
     # swap lines). None snapshots every identified slot.
     used_slots: list[list[int]] | None = None
+    # The preflight's estimate and swap count for this file, so the Queue tab
+    # can show them without the file being opened (see _queue_snapshot).
+    estimate: Any = None
+    swaps: Any = None
+
+
+def _queue_snapshot(estimate, swaps) -> dict | None:
+    """What the preflight said about a file when it was queued: the
+    estimated total and base seconds and the swap count. Sanitised, since it
+    comes from the browser; None when there is nothing usable (an older
+    client, or a file the model could not estimate)."""
+    out: dict = {}
+    if isinstance(estimate, dict):
+        for k in ("total_s", "base_s"):
+            v = estimate.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool)                     and 0 < v < 10_000_000:
+                out[k] = round(float(v), 1)
+    if "total_s" not in out:
+        out.pop("base_s", None)
+    if isinstance(swaps, int) and not isinstance(swaps, bool)             and 0 <= swaps < 100_000:
+        out["swaps"] = swaps
+    return out or None
 
 
 def _queue_path_ok(path: str) -> bool:
@@ -6742,23 +6770,28 @@ def _queue_path_ok(path: str) -> bool:
 
 
 def _queue_entry(filename: str, path: str, mode: str,
-                 used_slots: list[list[int]] | None, live: list[dict]) -> dict:
+                 used_slots: list[list[int]] | None, live: list[dict],
+                 snapshot: dict | None = None) -> dict:
     """A queue record with the identity of the slots the file uses."""
     if used_slots is None:
         used = list(live)
     else:
         want = {(int(p[0]), int(p[1])) for p in used_slots if len(p) == 2}
         used = [s for s in live if (s["ace"], s["slot"]) in want]
-    return {"id": uuid.uuid4().hex[:12], "filename": filename, "path": path,
-            "mode": mode, "ts": time.time(),
-            "slots": [{k: s[k] for k in ("ace", "slot", "material", "color")}
-                      for s in used]}
+    entry = {"id": uuid.uuid4().hex[:12], "filename": filename, "path": path,
+             "mode": mode, "ts": time.time(),
+             "slots": [{k: s[k] for k in ("ace", "slot", "material", "color")}
+                       for s in used]}
+    if snapshot:
+        entry["estimate"] = snapshot
+    return entry
 
 
 async def _queue_enqueue(filename: str, path: str, mode: str,
-                         used_slots: list[list[int]] | None) -> dict:
+                         used_slots: list[list[int]] | None,
+                         snapshot: dict | None = None) -> dict:
     entry = _queue_entry(filename, path, mode, used_slots,
-                         await _live_slots_async())
+                         await _live_slots_async(), snapshot)
     if not _require_history().add_queue_entry(MULTIACE_DATA_DIR, entry):
         await _queue_delete_file(path)
         raise HTTPException(status_code=409,
@@ -6809,10 +6842,13 @@ async def queue_add(request: Request, req: _QueueAdd) -> dict:
         raise HTTPException(status_code=400, detail="invalid queue path")
     if _mock_enabled(request):
         entry = _queue_entry(req.filename, req.path, req.mode, req.used_slots,
-                             await _live_slots_async())
+                             await _live_slots_async(),
+                             _queue_snapshot(req.estimate, req.swaps))
         _mock_queue.append(entry)
         return {"ok": True, "entry": entry, "mock": True}
-    entry = await _queue_enqueue(req.filename, req.path, req.mode, req.used_slots)
+    entry = await _queue_enqueue(req.filename, req.path, req.mode,
+                                 req.used_slots,
+                                 _queue_snapshot(req.estimate, req.swaps))
     return {"ok": True, "entry": entry}
 
 

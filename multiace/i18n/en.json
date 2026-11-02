@@ -1055,7 +1055,20 @@
       "remove": "Remove",
       "remove_title": "Remove from queue?",
       "remove_msg": "The prepared file is deleted from the printer.",
-      "busy": "A print is running."
+      "busy": "A print is running.",
+      "preview": "Preview",
+      "preview_hint": "Look at this file without starting it. Works while a print runs and leaves the queue untouched.",
+      "preview_title": "Queued print",
+      "preview_eta": "Estimated print time",
+      "preview_split": "{base} of printing + {added} of swaps",
+      "preview_no_estimate": "No estimate was saved for this file (it was queued before the queue kept one).",
+      "preview_swaps": "Swaps",
+      "preview_loadout": "Spools this file needs:",
+      "preview_match": "loaded",
+      "preview_no_slots": "No slots recorded.",
+      "preview_note": "Read-only: nothing starts and the file stays in the queue.",
+      "eta_hint": "Estimated total print time including swaps, as the preflight showed it when the file was queued. A model estimate, not a measurement.",
+      "swaps": "{n} swaps"
     },
     "history": {
       "title": "Print history",

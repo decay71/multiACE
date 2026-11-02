@@ -1056,7 +1056,20 @@
       "remove": "Entfernen",
       "remove_title": "Aus Warteschlange entfernen?",
       "remove_msg": "Die vorbereitete Datei wird vom Drucker gelöscht.",
-      "busy": "Ein Druck läuft."
+      "busy": "Ein Druck läuft.",
+      "preview": "Vorschau",
+      "preview_hint": "Diese Datei ansehen, ohne sie zu starten. Geht auch während eines Drucks und lässt die Warteschlange unverändert.",
+      "preview_title": "Eingereihter Druck",
+      "preview_eta": "Geschätzte Druckzeit",
+      "preview_split": "{base} Druck + {added} Wechsel",
+      "preview_no_estimate": "Für diese Datei wurde keine Schätzung gespeichert (sie kam in die Warteschlange, bevor diese eine mitgespeichert hat).",
+      "preview_swaps": "Wechsel",
+      "preview_loadout": "Spulen, die diese Datei braucht:",
+      "preview_match": "eingelegt",
+      "preview_no_slots": "Keine Slots gespeichert.",
+      "preview_note": "Nur ansehen: nichts startet und die Datei bleibt in der Warteschlange.",
+      "eta_hint": "Geschätzte Gesamtdruckzeit inklusive Wechsel, wie der Preflight sie beim Einreihen gezeigt hat. Eine Modellschätzung, keine Messung.",
+      "swaps": "{n} Wechsel"
     },
     "history": {
       "title": "Druckverlauf",
