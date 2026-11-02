@@ -6053,6 +6053,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     # nothing is written to flash while the print runs and nothing in the
     # swap path knows about history. Every method here swallows its own
     # errors: history is never worth disturbing Klipper over.
+    #
+    # A head only reaches the record if it PRINTED. Loads and the two
+    # snapshots see every head that holds a source, and the U1 does not
+    # unload at print end, so a head left loaded from an earlier print would
+    # otherwise show up in every record after it. Printing is the extruder
+    # activations of the job (_job_note_active); the head that was already
+    # active when the print started leaves no activation, so it counts when
+    # it extruded before the first switch (or the whole print had none).
+
+    # Filament a print must have pulled before its first tool switch for the
+    # head that was active at the start to count as having printed.
+    _JOB_START_HEAD_MIN_MM = 20.0
 
     def _new_head_source(self):
         m = _HeadSourceMap({0: None, 1: None, 2: None, 3: None})
@@ -6074,6 +6086,47 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if (ace, slot) not in seen or (seen[(ace, slot)] is None and color):
             seen[(ace, slot)] = color
 
+    def _job_active_head(self):
+        try:
+            ext = self.toolhead.get_extruder()
+            head = getattr(ext, 'extruder_index',
+                           getattr(ext, 'extruder_num', None))
+            return None if head is None else int(head)
+        except Exception:
+            return None
+
+    def _job_filament_mm(self):
+        try:
+            ps = self.printer.lookup_object('print_stats', None)
+            if ps is None:
+                return 0.0
+            status = ps.get_status(self.reactor.monotonic())
+            return float(status.get('filament_used') or 0.0)
+        except Exception:
+            return 0.0
+
+    def _job_credit_start_head(self, job, min_mm):
+        head = job.get('start_head')
+        if head is not None and self._job_filament_mm() > min_mm:
+            job['printed'].add(head)
+
+    def _job_note_active(self):
+        """An extruder was activated: the head that is active now prints."""
+        try:
+            job = self._job
+            if job is None or 'printed' not in job:
+                return
+            head = self._job_active_head()
+            if head is None:
+                return
+            if not job['switched']:
+                job['switched'] = True
+                self._job_credit_start_head(job, self._JOB_START_HEAD_MIN_MM)
+            job['printed'].add(head)
+        except Exception as e:
+            logging.info('[multiACE] history activation failed (ignored): %s'
+                         % e)
+
     def _job_snapshot_sources(self):
         try:
             if self._job is None:
@@ -6094,7 +6147,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             if self._job is not None and self._job['filename'] == filename:
                 return
             self._job = {'filename': filename, 'start_time': time.time(),
-                         'loadout': {}}
+                         'loadout': {}, 'printed': set(), 'switched': False,
+                         'start_head': self._job_active_head()}
         except Exception as e:
             self._job = None
             logging.info('[multiACE] history start failed (ignored): %s' % e)
@@ -6105,6 +6159,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             if job is None:
                 return
             self._job_snapshot_sources()
+            if 'printed' in job and not job['switched']:
+                # Never switched tools: the head active at the start printed
+                # the whole job, if it printed at all.
+                self._job_credit_start_head(job, 0.0)
             self._job = None
             # print_stats flips its state around the stop event; read the
             # final state a moment later rather than race it.
@@ -6143,7 +6201,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             result = {'complete': 'completed', 'cancelled': 'cancelled',
                       'error': 'error'}.get(state, 'unknown')
             assignment = {}
+            printed = job.get('printed')
             for head, seen in sorted(job['loadout'].items()):
+                if printed is not None and head not in printed:
+                    continue  # loaded, never extruded
                 assignment[str(head)] = [
                     {'ace_index': a, 'slot': sl, 'color': c}
                     for (a, sl), c in sorted(seen.items())]
@@ -17502,6 +17563,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         return True
 
     def _on_extruder_change(self):
+        self._job_note_active()
         self._fa_trace('_on_extruder_change fired; gate=%s context=%s active_ace=%d'
                        % (self._auto_feed_enabled, self._fa_context, self._active_device_index))
         if not any(self._head_source[h] for h in range(4)):
