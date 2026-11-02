@@ -1437,14 +1437,29 @@ def _model_cost(cost_model, kind, ace=None, slot=None):
                  else BG_SWAP_COST_INLINE_S)
 
 
-def _model_bg_cost(cost_model, ace, slot, window_min):
+def _lower_load_mode(configured, requested):
+    """The lighter of two background load modes ('full' > 'transport' >
+    'none'): a stamp's LOAD= may only lower the configured one."""
+    rank = {'none': 0, 'transport': 1, 'full': 2}
+    return min(configured, requested, key=lambda m: rank.get(m, 2))
+
+
+def _model_bg_cost(cost_model, ace, slot, window_min, load_mode='full'):
     """Seconds a background swap leaves on the critical path given its
     parked window: the handover, plus whatever the window was too short to
-    hide. Falls back to the flat constant without a (new enough) model."""
+    hide, plus what a lighter background load leaves to the arrival. Falls
+    back to the flat constant without a (new enough) model."""
     fn = getattr(cost_model, 'bg_swap_seconds', None)
     if fn is not None:
         try:
-            return float(fn(ace=ace, slot=slot, window_min=window_min))
+            return float(fn(ace=ace, slot=slot, window_min=window_min,
+                            load_mode=load_mode))
+        except TypeError:
+            # a model from before load modes: the full-load cost
+            try:
+                return float(fn(ace=ace, slot=slot, window_min=window_min))
+            except Exception:
+                pass
         except Exception:
             pass
     return _model_cost(cost_model, 'cross_ace_bg', ace, slot)
@@ -1465,7 +1480,8 @@ def _model_purge_mm(cost_model, flush_matrix, from_t, to_t):
 
 def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
                         cost_model=None, flush_matrix=None,
-                        bg_purge_inline=False, copies=None):
+                        bg_purge_inline=False, copies=None,
+                        bg_load_mode=None):
     """Per-toolchange trace of what the plan costs and why.
 
     One entry per toolchange:
@@ -1483,6 +1499,14 @@ def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
 
     `bg_purge_inline` marks background swaps whose flush happens inline
     anyway (the background load is disabled, so the arrival loads inline).
+    `bg_load_mode` ('full' | 'transport' | 'none', [ace_bg_swap]
+    load_enabled) says how much of the load the engine does in the
+    background: a lighter mode leaves the heat, grip, prime (and for 'none'
+    the whole feed) to the arrival, so the swap costs more. A window shorter
+    than BG_FULL_LOAD_MIN_WINDOW_MIN is stamped LOAD=transport by the
+    rewrite, and is costed the same way. Each background entry names the
+    mode it was costed with ('load_mode'); without `bg_load_mode` nothing
+    changes (the old numbers).
     Returns [] rather than raising on anything it cannot classify: an
     estimate is never worth failing a preflight over.
     """
@@ -1548,6 +1572,18 @@ def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
                 note = ('preloaded in the background (%.1f min window)'
                         % window if window is not None else
                         'background swap, window unknown (no M73 time)')
+                if bg_load_mode is not None:
+                    load_mode = bg_load_mode
+                    if (window is not None
+                            and window < BG_FULL_LOAD_MIN_WINDOW_MIN):
+                        # the rewrite stamps LOAD=transport on a short stay
+                        load_mode = _lower_load_mode(load_mode, 'transport')
+                        if load_mode != bg_load_mode:
+                            note += ' - short window: staged at the sensor only'
+                    if load_mode == 'transport':
+                        note += ' - the arrival heats, grips and primes'
+                    elif load_mode == 'none':
+                        note += (' - the arrival loads inline')
             elif prev_key[0] == key[0]:
                 kind = 'same_ace'
                 note = 'same ACE, different slot'
@@ -1556,19 +1592,24 @@ def build_swap_timeline(events, assignment, event_times=None, bg_heads=None,
                 note = ('no window before use - degrades to inline'
                         if head in bg_set else 'inline swap')
 
+        ev_mode = (load_mode if kind == 'cross_ace_bg'
+                   and bg_load_mode is not None else None)
+        purge_inline = bool(kind == 'cross_ace_bg' and (
+            bg_purge_inline if ev_mode is None else ev_mode != 'full'))
         out.append({
             'i': i, 't': t, 'from_t': from_t, 'head': head,
             'ace': e.get('ace'), 'slot': e.get('slot'), 'kind': kind,
             'window_min': (round(window, 2) if window is not None else None),
             'seconds': round(
                 _model_bg_cost(cost_model, e.get('ace'), e.get('slot'),
-                               window)
+                               window, ev_mode or 'full')
                 if kind == 'cross_ace_bg' else
                 _model_cost(cost_model, kind, e.get('ace'), e.get('slot')),
                 1),
             'purge_mm': round(_model_purge_mm(
                 cost_model, flush_matrix, from_t, t), 1),
-            'purge_inline': bool(kind == 'cross_ace_bg' and bg_purge_inline),
+            'purge_inline': purge_inline,
+            'load_mode': ev_mode,
             'note': note})
 
         head_key[head] = key
