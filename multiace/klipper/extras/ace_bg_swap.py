@@ -349,8 +349,9 @@ class AceBgSwap:
                                          maxval=57.)
         # swap_queue: hold a stamped ACE_BG_SWAP that finds another bg op
         # running and start it when that one ends (False = skip it, the
-        # arrival then swaps inline, as before).
-        self.swap_queue = config.getboolean('swap_queue', True)
+        # arrival then swaps inline, as before). Off until tried on
+        # hardware.
+        self.swap_queue = config.getboolean('swap_queue', False)
         self._deferred = []
         self.enabled_heads = set()
         for tok in heads_raw.replace(',', ' ').split():
