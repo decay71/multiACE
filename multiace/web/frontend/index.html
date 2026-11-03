@@ -2324,6 +2324,16 @@
         uiTheme === 'new' ? t('ui.config.nt_confirm_commands_short') : t('ui.config.confirm_commands_hint') }}</p>
       </div>
       <div class="nt-tile">
+      <h3>{{ t('ui.config.remember_filament') }}</h3>
+      <label class="pickup-clean-toggle">
+        <input type="checkbox" :checked="state.remember_filament"
+               @change="setRememberFilament($event.target.checked)">
+        {{ t('ui.config.remember_filament_label') }}
+      </label>
+      <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.remember_filament_hint') : null">{{
+        uiTheme === 'new' ? t('ui.config.nt_remember_filament_short') : t('ui.config.remember_filament_hint') }}</p>
+      </div>
+      <div class="nt-tile">
       <h3>{{ t('ui.config.airprint_detection') }}</h3>
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="state.airprint_detection"

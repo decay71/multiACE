@@ -578,6 +578,24 @@ class SettingsMixin:
         self.log_always('[multiACE] PA sync %s%s'
                         % ('ON' if enable else 'OFF', sfx))
 
+    cmd_ACE_SET_REMEMBER_FILAMENT_help = (
+        '[multiACE] Keep a slot\'s hand-set colour/material label and its '
+        'spool binding when its filament is removed, so putting filament '
+        'back there needs no re-entry (ENABLE=0|1, default off). A freshly '
+        'read RFID chip always replaces a kept label. Live + write-through '
+        '(writes the remember_filament config line; PERSIST=0 = until '
+        'restart).')
+
+    def cmd_ACE_SET_REMEMBER_FILAMENT(self, gcmd):
+        enable = bool(gcmd.get_int('ENABLE', 1, minval=0, maxval=1))
+        self._remember_filament = enable
+        sfx = self._wt_persist(gcmd, 'remember_filament',
+                               _wt_fmt_bool(enable), None,
+                               shadow_attr='_remember_filament_cfg',
+                               shadow_val=enable)
+        self.log_always('[multiACE] Remember last filament %s%s'
+                        % ('ON' if enable else 'OFF', sfx))
+
     def cmd_ACE_SET_TAG_WRITE(self, gcmd):
         """Defaults for ACE_TAG_WRITE / the picker's write button. Each
         given field is applied live and written through to its config

@@ -1045,6 +1045,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.pa_sync = config.getboolean('pa_sync', True)
         self._pa_sync_cfg = self.pa_sync
 
+        # Remember last filament (opt-in, default OFF = the old behaviour):
+        # a slot that goes empty keeps its hand-set label (web slot
+        # override) and its spool binding, so putting filament back needs
+        # no re-entry. Write-through toggle: the [ace] config line is the
+        # ONLY store (ACE_SET_REMEMBER_FILAMENT edits it, PERSIST=0 = RAM
+        # only) - no save-variable twin. Read unconditionally (config-halt
+        # trap).
+        self._remember_filament = config.getboolean('remember_filament',
+                                                    False)
+        self._remember_filament_cfg = self._remember_filament
+
         # The RC522 tag line (insert read, ACE_TAG_READ/WRITE) is on for
         # every unit running the ACE2-Open firmware and gated per unit by
         # _is_open_fw_idx. The old on/off option is gone; an existing line
@@ -2285,6 +2296,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'ACE_SET_PA_SYNC',
             self.cmd_ACE_SET_PA_SYNC,
             desc='[multiACE] Toggle PA capture+apply automatics (ENABLE=0|1), live + persist')
+        self.gcode.register_command(
+            'ACE_SET_REMEMBER_FILAMENT',
+            self.cmd_ACE_SET_REMEMBER_FILAMENT,
+            desc=self.cmd_ACE_SET_REMEMBER_FILAMENT_help)
         self.gcode.register_command(
             'ACE_SET_TAG_WRITE',
             self.cmd_ACE_SET_TAG_WRITE,
@@ -10637,9 +10652,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     if gate_list[i] == GATE_EMPTY:
                         self._spool_miss_forget(idx, i)
                     if (gate_list[i] == GATE_EMPTY
-                            and self._connected_per_ace.get(idx, False)
-                            and not self._reconnecting_per_ace.get(idx, False)
-                            and not self._slot_still_feeds_filament(idx, i)):
+                            and self._empty_slot_releases_spool(idx, i)):
                         self._spool_release_slot(
                             idx, i,
                             'slot went empty' if _gate_prev == GATE_AVAILABLE
@@ -14115,6 +14128,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                         and gates[int(slot)] == GATE_AVAILABLE)
         except Exception:
             return False
+
+    def _empty_slot_releases_spool(self, idx, slot):
+        """True when a slot that reads EMPTY drops its spool binding: the
+        unit is connected (a reconnect reads stale), the head does not still
+        print from that slot's filament, and "remember last filament" is
+        off - on, the binding (and the web's hand-set label) outlives the
+        filament so putting it back needs no re-entry."""
+        return (self._connected_per_ace.get(idx, False)
+                and not self._reconnecting_per_ace.get(idx, False)
+                and not self._slot_still_feeds_filament(idx, slot)
+                and not getattr(self, '_remember_filament', False))
 
     def _slot_still_feeds_filament(self, ace_idx, slot):
         """True while a head sourced from this slot still HAS filament at its
@@ -21824,6 +21848,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'purge_floor': int(getattr(self, 'swap_purge_floor', 0)),
             'purge_cap': int(getattr(self, 'swap_purge_cap', 0)),
             'pa_sync': bool(getattr(self, 'pa_sync', True)),
+            'remember_filament': bool(getattr(self, '_remember_filament',
+                                              False)),
             # RC522 tag read/write available on at least one unit (ACE2-Open
             # firmware); gates the web tag settings.
             'rc522': self._any_open_fw(),
@@ -21888,6 +21914,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                  getattr(self, '_spoolman_auto_cfg', None)),
                 ('pa_sync', getattr(self, 'pa_sync', None),
                  getattr(self, '_pa_sync_cfg', None)),
+                ('remember_filament',
+                 getattr(self, '_remember_filament', None),
+                 getattr(self, '_remember_filament_cfg', None)),
                 ('tag_write_format', getattr(self, 'tag_write_format', None),
                  getattr(self, '_tag_write_format_cfg', None)),
                 ('tag_write_uid_sku',
