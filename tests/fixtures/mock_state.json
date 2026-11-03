@@ -390,7 +390,7 @@
   },
   "bg_swap": {
     "available": true,
-    "version": "v0.9",
+    "version": "v1.0",
     "enabled_heads": [
       0
     ],

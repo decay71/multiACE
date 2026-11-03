@@ -170,6 +170,8 @@ def _verdict_feed(ace):
     class Feed(object):
         FEED_VERDICT_WAIT_S = F.FilamentFeed.FEED_VERDICT_WAIT_S
         _note_feed_verdict = F.FilamentFeed._note_feed_verdict
+        _unit_feed_stop = F.FilamentFeed._unit_feed_stop
+        _unit_motion = F.FilamentFeed._unit_motion
     feed = Feed()
     feed.ace = ace
     feed.reactor = _VerdictReactor()
@@ -200,6 +202,59 @@ def test_unit_without_slot_status_truth_carries_no_verdict():
     feed = _verdict_feed(ace)
     feed._note_feed_verdict(2, 0, 10.0)
     assert ace._load_feed_error == {}
+
+
+class _MotionAce(_VerdictAce):
+    """A unit without slot_status truth that reports its own motion
+    (the CFS Nano): the feed job's stop reason gives the verdict."""
+    def __init__(self, motions):
+        _VerdictAce.__init__(self, ['ready'], truth=False)
+        self.motions = list(motions)    # one per poll, last one sticks
+        self._info_per_ace = {}
+
+    def _v2_get_slot_status(self, idx, slot):
+        raise AssertionError('no slot_status on this unit')
+
+    @property
+    def _info_per_ace(self):
+        m = self.motions.pop(0) if len(self.motions) > 1 else self.motions[0]
+        return {0: {'motion': m}}
+
+    @_info_per_ace.setter
+    def _info_per_ace(self, v):
+        pass
+
+
+def _feed_motion(seq, stop=None, running=False, slot=2, kind='feed'):
+    m = {'seq': seq, 'slot': slot, 'kind': kind, 'mm': 1007.0,
+         'running': running}
+    if stop:
+        m['stop'] = stop
+    return m
+
+
+def test_box_slip_stop_is_stored_like_feed_error():
+    ace = _MotionAce([_feed_motion(4, running=True),
+                      _feed_motion(4, stop='slip')])
+    feed = _verdict_feed(ace)
+    feed._note_feed_verdict(2, 0, 23.0, 3)
+    assert (0, 2) in ace._load_feed_error
+
+
+def test_box_distance_stop_clears_the_verdict():
+    ace = _MotionAce([_feed_motion(5, stop='distance')])
+    ace._load_feed_error[(0, 2)] = 1.0
+    feed = _verdict_feed(ace)
+    feed._note_feed_verdict(2, 0, 30.0, 4)
+    assert ace._load_feed_error == {}
+
+
+def test_an_older_feed_job_gives_no_verdict():
+    ace = _MotionAce([_feed_motion(3, stop='slip')])
+    feed = _verdict_feed(ace)
+    feed._note_feed_verdict(2, 0, 30.0, 3)
+    assert ace._load_feed_error == {}
+    assert feed.reactor.t <= 100.0 + feed.FEED_VERDICT_WAIT_S + 0.2
 
 
 def test_old_ace_without_the_store_is_a_noop():

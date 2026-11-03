@@ -28,7 +28,7 @@ from .ace_spool import (SpoolMixin, SPOOLLINK_RESOLVE_METHOD,
                         SPOOLLINK_STARTUP_CHECK_DELAY)
 from .ace_resistance import ResistanceMixin, RESISTANCE_STRIKE_CLEAR_READS
 
-MULTIACE_VERSION = "1.30b"
+MULTIACE_VERSION = "1.50-pre"
 # Virtual slicer tools: T4..T31 (stock LOGICAL_EXTRUDER_NUM is 32). T0-T3
 # are the heads as loaded; tool n >= 4 = ACE (n-4)//4, slot (n-4)%4 (the
 # same numbering BMCU-Klipper uses on the U1).
@@ -59,8 +59,8 @@ BG_STAGED_STOP_WINDOW = 180.0
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "b424bbf0"
-MULTIACE_BUNDLE_SHA1 = "d575769"
+MULTIACE_BUILD_TAG = "1ddd1980"
+MULTIACE_BUNDLE_SHA1 = "e3d150b"
 # The klipper modules OUTSIDE the bundle sha (ace.py and its helpers), the
 # fixed order the banner's core= value hashes them in. Computed on disk at
 # startup, never stamped: `core=` is the deploy proof the bundle sha does
@@ -145,6 +145,36 @@ IDLE_RESCAN_S = 10.0
 # units. Enforced once, in the scan (startup) and the late-join; a fifth
 # unit stays unconnected with one log line per path (design, D10).
 MAX_ACE_UNITS = 4
+# Negative cache of the generic USB probes (ACE 2 on a generic adapter,
+# CFS). A port that answered nothing is asked again after a growing pause:
+# a unit that is still booting is found within seconds, a foreign device on
+# the same chip (often a mainboard) is only asked every 30 s after a few
+# tries. A port that was busy, refused or gone is asked again after 5 s and
+# does not count as a miss; a verified unit after 0.25 s (the next scan
+# connects it).
+PROBE_MISS_BACKOFF = (5.0, 10.0, 20.0, 30.0)
+PROBE_TRANSIENT_CATEGORIES = ('port_in_use', 'permission_denied',
+                              'device_disconnected')
+PROBE_TRANSIENT_TTL = 5.0
+PROBE_VERIFIED_TTL = 0.25
+
+
+def probe_misses_after(prev_misses, verified, category):
+    """Consecutive misses of a port after this probe result."""
+    if verified:
+        return 0
+    if category in PROBE_TRANSIENT_CATEGORIES:
+        return prev_misses
+    return prev_misses + 1
+
+
+def probe_cache_ttl(verified, category, misses):
+    """How long a cached probe result stands."""
+    if verified:
+        return PROBE_VERIFIED_TTL
+    if category in PROBE_TRANSIENT_CATEGORIES or misses <= 0:
+        return PROBE_TRANSIENT_TTL
+    return PROBE_MISS_BACKOFF[min(misses, len(PROBE_MISS_BACKOFF)) - 1]
 # D11: a place whose assigned unit is not connected keeps its index with
 # this pseudo path ('absent:<unit key>'); a place emptied by the user
 # below a higher occupied place holds 'free:'. Neither opens a port.
@@ -287,6 +317,15 @@ CAL_DECODER_SLACK_MM = 30.0
 CAL_ENCODER_RATIO_MIN = 0.85
 CAL_ENCODER_RATIO_MAX = 1.20
 CAL_ENCODER_LEARN_MIN_MM = 50
+# Single calibration feed (calibration_feed single): reported distances
+# kept, the fastest believable pace and how far past the last report the
+# distance is carried on to the sensor moment.
+CAL_SINGLE_SAMPLES = 8
+CAL_SINGLE_PACE_MAX = 80.0
+CAL_SINGLE_EXTRAP_S = 2.0
+# A unit still reporting its move as running gets this much longer than
+# the commanded speed allows before the move counts as timed out.
+CAL_UNIT_RUNNING_MAX_EXTRA_S = 120.0
 # After the toolhead sensor stops a feed: let the lane come to rest, then
 # take one last encoder reading before the distance is booked.
 CAL_SETTLE_S = 0.4
@@ -676,6 +715,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 "- multiACE cannot persist head sources, mode or settings and "
                 "would silently run in normal mode. Restore the [save_variables] "
                 "line in ace.cfg (see the installation guide).")
+        self._install_atomic_save_variables()
 
         self.serial_id = config.get('serial', '')
         self._protocols = {}
@@ -749,6 +789,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # edit the config line and apply live.
         self.swap_purge_scale = config.getint('swap_purge_scale', 100, minval=25, maxval=200)
         self.swap_purge_floor = config.getint('swap_purge_floor', 0, minval=0, maxval=200)
+        # How far the inline load lowers the nozzle below load temp while
+        # the MMU feeds (stock: 50). Read by filament_feed_ace.
+        self.load_feed_temp_drop = config.getint(
+            'load_feed_temp_drop', 50, minval=0, maxval=100)
         self.swap_purge_cap = config.getint('swap_purge_cap', 0, minval=0, maxval=200)
 
         self.seat_overshoot_length = config.getint('seat_overshoot_length', 0, minval=0, maxval=100)
@@ -2268,6 +2312,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'ACE_LOCATE', self.cmd_ACE_LOCATE,
             desc=self.cmd_ACE_LOCATE_help)
         self.gcode.register_command(
+            'ACE_COMOVE_TEST', self.cmd_ACE_COMOVE_TEST,
+            desc=self.cmd_ACE_COMOVE_TEST_help)
+        self.gcode.register_command(
             'ACE_SET_PREFLIGHT_COPIES',
             self.cmd_ACE_SET_PREFLIGHT_COPIES,
             desc='[multiACE] Max targets per slicer colour for the preflight (MAX=1..4), live + persist')
@@ -2488,7 +2535,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return False
         if self._ace_canonical is None:
             return True
-        return self._ace_devices[ace_index] in self._ace_present
+        path = self._ace_devices[ace_index]
+        # A placeholder ('absent:'/'free:') is in every scan result too.
+        if self._is_unit_sentinel(path):
+            return False
+        return path in self._ace_present
 
     # -- D4 unit places ---------------------------------------------------
 
@@ -2699,13 +2750,16 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if changed:
             self._save_unit_places('new unit placed')
         self._unit_unassigned = unassigned
-        if not assigned:
-            self._last_scan_place_of_path = {}
-            return []
-        highest = max(assigned)
+        # Nothing on the bus: places the table assigns stay 'absent:', so
+        # the start runs with them (a unit that appears later fills its
+        # place). Only a table without any assigned unit gives [].
+        highest = max(assigned) if assigned else -1
         for i, e in enumerate(places):
             if e and e.get('key') and e['key'] not in self._unit_excluded:
                 highest = max(highest, i)
+        if highest < 0:
+            self._last_scan_place_of_path = {}
+            return []
         ordered = []
         for i in range(highest + 1):
             if i in assigned:
@@ -3363,6 +3417,120 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     LOCATE_JOG_MM = 20
     LOCATE_JOG_SPEED = 30
     LOCATE_JOG_REPEAT = 2
+    # CFS Nano: unlocks (04 00 01), each one clacks the channel cam.
+    LOCATE_UNLOCK_REPEAT = 3
+    LOCATE_UNLOCK_GAP_S = 1.5
+
+    cmd_ACE_COMOVE_TEST_help = (
+        '[multiACE] Test move for a free-wheeling unit (CFS Nano): '
+        'ACE_COMOVE_TEST HEAD=<n> [LENGTH=<mm, 1-100>] [SPEED=<mm/s>] '
+        '[BOX=1|0]. Internal head index, the head must be active, loaded '
+        'from that unit and hot. Extrudes LENGTH at SPEED; BOX=1 lets the '
+        'box feed the same length (dosed, ~3.7 mm/s) at the same time, '
+        'BOX=0 pulls through the free clutch. Ends in print mode. Run it '
+        'over the purge position. Refused while printing.')
+
+    COMOVE_TEST_MIN_TEMP = 190.0
+
+    def cmd_ACE_COMOVE_TEST(self, gcmd):
+        head = gcmd.get_int('HEAD', None)
+        length = gcmd.get_float('LENGTH', 20.0)
+        speed = gcmd.get_float('SPEED', 3.5)
+        box = gcmd.get_int('BOX', 1)
+        if head is None or not 0 <= head <= 3:
+            raise self._ace_error(gcmd, 'HEAD must be 0-3', code=200)
+        if not 1.0 <= length <= 100.0 or not 0.5 <= speed <= 30.0:
+            raise self._ace_error(gcmd, 'LENGTH 1-100 mm, SPEED 0.5-30 '
+                                  'mm/s', code=200)
+        if self._is_print_active_or_paused():
+            raise self._ace_error(gcmd, 'ACE_COMOVE_TEST is refused while '
+                                  'a print runs or is paused', code=200,
+                                  keep_print=True)
+        src = self._head_source.get(head) or {}
+        idx, slot = src.get('ace_index'), src.get('slot')
+        if idx is None or slot is None:
+            raise self._ace_error(gcmd, 'Head %d is not loaded from an MMU'
+                                  % self._disp(head), code=200)
+        if not self._connected_per_ace.get(idx, False):
+            raise self._ace_error(gcmd, 'MMU %d is not connected'
+                                  % self._disp(idx), code=208)
+        if not self._cap(idx, 'freewheel_print_mode'):
+            raise self._ace_error(gcmd, 'MMU %d is not a free-wheeling unit '
+                                  '(CFS Nano)' % self._disp(idx), code=200)
+        extruder = self.toolhead.get_extruder()
+        name = extruder.get_name()
+        active = 0 if name == 'extruder' else int(
+            name.replace('extruder', '') or 0)
+        if active != head:
+            raise self._ace_error(gcmd, 'Head %d is not active - pick it '
+                                  'first (T%d)' % (self._disp(head), head),
+                                  code=200)
+        try:
+            temp = extruder.get_heater().get_temp(
+                self.reactor.monotonic())[0]
+        except Exception:
+            temp = 0.0
+        if temp < self.COMOVE_TEST_MIN_TEMP:
+            raise self._ace_error(gcmd, 'Head %d is at %.0f C - heat it to '
+                                  'at least %.0f C first'
+                                  % (self._disp(head), temp,
+                                     self.COMOVE_TEST_MIN_TEMP), code=200)
+
+        def _motion():
+            m = (self._info_per_ace.get(idx) or {}).get('motion')
+            return m if isinstance(m, dict) else {}
+        seq0 = int(_motion().get('seq', 0) or 0)
+        req_print = {"method": "start_feed_assist", "params": {"index": slot}}
+        if not box:
+            # Free clutch: the extruder pulls the spool itself.
+            self._tipform_send(idx, req_print, timeout=5.0)
+        t0 = self.reactor.monotonic()
+        if box:
+            resp = self._tipform_send(idx, {
+                "method": "feed_filament",
+                "params": {"index": slot, "length": length,
+                           "speed": 10}}, timeout=5.0)
+            if self._tipform_rejected(resp):
+                self._tipform_send(idx, req_print, timeout=5.0)
+                raise self._ace_error(gcmd, 'MMU %d refused the dosed feed '
+                                      '(%s)' % (self._disp(idx),
+                                                (resp or {}).get('msg')),
+                                      code=200)
+        self.gcode.run_script_from_command(
+            'M83\nG1 E%.2f F%.0f\nM400' % (length, speed * 60.0))
+        t_ext = self.reactor.monotonic() - t0
+        box_mm = None
+        ended = 'free clutch'
+        if box:
+            deadline = self.reactor.monotonic() + length / 3.0 + 10.0
+            while self.reactor.monotonic() < deadline:
+                m = _motion()
+                if int(m.get('seq', 0) or 0) > seq0 \
+                        and not m.get('running'):
+                    break
+                self.reactor.pause(self.reactor.monotonic() + 0.25)
+            m = _motion()
+            if int(m.get('seq', 0) or 0) > seq0:
+                box_mm = m.get('mm')
+                if m.get('running'):
+                    self._stop_feeding(slot, idx)
+                    ended = 'still running, stopped'
+                else:
+                    ended = 'done'
+            else:
+                ended = 'no motion report'
+        t_all = self.reactor.monotonic() - t0
+        self._tipform_send(idx, req_print, timeout=5.0)
+        msg = ('[multiACE] comove test head %d (MMU %d / Slot %d): extruder '
+               '%.1f mm at %.1f mm/s took %.1f s; box %s; total %.1f s'
+               % (self._disp(head), self._disp(idx), self._disp(slot),
+                  length, speed, t_ext,
+                  ('off (free clutch)' if not box else
+                   '%s mm, %s' % (('%.1f' % box_mm) if box_mm is not None
+                                  else '?', ended)),
+                  t_all))
+        self.log_always(msg)
+        logging.info(msg)
 
     cmd_ACE_LOCATE_help = (
         '[multiACE] Locate a unit: ACE_LOCATE ACE=<n> [JOG=1] [SLOT=<s>] '
@@ -3371,7 +3539,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         'DURATION seconds (default 15, 0 = until COMPONENTS=0 is sent; '
         'JOG=1 jogs a slot instead). ACE Pro: jogs a slot forward and '
         'back; default = the first occupied slot that feeds no head, '
-        'SLOT= picks one.')
+        'SLOT= picks one. CFS Nano: unlocks the box three times (the '
+        'channel cam clacks, no filament moves). Refused while printing.')
 
     def cmd_ACE_LOCATE(self, gcmd):
         idx = gcmd.get_int('ACE', None)
@@ -3391,7 +3560,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self.log_warn(self._t('msg.locate_busy'))
             return
         jog = gcmd.get_int('JOG', 0)
-        if self._cap(idx, 'v2_command_set') and not jog:
+        method = self._cap(idx, 'locate_method') or 'jog'
+        if method == 'unlock' and not jog:
+            self._locate_busy = True
+            self.log_always(self._t('msg.locate_unlock_start',
+                                    ace=self._disp(idx)))
+            self.reactor.register_async_callback(
+                lambda e: self._locate_unlock(idx))
+            return
+        if method == 'led' and not jog:
             params = dict(self.LOCATE_LED_DEFAULT)
             for key in params:
                 params[key] = gcmd.get_int(key.upper(), params[key],
@@ -3557,6 +3734,51 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 return 'ok'
             self.reactor.pause(self.reactor.monotonic() + pace)
         return 'rejected'
+
+    def _locate_unlock(self, idx):
+        """CFS Nano: unlock the box a few times; each unlock makes the cam
+        pick the channel, which clacks without moving filament. A head fed
+        from the box gets its print mode (clutch free) back afterwards."""
+        try:
+            results = []
+            for rnd in range(self.LOCATE_UNLOCK_REPEAT):
+                if rnd:
+                    self.reactor.pause(self.reactor.monotonic()
+                                       + self.LOCATE_UNLOCK_GAP_S)
+                resp = self._tipform_send(
+                    idx, {'method': 'locate_unlock', 'params': {}},
+                    timeout=3.0)
+                logging.info('[multiACE] [locate] MMU %d unlock %d -> %r',
+                             self._disp(idx), rnd + 1, resp)
+                ok = isinstance(resp, dict) and resp.get('code', -1) == 0
+                results.append('ok' if ok else (
+                    'none' if resp is None else
+                    str(resp.get('msg', '') or resp.get('code'))))
+                if not ok:
+                    break
+            fed = None
+            for h in range(4):
+                src = self._head_source.get(h)
+                if src and src.get('ace_index') == idx and \
+                        src.get('slot') is not None and \
+                        self._head_is_loaded(h):
+                    fed = int(src['slot'])
+                    break
+            if fed is not None:
+                resp = self._tipform_send(
+                    idx, {'method': 'start_feed_assist',
+                          'params': {'index': fed}}, timeout=3.0)
+                logging.info('[multiACE] [locate] MMU %d slot %d print mode '
+                             'restored -> %r', self._disp(idx),
+                             self._disp(fed), resp)
+            self.log_always(self._t('msg.locate_unlock_done',
+                                    ace=self._disp(idx),
+                                    result=' '.join(results)))
+        except Exception:
+            logging.exception('[multiACE] [locate] MMU %d unlock failed',
+                              self._disp(idx))
+        finally:
+            self._locate_busy = False
 
     def _locate_jog(self, idx, slot, mm):
         try:
@@ -3803,14 +4025,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         cache_key = (real_path, vendor, product)
         now = time.monotonic()
         cached = self._v2_generic_probe_cache.get(cache_key)
+        prev_misses = cached[3] if cached is not None else 0
         if cached is not None:
-            cached_at, verified, result = cached
-            # Keep positive identity results short-lived so unplug/replug on
-            # the same adapter path is re-identified on the next scan.
-            cache_ttl = (0.25 if verified else
-                         5.0 if result.get('category') in (
-                             'port_in_use', 'permission_denied', 'device_disconnected')
-                         else 30.0)
+            cached_at, verified, result, misses = cached
+            # Positive results short-lived so unplug/replug on the same
+            # adapter path is re-identified on the next scan; misses back
+            # off (PROBE_MISS_BACKOFF).
+            cache_ttl = probe_cache_ttl(verified, result.get('category'),
+                                        misses)
             if now - cached_at < cache_ttl:
                 return verified
 
@@ -3824,7 +4046,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 'error': 'path is open by a visible process',
             }
             self._v2_generic_probe_cache[cache_key] = (
-                now, False, result)
+                now, False, result, prev_misses)
             self._usb_log.info(
                 'PROBE skip path=%s reason=already-open', path)
             logging.info('[multiACE] V2 probe skipped path=%s '
@@ -3866,8 +4088,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 'error': 'probe exceeded 1.5s deadline',
             }
         verified = bool(result.get('ok'))
-        self._v2_generic_probe_cache[
-            cache_key] = (time.monotonic(), verified, result)
+        self._v2_generic_probe_cache[cache_key] = (
+            time.monotonic(), verified, result,
+            probe_misses_after(prev_misses, verified,
+                               result.get('category')))
         elapsed_ms = (time.monotonic() - probe_start) * 1000.0
         if verified:
             uid = '-'.join('%08x' % part for part in result['uid'])
@@ -3898,13 +4122,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         now = time.monotonic()
         cached = self._cfs_probe_cache.get(real_path)
         if cached is not None:
-            cached_at, verified, category = cached
+            cached_at, verified, category, misses = cached
             # Positive results short-lived (the next scan connects); a
-            # mute box (about 30 s after power-on) is asked again soon.
-            ttl = 0.25 if verified else (
-                5.0 if category in ('port_in_use', 'permission_denied')
-                else 15.0)
-            if now - cached_at < ttl:
+            # mute box (about 30 s after power-on) is asked again soon,
+            # a port that keeps silent backs off (PROBE_MISS_BACKOFF).
+            if now - cached_at < probe_cache_ttl(verified, category, misses):
                 return verified
         if not self._is_printer_idle_for_generic_probe():
             return False
@@ -3939,8 +4161,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         verified = bool(result.get('ok'))
         category = result.get('category', '?')
         prev = self._cfs_probe_cache.get(real_path)
-        self._cfs_probe_cache[real_path] = (time.monotonic(), verified,
-                                            category)
+        self._cfs_probe_cache[real_path] = (
+            time.monotonic(), verified, category,
+            probe_misses_after(prev[3] if prev is not None else 0,
+                               verified, category))
         if verified:
             key = ''
             uid_key = getattr(protocol_cls, 'uid_key', None)
@@ -4720,6 +4944,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.log_always(self._t('msg.core_line', core=core_sha))
         logging.info('[multiACE] Version %s build=%s core=%s file=%s' % (
             MULTIACE_VERSION, MULTIACE_BUILD_TAG, core_sha, ace_timestamp))
+        if getattr(self, '_sv_restored_from', None):
+            self.log_warn(self._t('msg.save_vars_restored',
+                                  backup=self._sv_restored_from))
 
         # bg-swap visibility: a missing [ace_bg_swap] section makes every
         # stamp run as Unknown command for a whole print. Module loaded ->
@@ -4870,7 +5097,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             if expected is not None and len(real) < expected:
                 self.log_warn(self._t('msg.found_fewer_than_count',
                     expected=expected, count=len(real)))
-        if not real and (expected is not None or table_known):
+        # Soft-fail only when no place names a unit (first boot, nothing on
+        # the bus). With a table every missing unit keeps its 'absent:'
+        # place and the normal start runs: a unit that appears later is
+        # connected by the idle rescan or the swap's scan, so a print
+        # resumed after a power loss can still get it without a restart.
+        if not real and not absent and (expected is not None or table_known):
             self._ace_startup_failed = True
             self.log_error(self._t('msg.usb_unstable',
                 expected=expected if expected is not None else len(absent),
@@ -4892,14 +5124,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 self._softfail_rescan_tick,
                 self.reactor.monotonic() + SOFTFAIL_RESCAN_S)
             return
-        if real:
+        if real or absent:
             self._ace_canonical = list(self._ace_devices)
             self._ace_present = set(real)
             for i, p in enumerate(self._ace_devices):
                 if str(p).startswith(ABSENT_UNIT_PREFIX):
                     self.log_always(self._t('msg.unit_place_absent',
                         ace=self._disp(i), unit=p[len(ABSENT_UNIT_PREFIX):]))
-            if not absent and (expected is None or len(real) >= expected
+            if not real:
+                logging.info('[multiACE] startup: no assigned MMU on the bus '
+                             '- every place kept, units connect when they '
+                             'appear')
+            if real and not absent and (expected is None or len(real) >= expected
                                or table_known):
                 self.log_always(self._t('msg.all_expected_found',
                                         expected=len(real)))
@@ -7060,8 +7296,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # nothing reads ace__active_device synchronously after a write (the
         # single reader is the startup restore). The serial id is captured
         # here, so queued saves land in call order.
-        self.reactor.register_callback(
-            lambda et, _sid=self.serial_id: self._save_active_device(_sid))
+        # A placeholder ('absent:'/'free:', every unit missing at start)
+        # is no device to remember.
+        if not self._is_unit_sentinel(self.serial_id):
+            self.reactor.register_callback(
+                lambda et, _sid=self.serial_id: self._save_active_device(_sid))
         return True
 
     def _save_active_device(self, serial_id):
@@ -8890,6 +9129,21 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         active_idx = source.get('ace_index')
         src_slot = source.get('slot', -1)
         if active_idx is None or not (0 <= src_slot <= 3):
+            return False
+        if self._cap(active_idx, 'freewheel_print_mode'):
+            # No rollback assist on this unit: put it in print mode
+            # (clutch free) so the tip-form pull is not held by the box,
+            # whatever state the last load or a self-stop left it in.
+            def _fw_cb(self, response):
+                if response is None or response.get('code', 0) != 0:
+                    logging.info('[multiACE] MMU %d slot %d: print mode for '
+                                 'the tip-form not confirmed (%s)'
+                                 % (active_idx, src_slot, response))
+            self.send_request_to(active_idx,
+                {"method": "start_feed_assist",
+                 "params": {"index": src_slot}}, _fw_cb)
+            self._fa_trace('unload: MMU %d slot %d free-wheel (print mode) '
+                           'for the tip-form' % (active_idx, src_slot))
             return False
         if not self._cap(active_idx, 'has_rollback_assist'):
             return False
@@ -11522,6 +11776,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'encoder_commanded_mm': 0.0,
             'decoder_ok': False,
             'position_source': 'timing',
+            'load_source': None,
             'load_length_mm': None,
             'swap_retract_length_mm': None,
             'retract_length_mm': None,
@@ -11893,14 +12148,84 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if move.get('stop_ignored'):
             # the ACE ran the whole move despite the stop
             return float(move['length'])
+        if move.get('single'):
+            # one feed to the sensor: the unit reports the distance
+            self._calibration['position_source'] = 'wheel'
+            s = move.get('samples') or []
+            return min(float(move['length']), s[-1][1] if s else 0.0)
         dec = move.get('dec')
         if dec is not None:
             self._calibration['position_source'] = 'encoder'
             return min(float(move['length']),
                        float(dec) / self._calibration_encoder_ratio())
+        if move.get('kind') == 'feed_jog':
+            # a unit that reports its distance (the CFS Nano) shows the
+            # real progress of the running move
+            m = self._calibration_motion(self._calibration.get('ace'))
+            if m is not None and m['running'] and m['kind'] != 'retract':
+                self._calibration['position_source'] = 'wheel'
+                return min(float(move['length']), m['mm'])
         self._calibration['position_source'] = 'timing'
         elapsed = max(0.0, eventtime - float(move['started']))
         return min(float(move['length']), elapsed * float(move['speed']))
+
+    def _calibration_motion(self, idx):
+        """The unit's 'motion' report (seq, kind, mm, running), or None."""
+        m = (self._info_per_ace.get(idx) or {}).get('motion')
+        if not isinstance(m, dict):
+            return None
+        try:
+            return {'seq': int(m.get('seq')), 'kind': str(m.get('kind')),
+                    'mm': float(m.get('mm') or 0.0),
+                    'running': bool(m.get('running'))}
+        except (TypeError, ValueError):
+            return None
+
+    def _calibration_unit_still_moving(self, idx, elapsed, expected):
+        """True while the unit reports its motion as running (units with a
+        motion report, the CFS Nano: a short feed runs as a dosed feed at
+        a few mm/s, far slower than the commanded speed). Capped so a
+        frozen report still ends in the timeout."""
+        if elapsed > expected + 8.0 + CAL_UNIT_RUNNING_MAX_EXTRA_S:
+            return False
+        m = self._calibration_motion(idx)
+        return bool(m and m['running'])
+
+    def _calibration_note_motion(self, move, eventtime):
+        """Record (time, mm) whenever the unit reports a new distance for
+        the single calibration feed (time = the tick that first saw it)."""
+        m = self._calibration_motion(self._calibration.get('ace'))
+        if (m is None or m['kind'] != 'feed'
+                or m['seq'] <= move.get('motion_seq0', -1)):
+            return
+        s = move['samples']
+        if not s or s[-1][1] != m['mm']:
+            s.append((eventtime, m['mm']))
+            del s[:-CAL_SINGLE_SAMPLES]
+
+    def _calibration_single_at(self, move, ts):
+        """Distance at the sensor: the last reported distance moved on at
+        the pace between the last two reports (the unit keeps feeding
+        until the stop reaches it, that coast is not part of the route)."""
+        self._calibration_note_motion(move, ts)
+        s = [x for x in (move.get('samples') or []) if x[0] <= ts]
+        if not s:
+            self._calibration['position_source'] = 'timing'
+            elapsed = max(0.0, ts - float(move['started']))
+            return min(float(move['length']), elapsed * float(move['speed']))
+        t1, m1 = s[-1]
+        if len(s) >= 2 and t1 - s[-2][0] > 0.2:
+            pace = (m1 - s[-2][1]) / (t1 - s[-2][0])
+        else:
+            pace = m1 / max(0.2, t1 - float(move['started']))
+        pace = max(0.0, min(CAL_SINGLE_PACE_MAX, pace))
+        dt = max(0.0, min(CAL_SINGLE_EXTRAP_S, ts - t1))
+        self._calibration['position_source'] = 'wheel'
+        at = m1 + pace * dt
+        logging.info('[multiACE] calibration single feed: %.1f mm reported '
+                     '%.2f s before the sensor, pace %.1f mm/s -> %.1f mm'
+                     % (m1, ts - t1, pace, at))
+        return at
 
     def _calibration_encoder_ratio(self):
         # Encoder counts per commanded mm on this session's completed moves.
@@ -12073,7 +12398,13 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         move = self._calibration_move
         if move is None or not str(move.get('kind', '')).startswith('verify_'):
             return int(c.get('verify_position_mm') or 0)
-        travelled = self._calibration_move_travel(move, eventtime)
+        if commit and move.get('single'):
+            # the sensor stopped the one verify feed: the reported distance
+            # carried on to the sensor moment, as on the calibration feed
+            travelled = min(float(move['length']),
+                            self._calibration_single_at(move, eventtime))
+        else:
+            travelled = self._calibration_move_travel(move, eventtime)
         position = (float(move.get('position_start', 0))
                     + float(move.get('direction', 1)) * travelled)
         load = int(c.get('load_length_mm') or 0)
@@ -12223,6 +12554,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         c = self._calibration
         position = int(c.get('verify_position_mm') or 0)
         load = int(c.get('load_length_mm') or 0)
+        single = False
         if state == 'verifying_feed':
             remaining = (load + int(c.get('verify_search_mm') or 0)
                          - position)
@@ -12241,8 +12573,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             # sensor is polled throughout and stops the move immediately.
             # With a working lane encoder the position is measured, so the
             # steps are not needed: one move, stopped by the sensor.
+            # A unit that reports its own distance (calibration_feed single)
+            # also feeds once: its short feeds run far slower (CFS Nano:
+            # dosed, ~3.7 mm/s), and the distance is read, not timed.
             coarse = load - CAL_VERIFY_FINE_ZONE_MM - position
-            if c.get('protocol') == 'v2' and c.get('decoder_ok'):
+            single = (self._cap(c['ace'], 'calibration_feed') == 'single')
+            if single:
+                length = remaining
+            elif c.get('protocol') == 'v2' and c.get('decoder_ok'):
                 length = remaining
             elif coarse >= CAL_VERIFY_CHUNK_MM:
                 length = coarse
@@ -12300,6 +12638,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'method': method,
             'next_decoder_sample': eventtime, 'error': None,
         }
+        if kind == 'verify_feed' and single:
+            prev = self._calibration_motion(c['ace'])
+            move.update({'single': True, 'samples': [],
+                         'motion_seq0': prev['seq'] if prev else -1})
         self._calibration_move = move
         try:
             self.send_request_to(c['ace'], {
@@ -12320,6 +12662,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         idx, head = c['ace'], c['head']
         move = self._calibration_move
         c['toolhead_sensor'] = self._calibration_sensor(head)
+        if move is not None and move.get('single'):
+            self._calibration_note_motion(move, eventtime)
         if state == 'verifying_feed' and c['toolhead_sensor'] is True:
             self._calibration_verify_hold_toolhead(eventtime)
             return self.reactor.NEVER
@@ -12389,7 +12733,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     self._calibration_timer = None
                     return self.reactor.NEVER
                 return eventtime + 0.05
-            if elapsed > expected + 8.0:
+            if (elapsed > expected + 8.0
+                    and not self._calibration_unit_still_moving(
+                        idx, elapsed, expected)):
                 self._calibration_fail('verification movement timed out')
                 self._calibration_timer = None
                 return self.reactor.NEVER
@@ -12419,13 +12765,19 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         move = self._calibration_move
         partial = 0.0
         if move is not None:
-            partial = self._calibration_move_travel(move, eventtime)
+            if move.get('single'):
+                partial = self._calibration_single_at(move, eventtime)
+            else:
+                partial = self._calibration_move_travel(move, eventtime)
             if not self._calibration_accumulate_decoder(move):
                 self._calibration_move = None
                 return
         c['feed_travel_mm'] = float(c.get('feed_travel_mm') or 0.0) + partial
         c['commanded_feed_mm'] = int(round(c['feed_travel_mm']))
         c['load_length_mm'] = c['commanded_feed_mm']
+        # Where this distance came from (encoder, wheel or timing); the
+        # moves after it report their own source.
+        c['load_source'] = c.get('position_source') or 'timing'
         c['tip_position_mm'] = c['load_length_mm']
         c['toolhead_sensor'] = True
         c['state'] = 'at_sensor'
@@ -12464,6 +12816,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         detected = self._calibration_sensor(head)
         c['toolhead_sensor'] = detected
         move = self._calibration_move
+        if state == 'feeding' and move is not None and move.get('single'):
+            self._calibration_note_motion(move, eventtime)
 
         if state == 'feeding' and detected is True:
             self._calibration_feed_reached(eventtime)
@@ -12536,7 +12890,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     c['feed_travel_mm'] = (
                         float(c.get('feed_travel_mm') or 0.0)
                         + (self._calibration_move_travel(move, eventtime)
-                           if move.get('dec') is not None
+                           if (move.get('dec') is not None
+                               or move.get('single'))
                            else float(move['length'])))
                     self._calibration_move = None
                     if c['commanded_feed_mm'] >= c['max_feed_mm']:
@@ -12578,7 +12933,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 c['toolhead_sensor'] = self._calibration_sensor(head)
                 self._calibration_timer = None
                 return self.reactor.NEVER
-            if elapsed > expected + 8.0:
+            if (elapsed > expected + 8.0
+                    and not self._calibration_unit_still_moving(
+                        idx, elapsed, expected)):
                 self._calibration_fail('MMU movement timed out')
                 self._calibration_timer = None
                 return self.reactor.NEVER
@@ -12588,6 +12945,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if info.get('status') != 'ready':
             return eventtime + 0.10
         tip_start = None
+        single = False
         if state == 'homing':
             remaining = int(round(float(c.get('tip_position_mm') or 0)))
             if remaining <= 0:
@@ -12623,8 +12981,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             remaining = int(c['max_feed_mm']) - int(c['commanded_feed_mm'])
             # 500 mm first, then 100 mm steps - unless the lane encoder has
             # reported during the first chunk: then the position is measured
-            # and the rest is one move, stopped by the sensor.
-            if c.get('commanded_feed_mm') and c.get('decoder_ok'):
+            # and the rest is one move, stopped by the sensor. A unit that
+            # reports its own distance (calibration_feed single) feeds once.
+            single = self._cap(idx, 'calibration_feed') == 'single'
+            if single:
+                length = remaining
+            elif c.get('commanded_feed_mm') and c.get('decoder_ok'):
                 length = remaining
             else:
                 length = min(500 if not c.get('commanded_feed_mm') else 100,
@@ -12645,6 +13007,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'method': method,
             'next_decoder_sample': eventtime, 'error': None,
         }
+        if kind == 'feed' and single:
+            prev = self._calibration_motion(idx)
+            move.update({'single': True, 'samples': [],
+                         'motion_seq0': prev['seq'] if prev else -1})
         self._calibration_move = move
         try:
             self.send_request_to(idx, {
@@ -17863,87 +18229,98 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         src = self._head_source.get(head) or {}
         return (src.get('brand') or '').strip()
 
-    def tipform_table_for(self, material, vendor=None, soft=False):
-        # Custom per-material (+ optional vendor) tip-form table
-        # ([ace_tipform] section), or None = stock behaviour. Lookup order:
-        # '<vendor> <material>' -> '<material>' -> soft -> default. Printers
-        # without the section (or with mode: stock) always get None -
-        # byte-identical paths.
+    def _tipform_device_for(self, head):
+        # Driver name of the unit feeding `head` (ace_v1, ace_v2, cfs) for
+        # the '@<driver>' rows of [ace_tipform]; '' for a feeder/manual
+        # head or when the unit is unknown (= only the plain rows apply).
+        # Unit: head_source first, else head-mode wiring, else the active
+        # unit (the same order the feed path resolves).
+        try:
+            if not self.head_uses_ace(head):
+                return ''
+            src = self._head_source.get(head) or {}
+            idx = src.get('ace_index')
+            if idx is None:
+                idx = (self.head_ace_for(head)
+                       if getattr(self, '_ace_mode', 'multi') == 'head'
+                       else self._active_device_index)
+            proto = self._protocols.get(idx)
+            if proto is None:
+                return ''
+            for d in DRIVERS:
+                if isinstance(proto, d.codec):
+                    return d.name
+        except Exception:
+            pass
+        return ''
+
+    @staticmethod
+    def _tipform_call(fn, material, vendor, soft, device):
+        # Device-aware lookup; an ace_tipform.py without the 'device'
+        # argument answers the plain rows.
+        try:
+            return fn(material, vendor=vendor, soft=bool(soft),
+                      device=device)
+        except TypeError:
+            return fn(material, vendor=vendor, soft=bool(soft))
+
+    def tipform_table_for(self, material, vendor=None, soft=False,
+                          device=None):
+        # Custom per-material (+ optional vendor, + optional device) tip-
+        # form table ([ace_tipform] section), or None = stock behaviour.
+        # Lookup order: see AceTipform._lookup. Printers without the
+        # section (or with mode: stock) always get None.
         tf = self.printer.lookup_object('ace_tipform', None)
         if tf is None:
             return None
         try:
-            return tf.table_for(material, vendor=vendor, soft=soft)
+            return self._tipform_call(tf.table_for, material, vendor, soft,
+                                      device)
         except Exception:
             logging.exception('[multiACE] tipform table lookup failed')
             return None
 
-    def tipform_unload_temp_for(self, head, soft=False):
-        # Per-material/vendor unload-temp PARAMETER from [ace_tipform]
-        # ('unloadtemp:' table token) - the ONLY unload-temp source next
-        # to the plain load temp (chain: tipform -> load temp; the
-        # dormant stock DB unload_temp field is deliberately not read).
-        # None = no override. Inert in mode: stock (loud log).
+    def _tipform_param_for(self, head, name, soft):
+        # One [ace_tipform] parameter lookup for a head: declared
+        # material + vendor + the feeding unit's driver. None = no
+        # override (or no section / mode: stock / older module).
         tf = self.printer.lookup_object('ace_tipform', None)
-        if tf is None or not hasattr(tf, 'unload_temp_for'):
+        fn = getattr(tf, name, None) if tf is not None else None
+        if fn is None:
             return None
         try:
-            return tf.unload_temp_for(self._tipform_material_for(head),
-                                      vendor=self._tipform_vendor_for(head),
-                                      soft=bool(soft))
+            return self._tipform_call(fn, self._tipform_material_for(head),
+                                      self._tipform_vendor_for(head), soft,
+                                      self._tipform_device_for(head))
         except Exception:
-            logging.exception('[multiACE] tipform unload-temp lookup failed')
+            logging.exception('[multiACE] tipform %s lookup failed' % name)
             return None
+
+    def tipform_unload_temp_for(self, head, soft=False):
+        # Per-material/vendor/device unload-temp PARAMETER ('unloadtemp:'
+        # table token) - the ONLY unload-temp source next to the plain
+        # load temp (chain: tipform -> load temp; the dormant stock DB
+        # unload_temp field is deliberately not read). None = no override.
+        return self._tipform_param_for(head, 'unload_temp_for', soft)
 
     def tipform_load_temp_for(self, head, soft=False):
-        # Per-material/vendor LOAD-temp parameter from [ace_tipform]
-        # ('loadtemp:' table token) - the soak lever: load
-        # heat, seat press, phase3 and the bg load half run at this temp
-        # instead of the DB load temp. None = no override. The stuck-tip
-        # RETRY deliberately does NOT use it (it escalates to the
-        # DB load temp for freeing power; see the retry sites in
-        # filament_feed_ace). Inert in mode: stock (loud log).
-        tf = self.printer.lookup_object('ace_tipform', None)
-        if tf is None or not hasattr(tf, 'load_temp_for'):
-            return None
-        try:
-            return tf.load_temp_for(self._tipform_material_for(head),
-                                    vendor=self._tipform_vendor_for(head),
-                                    soft=bool(soft))
-        except Exception:
-            logging.exception('[multiACE] tipform load-temp lookup failed')
-            return None
+        # LOAD-temp parameter ('loadtemp:'): load heat, seat press, phase3
+        # and the bg load half run at it instead of the DB load temp. The
+        # stuck-tip RETRY deliberately does NOT use it (it escalates to
+        # the DB load temp for freeing power).
+        return self._tipform_param_for(head, 'load_temp_for', soft)
 
     def tipform_bg_temp_for(self, head, soft=False):
-        # Per-material/vendor BACKGROUND-load temp ('bgtemp:' token): the
-        # bg engine's load half (feed/grip/prime into the bin) runs at it
-        # instead of the load temp. None = no override.
-        tf = self.printer.lookup_object('ace_tipform', None)
-        if tf is None or not hasattr(tf, 'bg_temp_for'):
-            return None
-        try:
-            return tf.bg_temp_for(self._tipform_material_for(head),
-                                  vendor=self._tipform_vendor_for(head),
-                                  soft=bool(soft))
-        except Exception:
-            logging.exception('[multiACE] tipform bg-temp lookup failed')
-            return None
+        # BACKGROUND-load temp ('bgtemp:'): the bg engine's load half runs
+        # at it instead of the load temp.
+        return self._tipform_param_for(head, 'bg_temp_for', soft)
 
     def tipform_prime_for(self, head, soft=False):
-        # Hot pre-purge before the tip forms ('prime:'/'primetemp:' table
-        # tokens): (primetemp or None, mm) or None. Both unload paths
+        # Hot pre-purge before the tip forms ('prime:'/'primetemp:'):
+        # (primetemp or None, mm, feedrate) or None. Both unload paths
         # (inline _run_tipform, bg _unload_core) run it before cooling to
         # the unload temp.
-        tf = self.printer.lookup_object('ace_tipform', None)
-        if tf is None or not hasattr(tf, 'prime_for'):
-            return None
-        try:
-            return tf.prime_for(self._tipform_material_for(head),
-                                vendor=self._tipform_vendor_for(head),
-                                soft=bool(soft))
-        except Exception:
-            logging.exception('[multiACE] tipform prime lookup failed')
-            return None
+        return self._tipform_param_for(head, 'prime_for', soft)
 
     def _tipform_fa_start(self, ace_idx, slot):
         # Forward feed-assist for a push on a V2 (device-truth pre-check:
@@ -18099,7 +18476,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         _pp = self.tipform_prime_for(head, soft)
         if _pp:
             self._tipform_pre_prime(head, _pp, temp, soft)
-        table = self.tipform_table_for(material, vendor=vendor, soft=bool(soft))
+        device = self._tipform_device_for(head)
+        table = self.tipform_table_for(material, vendor=vendor,
+                                       soft=bool(soft), device=device)
         if table is None:
             # The stock fallback must never be SILENT in custom mode, or a
             # failed material lookup passes a stock pull off as a custom one.
@@ -18111,8 +18490,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 # ineffective" while the temp is very much applied.
                 _utemp = None
                 try:
-                    _utemp = tf.unload_temp_for(material, vendor=vendor,
-                                                soft=bool(soft))
+                    _utemp = self._tipform_call(tf.unload_temp_for,
+                                                material, vendor, soft,
+                                                device)
                 except Exception:
                     pass
                 if _utemp is not None:
@@ -18139,6 +18519,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return
         _tf_desc = (('%s %s' % (vendor, material)) if vendor and material
                     else (material.lower() if material else 'default'))
+        if device:
+            _tf_desc += ', device %s' % device
         _tf_line = ('[multiACE] head %d: custom tip form (%s, %d tokens)'
                     % (self._disp(head), _tf_desc, len(table)))
         self.log_always(_tf_line)
@@ -18373,6 +18755,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # ACE must not fail (or silently return) because some ACE is absent.
         if self.head_uses_ace(head):
             if ace_index < 0 or not self._ensure_ace_available(ace_index):
+                if not self._swap_in_progress and self._is_actively_printing():
+                    # A print line (the virtual-tool preload) must not run
+                    # on with an unloaded head: pause, resumable.
+                    self._mmu_missing_stop(gcmd, ace_index, head,
+                        'MMU %d not available' % self._disp(ace_index))
                 self.log_always(self._t('msg.ace_not_available',
                     ace=self._disp(ace_index)))
                 return
@@ -18484,9 +18871,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if self.head_uses_ace(head):
             if ace_index != self._active_device_index:
                 if not self._switch_ace_for_head_target(ace_index):
-                    raise self._ace_error(gcmd,
-                        'Failed to connect to MMU %d' % self._disp(ace_index),
-                        code=208, head=head)
+                    msg = 'Failed to connect to MMU %d' % self._disp(ace_index)
+                    if self._swap_in_progress:
+                        # The swap around this load reports the failure.
+                        raise self._ace_error(gcmd, msg, code=208, head=head)
+                    self._mmu_missing_stop(gcmd, ace_index, head, msg)
 
             if self.gate_status[slot] != GATE_AVAILABLE:
                 self.log_always(self._t('msg.load_slot_no_filament',
@@ -18835,10 +19224,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
             if ace_index != self._active_device_index:
                 if not self._switch_ace_for_head_target(ace_index):
-                    raise self._ace_error(gcmd,
-                        'Failed to connect to MMU %d for unload!'
-                        % self._disp(ace_index),
-                        code=208, head=head)
+                    msg = ('Failed to connect to MMU %d for unload!'
+                           % self._disp(ace_index))
+                    if self._swap_in_progress:
+                        raise self._ace_error(gcmd, msg, code=208, head=head)
+                    self._mmu_missing_stop(gcmd, ace_index, head, msg)
             if recovery_source:
                 # FEED_AUTO resolves its retract slot through head_source.
                 # Record the user's validated route in memory so every

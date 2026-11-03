@@ -41,7 +41,7 @@ import logging
 import chelper
 from . import force_move
 
-BG_SWAP_VERSION = 'v0.9'
+BG_SWAP_VERSION = 'v1.0'
 
 # --- background LOAD (the BG-Load v1 feature) ---
 # The bowden feed runs the full padded get_load_length and is stopped by the
@@ -106,6 +106,7 @@ PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_GRIP', 'LD_PRIME')
 # none of that - part of its 80 only FILLS the melt zone (grip ends 60mm
 # past the sensor) and there is no cutter at the dock. Without the bonus a
 # bg swap carries visibly more old colour into the print. ~+10s bg time - invisible, it runs in the background.
+# Default of [ace_bg_swap] prime_extra.
 BG_LOAD_PRIME_EXTRA = 40.
 BG_LOAD_RETRACT_SPEED = 25.  # mm/s anti-ooze end retract
 BG_FEED_MIN_MOVE = 100       # V2: span below this = nothing demonstrably moved
@@ -218,6 +219,10 @@ class AceBgSwap:
         # and without the holds (A/B); the toolchange then goes as before:
         # the pick notice and the engine's pick interlock decide.
         self.arrival_wait = config.getboolean('arrival_wait', True)
+        # Extra prime on top of the purge length in the background load
+        # (BG_LOAD_PRIME_EXTRA note). Read unconditionally.
+        self.prime_extra = config.getfloat('prime_extra', BG_LOAD_PRIME_EXTRA,
+                                           minval=0., maxval=100.)
         # Unload-only switch: False disables the
         # bg LOAD half - ACE_BG_SWAP stamps run only the HW-proven unload
         # half, the arrival swap then loads INLINE with full phase3
@@ -1986,9 +1991,18 @@ class AceBgSwap:
             # reclaim below adapts to any custom table automatically.
             seq = None
             try:
-                seq = ace.tipform_table_for(
-                    ace._tipform_material_for(head),
-                    vendor=ace._tipform_vendor_for(head), soft=bool(soft))
+                _dev_fn = getattr(ace, '_tipform_device_for', None)
+                _dev = _dev_fn(head) if _dev_fn else None
+                if _dev:
+                    seq = ace.tipform_table_for(
+                        ace._tipform_material_for(head),
+                        vendor=ace._tipform_vendor_for(head),
+                        soft=bool(soft), device=_dev)
+                else:
+                    seq = ace.tipform_table_for(
+                        ace._tipform_material_for(head),
+                        vendor=ace._tipform_vendor_for(head),
+                        soft=bool(soft))
             except Exception:
                 seq = None
             if seq is not None:
@@ -2658,10 +2672,10 @@ class AceBgSwap:
                 _policy = getattr(ace, 'apply_purge_policy', None)
                 if _policy is not None:
                     purge = _policy(purge)
-                prime_target = float(purge) + BG_LOAD_PRIME_EXTRA
+                prime_target = float(purge) + self.prime_extra
             else:
                 prime_target = (float(ace.get_purge_length() or 0) or 80.) \
-                    + BG_LOAD_PRIME_EXTRA
+                    + self.prime_extra
             primed = 0.
             ooze_done = False
 

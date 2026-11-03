@@ -96,7 +96,10 @@ class TestSwapTimeline:
         assert last["seconds"] == pytest.approx(
             model.swap_seconds("cross_ace_bg"), abs=0.1)
 
-    def test_a_short_window_degrades_to_inline(self, model):
+    def test_a_short_window_degrades_to_inline(self, model, monkeypatch):
+        # The shipped threshold is 0 (every window qualifies); the degrade
+        # path still has to work for a threshold above the window.
+        monkeypatch.setattr(pp, "BG_UNLOAD_MIN_WINDOW_MIN", 1)
         assignment = {0: _ace(0, ace=0), 1: _ace(0, ace=1), 2: _ace(1)}
         tl = pp.build_swap_timeline([0, 2, 1], assignment,
                                     event_times=[60, 50, 49.9],
@@ -166,12 +169,14 @@ class TestSwapTimeline:
 
 
 class TestStampMatrix:
-    def test_the_text_parser_applies_the_multiplier_upward_only(self):
+    def test_the_text_parser_applies_the_multiplier_both_ways(self):
         text = ("; flush_volumes_matrix = 0,100,100,0\n"
                 "; flush_multiplier = 0.5\n")
-        assert pp.parse_flush_matrix_raw(text) == [[0, 100], [100, 0]]
+        assert pp.parse_flush_matrix_raw(text) == [[0, 50], [50, 0]]
         text = text.replace("0.5", "2")
         assert pp.parse_flush_matrix_raw(text) == [[0, 200], [200, 0]]
+        text = text.replace("= 2", "= 0")
+        assert pp.parse_flush_matrix_raw(text) == [[0, 100], [100, 0]]
 
     def test_no_matrix_is_none(self):
         assert pp.parse_flush_matrix_raw("G1 X1\n") is None

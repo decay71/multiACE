@@ -301,7 +301,7 @@ Emitted events:
 | `airlog_chew` | the in-print flow sampler (`[ace] airlog: true`) saw sustained huge back-pressure while extruding (chew / air-print suspect); with `resistance_pause` on this pauses the print | `head delta run seq` |
 
 `status` on `swap_failed` carries the failure tag (`unload_failed`, `load_failed`,
-`slot_empty`, `staged_mismatch`, …). `error` is the generic fallback for an exit that names no tag of
+`slot_empty`, `staged_mismatch`, `mmu_missing` (the target MMU dropped off USB mid-swap), …). `error` is the generic fallback for an exit that names no tag of
 its own - it means "the swap failed", nothing more; the paused error message that
 comes with it is the specific one. `ok` is never a legal value on this event.
 All push events are best-effort: a transport hiccup never disturbs

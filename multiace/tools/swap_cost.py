@@ -36,8 +36,8 @@ import re
 # that, with the shipped ace.cfg defaults (feed_speed/retract_speed 80,
 # load_length 2100, swap_retract_length 900, seat_overshoot_length 20,
 # swap_anti_ooze_retract 10), the modelled cost of an inline swap lands on
-# about 210 s and a background swap on 30 s - the whole-swap figures of
-# post_process_virtual_toolheads.BG_SWAP_COST_INLINE_S / _BG_S. The purge
+# about 210 s and a background swap on 30 s - the old whole-swap figures
+# of post_process_virtual_toolheads (now 146 / 56 s, measured). The purge
 # is NOT in these seeds: build_estimate bills it on top, so an estimate with
 # the default 80 mm flush reads about 28 s above the old inline figure.
 # Every later change is a deliberate constant edit.
@@ -103,7 +103,8 @@ PURGE_MIN_MM = 40.0
 PURGE_MAX_MM = 150.0
 
 #: A background swap primes the head with the purge length plus this much
-#: (ace_bg_swap.BG_LOAD_PRIME_EXTRA), so it uses that much more filament.
+#: ([ace_bg_swap] prime_extra, default ace_bg_swap.BG_LOAD_PRIME_EXTRA), so
+#: it uses that much more filament.
 BG_LOAD_PRIME_EXTRA_MM = 40.0
 
 #: A background swap that its head's arrival catches before it has finished:
@@ -468,15 +469,21 @@ class SwapCostModel(object):
         self.swap_anti_ooze_retract = float(
             p.get("swap_anti_ooze_retract", 10) or 0)
         self.swap_purge_length = float(p.get("swap_purge_length", 0) or 0)
+        self.bg_prime_extra = float(
+            p.get("bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM) or 0)
 
-        self.swap_purge_min = float(p.get("swap_purge_min", PURGE_MIN_MM) or 0)
+        # swap_purge_floor is the one minimum: the post-processor sizes its
+        # stamps with it too (40 while it is 0).
+        _floor = float(p.get("swap_purge_floor", 0) or 0)
+        self.swap_purge_min = float(p.get(
+            "swap_purge_min", _floor if _floor > 0 else PURGE_MIN_MM) or 0)
         self.swap_purge_max = float(p.get("swap_purge_max", PURGE_MAX_MM) or 0)
         #: ACE_SET_PURGE MATRIX=0 - ignore the slicer's flush-matrix stamps
         #: and purge the fixed length again.
         self.purge_matrix = bool(p.get("purge_matrix", True))
         #: The engine's purge policy (ace.py get_purge_length): a percent
         #: scale on the resolved length, then an optional floor and cap in
-        #: mm (0 = off). Same names as the [ace] settings.
+        #: mm (cap 0 = off, floor 0 = 40). Same names as the [ace] settings.
         self.swap_purge_scale = float(p.get("swap_purge_scale", 100) or 100)
         self.swap_purge_floor = float(p.get("swap_purge_floor", 0) or 0)
         self.swap_purge_cap = float(p.get("swap_purge_cap", 0) or 0)
@@ -658,10 +665,10 @@ class SwapCostModel(object):
         return self.apply_purge_policy(base)
 
     def apply_purge_policy(self, length_mm):
-        """The engine's scale and floor/cap on a resolved purge length (see
-        ace.py get_purge_length): percent scale first, then the floor, then
-        the cap, then never below PURGE_MIN_MM (the engine's hard minimum)
-        nor above INNER_FLUSH_FILAMENT's own limit."""
+        """The engine's scale, floor and cap on a resolved purge length (see
+        ace_swap.py apply_purge_policy): percent scale, floor, cap, then never
+        below PURGE_MIN_MM or a lower swap_purge_floor, nor above
+        INNER_FLUSH_FILAMENT's own limit."""
         value = float(length_mm or 0.0)
         if (self.swap_purge_scale == 100 and not self.swap_purge_floor
                 and not self.swap_purge_cap):
@@ -675,7 +682,9 @@ class SwapCostModel(object):
             value = max(value, self.swap_purge_floor)
         if self.swap_purge_cap > 0:
             value = min(value, self.swap_purge_cap)
-        return min(max(value, PURGE_MIN_MM), PURGE_LENGTH_MAX_MM)
+        hard = (min(self.swap_purge_floor, PURGE_MIN_MM)
+                if self.swap_purge_floor > 0 else PURGE_MIN_MM)
+        return min(max(value, hard), PURGE_LENGTH_MAX_MM)
 
     def clamp_purge_mm(self, requested_mm):
         """Clamp a flush-matrix stamp to the range the post-processor uses."""
@@ -745,12 +754,12 @@ def build_estimate(model, header, timeline, *, materials=None,
                      else model.resolve_swap_purge_mm())
         purge = float(purge or 0.0)
         # A finished background swap purges on the parked head, off the
-        # critical path; its prime is the purge plus BG_LOAD_PRIME_EXTRA_MM.
+        # critical path; its prime is the purge plus bg_prime_extra.
         # The flush is inline for every other kind, and for a background
         # swap in transport mode or one that was aborted (`purge_inline`).
         bg_parked = kind == "cross_ace_bg" and not ev.get("purge_inline")
         if bg_parked and purge > 0:
-            purge += BG_LOAD_PRIME_EXTRA_MM
+            purge += getattr(model, "bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM)
         added_s += float(seconds or 0.0)
         purge_mm_total += purge
         if not bg_parked:
