@@ -130,9 +130,12 @@ class TestEnginePurgePolicy:
             engine.swap_purge_scale = scale
             engine.swap_purge_floor = floor
             engine.swap_purge_cap = cap
-            engine._purge_length_override = stamp or None
             m = _model(swap_purge_scale=scale, swap_purge_floor=floor,
                        swap_purge_cap=cap)
+            # The engine gets the stamp the post-processor wrote, which is
+            # already clamped to swap_purge_floor (the model's stamp clamp).
+            engine._purge_length_override = (
+                int(m.clamp_purge_mm(stamp)) if stamp else None)
             assert engine.get_purge_length() == pytest.approx(
                 m.resolve_swap_purge_mm(stamp_mm=stamp or None), abs=0.51)
 

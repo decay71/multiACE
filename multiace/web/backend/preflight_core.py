@@ -725,6 +725,39 @@ def multi_assignment_shape(head_ctx) -> bool:
     return max_copies(head_ctx) > 1 or bool(manual_head_list(head_ctx))
 
 
+def connected_aces(head_ctx: dict):
+    """Set of connected MMU indices from head_ctx, or None when the context
+    carries no unit list (older backend, Klipper not answering): callers
+    then plan as before."""
+    conn = (head_ctx or {}).get("connected_aces")
+    if conn is None:
+        return None
+    try:
+        return {int(a) for a in conn}
+    except (TypeError, ValueError):
+        return None
+
+
+def unconnected_heads(head_ctx: dict) -> list:
+    """Head mode: the MMU-fed heads whose wired MMU is not connected, as
+    [{'head': h, 'ace': a}]. They get no targets; the preview names them
+    so the user can connect the unit or switch the head to feeder."""
+    head_ctx = head_ctx or {}
+    conn = connected_aces(head_ctx)
+    if conn is None or is_multi_ctx(head_ctx):
+        return []
+    raw = head_ctx.get("head_ace") or {}
+    out = []
+    for h in sorted({int(x) for x in (head_ctx.get("ace_heads") or [])}):
+        try:
+            a = int(raw.get(str(h), raw.get(h, h)))
+        except (TypeError, ValueError):
+            a = h
+        if a not in conn:
+            out.append({"head": h, "ace": a})
+    return out
+
+
 def head_maps(head_ctx: dict, pp=None) -> tuple:
     """Resolve the ACE-head topology from head_ctx into the maps the matcher
     needs: (ace_heads, ace_head_of_ace, ace_num_of_head, feeder_heads).
@@ -749,6 +782,9 @@ def head_maps(head_ctx: dict, pp=None) -> tuple:
         manual = sorted({m["head"] for m in manual_head_list(head_ctx)})
         ace_heads = [h for h in range(4) if h not in manual]
         num_aces = int(head_ctx.get("num_aces") or 4)
+        conn = connected_aces(head_ctx)
+        if conn:
+            num_aces = min(num_aces, max(conn) + 1)
         topo = topo_cls(ace_heads, num_aces)
         return ace_heads, topo, {h: 0 for h in ace_heads}, manual
     ace_heads = [int(h) for h in (head_ctx.get("ace_heads") or [])]
@@ -762,9 +798,16 @@ def head_maps(head_ctx: dict, pp=None) -> tuple:
     if not ace_heads:
         ace_heads = [int(head_ctx.get("ace_head", 3) or 3)]
     ace_heads = sorted(set(ace_heads))
+    # A head whose wired MMU is not connected is neither an MMU head (no
+    # slots to plan) nor a feeder (the user did not declare one).
+    conn = connected_aces(head_ctx)
+    dead = ({h for h in ace_heads if head_ace.get(h, h) not in conn}
+            if conn is not None else set())
+    ace_heads = [h for h in ace_heads if h not in dead]
     ace_num_of_head = {h: head_ace.get(h, h) for h in ace_heads}
     ace_head_of_ace = {ace_num_of_head[h]: h for h in ace_heads}
-    feeder_heads = [h for h in range(4) if h not in ace_heads]
+    feeder_heads = [h for h in range(4)
+                    if h not in ace_heads and h not in dead]
     return ace_heads, ace_head_of_ace, ace_num_of_head, feeder_heads
 
 
@@ -1149,6 +1192,7 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
       layer    - same with layer-only swaps (Belady-/layer-optimal)
     Plus the colour grids at the top (available targets + slicer colours).
     """
+    _apply_pp_settings(pp, head_ctx)
     multi = is_multi_ctx(head_ctx)
     feeders = (manual_head_list(head_ctx) if multi
                else ((head_ctx or {}).get("feeders") or []))
@@ -1253,6 +1297,7 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
         "token": token, "filename": safe_name, "size": upload_size,
         "head_mode": True, "ace_head": (ace_heads[0] if ace_heads else 3),
         "ace_heads": ace_heads,
+        "unconnected_heads": unconnected_heads(head_ctx),
         # 'multi': the assignment pipeline on the multi topology (slot N
         # feeds head N, pins = hand-fed heads); 'head': the wired 1:1 one.
         "topology": ("multi" if multi else "head"),
@@ -1285,7 +1330,7 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
                     "min_window_min": getattr(
                         pp, "BG_UNLOAD_MIN_WINDOW_MIN", 3),
                     "inline_saving_s": getattr(
-                        pp, "BG_UNLOAD_INLINE_SAVING_S", 180)},
+                        pp, "BG_UNLOAD_INLINE_SAVING_S", 90)},
         # Remaining minutes per toolchange (M73), so the browser can rate
         # the bg windows of a live-edited plan like the server does.
         "event_times": (list(event_times) if event_times is not None
@@ -1336,6 +1381,7 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
     inline /api/preflight body 1:1 so backend and Pyodide produce identical
     reports.
     """
+    _apply_pp_settings(pp, head_ctx)
     _dp = getattr(pp, "detect_processed", None)
     if _dp is not None:
         try:
@@ -1354,6 +1400,11 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
                 % ("format %d" % _fmt if _fmt is not None
                    else "an older version, no format marker"))
     num_aces = max(num_aces, max((s["ace"] for s in live_slots), default=0) + 1)
+    # Never plan onto an MMU that is not connected (the slicer's T numbers
+    # alone can name a fourth unit on a three-unit printer).
+    _conn = connected_aces(head_ctx)
+    if _conn:
+        num_aces = min(num_aces, max(_conn) + 1)
 
     if (head_ctx or {}).get("mode") == "head":
         ensure_head_mode_support(pp)
@@ -1454,6 +1505,15 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
 # rewrite pipeline (produce the print-ready gcode)                            #
 # --------------------------------------------------------------------------- #
 
+def _apply_pp_settings(pp, head_ctx):
+    """Printer settings the post-processor reads at module level. Set before
+    every report and every rewrite so preview and print use the same values;
+    an older post-processor without the setter keeps its defaults."""
+    _spf = getattr(pp, "set_purge_floor", None)
+    if callable(_spf):
+        _spf((head_ctx or {}).get("purge_floor"))
+
+
 def _noop_stage(stage, percent):
     pass
 
@@ -1484,6 +1544,7 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
     """
     set_stage = set_stage or _noop_stage
     stage_cb  = stage_cb  or _noop_stage_cb
+    _apply_pp_settings(pp, head_ctx)
 
     # A2: a multi-colour file whose body cannot be found by any marker (no
     # '; Change Tool' AND no layer-change marker) stamps zero swaps and
@@ -1517,6 +1578,11 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
                 % ("format %d" % _fmt if _fmt is not None
                    else "older version"))
     num_aces = max(num_aces, max((s["ace"] for s in live_slots), default=0) + 1)
+    # Never plan onto an MMU that is not connected (the slicer's T numbers
+    # alone can name a fourth unit on a three-unit printer).
+    _conn = connected_aces(head_ctx)
+    if _conn:
+        num_aces = min(num_aces, max(_conn) + 1)
 
     if mode != "head":
         # Head mode pins colours to feeders too (materials not in an ACE slot),

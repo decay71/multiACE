@@ -32,7 +32,8 @@ STATIC_FIELDS = (
     'has_decoder', 'v1_fa_health_log', 'tag_identity_in_status',
     'fw_tag_pair_dedupe', 'has_humidity', 'has_dryer', 'has_exhaust_valve',
     'has_feed_check', 'flash_engine', 'v2_command_set', 'lanes_concurrent',
-    'speed_unit', 'busy_reply', 'has_stable_id',
+    'speed_unit', 'busy_reply', 'has_stable_id', 'freewheel_print_mode',
+    'locate_method', 'calibration_feed',
 )
 
 # Caps derived from the firmware string and the Gen-1 probe.
@@ -79,6 +80,12 @@ REASONS = {
     'flash_engine': 'ACE Pro flashes over the V1 IAP JSON-RPC, ACE 2 over '
                     'the protobuf OTA',
     'v2_command_set': 'the A_* diagnostics speak protobuf commands',
+    'calibration_feed': 'chunked: 500 mm then 100 mm steps, the position '
+                        'from the lane encoder or the time; single: one feed '
+                        'to the sensor, the unit reports the distance (CFS '
+                        'Nano wheel)',
+    'locate_method': 'the ACE 2 blinks its LEDs (FLASH_LED), the ACE Pro '
+                     'has none and jogs a slot',
     'lanes_concurrent': 'V1 serialises lanes; for the ACE 2 it is open',
     'busy_reply': "V1 rejects busy as code=0 msg=FORBIDDEN, V2 as "
                   "code=n error_n",
@@ -201,7 +208,7 @@ def _none_fields():
               'v2_command_set', 'blocking_write_on_reactor',
               'lanes_concurrent', 'bootloader_held', 'rc522_tunnel',
               'can_write_tags', 'insert_bites_while_busy', 'dryer_flag_bits',
-              'gen1_tunnel', 'tag_read'):
+              'gen1_tunnel', 'tag_read', 'freewheel_print_mode'):
         d[k] = False
     d['community_fw'] = ''
     return d

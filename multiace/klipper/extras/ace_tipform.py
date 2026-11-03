@@ -75,6 +75,11 @@
 #   default: 57@400, 3@1500, -27@2700, -5.5@40, -37.5@1500
 #   petg: 30@400, 0.7@1600, 0.7@2400, -27@2700, pause:200, 2@600, -2@600, -35@1500
 #
+# Per device: append '@<driver>' to any key (ace_v1, ace_v2, cfs), e.g.
+#   pla@cfs: unloadtemp:215, loadtemp:220
+# The row applies only to heads fed by a unit of that driver; the lookup
+# tries the whole '@<driver>' chain first, then the plain chain.
+#
 # Lookup order: <vendor>_<material> -> <material> -> soft (when SOFT) ->
 # default -> None (= stock macro inline / built-in table in the bg engine).
 # A table with a NET push (sum of moves > 0) is refused at startup - the tip
@@ -355,7 +360,7 @@ class AceTipform:
                 continue
             if not in_sec:
                 continue
-            m = re.match(r'^([A-Za-z0-9_\-]+)\s*[:=]\s*(.*)$', s)
+            m = re.match(r'^([A-Za-z0-9_\-@]+)\s*[:=]\s*(.*)$', s)
             if not m:
                 continue
             k, v = m.group(1).strip().lower(), m.group(2).strip()
@@ -396,107 +401,68 @@ class AceTipform:
         gcmd.respond_info(msg)
         logging.info(msg)
 
-    def table_for(self, material, vendor=None, soft=False):
-        """The custom table for a (vendor, material), or None = use the stock
-        path (INNER macro inline / built-in table in the bg engine).
+    def _lookup(self, store, material, vendor=None, soft=False, device=None):
+        """One value from `store` (tables or a parameter dict) for a
+        (vendor, material, device), or None. Gated on mode: custom.
 
-        Precedence: '<vendor>_<material>' -> '<material>' -> 'soft' ->
-        'default'. The vendor key is CONSTRUCTED and checked for membership
-        (never parsed back) - a missing/empty/generic vendor simply doesn't
-        match and falls through to the plain material, so no vendor
-        canonicalisation is needed (the fallback is the safety net). The
-        join is '_' (not a space): a space is invalid in a Klipper config
-        option name and the web editor's key validator forbids it. The
-        vendor part itself is lowercased and its internal spaces collapsed
-        to '_' so 'Prusament PLA' and a vendor field 'Prusa Research' both
-        land on a stable key."""
+        Precedence per pass: '<vendor>_<material>' -> '<material>' ->
+        'soft' (when SOFT) -> 'default'. With a device (driver name of the
+        unit feeding the head: ace_v1, ace_v2, cfs) a first pass looks up
+        the same chain with '@<device>' appended to every key, then the
+        plain chain; a section without '@' keys behaves as before.
+        Keys are CONSTRUCTED and checked for membership (never parsed
+        back) - a missing/empty/generic vendor simply doesn't match and
+        falls through to the plain material, so no vendor
+        canonicalisation is needed. The vendor/material join is '_' (a
+        space is invalid in a Klipper option name); the vendor part is
+        lowercased and its internal spaces collapsed to '_' so
+        'Prusament PLA' and 'Prusa Research' land on stable keys."""
         if self.mode != 'custom':
             return None
         mat = (material or '').strip().lower()
         ven = '_'.join((vendor or '').strip().lower().split())
+        dev = (device or '').strip().lower()
+        chain = []
         if mat and ven and ven not in ('none', 'generic'):
-            vkey = '%s_%s' % (ven, mat)
-            if vkey in self.tables:
-                return self.tables[vkey]
-        if mat and mat in self.tables:
-            return self.tables[mat]
-        if soft and 'soft' in self.tables:
-            return self.tables['soft']
-        return self.tables.get('default')
+            chain.append('%s_%s' % (ven, mat))
+        if mat:
+            chain.append(mat)
+        if soft:
+            chain.append('soft')
+        chain.append('default')
+        keys = (['%s@%s' % (k, dev) for k in chain] if dev else []) + chain
+        for k in keys:
+            if k in store:
+                return store[k]
+        return None
 
-    def unload_temp_for(self, material, vendor=None, soft=False):
-        """The custom unload temp for a (vendor, material), or None = the
-        unload runs at the load temp.
-        Same precedence + key normalisation as table_for, same mode gate:
-        the whole section is inert in mode: stock (a param-only table
-        just means stock CHOREOGRAPHY at the custom temp)."""
-        if self.mode != 'custom':
-            return None
-        mat = (material or '').strip().lower()
-        ven = '_'.join((vendor or '').strip().lower().split())
-        if mat and ven and ven not in ('none', 'generic'):
-            vkey = '%s_%s' % (ven, mat)
-            if vkey in self.unload_temps:
-                return self.unload_temps[vkey]
-        if mat and mat in self.unload_temps:
-            return self.unload_temps[mat]
-        if soft and 'soft' in self.unload_temps:
-            return self.unload_temps['soft']
-        return self.unload_temps.get('default')
+    def table_for(self, material, vendor=None, soft=False, device=None):
+        """The custom table for a (vendor, material, device), or None = use
+        the stock path (INNER macro inline / built-in table in the bg
+        engine). Precedence: see _lookup."""
+        return self._lookup(self.tables, material, vendor, soft, device)
 
-    def load_temp_for(self, material, vendor=None, soft=False):
-        """The custom LOAD temp for a (vendor, material), or None = fall
-        through to the DB chain (get_load_temp -> 250). Same precedence,
-        key normalisation and mode gate as unload_temp_for."""
-        if self.mode != 'custom':
-            return None
-        mat = (material or '').strip().lower()
-        ven = '_'.join((vendor or '').strip().lower().split())
-        if mat and ven and ven not in ('none', 'generic'):
-            vkey = '%s_%s' % (ven, mat)
-            if vkey in self.load_temps:
-                return self.load_temps[vkey]
-        if mat and mat in self.load_temps:
-            return self.load_temps[mat]
-        if soft and 'soft' in self.load_temps:
-            return self.load_temps['soft']
-        return self.load_temps.get('default')
+    def unload_temp_for(self, material, vendor=None, soft=False,
+                        device=None):
+        """The custom unload temp, or None = the unload runs at the load
+        temp. Same precedence and mode gate as table_for (the whole
+        section is inert in mode: stock; a param-only table just means
+        stock CHOREOGRAPHY at the custom temp)."""
+        return self._lookup(self.unload_temps, material, vendor, soft, device)
 
-    def bg_temp_for(self, material, vendor=None, soft=False):
-        """The custom BACKGROUND-load temp for a (vendor, material), or
-        None = use loadtemp. Same precedence and mode gate as
-        load_temp_for."""
-        if self.mode != 'custom':
-            return None
-        mat = (material or '').strip().lower()
-        ven = '_'.join((vendor or '').strip().lower().split())
-        if mat and ven and ven not in ('none', 'generic'):
-            vkey = '%s_%s' % (ven, mat)
-            if vkey in self.bg_temps:
-                return self.bg_temps[vkey]
-        if mat and mat in self.bg_temps:
-            return self.bg_temps[mat]
-        if soft and 'soft' in self.bg_temps:
-            return self.bg_temps['soft']
-        return self.bg_temps.get('default')
+    def load_temp_for(self, material, vendor=None, soft=False, device=None):
+        """The custom LOAD temp, or None = fall through to the DB chain
+        (get_load_temp -> 250)."""
+        return self._lookup(self.load_temps, material, vendor, soft, device)
 
-    def prime_for(self, material, vendor=None, soft=False):
-        """(primetemp or None, prime_mm) of the hot pre-purge for a
-        (vendor, material), or None = no pre-purge. Same precedence and
-        mode gate as the other parameters."""
-        if self.mode != 'custom':
-            return None
-        mat = (material or '').strip().lower()
-        ven = '_'.join((vendor or '').strip().lower().split())
-        if mat and ven and ven not in ('none', 'generic'):
-            vkey = '%s_%s' % (ven, mat)
-            if vkey in self.primes:
-                return self.primes[vkey]
-        if mat and mat in self.primes:
-            return self.primes[mat]
-        if soft and 'soft' in self.primes:
-            return self.primes['soft']
-        return self.primes.get('default')
+    def bg_temp_for(self, material, vendor=None, soft=False, device=None):
+        """The custom BACKGROUND-load temp, or None = use loadtemp."""
+        return self._lookup(self.bg_temps, material, vendor, soft, device)
+
+    def prime_for(self, material, vendor=None, soft=False, device=None):
+        """(primetemp or None, prime_mm, feedrate) of the hot pre-purge,
+        or None = no pre-purge."""
+        return self._lookup(self.primes, material, vendor, soft, device)
 
     def get_status(self, eventtime):
         # tables = UNION of move-tables and param-only (unloadtemp:/

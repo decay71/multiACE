@@ -780,3 +780,74 @@ def test_forward_jog_reports_tip_live():
     run_until(a, lambda: c['state'] == 'feed_jogging'
               and phys(a) > start + 120)
     assert c['tip_position_mm'] > start + 60
+
+
+# ---- a unit that reports its own distance (calibration_feed single) ------
+
+def _single_unit(true_mm, slow_short=True):
+    """A unit like the CFS Nano: feeds up to 100 mm run dosed at a few mm/s,
+    longer ones at speed, and the heartbeat carries the distance of the
+    running move ('motion'). No lane encoder."""
+    a, c = complete_session(true_mm, 'cfs')
+    a._cap = (lambda idx, name, default=None:
+              'single' if name == 'calibration_feed' else
+              (False if name == 'has_decoder' else default))
+    fake = a.fake
+    mo = {'seq': 0, 'start': 0.0, 'kind': 'feed', 'running': False,
+          'move': None}
+    send = a.send_request_to
+
+    def send_request_to(idx, request, callback):
+        send(idx, request, callback)
+        method = request['method']
+        if method in ('feed_filament', 'unwind_filament'):
+            if slow_short and float(request['params']['length']) <= 100:
+                fake['move']['speed'] = 3.7
+            elif method == 'feed_filament':
+                fake['move']['speed'] = 44.0     # the box sets its own pace
+            mo.update({'seq': mo['seq'] + 1, 'start': fake['pos'],
+                       'kind': 'feed' if method == 'feed_filament'
+                       else 'retract', 'move': fake['move']})
+    a.send_request_to = send_request_to
+    step = a.step
+
+    def step_with_motion(dt):
+        before = a._info_per_ace[0]
+        step(dt)
+        if a._info_per_ace[0] is not before:   # a fresh heartbeat report
+            running = fake['move'] is not None and fake['move'] is mo['move']
+            a._info_per_ace[0]['motion'] = {
+                'seq': mo['seq'], 'kind': mo['kind'], 'running': running,
+                'mm': abs(fake['pos'] - mo['start'])}
+    a.step = step_with_motion
+    a.reactor.stepper = step_with_motion
+    return a, c
+
+
+def test_single_unit_verify_feeds_once():
+    a, c = _single_unit(1430)
+    c['load_length_mm'] = c['retract_length_mm'] = 1400
+    _verify_to_hub(a, c)
+    feeds = [s for s in a.fake['sent'] if s[0] == 'feed_filament']
+    assert len(feeds) == 1, feeds
+    assert abs(c['verify_feed_delta_mm'] - 30) <= 10
+
+
+def test_single_unit_verify_marker_follows_the_wheel():
+    a, c = _single_unit(1430)
+    c['load_length_mm'] = c['retract_length_mm'] = 1400
+    a.cmd_ACE_CALIBRATION_VERIFY(GCmd(ACTION='start'))
+    run_until(a, lambda: c['state'] == 'verifying_feed' and phys(a) > 600)
+    run_for(a, 1.5)
+    assert abs(c['verify_position_mm'] - phys(a)) <= 70
+
+
+def test_single_unit_load_source_is_wheel():
+    a, c = _single_unit(1430)
+    c.update({'state': 'prepared', 'tip_position_mm': 0, 'max_feed_mm': 3000,
+              'load_length_mm': None})
+    a.cmd_ACE_CALIBRATION_FEED(GCmd())
+    assert pump(a, ('at_sensor',)) == 'at_sensor'
+    assert c['load_source'] == 'wheel'
+    assert abs(c['load_length_mm'] - 1430) <= 15
+

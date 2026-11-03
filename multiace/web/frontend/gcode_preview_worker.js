@@ -1,4 +1,4 @@
-/* multiACE g-code preview — parser worker.
+/* multiACE g-code preview - parser worker.
  *
  * Runs entirely client-side, on the file the user already selected. No
  * upload, no Moonraker, no printer required - the original design uploaded

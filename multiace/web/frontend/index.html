@@ -66,7 +66,12 @@
        it reuses the same state, macros, queue, confirmations and i18n, so
        there is nothing to keep in sync. The iframe does not scale, so the
        layout targets a narrow fixed box (Fluidd defaults to 300px wide). -->
-  <div v-if="panelMode" class="panel">
+  <!-- Outside panel mode the same block can be shown as a tile of the
+       Control tab (camera picker "MMU"): Teleport moves it there instead of
+       a second copy of the markup, and it reads the state this page already
+       polls - no second socket, no extra printer query. -->
+  <Teleport v-if="panelMode || mmuTileEl" :to="mmuTileEl" :disabled="panelMode">
+  <div class="panel" :class="{'panel-in-tile': !panelMode}">
     <div v-if="loadError" class="panel-err">{{ loadError }}</div>
     <!-- Thumbnail line. In an all-cameras strip a tile is about 190px wide,
          where four slot cards are neither readable nor tappable - so below
@@ -110,7 +115,7 @@
         <!-- Always a NEW tab: a plain link would navigate the camera tile
              itself, leaving the full interface squeezed into a 190px box
              with no way back. -->
-        <a class="panel-full" :href="fullUiHref" target="_blank" rel="noopener"
+        <a v-if="panelMode" class="panel-full" :href="fullUiHref" target="_blank" rel="noopener"
            :title="t('ui.common.panel_full')">⧉</a>
       </div>
       <!-- One card per slot, side by side (AFC-style). The grid wraps by
@@ -224,7 +229,7 @@
     <template v-if="panelPage && panelPage.kind === 'feeders'">
       <div class="panel-head">
         <span>{{ panelPage.label }}</span>
-        <a class="panel-full" :href="fullUiHref" target="_blank" rel="noopener"
+        <a v-if="panelMode" class="panel-full" :href="fullUiHref" target="_blank" rel="noopener"
            :title="t('ui.common.panel_full')">⧉</a>
       </div>
       <div class="panel-cards">
@@ -295,7 +300,7 @@
          means the backend gave us nothing. -->
     <div v-if="!panelPage" class="panel-err">{{ t('ui.common.offline') }}</div>
     <!-- Without this a failed load would be invisible in the panel. -->
-    <div class="panel-status" v-if="visibleQueue.length || notifications.length">
+    <div class="panel-status" v-if="panelMode && (visibleQueue.length || notifications.length)">
       <span v-if="visibleQueue.length">⏳ {{ visibleQueue.length }}</span>
       <span v-if="notifications.length" class="panel-notif"
             :title="notifTime(notifications[notifications.length-1]) + ' ' + notifications[notifications.length-1].msg"><span
@@ -303,6 +308,7 @@
           notifications[notifications.length-1].msg }}</span>
     </div>
   </div>
+  </Teleport>
 
   <header v-if="!panelMode">
     <h1>m<span class="hl">U</span>lt<span class="hl">1</span>ACE<span class="hl">+</span>
@@ -931,8 +937,8 @@
                             :disabled='calibrationRouteLocked || !!calibrationUi.busy'
                             @click='calibrationSelectAce(ace.idx)'>
                       <strong>MMU {{ dispIdx(ace.idx) }}</strong>
-                      <small>{{ aceHasDecoder(ace)
-                        ? t('ui.calibration.unit_v2') : t('ui.calibration.unit_v1') }}</small>
+                      <small>{{ [unitDriverLabel(ace), t('ui.calibration.unit_connected')]
+                        .filter(Boolean).join(' · ') }}</small>
                     </button>
                   </div>
                 </div>
@@ -1147,8 +1153,7 @@
                   <template v-if='calibrationMeasureStep === 1'>
                     <div class='calibration-metrics two'>
                       <div><small>{{ t('ui.calibration.fed') }}</small><strong>{{ Math.round(state.calibration.tip_position_mm || 0) }} mm</strong>
-                        <span>{{ state.calibration.position_source === 'encoder'
-                          ? t('ui.calibration.src_encoder') : t('ui.calibration.src_time') }}</span></div>
+                        <span>{{ calibrationSrcLabel(state.calibration.position_source) }}</span></div>
                       <div><small>{{ t('ui.calibration.stops_at') }}</small><strong>{{ t('ui.calibration.stops_sensor') }}</strong>
                         <span>{{ t('ui.calibration.stops_limit', {mm: state.calibration.max_feed_mm}) }}</span></div>
                     </div>
@@ -1162,8 +1167,7 @@
                   <template v-else-if='calibrationMeasureStep === 2'>
                     <div class='calibration-metrics'>
                       <div><small>{{ t('ui.calibration.m_toolhead') }}</small><strong>{{ state.calibration.load_length_mm }} mm</strong>
-                        <span>{{ (state.calibration.has_decoder ?? state.calibration.protocol === 'v2')
-                          ? t('ui.calibration.src_encoder') : t('ui.calibration.src_time') }}</span></div>
+                        <span>{{ calibrationLoadSrcLabel() }}</span></div>
                       <div><small>{{ t('ui.calibration.pulled_back') }}</small><strong>{{ state.calibration.commanded_retract_mm }} mm</strong>
                         <span>{{ t('ui.calibration.pulled_back_sub') }}</span></div>
                       <div><small>{{ t('ui.calibration.tip_now') }}</small><strong>{{ Math.round(state.calibration.tip_position_mm || 0) }} mm</strong>
@@ -1465,8 +1469,7 @@
                     {{ t('ui.calibration.r_measured', {
                       load: state.calibration.load_length_mm,
                       swap: state.calibration.swap_retract_length_mm,
-                      src: (state.calibration.has_decoder ?? state.calibration.protocol === 'v2')
-                        ? t('ui.calibration.src_encoder') : t('ui.calibration.src_time')}) }}
+                      src: calibrationLoadSrcLabel()}) }}
                   </p>
 
                   <template v-if='!calibrationNothingToSave'>
@@ -1622,28 +1625,45 @@
          Fluidd/Moonraker side so it is on the same page as the ACEs. -->
     <section v-show="tab==='control'" class="control-tab">
       <div class="control-top">
-        <div class="control-webcam">
-          <video v-if="webcam.available && webcam.webrtc" ref="webcamVideo" class="webcam-img"
-                 :style="{aspectRatio: webcam.aspect}" autoplay muted playsinline
-                 :aria-label="webcam.name || t('ui.control.webcam')"></video>
-          <img v-else-if="webcam.available && webcamSrc" :src="webcamSrc" class="webcam-img"
-               :style="{aspectRatio: webcam.aspect}"
-               :alt="webcam.name || t('ui.control.webcam')">
-          <div v-else-if="!webcam.available" class="webcam-none">
-            <p>{{ webcam.loaded ? t('ui.control.webcam_unavailable')
+        <div class="control-cams">
+          <template v-for="c in cams" :key="c.st.slot">
+          <div class="control-webcam" v-if="camVisible(c)">
+            <div v-if="c.st.kind === 'mmu' && controlShown" class="webcam-mmu"
+                 :ref="el => setMmuEl(c.st.slot, el)"></div>
+            <video v-else-if="c.st.available && c.st.kind === 'webrtc'" :ref="c.setVideo" class="webcam-img"
+                   :style="{aspectRatio: c.st.aspect}" autoplay muted playsinline
+                   :aria-label="c.st.name || t('ui.control.webcam')"></video>
+            <iframe v-else-if="c.st.available && c.st.kind === 'iframe' && controlShown" :src="c.st.iframe"
+                    class="webcam-img webcam-frame" :style="{aspectRatio: c.st.aspect}"
+                    :title="c.st.name || t('ui.control.webcam')"></iframe>
+            <img v-else-if="c.st.available && c.src()" :src="c.src()" class="webcam-img"
+                 :style="{aspectRatio: c.st.aspect}"
+                 :alt="c.st.name || t('ui.control.webcam')">
+            <div v-else-if="!c.st.available" class="webcam-none">
+              <p>{{ c.st.loaded ? t('ui.control.webcam_unavailable')
                                 : t('ui.control.webcam_loading') }}</p>
-            <p class="muted small" v-if="webcam.reason">{{ webcam.reason }}</p>
-            <p class="muted small">{{ t('ui.control.webcam_hint') }}</p>
+              <p class="muted small" v-if="c.st.reason">{{ c.st.reason }}</p>
+              <p class="muted small">{{ t('ui.control.webcam_hint') }}</p>
+            </div>
+            <div class="webcam-foot">
+              <select class="webcam-pick" :value="c.st.kind === 'mmu' ? MMU_CAM : c.st.name"
+                      @change="c.select($event.target.value)"
+                      :aria-label="t('ui.control.webcam_pick')">
+                <option v-for="o in camList" :key="o.name" :value="o.name">{{ o.name }}</option>
+                <option :value="MMU_CAM" :disabled="mmuTileTaken(c.st.slot)">{{ t('ui.control.webcam_mmu') }}</option>
+              </select>
+              <span v-if="c.st.connFailed" class="muted small webcam-err">
+                {{ t('ui.control.webcam_unavailable') }}<span v-if="c.st.reason"> ({{ c.st.reason }})</span>
+              </span>
+              <span class="webcam-btns">
+                <button v-if="c.st.slot === 0 && !camSecond"
+                        @click="setCamSecond(true)" :title="t('ui.control.webcam_second_hint')">{{ t('ui.control.webcam_second') }}</button>
+                <button v-if="c.st.slot === 1" @click="setCamSecond(false)">{{ t('ui.control.webcam_close') }}</button>
+                <button v-if="c.st.kind !== 'mmu'" @click="c.reload()">{{ t('ui.common.reload') }}</button>
+              </span>
+            </div>
           </div>
-          <div class="webcam-foot">
-            <span class="muted small">
-              {{ webcam.name || t('ui.control.webcam') }}
-              <template v-if="webcam.connFailed">
-                &middot; {{ t('ui.control.webcam_unavailable') }}<span v-if="webcam.reason"> ({{ webcam.reason }})</span>
-              </template>
-            </span>
-            <button @click="reloadWebcam">{{ t('ui.common.reload') }}</button>
-          </div>
+          </template>
         </div>
 
         <div class="control-print">
@@ -2749,6 +2769,10 @@
               <option value="" disabled>{{ t('ui.config.tipform_name_ph') }}</option>
               <option v-for="n in tipformNameOptions(row)" :key="n" :value="n">{{ n }}</option>
             </select>
+            <select class="tipform-device" v-model="row.device"
+                    :title="t('ui.config.tipform_device_hint')">
+              <option v-for="o in tipformDeviceOptions(row)" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
             <input class="tipform-vendor" v-model="row.vendor"
                    :placeholder="t('ui.config.tipform_vendor_ph')"
                    spellcheck="false">
@@ -3598,6 +3622,19 @@ reboot</pre>
             {{ t('ui.preflight.forca_mixed_hint') }}
           </p>
         </div>
+        <!-- Head mode: heads wired to an MMU that is not connected get no
+             targets; say so instead of planning onto the missing unit. -->
+        <div v-if="(preflight.report.unconnected_heads || []).length"
+             class="preflight-warn">
+          <strong>{{ t('ui.preflight.unconnected_title') }}</strong>
+          <ul>
+            <li v-for="u in preflight.report.unconnected_heads"
+                :key="'uc-'+u.head">
+              {{ t('ui.preflight.unconnected_row',
+                   {head: dispIdx(u.head), mmu: dispIdx(u.ace)}) }}
+            </li>
+          </ul>
+        </div>
 
         <!-- Mixed nozzles: REPLACES the normal assignment table entirely.
              There is no free assignment left across diameters, so this is a
@@ -3682,7 +3719,7 @@ reboot</pre>
                     <div v-if="preflight.report.head_mode
                                && headTargetOptions(c.t).length" class="hm-dd">
                       <button type="button" class="hm-dd-btn"
-                              @click="hmDdToggle(c.t)"
+                              @click="hmDdToggle(c.t, $event)"
                               @keydown.esc="hmDdClose()"
                               @blur="hmDdClose()">
                         <span class="hm-dd-chip"
@@ -3691,7 +3728,8 @@ reboot</pre>
                               || ('- ' + t('ui.preflight.not_feasible') + ' -') }}</span>
                         <span class="hm-dd-caret">▾</span>
                       </button>
-                      <div class="hm-dd-list" v-if="hmDropOpen === c.t">
+                      <div class="hm-dd-list" v-if="hmDropOpen === c.t"
+                           :class="{up: hmDropUp}" :style="{maxHeight: hmDropMax + 'px'}">
                         <div class="hm-dd-item"
                              @mousedown.prevent="hmDdPick(c.t, '')">
                           <span class="hm-dd-chip" style="background:var(--nt-nocolor, #444)"></span>
@@ -4117,7 +4155,7 @@ reboot</pre>
                            cannot swallow the click. -->
                       <div class="hm-dd">
                         <button type="button" class="hm-dd-btn"
-                                @click="hmDdToggle(c.t)"
+                                @click="hmDdToggle(c.t, $event)"
                                 @keydown.esc="hmDdClose()"
                                 @blur="hmDdClose()">
                           <span class="hm-dd-chip"
@@ -4126,7 +4164,8 @@ reboot</pre>
                                 || ('- ' + t('ui.preflight.not_feasible') + ' -') }}</span>
                           <span class="hm-dd-caret">▾</span>
                         </button>
-                        <div class="hm-dd-list" v-if="hmDropOpen === c.t">
+                        <div class="hm-dd-list" v-if="hmDropOpen === c.t"
+                           :class="{up: hmDropUp}" :style="{maxHeight: hmDropMax + 'px'}">
                           <div class="hm-dd-item"
                                @mousedown.prevent="hmDdPick(c.t, '')">
                             <span class="hm-dd-chip" style="background:var(--nt-nocolor, #444)"></span>
@@ -4268,7 +4307,7 @@ reboot</pre>
           <canvas ref="gpreviewCanvasEl" class="gpreview-canvas"></canvas>
           <div class="gpreview-layers">
             <span class="gpreview-layer-label num">
-              {{ gpreview.layerLo + 1 }}–{{ gpreview.layerHi + 1 }}
+              {{ gpreview.layerLo + 1 }}-{{ gpreview.layerHi + 1 }}
               / {{ gpreview.totalLayers }}
             </span>
             <div class="gpreview-layer-sliders">

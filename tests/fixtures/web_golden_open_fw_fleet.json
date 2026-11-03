@@ -273,6 +273,7 @@
   "has_decoder": false,
   "head": null,
   "load_length_mm": null,
+  "load_source": null,
   "max_feed_mm": 0,
   "park_reference": "ace_preload",
   "position_source": "timing",

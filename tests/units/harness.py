@@ -931,6 +931,14 @@ class FakeSerial:
                 data = bytes(self.rx[:size])
                 del self.rx[:size]
                 return data
+            if (self.unit.kind == 'cfs' and self.is_open and not self.rx
+                    and self.fail_read is None and not self._gone()):
+                # The CFS link reads inside the writer thread (half duplex)
+                # and its box answers within the write that asked, so an
+                # empty read is a miss at once. The thread stays active: a
+                # wait here would let the main thread run in the middle of
+                # a link step (trace order by real timing).
+                return b''
             waited = 0
             while (self.is_open and not self.rx and self.fail_read is None
                    and not self._gone()):

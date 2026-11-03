@@ -1395,16 +1395,19 @@ ANTI_OOZE_NO_UNRETRACT = 1.0
 # Below the threshold the pick lands in HEAT/PULL and the engine aborts.
 # Files without M73 stamp unconditionally (engine aborts stay the safety
 # net).
-BG_UNLOAD_MIN_WINDOW_MIN = 1
+# 0 since the arrival waits for the cold pull (ACE_BG_WAIT): a short
+# window then costs at most the inline swap it replaces, so every tool
+# change on a bg head is stamped.
+BG_UNLOAD_MIN_WINDOW_MIN = 0
 
 # Bg-aware loadout scoring (compute_head_mode_optimize) + report estimate
-# (head_mode_bg_stats). Since BG-Load v1 a COMPLETE background swap
-# (unload + feed + grip + prime) makes the arrival toolchange a near
-# no-op: a full inline swap stalls the print ~3.5min (heat + unload incl.
-# probes + load + flush), a bg-completed arrival only re-heats (~30s).
-# The report's saved_s uses the difference (~3min per bg-ok swap).
-BG_SWAP_COST_INLINE_S = 210
-BG_SWAP_COST_BG_S = 30
+# (head_mode_bg_stats). Measured stall per swap on a real print: a full
+# inline swap 146 s, a background swap 56 s. Most background swaps end
+# staged (the unload and the feed ran parked, the arrival still loads
+# inline); a fully completed one is cheaper, but too rare to plan on.
+# The report's saved_s uses the difference (~90 s per bg-ok swap).
+BG_SWAP_COST_INLINE_S = 146
+BG_SWAP_COST_BG_S = 56
 BG_UNLOAD_INLINE_SAVING_S = BG_SWAP_COST_INLINE_S - BG_SWAP_COST_BG_S
 
 # --------------------------------------------------------------------------
@@ -1612,7 +1615,8 @@ BG_INITIAL_LOAD = True
 # (START_TOOL_MARK) so a file whose body has no tool change still gets an
 # auto-load block.
 # 6: stamped ACE_BG_WAIT arrival holds before toolchanges.
-PP_FORMAT_VERSION = 6
+# 7: flush_multiplier applied in both directions to the purge stamps.
+PP_FORMAT_VERSION = 7
 
 # Written by both rewrites right after the pre-body tool select. A one-colour
 # export has no tool change in the body (Orca writes no change_filament_gcode
@@ -1722,15 +1726,26 @@ FILAMENT_MM3_PER_MM = 2.405
 # Share of a pair's RAW matrix value our swap flush adds on top of the wipe
 # tower. 0.45 comes from the measured failure point: black->red (433 mm3
 # raw = 180 mm) washed at a 40 mm top-up while a fixed 80 mm was clean, so
-# f >= 80/180. RAW basis on purpose: flush_multiplier is the user's TOWER
-# calibration, while our top-up serves the melt zone, a machine property the
-# tower slider must not silently scale down. The multiplier is inherited
-# UPWARD only (max(1, mult) in parse_flush_matrix_raw_from_file), so a
-# tower-less print can raise it; the multiplied matrix is still what the
-# optimizer/flush-cost preview uses (tower model).
+# f >= 80/180 at multiplier 1. The file's flush_multiplier scales the stamps
+# in both directions, like the tower purge it also scales. The floor is
+# [ace] swap_purge_floor (the same minimum the engine applies), 40 mm while
+# it is 0; set_purge_floor() hands it in before a rewrite.
 PURGE_MATRIX_TOPUP_FRAC = 0.45
 PURGE_MATRIX_MIN_MM = 40.
 PURGE_MATRIX_MAX_MM = 150.
+_purge_floor_mm = None
+
+
+def set_purge_floor(mm):
+    """Smallest per-pair stamp in mm from the printer's swap_purge_floor;
+    0/None/invalid = PURGE_MATRIX_MIN_MM. A stamp never goes below 1 mm:
+    ACE_SET_PURGE LENGTH=0 and ACE_BG_SWAP PURGE=0 both mean 'stock 80'."""
+    global _purge_floor_mm
+    try:
+        mm = float(mm)
+    except (TypeError, ValueError):
+        mm = 0.
+    _purge_floor_mm = max(1., mm) if mm > 0 else None
 
 _FLUSH_MATRIX_RE = re.compile(
     r'^;?\s*flush_volumes_matrix\s*=\s*([0-9.,\s]+)$')
@@ -1797,22 +1812,14 @@ def parse_flush_matrix_raw(gcode):
                 mult = float(m.group(1))
             except ValueError:
                 mult = 1.0
-    return _flush_matrix_build(raw, max(1.0, mult))
+    return _flush_matrix_build(raw, mult)
 
 def parse_flush_matrix_raw_from_file(in_path):
-    """The stamp basis: pair values as authored, with the file's
-    flush_multiplier applied UPWARD ONLY (max(1, mult)). The asymmetry is
-    the whole point:
-      - mult < 1 is the user's TOWER-economy calibration and must not scale
-        our melt-zone top-up below the measured floor (black->red washed
-        under ~80 mm) - so downward it is ignored;
-      - mult > 1 is the one slicer-side knob a TOWER-LESS print has to
-        raise the stamps to the full transition (without a tower, 0.45 x
-        raw leaves wash in the part). Deliberate per-pair reductions go through
-        the raw cells, which keep working 1:1 in both directions.
-    The multiplied variant stays the contract of the public parse
-    functions (optimizer/flush-cost = tower model; changing their return
-    would break preflight_core across a version skew)."""
+    """The stamp basis: pair values with the file's flush_multiplier
+    applied in both directions, so the slicer's multiplier sizes our flush
+    the same way it sizes the tower purge. The result equals
+    parse_flush_matrix_from_file; the separate name stays because
+    preflight_core calls both (version-skew contract)."""
     raw = None
     mult = 1.0
     try:
@@ -1830,7 +1837,7 @@ def parse_flush_matrix_raw_from_file(in_path):
                         mult = 1.0
     except OSError:
         return None
-    return _flush_matrix_build(raw, max(1.0, mult))
+    return _flush_matrix_build(raw, mult)
 
 def _flush_matrix_build(raw, mult):
     if not raw:
@@ -1867,8 +1874,9 @@ def _matrix_purge_mm(matrix, t_from, t_to):
         return None
     pair_mm = matrix[t_from][t_to] / FILAMENT_MM3_PER_MM
     mm = pair_mm * PURGE_MATRIX_TOPUP_FRAC
-    mm = max(PURGE_MATRIX_MIN_MM, min(PURGE_MATRIX_MAX_MM, mm))
-    return int(round(mm))
+    floor = _purge_floor_mm if _purge_floor_mm else PURGE_MATRIX_MIN_MM
+    mm = max(floor, min(PURGE_MATRIX_MAX_MM, mm))
+    return max(1, int(round(mm)))
 
 # Explicit toolchange un-retract: a pure-E positive move (no X/Y/Z), e.g.
 # "G1 E10 F1800" (SnOrca, layer 1+) - tolerate F before or after E.
@@ -2021,8 +2029,7 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
     # colour's FIRST tower block ~10mm lean; stock arrives freshly primed).
     post_t_unret = _scan_post_t_unretracts(in_path)
     # Per-pair purge sizing (PURGE_MATRIX_* const note). None = no matrix in
-    # the file -> no stamps, engine default (old behaviour). RAW matrix on
-    # purpose - the stamps must not inherit the tower's flush_multiplier.
+    # the file -> no stamps, engine default (old behaviour).
     flush_matrix = (parse_flush_matrix_raw_from_file(in_path)
                     if PURGE_MATRIX_ENABLE else None)
     # Background-unload look-ahead: body tool sequence + a moving index, so
@@ -3818,8 +3825,7 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     # while every value clamped to the floor).
     # rewrite_head_mode_to_file never had this - it tracks cur_tool[head].
     head_slicer = {}
-    # RAW matrix on purpose - the stamps must not inherit the tower's
-    # flush_multiplier (PURGE_MATRIX_TOPUP_FRAC note).
+    # Per-pair purge sizing, PURGE_MATRIX_TOPUP_FRAC note.
     flush_matrix = (parse_flush_matrix_raw_from_file(in_path)
                     if PURGE_MATRIX_ENABLE else None)
     active = 0

@@ -37,8 +37,8 @@ SECTION_RE = re.compile(r'^\[\s*(ace(?:\s+\d+)?|ace_bg_swap|ace_tipform)\s*\]\s*
 PRESERVE_ALL_KEYS_SECTIONS = ('ace_tipform',)
 # '-' in the key body: DB material names are hyphenated (petg-cf, pla-cf)
 # and [ace_tipform] keys are spelled exactly like the lowercased material.
-KEY_RE = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_\-]*)\s*:\s*(.*)$')
-COMMENTED_KEY_RE = re.compile(r'^#\s*([a-zA-Z_][a-zA-Z0-9_\-]*)\s*:\s*(.*)$')
+KEY_RE = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_\-@]*)\s*:\s*(.*)$')
+COMMENTED_KEY_RE = re.compile(r'^#\s*([a-zA-Z_][a-zA-Z0-9_\-@]*)\s*:\s*(.*)$')
 
 def is_section_header(stripped: str) -> bool:
     return stripped.startswith('[') and stripped.endswith(']')
