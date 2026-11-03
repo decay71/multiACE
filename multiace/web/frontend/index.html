@@ -2050,6 +2050,9 @@
             </button>
             <button :title="t('ui.printqueue.preview_hint')" @click="previewQueued(it)">
               {{ t('ui.printqueue.preview') }}</button>
+            <button v-if="it.has_original && uiTheme === 'new'" :disabled="pq.launching !== '' || preflight.open"
+                    :title="t('ui.printqueue.reassign_hint')" @click="reassignQueued(it)">
+              {{ t('ui.printqueue.reassign') }}</button>
             <button :disabled="pq.launching !== ''" @click="removeQueued(it)">
               {{ t('ui.printqueue.remove') }}</button>
           </div>
@@ -4420,10 +4423,11 @@ reboot</pre>
         <button class="nt-cancel-r" @click="closePreflight"
                 :disabled="preflight.sending !== ''">{{ t('ui.common.cancel') }}</button>
         <button v-if="uiTheme === 'new' && pfSelected()" class="nt-queue-add"
+                :class="{primary: preflight.replaces}"
                 :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
-                :title="t('ui.printqueue.add_hint')"
-                @click="pfPrintSelected(true)">{{ t('ui.printqueue.add') }}</button>
-        <button v-if="uiTheme === 'new' && pfSelected()" class="primary nt-main"
+                :title="preflight.replaces ? t('ui.printqueue.replace_hint') : t('ui.printqueue.add_hint')"
+                @click="pfPrintSelected(true)">{{ preflight.replaces ? t('ui.printqueue.replace') : t('ui.printqueue.add') }}</button>
+        <button v-if="uiTheme === 'new' && pfSelected() && !preflight.replaces" class="primary nt-main"
                 :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
                 @click="pfPrintSelected()">{{ pfGoLabel() }}</button>
       </div>

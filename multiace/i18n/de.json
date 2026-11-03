@@ -1069,7 +1069,13 @@
       "preview_no_slots": "Keine Slots gespeichert.",
       "preview_note": "Nur ansehen: nichts startet und die Datei bleibt in der Warteschlange.",
       "eta_hint": "Geschätzte Gesamtdruckzeit inklusive Wechsel, wie der Preflight sie beim Einreihen gezeigt hat. Eine Modellschätzung, keine Messung.",
-      "swaps": "{n} Wechsel"
+      "swaps": "{n} Wechsel",
+      "reassign": "Neu zuordnen",
+      "reassign_hint": "Die ursprüngliche Slicer-Datei erneut öffnen, um die Farbzuordnung zu ändern, mit 3D-Vorschau. Einreihen ersetzt diesen Eintrag; Schließen ändert nichts.",
+      "replace": "Eintrag ersetzen",
+      "replace_hint": "Die Datei mit dieser Zuordnung vorbereiten und den eingereihten Eintrag damit ersetzen.",
+      "reassign_failed": "Das gespeicherte Original konnte nicht gelesen werden.",
+      "reassign_unsupported": "Dieser Browser kann das gespeicherte Original nicht entpacken."
     },
     "history": {
       "title": "Druckverlauf",

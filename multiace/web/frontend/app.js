@@ -6672,6 +6672,9 @@ createApp({
       report:  null,
       error:   "",
       progress: null,
+      // Id of the queue entry being reassigned: the preflight is open on its
+      // stored original and queuing replaces that entry (see reassignQueued).
+      replaces: "",
       // Manual slot reassignment for the slicer plan only: {origT: "ace-slot"}.
       // slicerSwaps holds the recomputed swap count (null = use the plan's
       // server value); recomputed automatically on every dropdown change.
@@ -8281,6 +8284,7 @@ createApp({
       preflight.sending = "";
       preflight.progress = null;
       preflight.local   = false;
+      preflight.replaces = "";
       clearLocalPreflightJob();
     }
     function stageLabel(stage) {
@@ -8443,6 +8447,20 @@ createApp({
         return out;
       } catch (_) { return {}; }
     }
+    // Keep the slicer export a queued file was made from, gzip-compressed in
+    // the browser, next to the entry so Reassign can reopen it (the rewritten
+    // file cannot be turned back). Best effort: without it the entry works as
+    // before, it just has no Reassign button.
+    async function keepQueueOriginal(id) {
+      if (!id || !preflightFile || typeof CompressionStream === "undefined") return;
+      try {
+        preflight.progress = {percent: 95, stage: "upload", running: true};
+        const gz = await new Response(
+          preflightFile.stream().pipeThrough(new CompressionStream("gzip"))).blob();
+        await fetch(`${API}/queue/${encodeURIComponent(id)}/original`, {
+          method: "PUT", headers: {"Content-Type": "application/gzip"}, body: gz});
+      } catch (_) {}
+    }
     // queue=true stages the rewritten file in the print queue instead of
     // starting it (see the Queue tab).
     async function startPreflightPrint(mode, headPlan, queue) {
@@ -8544,6 +8562,7 @@ createApp({
             body: JSON.stringify({filename: baseName,
                                   path: QUEUE_DIR + "/" + stagedName, mode,
                                   used_slots: j.usedSlots || [],
+                                  replaces: preflight.replaces || undefined,
                                   ...queueSnapshot(mode, headPlan)}),
           });
           if (!qr.ok) {
@@ -8552,6 +8571,8 @@ createApp({
                               {method: "DELETE"}); } catch (_) {}
             throw new Error(qj.detail || `${qr.status} ${qr.statusText}`);
           }
+          const added = await qr.json().catch(() => ({}));
+          await keepQueueOriginal(added.entry && added.entry.id);
           pq.loaded = false;
         }
         preflight.progress = {percent: 100, stage: "done", running: true};
@@ -8585,7 +8606,10 @@ createApp({
         const body = {token: rep.token, mode,
                       bed_mesh: !!preflight.bedMesh, camera: !!preflight.camera,
                       flow_cal: !!preflight.flowCal, queue: !!queue};
-        if (queue) Object.assign(body, queueSnapshot(mode, headPlan));
+        if (queue) {
+          Object.assign(body, queueSnapshot(mode, headPlan));
+          if (preflight.replaces) body.replaces = preflight.replaces;
+        }
         if (mode === "slicer") {
           // Send the (possibly user-edited) slot assignment verbatim so the
           // print matches the preview exactly. Only entries differing from
@@ -9690,6 +9714,29 @@ createApp({
         pq.launching = "";
       }
     }
+    // Reopen the preflight on the slicer export kept with the entry, so the
+    // colours can be assigned again (and the 3D preview is there). Queuing
+    // the result replaces this entry; closing the dialog changes nothing.
+    // Works while a print runs, like Preview.
+    async function reassignQueued(item) {
+      if (!item || !item.has_original || pq.launching) return;
+      pq.error = "";
+      try {
+        if (typeof DecompressionStream === "undefined") {
+          throw new Error(t("ui.printqueue.reassign_unsupported"));
+        }
+        const r = await fetch(`${API}/queue/${encodeURIComponent(item.id)}/original`);
+        if (!r.ok) throw new Error(t("ui.printqueue.reassign_failed"));
+        const blob = await new Response(
+          r.body.pipeThrough(new DecompressionStream("gzip"))).blob();
+        const file = new File([blob], item.filename, {type: "text/plain"});
+        preflight.replaces = item.id;
+        await _runPreflight(file);
+      } catch (e) {
+        preflight.replaces = "";
+        pq.error = e.message || String(e);
+      }
+    }
     function removeQueued(item) {
       confirm({
         title: t("ui.printqueue.remove_title"),
@@ -9733,7 +9780,7 @@ createApp({
       gpreviewSetLayerHi, gpreviewPreset, gpreviewIsolate, gpreviewToggleMax,
       gpreviewTogglePlay,
       thumbUrl, hideBrokenThumb, isFavorite, toggleFavorite, favKey, favoriteCards, loadFavoritesTab,
-      pq, loadQueue, launchQueued, removeQueued, previewQueued, queueEta, queueSlotLabel, queueColor, queueChangeText,
+      pq, loadQueue, launchQueued, removeQueued, reassignQueued, previewQueued, queueEta, queueSlotLabel, queueColor, queueChangeText,
       subText,
       sourceLabel,
       tab, version, printerName, printerFw, connClass, connText, screenAvailable,
