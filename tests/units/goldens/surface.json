@@ -186,6 +186,9 @@
     "AceBgSwap.cmd_ACE_BG_SWAP",
     "AceBgSwap.cmd_ACE_BG_UNLOAD"
    ],
+   "_tipform_device_for": [
+    "AceBgSwap._unload_core"
+   ],
    "_wt_persist": [
     "AceBgSwap.cmd_ACE_BG_SET_HEAD"
    ],
@@ -353,7 +356,8 @@
    ],
    "_active_device_index": [
     "FilamentFeed._do_feed",
-    "FilamentFeed._note_feed_verdict"
+    "FilamentFeed._note_feed_verdict",
+    "FilamentFeed._unit_motion"
    ],
    "_arm_fa_for": [
     "FilamentFeed._do_feed",
@@ -422,7 +426,8 @@
     "FilamentFeed._restore_print_fa_gate"
    ],
    "_info_per_ace": [
-    "FilamentFeed._do_feed"
+    "FilamentFeed._do_feed",
+    "FilamentFeed._unit_motion"
    ],
    "_last_unload_ok": [
     "FilamentFeed._do_feed"
@@ -640,6 +645,9 @@
    ],
    "head_uses_ace": [
     "FilamentFeed._localized_feed_head"
+   ],
+   "load_feed_temp_drop": [
+    "FilamentFeed._load_feed_temp_drop"
    ],
    "notify_external_load": [
     "FilamentFeed.cmd_FEED_AUTO",

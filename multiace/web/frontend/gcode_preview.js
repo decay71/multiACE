@@ -1,4 +1,4 @@
-/* multiACE g-code preview — main-thread glue + renderer.
+/* multiACE g-code preview - main-thread glue + renderer.
  *
  * Pairs with gcode_preview_worker.js, which parses off the UI thread into
  * transferable typed arrays. This file owns the worker lifecycle, the

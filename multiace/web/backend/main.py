@@ -378,6 +378,9 @@ def _parse_state(status: dict) -> dict:
     fr = status.get("filament_feed right", {}) or {}
     bg = status.get("ace_bg_swap", {}) or {}
     tf = status.get("ace_tipform", {}) or {}
+    # Opt-in (default OFF = the old behaviour: a slot that stays empty drops
+    # its hand-set label). An older ace.py has no field -> off.
+    remember_filament = bool(ace.get("remember_filament", False))
 
     device_count = int(ace.get("device_count", 1))
     active_device = int(ace.get("active_device", 0))
@@ -514,12 +517,30 @@ def _parse_state(status: dict) -> dict:
                 if _pending is None:
                     _eject_pending_since[(i, s)] = _now
                 elif _now - _pending >= EJECT_DEBOUNCE_S:
-                    if _drop_override_if_present(i, s):
+                    if not remember_filament and _drop_override_if_present(i, s):
                         overrides_dirty = True
+                    if remember_filament:
+                        # the kept label's spool is gone: a tagged spool
+                        # read here next is a refill (see below)
+                        _kept_slot_emptied.add((i, s))
                     _eject_pending_since.pop((i, s), None)
             else:
                 _eject_pending_since.pop((i, s), None)
             rfid_status = sd.get("rfid", 0)
+            # "Remember last filament" only: a chip read wins over the kept
+            # label when the slot was seen EMPTY since (a refill with a
+            # tagged spool, which would otherwise be shadowed by the old
+            # label). Not on any 0 -> 2 change: after a backend restart or a
+            # unit reconnect the first read of an unchanged spool looks like
+            # one, and would drop a label the user set by hand to correct
+            # the chip. Off: gate == 0 already dropped the label.
+            if (remember_filament and rfid_status == 2
+                    and _last_rfid_status.get((i, s)) != 2
+                    and (i, s) in _kept_slot_emptied):
+                _kept_slot_emptied.discard((i, s))
+                if _drop_override_if_present(i, s):
+                    overrides_dirty = True
+            _last_rfid_status[(i, s)] = rfid_status
             rfid_data = None
             if rfid_status == 2:
                 rfid_data = {
@@ -874,6 +895,8 @@ def _parse_state(status: dict) -> dict:
                      else {}),
         # Default TRUE like the engine; an older ace.py has no field.
         "pa_sync": bool(ace.get("pa_sync", True)),
+        # Opt-in switch, default OFF; an older ace.py has no field.
+        "remember_filament": remember_filament,
         # RC522 tag read/write enabled - gates the picker "write to tag" button.
         "rc522": bool(ace.get("rc522", False)),
         # D11 Devices list (engine, additive since 1.30b): every place of
@@ -1384,6 +1407,17 @@ async def _head_mode_context() -> dict:
     # Colour copies (Multifilament-Optimierung): the EMPTY slots the planner
     # may suggest a second spool for, and the max targets per colour. Empty
     # = the slot's own presence gate reads empty (not merely "no identity").
+    # MMUs that are connected right now. A head-mode head wired to any
+    # other place gets no targets (its unit is absent, removed or not
+    # assigned), and multi plans only over these units. None = no unit
+    # list at all (Klipper not answering): the preflight then plans as
+    # before instead of dropping every head.
+    _aces = [a for a in (parsed.get("aces", []) or []) if isinstance(a, dict)]
+    connected_aces = ([int(a["idx"]) for a in _aces
+                       if isinstance(a.get("idx"), int)
+                       and a.get("connected")
+                       and a.get("unit_present", True)]
+                      if _aces else None)
     empty_slots = []
     for a in parsed.get("aces", []) or []:
         for sl in a.get("slots", []) or []:
@@ -1408,9 +1442,13 @@ async def _head_mode_context() -> dict:
                                   for h, v in
                                   (await _machine_nozzle_types()).items()},
             "pickup_cleaning": bool(parsed.get("pickup_cleaning")),
+            # [ace] swap_purge_floor: the smallest per-pair purge the
+            # rewrite stamps (0 = the post-processor default).
+            "purge_floor": _int_or(parsed.get("purge_floor", 0), 0),
             "max_copies": _int_or(parsed.get("preflight_max_copies", 1), 1),
             "copies_strict": bool(parsed.get("preflight_copies_strict")),
             "empty_slots": empty_slots,
+            "connected_aces": connected_aces,
             "bg_available": bool(bgs.get("available")),
             "bg_heads": [int(h) for h in (bgs.get("enabled_heads") or [])]}
 
@@ -1555,12 +1593,15 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
         # ACE_PICKUP_CLEAN after bare-T picks with no cleaning move only when it
         # is on (the runtime command also no-ops unless enabled). Read from the
         # live state that _parse_state surfaces.
-        if "pickup_cleaning" not in head_ctx:
+        if "pickup_cleaning" not in head_ctx or "purge_floor" not in head_ctx:
             try:
-                head_ctx["pickup_cleaning"] = bool(_parse_state(
-                    await _query_state_gated()).get("pickup_cleaning"))
+                _st = _parse_state(await _query_state_gated())
             except Exception:
-                head_ctx["pickup_cleaning"] = False
+                _st = {}
+            head_ctx.setdefault("pickup_cleaning",
+                                bool(_st.get("pickup_cleaning")))
+            head_ctx.setdefault("purge_floor",
+                                _int_or(_st.get("purge_floor", 0), 0))
 
         # The rewrite pipeline (apply_remap -> rewrite -> inject_auto_load, the
         # head-mode variants and the slicer/optimize/layer dispatch) lives in
@@ -2182,24 +2223,38 @@ def _abs_webcam_url(url: str) -> str:
         return url
     return f"{_webcam_base()}/{url.lstrip('/')}"
 
-async def _resolve_webcam() -> dict:
-    """First real camera Moonraker knows about.
+def _webcam_kind(service: str) -> str:
+    svc = service.lower()
+    if svc == "iframe":
+        return "iframe"
+    if "webrtc" in svc:
+        return "webrtc"
+    return "mjpeg"
 
-    Skips our own Fluidd panel entry: it is an iframe pointing back at
-    this UI, and embedding it in the UI's own page would be a mirror
-    tunnel rather than a webcam.
-    """
+def _iframe_url(url: str) -> str:
+    """An iframe camera is a page the BROWSER loads, so it keeps a
+    relative URL relative to the printer's web root (same host as this
+    UI behind nginx) instead of the backend's view of the host."""
+    if url.startswith(("http://", "https://")):
+        return url
+    return "/" + url.lstrip("/")
+
+async def _list_webcams() -> tuple[list, str]:
+    """Every camera the Control tab can show, in Moonraker's order.
+
+    Our own Fluidd panel entry is never listed: it is an iframe pointing
+    back at this UI, and embedding it in the UI's own page would be a
+    mirror tunnel rather than a camera. Disabled and URL-less entries are
+    skipped too. Returns (cameras, reason-if-none)."""
     try:
         listing = await _mr_get("/server/webcams/list")
     except Exception as e:
         # httpx timeouts have an empty message: name the error then.
-        return {"available": False, "reason": f"moonraker: {str(e) or type(e).__name__}"}
-    cams = (listing.get("result") or {}).get("webcams") or []
-    for cam in cams:
+        return [], f"moonraker: {str(e) or type(e).__name__}"
+    out = []
+    for cam in (listing.get("result") or {}).get("webcams") or []:
         name = str(cam.get("name", ""))
         if name.strip().lower() == FLUIDD_CAMERA_NAME.lower():
-            continue
-        if str(cam.get("service", "")).lower() == "iframe":
             continue
         if cam.get("enabled") is False:
             continue
@@ -2207,26 +2262,56 @@ async def _resolve_webcam() -> dict:
         if not stream:
             continue
         service = str(cam.get("service") or "mjpegstreamer")
-        return {
+        kind = _webcam_kind(service)
+        out.append({
             "available": True,
             "name": name,
             "service": service,
-            "webrtc": "webrtc" in service.lower(),
-            "stream_url": _abs_webcam_url(stream),
+            "kind": kind,
+            "webrtc": kind == "webrtc",
+            "stream_url": (_iframe_url(stream) if kind == "iframe"
+                           else _abs_webcam_url(stream)),
             "snapshot_url": _abs_webcam_url(str(cam.get("snapshot_url") or "")),
             "aspect_ratio": cam.get("aspect_ratio") or "16:9",
-        }
-    return {"available": False,
-            "reason": "no camera configured in Moonraker"}
+        })
+    return out, ("" if out else "no camera configured in Moonraker")
+
+async def _resolve_webcam(name: str = "") -> dict:
+    """The camera called `name`, else the first real one.
+
+    The default prefers a streamed camera over an iframe page; an
+    unknown name (camera removed or renamed in Fluidd) falls back to the
+    default instead of failing, so a stale browser choice heals itself.
+    """
+    cams, reason = await _list_webcams()
+    if not cams:
+        return {"available": False, "reason": reason}
+    want = (name or "").strip().lower()
+    if want:
+        for cam in cams:
+            if cam["name"].strip().lower() == want:
+                return cam
+    for cam in cams:
+        if cam["kind"] != "iframe":
+            return cam
+    return cams[0]
 
 @app.get("/api/webcam/info")
-async def webcam_info(request: Request) -> dict:
+async def webcam_info(request: Request, cam: str = "") -> dict:
     if _mock_enabled(request):
         return {**(_mock_load("mock_webcam.json") or {"available": False,
                                                       "reason": "no fixture"}),
                 "mock": True}
-    info = await _resolve_webcam()
-    if info.get("available"):
+    cams, _ = await _list_webcams()
+    info = dict(await _resolve_webcam(cam))
+    # The picker's list: names and kinds only, never addresses.
+    info["cameras"] = [{"name": c["name"], "kind": c["kind"]} for c in cams]
+    if info.get("available") and info.get("kind") == "iframe":
+        # An iframe page is loaded by the browser itself; there is no
+        # stream to proxy.
+        info["iframe_url"] = info.pop("stream_url", "")
+        info.pop("snapshot_url", None)
+    elif info.get("available"):
         # The browser always goes through our proxy: the camera may live
         # on a host/port the UI's origin cannot reach, and https pages
         # refuse plain-http streams. The path is relative to the client's
@@ -2245,14 +2330,14 @@ async def webcam_info(request: Request) -> dict:
     return info
 
 @app.get("/api/webcam/stream")
-async def webcam_stream(request: Request):
+async def webcam_stream(request: Request, cam: str = ""):
     """Pipe the camera's MJPEG stream through this service."""
     from fastapi.responses import StreamingResponse
 
     if _mock_enabled(request):
         raise HTTPException(503, "webcam stream unavailable in mock mode")
-    info = await _resolve_webcam()
-    if not info.get("available") or info.get("webrtc"):
+    info = await _resolve_webcam(cam)
+    if not info.get("available") or info.get("kind") != "mjpeg":
         raise HTTPException(503, info.get("reason") or "no MJPEG webcam")
 
     client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None))
@@ -2280,7 +2365,7 @@ async def webcam_stream(request: Request):
                              headers={"Cache-Control": "no-store"})
 
 @app.post("/api/webcam/webrtc-signal")
-async def webcam_webrtc_signal(request: Request) -> dict:
+async def webcam_webrtc_signal(request: Request, cam: str = "") -> dict:
     """Relay one leg of the browser<->camera SDP handshake.
 
     camera-streamer sends no CORS headers and answers OPTIONS with 501, so
@@ -2289,7 +2374,7 @@ async def webcam_webrtc_signal(request: Request) -> dict:
     where CORS does not apply."""
     if _mock_enabled(request):
         raise HTTPException(503, "webrtc signalling unavailable in mock mode")
-    info = await _resolve_webcam()
+    info = await _resolve_webcam(cam)
     if not info.get("available") or not info.get("webrtc"):
         raise HTTPException(503, info.get("reason") or "no WebRTC camera")
     try:
@@ -2305,10 +2390,10 @@ async def webcam_webrtc_signal(request: Request) -> dict:
         raise HTTPException(502, f"webrtc signal: {e}")
 
 @app.get("/api/webcam/snapshot")
-async def webcam_snapshot(request: Request):
+async def webcam_snapshot(request: Request, cam: str = ""):
     if _mock_enabled(request):
         raise HTTPException(503, "webcam snapshot unavailable in mock mode")
-    info = await _resolve_webcam()
+    info = await _resolve_webcam(cam)
     url = info.get("snapshot_url") or ""
     if not info.get("available") or not url:
         raise HTTPException(503, info.get("reason") or "no webcam snapshot")
@@ -4708,6 +4793,21 @@ def _read_bg_load_mode(text: str) -> str:
                 return "transport" if v == "transport" else "false"
     return "true"
 
+def _read_bg_option(text: str, key: str):
+    """An active `key:` line in [ace_bg_swap], or None."""
+    rx = re.compile(r"^\s*%s\s*[:=]\s*(\S+)" % re.escape(key), re.IGNORECASE)
+    in_section = False
+    for raw in text.splitlines():
+        s = raw.strip()
+        if s.startswith("[") and s.endswith("]"):
+            in_section = s[1:-1].strip() == "ace_bg_swap"
+            continue
+        if in_section:
+            m = rx.match(raw)
+            if m:
+                return m.group(1)
+    return None
+
 def _swap_cost_params() -> dict:
     """The cost model's inputs, straight out of [ace] / [ace N].
 
@@ -4729,6 +4829,9 @@ def _swap_cost_params() -> dict:
     if raw:
         out["purge_matrix"] = raw in ("1", "true", "yes", "on")
     out["bg_load"] = _read_bg_load_mode(text)
+    pe = _as_float(_read_bg_option(text, "prime_extra"))
+    if pe is not None:
+        out["bg_prime_extra"] = pe
     per: dict = {}
     for ace_idx, section in (per_ace or {}).items():
         vals = {}
@@ -4742,8 +4845,9 @@ def _swap_cost_params() -> dict:
     return {"main": out, "per_ace": per}
 
 _TIPFORM_SECTION_RE = re.compile(r"^\[\s*ace_tipform\s*\]\s*$")
-_TIPFORM_KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_\-]*)\s*:\s*(.*)$")
-_TIPFORM_NAME_RE = re.compile(r"^[a-z0-9_\-]{1,32}$")
+_TIPFORM_KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_\-@]*)\s*:\s*(.*)$")
+# Optional "@<driver>" suffix = a row for heads fed by that driver only.
+_TIPFORM_NAME_RE = re.compile(r"^[a-z0-9_\-]{1,32}(@[a-z0-9_]{1,16})?$")
 _tipform_mod_cache: dict = {"sig": None, "mod": None}
 
 def _load_tipform_module():
@@ -4871,7 +4975,8 @@ async def set_tipform(payload: TipformUpdate) -> dict:
             continue
         if key == "mode" or not _TIPFORM_NAME_RE.match(key):
             raise HTTPException(
-                400, "invalid table name %r (a-z, 0-9, _ and -, max 32)"
+                400, "invalid table name %r (a-z, 0-9, _ and -, max 32, "
+                "optionally @<driver>)"
                 % name)
         try:
             mod.parse_table(raw)
@@ -5431,6 +5536,11 @@ def _drop_override_if_present(ace: int, slot: int) -> bool:
 
 EJECT_DEBOUNCE_S = 0.5
 _eject_pending_since: dict[tuple[int, int], float] = {}
+# Last RFID read state per slot, and the slots seen empty since their label
+# was set: only a read that becomes successful (2) on such a slot drops the
+# kept hand-set label (see the remember-last-filament note in _parse_state).
+_last_rfid_status: dict[tuple[int, int], int] = {}
+_kept_slot_emptied: set[tuple[int, int]] = set()
 
 def _override_for(ace: int, slot: int) -> dict | None:
     """Return the override dict for this (ace, slot) if any meaningful
@@ -5482,6 +5592,7 @@ async def set_slot_override(req: SlotOverride) -> dict:
     }
     old = _slot_overrides.get(key)
     _slot_overrides[key] = new
+    _kept_slot_emptied.discard((req.ace, req.slot))     # a fresh label
     _trace.info("override SET via picker POST MMU %d / slot %d: %s -> %s",
                 req.ace, req.slot, old, new)
     _save_overrides_to_disk()

@@ -49,7 +49,7 @@ class TestResolve:
         info = self._resolve(main, monkeypatch, [_cam()])
         assert info["stream_url"] == "http://cam.local:8080/webcam/?action=stream"
 
-    def test_skips_own_panel_iframes_disabled_and_streamless(
+    def test_default_skips_own_panel_iframes_disabled_and_streamless(
             self, main, monkeypatch):
         cams = [_cam(name="multiACE", service="iframe"),
                 _cam(name="Frame", service="iframe"),
@@ -153,8 +153,10 @@ class TestEndpoints:
 
 
 def _rtc_cam(**kw):
-    return _cam(name="case", service="webrtc-camerastreamer",
-                stream_url="/webcam/webrtc", snapshot_url="/webcam/snapshot.jpg", **kw)
+    base = dict(name="case", service="webrtc-camerastreamer",
+                stream_url="/webcam/webrtc", snapshot_url="/webcam/snapshot.jpg")
+    base.update(kw)
+    return _cam(**base)
 
 
 class TestWebrtc:
@@ -236,3 +238,76 @@ class TestMockMode:
 
     def test_query_param_cannot_enable_mock_on_a_real_printer(self, live_client):
         assert live_client.get("/api/webcam/info?mock=1").json().get("mock") is not True
+
+
+class TestSelection:
+    def _client(self, main):
+        from fastapi.testclient import TestClient
+        return TestClient(main.app)
+
+    def _cams(self):
+        return [_cam(name="multiACE", service="iframe"),
+                _cam(name="display", service="iframe",
+                     stream_url="/screen/", aspect_ratio="16:9"),
+                _cam(name="case"),
+                _rtc_cam(name="nozzle")]
+
+    def test_info_lists_every_camera_but_our_own_panel(self, main, monkeypatch):
+        _listing(main, monkeypatch, self._cams())
+        with self._client(main) as c:
+            j = c.get("/api/webcam/info").json()
+        assert j["cameras"] == [{"name": "display", "kind": "iframe"},
+                                {"name": "case", "kind": "mjpeg"},
+                                {"name": "nozzle", "kind": "webrtc"}]
+        # The default skips the iframe page and takes the first stream.
+        assert j["name"] == "case"
+
+    def test_info_by_name(self, main, monkeypatch):
+        _listing(main, monkeypatch, self._cams())
+        with self._client(main) as c:
+            j = c.get("/api/webcam/info?cam=NOZZLE").json()
+        assert j["name"] == "nozzle" and j["signal_path"]
+
+    def test_iframe_camera_hands_the_page_to_the_browser(self, main, monkeypatch):
+        _listing(main, monkeypatch, self._cams())
+        with self._client(main) as c:
+            j = c.get("/api/webcam/info?cam=display").json()
+        assert j["kind"] == "iframe" and j["iframe_url"] == "/screen/"
+        assert "proxy_path" not in j and "stream_url" not in j
+        with self._client(main) as c:
+            assert c.get("/api/webcam/stream?cam=display").status_code == 503
+
+    def test_unknown_name_falls_back_to_the_default(self, main, monkeypatch):
+        _listing(main, monkeypatch, self._cams())
+        with self._client(main) as c:
+            j = c.get("/api/webcam/info?cam=gone").json()
+        assert j["name"] == "case"
+
+    def test_own_panel_cannot_be_selected(self, main, monkeypatch):
+        _listing(main, monkeypatch, self._cams())
+        with self._client(main) as c:
+            j = c.get("/api/webcam/info?cam=multiACE").json()
+        assert j["name"] == "case"
+
+    def test_only_iframes_still_shows_one(self, main, monkeypatch):
+        _listing(main, monkeypatch, [_cam(name="display", service="iframe")])
+        with self._client(main) as c:
+            j = c.get("/api/webcam/info").json()
+        assert j["available"] is True and j["kind"] == "iframe"
+
+    def test_stream_follows_the_selected_camera(self, main, monkeypatch):
+        _listing(main, monkeypatch, [_cam(name="a", stream_url="http://a/s"),
+                                     _cam(name="b", stream_url="http://b/s")])
+        seen = []
+
+        def handler(req):
+            seen.append(req.url.host)
+            return httpx.Response(200, stream=httpx.ByteStream(b"JPEG"),
+                                  headers={"content-type": "image/jpeg"})
+        real = httpx.AsyncClient
+        monkeypatch.setattr(
+            main.httpx, "AsyncClient",
+            lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+        with self._client(main) as c:
+            assert c.get("/api/webcam/stream?cam=b").status_code == 200
+        assert seen == ["b"]

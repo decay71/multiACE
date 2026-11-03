@@ -267,6 +267,7 @@ createApp({
       preflight_copies_strict: false,
       tool_map: {},
       confirm_commands: false,
+      remember_filament: false,
       spoolman_url: "",
       spoolman_auto: false,
       spool_mode: "local",
@@ -448,6 +449,7 @@ createApp({
       state.preflight_copies_strict = !!s.preflight_copies_strict;
       state.tool_map = (s.tool_map && typeof s.tool_map === "object") ? s.tool_map : {};
       state.confirm_commands = !!s.confirm_commands;
+      state.remember_filament = !!s.remember_filament;
       state.spoolman_url = s.spoolman_url || "";
       state.spoolman_auto = !!s.spoolman_auto;
       state.spool_mode = s.spool_mode || "local";
@@ -727,7 +729,7 @@ createApp({
       // generous margin: the load is stopped by the toolhead sensor
       // anyway, and a swap retract that runs long only costs seconds
       // while one that stops short leaves filament in the hub.
-      loadAllowance: 150, swapAllowance: 100,   // load: 200 without encoder (below)
+      loadAllowance: 150, swapAllowance: 100,   // 200 / 150 without encoder (below)
       panel: 'setup', panelTouched: false, recalibrate: false,
       busy: '', cancelRequested: false, error: '', saved: false,
       hubAdjust: false,
@@ -752,12 +754,13 @@ createApp({
       state.aces.filter(a => a && a.connected));
     const calibrationSelectedAce = computed(() =>
       state.aces.find(a => Number(a.idx) === Number(calibrationUi.ace)) || null);
-    // Load margin default per unit: without an encoder the feed slips
-    // while it pushes into the head (ACE Pro: ~4% of the route, +100 mm on
-    // 2.3 m), so the budget gets more room there. Set only when the kind of
-    // the selected unit changes, so a typed value stays.
+    // Margin defaults per unit: without an encoder the feed and the
+    // retract slip (ACE Pro: ~4% of the route, +100 mm on 2.3 m), so the
+    // load budget and the hub clearance get more room there. Set only when
+    // the kind of the selected unit changes, so a typed value stays.
     watch(() => aceHasDecoder(calibrationSelectedAce.value), (hasEncoder) => {
       calibrationUi.loadAllowance = hasEncoder ? 150 : 200;
+      calibrationUi.swapAllowance = hasEncoder ? 100 : 150;
     }, {immediate: true});
     const calibrationSelectedToolhead = computed(() =>
       state.toolheads.find(
@@ -1046,7 +1049,22 @@ createApp({
     const CALIBRATION_ESTIMATE_MARGIN_MM = 75;
     const calibrationTipEstimated = computed(() =>
       calibrationMoving.value
-        && state.calibration?.position_source !== 'encoder');
+        && !['encoder', 'wheel'].includes(state.calibration?.position_source));
+    // Label for where a distance came from: the lane encoder, the unit's
+    // own measuring wheel (CFS Nano), or a time estimate.
+    function calibrationSrcLabel(src) {
+      if (src === 'encoder') return t('ui.calibration.src_encoder');
+      if (src === 'wheel') return t('ui.calibration.src_wheel');
+      return t('ui.calibration.src_time');
+    }
+    // Source of the measured toolhead distance. An older Klipper without
+    // load_source falls back to the unit's lane encoder.
+    function calibrationLoadSrcLabel() {
+      const c = state.calibration || {};
+      const src = c.load_source
+        || ((c.has_decoder ?? c.protocol === 'v2') ? 'encoder' : 'timing');
+      return calibrationSrcLabel(src);
+    }
     const calibrationTipDrawnMm = computed(() => {
       const position = calibrationTipPositionMm.value;
       if (position == null || !calibrationTipEstimated.value) return position;
@@ -1118,8 +1136,9 @@ createApp({
       const mm = Math.round(position);
       if (c.state === 'homing') return t('ui.calibration.tip_homing', {mm});
       if (calibrationMoving.value) {
-        return t(calibrationTipEstimated.value
-          ? 'ui.calibration.tip_moving' : 'ui.calibration.tip_moving_enc', {mm});
+        if (calibrationTipEstimated.value) return t('ui.calibration.tip_moving', {mm});
+        return t(state.calibration?.position_source === 'wheel'
+          ? 'ui.calibration.tip_moving_wheel' : 'ui.calibration.tip_moving_enc', {mm});
       }
       if (calibrationRecovery.value) return t('ui.calibration.tip_stopped', {mm});
       if (['at_sensor', 'verify_toolhead'].includes(c.state)) return t('ui.calibration.tip_at_head');
@@ -3333,6 +3352,19 @@ createApp({
       } catch (_) {}
       reloadState();
     }
+    // Keep a slot's hand-set label and spool binding when it goes empty
+    // (opt-in). Write-through on the printer, live, no Save/restart.
+    async function setRememberFilament(enable) {
+      try {
+        await fetch(`${API}/macro`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name: "ACE_SET_REMEMBER_FILAMENT",
+                                args: {ENABLE: enable ? 1 : 0}}),
+        });
+      } catch (_) {}
+      reloadState();
+    }
     // Register the panel as a camera in Fluidd. A button, not something
     // the installer does - it changes the user's own dashboard, and the
     // backend leaves an existing entry of that name alone, so a second
@@ -4763,20 +4795,42 @@ createApp({
     // underscored - pla, petg, pla-cf), the vendor is everything before,
     // with '_' shown as spaces for readability. 'default'/'soft' and any
     // plain material have no '_' -> vendor ''.
+    // An optional '@<driver>' suffix limits a row to heads fed by that
+    // driver (ace_v1, ace_v2, cfs); it is split off first.
     function tipformSplitKey(key) {
-      const k = String(key || "");
+      let k = String(key || "");
+      let device = "";
+      const at = k.indexOf("@");
+      if (at >= 0) { device = k.slice(at + 1); k = k.slice(0, at); }
       const i = k.lastIndexOf("_");
-      if (i < 0) return {material: k, vendor: ""};
-      return {vendor: k.slice(0, i).replace(/_/g, " "), material: k.slice(i + 1)};
+      if (i < 0) return {material: k, vendor: "", device};
+      return {vendor: k.slice(0, i).replace(/_/g, " "), material: k.slice(i + 1), device};
     }
     // Compose the section key from a row: vendor collapsed to lower_snake,
     // '<vendor>_<material>' or '<material>'. Mirrors ace_tipform.table_for
     // so the editor's key and the engine's constructed lookup key match.
-    function tipformComposeKey(material, vendor) {
+    function tipformComposeKey(material, vendor, device) {
       const mat = (material || "").trim().toLowerCase();
       const ven = (vendor || "").trim().toLowerCase().split(/\s+/).filter(Boolean).join("_");
+      const dev = (device || "").trim().toLowerCase();
       if (!mat) return "";
-      return ven ? `${ven}_${mat}` : mat;
+      const base = ven ? `${ven}_${mat}` : mat;
+      return dev ? `${base}@${dev}` : base;
+    }
+    // Device options of a row: "all devices" + the active drivers. A row
+    // saved for a driver that is off now keeps its entry (marked), so the
+    // select never blanks it and a save does not drop the row.
+    function tipformDeviceOptions(row) {
+      const opts = [{value: "", label: t("ui.config.tipform_device_all")}];
+      for (const d of (state.driver_switches || [])) {
+        if (d.active) opts.push({value: d.name, label: d.label || d.name});
+      }
+      const own = (row && row.device || "").trim().toLowerCase();
+      if (own && !opts.some(o => o.value === own)) {
+        const d = (state.driver_switches || []).find(x => x.name === own);
+        opts.push({value: own, label: `${(d && d.label) || own} (${t("ui.config.tipform_device_off")})`});
+      }
+      return opts;
     }
     // --- Visual token builder (web-only convenience; the raw string stays
     // the source of truth, this just parses/serializes it). Step = one token
@@ -4834,9 +4888,9 @@ createApp({
       row.table = TIPFORM_STOCK;
       if (row._builderOpen) row._steps = tipformParseSteps(row.table);
     }
-    function _tipformNewRow(material, vendor, table) {
-      return {material: material || "", vendor: vendor || "", table: table || "",
-              _builderOpen: false, _steps: []};
+    function _tipformNewRow(material, vendor, table, device) {
+      return {material: material || "", vendor: vendor || "", device: device || "",
+              table: table || "", _builderOpen: false, _steps: []};
     }
     async function loadTipform() {
       try {
@@ -4848,7 +4902,7 @@ createApp({
         tipform.rows = Object.entries(j.tables || {})
           .map(([name, table]) => {
             const s = tipformSplitKey(name);
-            return _tipformNewRow(s.material, s.vendor, table);
+            return _tipformNewRow(s.material, s.vendor, table, s.device);
           });
         tipform.cfgMode = tipform.mode;
         tipform.cfgNames = Object.keys(j.tables || {});
@@ -4862,7 +4916,7 @@ createApp({
       const tables = {};
       for (const row of tipform.rows) {
         const tbl = (row.table || "").trim();
-        const key = tipformComposeKey(row.material, row.vendor);
+        const key = tipformComposeKey(row.material, row.vendor, row.device);
         if (!key && !tbl) continue;
         if (!key) { tipform.error = t("ui.config.tipform_err_name"); return; }
         tables[key] = tbl;
@@ -7147,8 +7201,46 @@ createApp({
     // keyed by the slicer-T; items pick on mousedown (fires before the
     // button's blur closes the list).
     const hmDropOpen = ref(null);
-    function hmDdToggle(tt) {
-      hmDropOpen.value = (hmDropOpen.value === tt) ? null : tt;
+    // The list hangs below its button inside the scrolling preflight dialog,
+    // so on the last rows it was cut off at the dialog edge. After it renders
+    // its real height is measured: when that does not fit below (inside the
+    // clipping ancestor and the viewport) and there is more room above, it
+    // opens upwards; the height is capped to the side it opens to.
+    const HM_DD_MAX = 260;
+    const hmDropUp = ref(false);
+    const hmDropMax = ref(HM_DD_MAX);
+    function _hmDdPlace(btn, list) {
+      let top = 0, bottom = window.innerHeight;
+      for (let el = btn && btn.parentElement; el && el !== document.body;
+           el = el.parentElement) {
+        const oy = getComputedStyle(el).overflowY;
+        if (oy === "auto" || oy === "scroll" || oy === "hidden") {
+          const r = el.getBoundingClientRect();
+          top = Math.max(top, r.top);
+          bottom = Math.min(bottom, r.bottom);
+          break;
+        }
+      }
+      const need = Math.min(HM_DD_MAX, (list && list.scrollHeight) || HM_DD_MAX);
+      const b = btn.getBoundingClientRect();
+      const below = bottom - b.bottom - 8;
+      const above = b.top - top - 8;
+      hmDropUp.value = below < need && above > below;
+      hmDropMax.value = Math.max(80, Math.min(HM_DD_MAX,
+                                              hmDropUp.value ? above : below));
+    }
+    function hmDdToggle(tt, ev) {
+      const opening = hmDropOpen.value !== tt;
+      hmDropOpen.value = opening ? tt : null;
+      if (!opening || !ev || !ev.currentTarget) return;
+      const btn = ev.currentTarget;
+      hmDropUp.value = false;
+      hmDropMax.value = HM_DD_MAX;
+      nextTick(() => {
+        if (hmDropOpen.value !== tt) return;
+        _hmDdPlace(btn, btn.parentElement
+                        && btn.parentElement.querySelector(".hm-dd-list"));
+      });
     }
     function hmDdClose() { hmDropOpen.value = null; }
     function hmDdPick(tt, id) {
@@ -7555,7 +7647,7 @@ createApp({
       const haveT = Array.isArray(times) && times.length === n;
       const bgs = rep && rep.bg_swap;
       const minW = Number((bgs && bgs.min_window_min) || 3);
-      const saving = Number((bgs && bgs.inline_saving_s) || 180);
+      const saving = Number((bgs && bgs.inline_saving_s) || 90);
       const bgSet = new Set(headBgHeads().map(Number));
       const plan = simulateDynamicSwaps(events, targets, headBgHeads()).plan;
       const st = {unloads: 0, bg_ok: 0, bg_small: 0, bg_unknown: 0, bg_disabled: 0, saved_s: 0};
@@ -8002,7 +8094,7 @@ createApp({
         if (tg && tg.kind === "feeder") {
           bits.push(t("ui.preflight.feeder"));
         } else if (tg && tg.ace !== null && tg.ace !== undefined) {
-          bits.push(`ACE ${dispIdx(tg.ace)} / ${t("ui.gpreview.slot")} ${dispIdx(tg.slot)}`);
+          bits.push(`MMU ${dispIdx(tg.ace)} / ${t("ui.gpreview.slot")} ${dispIdx(tg.slot)}`);
         }
         const mat = (tg && tg.material) || "";
         if (mat) bits.push(mat);
@@ -8659,141 +8751,227 @@ createApp({
         },
       });
     }
-    // Control tab: the printer's camera. MJPEG comes through the backend as
+    // Control tab: the printer's cameras. MJPEG comes through the backend as
     // an <img>; a WebRTC camera (camera-streamer) is a <video> whose media
     // travels browser-to-camera, with only the handshake going through the
-    // backend. The stream is only opened while the tab is showing, so a
+    // backend; an "HTTP page" camera is an <iframe> the browser loads
+    // itself. A stream is only opened while the tab is showing, so a
     // hidden tab does not keep a connection to the camera.
-    const webcam = reactive({
-      loaded: false, available: false, reason: "", name: "",
-      webrtc: false, proxy: "", signal: "", aspect: "16 / 9",
-      connFailed: false,
-      // Cache-buster: an MJPEG <img> that was torn down keeps its old
-      // connection cached, so re-opening the tab shows a frozen frame
-      // until the src actually changes.
-      nonce: 0,
-    });
+    // Two tiles: the first always, the second on demand (each MJPEG tile
+    // is one more stream piped through the printer). Each tile remembers
+    // its camera per browser; an unknown name falls back to the default.
     const controlShown = computed(() => !panelMode && tab.value === "control");
-    const webcamVideo = ref(null);
-    const webcamSrc = computed(() =>
-      webcam.available && !webcam.webrtc && controlShown.value
-        ? `${BASE}${webcam.proxy}?n=${webcam.nonce}` : "");
-    let webcamPc = null;
-    let webcamRetry = null;
-    function stopWebrtc() {
-      clearTimeout(webcamRetry);
-      if (webcamPc) { webcamPc.close(); webcamPc = null; }
-      if (webcamVideo.value) webcamVideo.value.srcObject = null;
+    const CAM_KEY = (slot) => `multiace.cam.${slot}`;
+    const CAM2_KEY = "multiace.cam2";
+    function camStored(key) {
+      try { return localStorage.getItem(key) || ""; } catch (_) { return ""; }
     }
-    // camera-streamer's handshake is reversed from a typical WHIP/WHEP
-    // flow: the SERVER makes the offer (it knows the video track) and the
-    // browser answers, over two plain POSTs of JSON-wrapped SDP.
-    async function startWebrtc() {
-      stopWebrtc();
-      webcam.connFailed = false;
-      webcam.reason = "";
-      await nextTick();
-      const video = webcamVideo.value;
-      if (!video || !webcam.signal) return;
-      const post = (body) => fetch(`${BASE}${webcam.signal}`, {
-        method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(body),
+    function camStore(key, val) {
+      try { if (val) localStorage.setItem(key, val); else localStorage.removeItem(key); }
+      catch (_) {}
+    }
+    const camSecond = ref(camStored(CAM2_KEY) === "1");
+    const camList = ref([]);
+    // Picker value for the MMU tile: the compact panel view, moved into the
+    // tile by a Teleport (index.html). Not a camera name Moonraker can hold.
+    const MMU_CAM = "__mmu__";
+    const mmuTileEl = ref(null);
+    let mmuTileSlot = -1;
+    function setMmuEl(slot, el) {
+      if (el) { mmuTileEl.value = el; mmuTileSlot = slot; }
+      else if (mmuTileSlot === slot) { mmuTileEl.value = null; mmuTileSlot = -1; }
+    }
+    function makeCam(slot) {
+      const st = reactive({
+        slot, loaded: false, available: false, reason: "", name: "",
+        kind: "mjpeg", webrtc: false, proxy: "", signal: "", iframe: "",
+        aspect: "16 / 9", connFailed: false,
+        // The camera this tile asked for ("" = backend default).
+        want: camStored(CAM_KEY(slot)),
+        // Cache-buster: an MJPEG <img> that was torn down keeps its old
+        // connection cached, so re-opening the tab shows a frozen frame
+        // until the src actually changes.
+        nonce: 0,
       });
-      const pc = new RTCPeerConnection();
-      webcamPc = pc;
-      const fail = (why) => {
-        if (pc !== webcamPc) return;
-        webcam.reason = why;
-        webcam.connFailed = true;
-        // Retry while the tab is open, but not in a tight loop.
-        if (controlShown.value) {
-          webcamRetry = setTimeout(() => { if (pc === webcamPc) startWebrtc(); }, 5000);
-        }
-      };
-      pc.addTransceiver("video", {direction: "recvonly"});
-      pc.addEventListener("track", (evt) => {
-        if (pc === webcamPc && evt.track.kind === "video") video.srcObject = evt.streams[0];
-      });
-      // "track" fires as soon as the transceiver is negotiated, before any
-      // media arrives, so it proves nothing. Some LAN cameras never resolve
-      // Chrome's mDNS-obfuscated host candidates, leaving the connection in
-      // "checking" with no "failed" event: a flat timeout catches that.
-      // The same check covers a connection that comes up but delivers no
-      // video (a stale session on the camera): it fails visibly and retries.
-      const connectTimeout = setTimeout(() => {
-        if (pc !== webcamPc) return;
-        if (pc.connectionState !== "connected") fail("connection timed out");
-        else if (!video.videoWidth) fail("no video received");
-      }, 10000);
-      pc.addEventListener("connectionstatechange", () => {
-        if (pc !== webcamPc) return;
-        if (pc.connectionState === "connected") {
-          webcam.connFailed = false;
-        } else if (["failed", "disconnected"].includes(pc.connectionState)) {
-          clearTimeout(connectTimeout);
-          fail(pc.connectionState);
-        }
-      });
-      try {
-        const offerRes = await post({type: "request"});
-        if (!offerRes.ok) throw new Error(`camera: HTTP ${offerRes.status}`);
-        const offer = await offerRes.json();
-        await pc.setRemoteDescription(offer);
-        await pc.setLocalDescription(await pc.createAnswer());
-        await new Promise((resolve) => {
-          if (pc.iceGatheringState === "complete") { resolve(); return; }
-          const check = () => {
-            if (pc.iceGatheringState === "complete") {
-              pc.removeEventListener("icegatheringstatechange", check);
-              resolve();
-            }
-          };
-          pc.addEventListener("icegatheringstatechange", check);
+      let videoEl = null;
+      let pc0 = null;
+      let retry = null;
+      let loading = false;
+      const shown = () => controlShown.value && (slot === 0 || camSecond.value);
+      const isMmu = () => st.want === MMU_CAM;
+      // The MMU tile still fetches the list (for its picker), never a camera.
+      const q = () => st.want && !isMmu() ? `cam=${encodeURIComponent(st.want)}` : "";
+      function stop() {
+        clearTimeout(retry);
+        if (pc0) { pc0.close(); pc0 = null; }
+        if (videoEl) videoEl.srcObject = null;
+      }
+      // camera-streamer's handshake is reversed from a typical WHIP/WHEP
+      // flow: the SERVER makes the offer (it knows the video track) and the
+      // browser answers, over two plain POSTs of JSON-wrapped SDP.
+      async function startWebrtc() {
+        stop();
+        st.connFailed = false;
+        st.reason = "";
+        await nextTick();
+        const video = videoEl;
+        if (!video || !st.signal) return;
+        const qs = q();
+        const post = (body) => fetch(`${BASE}${st.signal}${qs ? "?" + qs : ""}`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body),
         });
-        if (pc !== webcamPc) return;
-        const ans = await post({type: pc.localDescription.type, id: offer.id,
-                                sdp: pc.localDescription.sdp});
-        if (!ans.ok) throw new Error(`camera: HTTP ${ans.status}`);
-      } catch (e) {
-        clearTimeout(connectTimeout);
-        fail(e.message || String(e));
+        const pc = new RTCPeerConnection();
+        pc0 = pc;
+        const fail = (why) => {
+          if (pc !== pc0) return;
+          st.reason = why;
+          st.connFailed = true;
+          // Retry while the tile is open, but not in a tight loop.
+          if (shown()) {
+            retry = setTimeout(() => { if (pc === pc0) startWebrtc(); }, 5000);
+          }
+        };
+        pc.addTransceiver("video", {direction: "recvonly"});
+        pc.addEventListener("track", (evt) => {
+          if (pc === pc0 && evt.track.kind === "video") video.srcObject = evt.streams[0];
+        });
+        // "track" fires as soon as the transceiver is negotiated, before any
+        // media arrives, so it proves nothing. Some LAN cameras never resolve
+        // Chrome's mDNS-obfuscated host candidates, leaving the connection in
+        // "checking" with no "failed" event: a flat timeout catches that.
+        // The same check covers a connection that comes up but delivers no
+        // video (a stale session on the camera): it fails visibly and retries.
+        const connectTimeout = setTimeout(() => {
+          if (pc !== pc0) return;
+          if (pc.connectionState !== "connected") fail("connection timed out");
+          else if (!video.videoWidth) fail("no video received");
+        }, 10000);
+        pc.addEventListener("connectionstatechange", () => {
+          if (pc !== pc0) return;
+          if (pc.connectionState === "connected") {
+            st.connFailed = false;
+          } else if (["failed", "disconnected"].includes(pc.connectionState)) {
+            clearTimeout(connectTimeout);
+            fail(pc.connectionState);
+          }
+        });
+        try {
+          const offerRes = await post({type: "request"});
+          if (!offerRes.ok) throw new Error(`camera: HTTP ${offerRes.status}`);
+          const offer = await offerRes.json();
+          await pc.setRemoteDescription(offer);
+          await pc.setLocalDescription(await pc.createAnswer());
+          await new Promise((resolve) => {
+            if (pc.iceGatheringState === "complete") { resolve(); return; }
+            const check = () => {
+              if (pc.iceGatheringState === "complete") {
+                pc.removeEventListener("icegatheringstatechange", check);
+                resolve();
+              }
+            };
+            pc.addEventListener("icegatheringstatechange", check);
+          });
+          if (pc !== pc0) return;
+          const ans = await post({type: pc.localDescription.type, id: offer.id,
+                                  sdp: pc.localDescription.sdp});
+          if (!ans.ok) throw new Error(`camera: HTTP ${ans.status}`);
+        } catch (e) {
+          clearTimeout(connectTimeout);
+          fail(e.message || String(e));
+        }
       }
-    }
-    function reloadWebcam() {
-      if (webcam.available && webcam.webrtc) startWebrtc();
-      else loadWebcam();
-    }
-    let webcamLoading = false;
-    async function loadWebcam() {
-      webcamLoading = true;
-      try {
-        const r = await fetch(`${API}/webcam/info`);
-        const j = r.ok ? await r.json() : {available: false, reason: `HTTP ${r.status}`};
-        webcam.webrtc = !!j.webrtc;
-        webcam.proxy = j.proxy_path || "";
-        webcam.signal = j.signal_path || "";
-        webcam.available = !!(j.available && (webcam.proxy || webcam.signal));
-        webcam.reason = j.reason || "";
-        webcam.name = j.name || "";
-        webcam.aspect = String(j.aspect_ratio || "16:9").replace(":", " / ");
-      } catch (e) {
-        webcam.available = false;
-        webcam.reason = String(e);
-      } finally {
-        webcamLoading = false;
-        webcam.loaded = true;
-        webcam.nonce++;
-        if (controlShown.value && webcam.available && webcam.webrtc) startWebrtc();
-        else stopWebrtc();
+      async function load() {
+        loading = true;
+        try {
+          const qs = q();
+          const r = await fetch(`${API}/webcam/info${qs ? "?" + qs : ""}`);
+          const j = r.ok ? await r.json() : {available: false, reason: `HTTP ${r.status}`};
+          if (Array.isArray(j.cameras)) camList.value = j.cameras;
+          // Only one MMU tile: a stored pick on tile 2 yields to tile 1.
+          if (isMmu() && slot === 1 && cams[0].st.kind === "mmu") st.want = "";
+          if (isMmu()) {
+            st.kind = "mmu";
+            st.webrtc = false;
+            st.available = true;
+            st.reason = "";
+            st.name = "";
+            return;
+          }
+          st.kind = j.kind || (j.webrtc ? "webrtc" : "mjpeg");
+          st.webrtc = st.kind === "webrtc";
+          st.proxy = j.proxy_path || "";
+          st.signal = j.signal_path || "";
+          st.iframe = j.iframe_url || "";
+          st.available = !!(j.available && (st.proxy || st.signal || st.iframe));
+          st.reason = j.reason || "";
+          st.name = j.name || "";
+          st.aspect = String(j.aspect_ratio || "16:9").replace(":", " / ");
+        } catch (e) {
+          st.available = false;
+          st.reason = String(e);
+        } finally {
+          loading = false;
+          st.loaded = true;
+          st.nonce++;
+          if (shown() && st.available && st.webrtc) startWebrtc();
+          else stop();
+        }
       }
+      return {
+        st,
+        setVideo(el) { videoEl = el; },
+        src() {
+          if (!st.available || st.kind !== "mjpeg" || !shown()) return "";
+          const qs = q();
+          return `${BASE}${st.proxy}?${qs ? qs + "&" : ""}n=${st.nonce}`;
+        },
+        reload() {
+          if (isMmu()) return;
+          if (st.available && st.webrtc) startWebrtc();
+          else load();
+        },
+        select(name) {
+          st.want = name || "";
+          camStore(CAM_KEY(slot), st.want);
+          stop();
+          load();
+        },
+        show(on) {
+          if (!on) { stop(); return; }
+          if (!st.loaded || isMmu()) load();
+          else if (st.webrtc) startWebrtc();
+          else st.nonce++;
+        },
+        retryMissing() {
+          if (shown() && st.loaded && !st.available && !loading) load();
+        },
+        stop,
+      };
+    }
+    const cams = [makeCam(0), makeCam(1)];
+    // One panel instance only: the other tile cannot pick MMU as well.
+    function mmuTileTaken(slot) {
+      return cams.some(c => c.st.slot !== slot && camVisible(c) && c.st.kind === "mmu");
+    }
+    function camVisible(c) { return c.st.slot === 0 || camSecond.value; }
+    function setCamSecond(on) {
+      camSecond.value = !!on;
+      camStore(CAM2_KEY, on ? "1" : "");
+      if (on && !cams[1].st.want) {
+        // First time: a different camera than the first tile, else the MMU
+        // view (always available, needs no second camera).
+        const other = camList.value.find((c) => c.name !== cams[0].st.name);
+        if (other) cams[1].st.want = other.name;
+        else if (cams[0].st.kind !== "mmu") cams[1].st.want = MMU_CAM;
+      }
+      if (on && mmuTileTaken(1) && cams[1].st.want === MMU_CAM) cams[1].st.want = "";
+      cams[1].show(on && controlShown.value);
     }
     watch(controlShown, (shown) => {
-      if (!shown) { stopWebrtc(); return; }
-      if (!webcam.loaded) loadWebcam();
-      else if (webcam.webrtc) startWebrtc();
-      else webcam.nonce++;
+      for (const c of cams) c.show(shown && camVisible(c));
     }, {immediate: true});
-    onUnmounted(stopWebrtc);
+    onUnmounted(() => { for (const c of cams) c.stop(); });
 
     // Print panel: speed, flow, fan, temperatures, Z offset and the job
     // verbs. Every value shown is READ BACK from the printer (polled while
@@ -9054,8 +9232,8 @@ createApp({
       loadConsole();
       // No camera yet (Moonraker was slow, or it was added later): look again
       // every ~10 s while the tab is open instead of waiting for a click.
-      if (webcam.loaded && !webcam.available && !webcamLoading && ++webcamRetryTick % 5 === 0) {
-        loadWebcam();
+      if (++webcamRetryTick % 5 === 0) {
+        for (const c of cams) c.retryMissing();
       }
     }
     watch(controlShown, (shown) => {
@@ -9505,7 +9683,7 @@ createApp({
       calibrationSelectedHeadSensorKnown, calibrationSelectedHeadClear,
       calibrationCanPrepare,
       calibrationCanStart, calibrationCanVerifyConfigured, calibrationProposed,
-      calibrationTipEstimated,
+      calibrationTipEstimated, calibrationSrcLabel, calibrationLoadSrcLabel,
       calibrationSetPanel, calibrationContinueRoute,
       calibrationBeginRecalibration, calibrationKeepSaved,
       calibrationSetScope, calibrationPrepare,
@@ -9525,7 +9703,7 @@ createApp({
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
       panelMini, fullUiHref, uiTheme, uiThemeChoice, uiLight, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,
-      slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
+      slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setRememberFilament, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
       spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
@@ -9561,7 +9739,7 @@ createApp({
       aceHeadsRightSide,
       loadConfig, saveConfigForm, saveConfigRaw, setMode,
       tipform, loadTipform, tipformAddRow, tipformRemoveRow, saveTipform, tipformRestartPending, tipformNameOptions,
-      TIPFORM_STEP_TYPES, tipformToggleBuilder, tipformAddStep, tipformRemoveStep, tipformStepsToTable, tipformStepPlaceholder, tipformInsertStock,
+      TIPFORM_STEP_TYPES, tipformToggleBuilder, tipformAddStep, tipformRemoveStep, tipformStepsToTable, tipformStepPlaceholder, tipformInsertStock, tipformDeviceOptions,
       preflight, closePreflight, startPreflightPrint, applyLoadout, stageLabel,
       tierLabel, tierWarn, rgbDec, sortedMapping, slicerColorsInPrintOrder,
       forcaMixed, forcaNozzleList, forcaGroups, forcaFeasible, forcaTargetHint,
@@ -9572,7 +9750,7 @@ createApp({
       slicerSwapsDisplay,
       headTargets, headTargetOptions, headEffectiveTargetId, headTargetLabel,
       headTargetColor, chipBg, headTargetLabelById, onHeadTargetChange, headSwapsDisplay,
-      hmDropOpen, hmDdToggle, hmDdClose, hmDdPick,
+      hmDropOpen, hmDropUp, hmDropMax, hmDdToggle, hmDdClose, hmDdPick,
       pfPlanSel, pfEst, pfTimelineSegs, pfEstCounts, pfEstDelta, pfEstStale, pfPlanList, pfPlanFeasible, pfPlanSwaps, pfPlanFlush, pfPlanBg, pfSelected, pfRecommended, pfPlanTitle, pfGoLabel, pfPrintSelected,
       headFeasible, headPlanFeasible, headPlanSwaps, headPlanBg, headPlanFlushG, headPlanBgLabel, headSlicerHex,
       headSlicerMat, headProposalLabel,
@@ -9582,7 +9760,8 @@ createApp({
       updateState, updateCheck, updateApply,
       debugState, debugEnable, debugDisable,
       navItems, topItems, subItems, topActive, openNav,
-      webcam, webcamSrc, webcamVideo, reloadWebcam,
+      cams, camList, camSecond, setCamSecond, camVisible, controlShown,
+      MMU_CAM, mmuTileEl, setMmuEl, mmuTileTaken,
       printCtl, printCtlLimits, printCtlDraft, printCtlBusy, printCtlError, printCtlCan,
       printCtlNotice, printCtlQueued, printCtlRestart, printCtlRestartBlocked,
       printCtlTempDraft, printCtlTempShown,

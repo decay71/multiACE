@@ -25,8 +25,8 @@ from .ace_resistance import RESISTANCE_PAUSE_STRIKES
 # starts, so commanded push = anti_ooze + PICK_CHECK_FLOW_PUSH, and the
 # cushion is retracted back afterwards (anti-ooze contract stays intact).
 PICK_CHECK_FLOW_PUSH = 10.
-#: Smallest flush the purge policy may produce (mm), same as the post-
-#: processor's stamp minimum.
+#: Smallest flush the purge policy may produce (mm) while swap_purge_floor
+#: is 0; the post-processor's stamp minimum uses the same default.
 PURGE_HARD_MIN_MM = 40
 PICK_CHECK_PUSH_FEEDRATE = 400     # mm/min, = the phase3 extrude feedrate
 PICK_CHECK_COIL_SAMPLES = 5        # phase3 non-soft sampling: 5 x 0.5 s
@@ -109,7 +109,8 @@ class SwapMixin:
         value. 0 means 'use the stock default' (caller omits LENGTH=).
 
         The purge policy (swap_purge_scale percent, then swap_purge_floor
-        and swap_purge_cap in mm, 0 = off) applies to the resolved length.
+        and swap_purge_cap in mm, see apply_purge_policy) applies to the
+        resolved length.
         With the policy at its defaults the result is unchanged. A policy
         on a 0 (stock default) length works on the stock 80 mm and returns
         a real length, so the caller then passes LENGTH=."""
@@ -121,10 +122,11 @@ class SwapMixin:
     def apply_purge_policy(self, length):
         """Scale, floor and cap a resolved flush length (mm). Unchanged
         while the policy sits at its defaults; a 0 (stock default) length
-        then stays 0. Once the policy is active the result is never below
-        PURGE_HARD_MIN_MM (the melt zone has to stay clear and the flow
-        check valid), whatever scale, floor or cap say; FLOOR only raises
-        the minimum further."""
+        then stays 0. FLOOR raises, CAP lowers (and wins over a higher
+        floor); the result never drops below PURGE_HARD_MIN_MM, or below a
+        lower swap_purge_floor the user set. The same floor sizes the
+        preflight's per-pair stamps, so one setting decides the smallest
+        purge everywhere."""
         scale = getattr(self, 'swap_purge_scale', 100)
         floor = getattr(self, 'swap_purge_floor', 0)
         cap = getattr(self, 'swap_purge_cap', 0)
@@ -135,7 +137,9 @@ class SwapMixin:
             value = max(value, floor)
         if cap:
             value = min(value, cap)
-        value = max(value, PURGE_HARD_MIN_MM)
+        # The hard minimum: 40 mm, or a lower floor the user chose.
+        value = max(value, min(floor, PURGE_HARD_MIN_MM) if floor
+                    else PURGE_HARD_MIN_MM)
         return int(min(round(value), 200))
 
     def _restore_pos_for_pause(self, saved_pos):
@@ -388,6 +392,35 @@ class SwapMixin:
         raise gcmd.error(
             message=detail_msg.replace('"', "'")[:400], action='pause',
             id=525, index=idx, code=code, oneshot=1, level=2)
+
+    def _mmu_missing_stop(self, gcmd, ace_index, head, text,
+                          before_pause=None):
+        """An MMU the command needs is not connected. In a running print
+        this is a resumable pause: the print and its power-loss data stay,
+        RESUME re-runs the line once the unit is back (the swap's own scan
+        connects it). A paused print keeps its pause, idle is a plain
+        refusal. before_pause runs first in the print case (a swap that
+        already moved hands the head back and restores the position).
+        Always raises."""
+        if self._is_actively_printing():
+            if before_pause is not None:
+                before_pause()
+            logging.info('[multiACE] MMU %d not connected for head %d '
+                         'during a print - resumable pause instead of a '
+                         'cancel' % (self._disp(ace_index), self._disp(head)))
+            self._pause_for_recovery(
+                gcmd,
+                detail_msg=self._t('msg.pause_mmu_missing',
+                    ace=self._disp(ace_index), head=self._disp(head)),
+                recovery_steps=[
+                    'Check USB and power of MMU %d' % self._disp(ace_index),
+                    'RESUME                            (continue the print)',
+                    'MMU still missing: restart the printer, the print '
+                    'continues as power-loss recovery',
+                ],
+            )
+        raise self._ace_error(gcmd, text, code=208, head=head,
+                              keep_print=self._is_print_active_or_paused())
 
     cmd_ACE_PICKUP_CLEAN_help = (
         '[multiACE] Short nozzle wipe at the discard position after a bare-T '
@@ -1296,9 +1329,8 @@ class SwapMixin:
         self._wait_bg_op(head, gcmd, rearm_target=(ace_index, slot),
                          park=True)
         if ace_index < 0 or not self._ensure_ace_available(ace_index):
-            raise self._ace_error(gcmd,
-                'MMU %d not available' % self._disp(ace_index),
-                code=208, head=head)
+            self._mmu_missing_stop(gcmd, ace_index, head,
+                'MMU %d not available' % self._disp(ace_index))
         if slot < 0 or slot > 3:
             raise self._ace_error(gcmd, 'SLOT must be 0-3', code=200,
                                   head=head)
@@ -1762,9 +1794,15 @@ class SwapMixin:
                 logging.info(self._t('msg.swap_switching_ace',
                     ace=self._raw(ace_index)))
                 if not self._switch_ace_for_head_target(ace_index):
-                    raise self._ace_error(gcmd,
+                    swap_status = 'mmu_missing'
+
+                    def _hand_back():
+                        self._swap_back_to_orig_for_pause(
+                            switched_head, orig_ext_name)
+                        self._restore_pos_for_pause(saved_pos)
+                    self._mmu_missing_stop(gcmd, ace_index, head,
                         'Failed to connect to MMU %d' % self._disp(ace_index),
-                        code=208, head=head)
+                        before_pause=_hand_back)
 
             if self._await_known_gate(self.gate_status, slot) == GATE_UNKNOWN:
                 swap_status = 'gate_unknown'

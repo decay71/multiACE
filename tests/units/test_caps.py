@@ -98,6 +98,11 @@ def test_caps_equal_live_predicates():
                                       'code0_forbidden' if v1 else None)
         assert caps['speed_unit'] == ('mm_s' if (v1 or v2) else None)
         assert caps['lanes_concurrent'] == (None if v2 else False)
+        assert caps['freewheel_print_mode'] is False
+        assert caps['locate_method'] == ('led' if v2 else 'jog' if v1
+                                         else None)
+        assert caps['calibration_feed'] == ('chunked' if (v1 or v2)
+                                            else None)
         old_open = s._is_open_fw_idx(0)
         old_ver = s._open_fw_version(0)
         old_bites = old_ver is not None and old_ver >= U.INSERT_MIDPRINT_MIN_FW

@@ -578,6 +578,24 @@ class SettingsMixin:
         self.log_always('[multiACE] PA sync %s%s'
                         % ('ON' if enable else 'OFF', sfx))
 
+    cmd_ACE_SET_REMEMBER_FILAMENT_help = (
+        '[multiACE] Keep a slot\'s hand-set colour/material label and its '
+        'spool binding when its filament is removed, so putting filament '
+        'back there needs no re-entry (ENABLE=0|1, default off). A freshly '
+        'read RFID chip always replaces a kept label. Live + write-through '
+        '(writes the remember_filament config line; PERSIST=0 = until '
+        'restart).')
+
+    def cmd_ACE_SET_REMEMBER_FILAMENT(self, gcmd):
+        enable = bool(gcmd.get_int('ENABLE', 1, minval=0, maxval=1))
+        self._remember_filament = enable
+        sfx = self._wt_persist(gcmd, 'remember_filament',
+                               _wt_fmt_bool(enable), None,
+                               shadow_attr='_remember_filament_cfg',
+                               shadow_val=enable)
+        self.log_always('[multiACE] Remember last filament %s%s'
+                        % ('ON' if enable else 'OFF', sfx))
+
     def cmd_ACE_SET_TAG_WRITE(self, gcmd):
         """Defaults for ACE_TAG_WRITE / the picker's write button. Each
         given field is applied live and written through to its config
@@ -677,3 +695,130 @@ class SettingsMixin:
                            if self.quad_first
                            else 'stock first - switch head, then reload',
                            sfx))
+
+    # -- power-safe SAVE_VARIABLE ---------------------------------------
+    # Stock save_variables rewrites its file in place (open "w", no sync),
+    # so a power cut shortly after a write can leave it empty: mode, head
+    # wiring, unit table and every other multiACE state come back as
+    # defaults (an empty file reads as normal mode). The command is
+    # replaced by a twin that parses exactly like stock but writes a temp
+    # file, syncs it and renames it over the old one, then keeps a copy in
+    # <file>.bak. At start an empty or unreadable file is restored from
+    # that copy.
+
+    def _install_atomic_save_variables(self):
+        sv = self.save_variables
+        fn = getattr(sv, 'filename', None)
+        if not fn or not hasattr(sv, 'loadVariables'):
+            return
+        self._sv_restore_from_backup(sv, fn)
+        gcode = self.printer.lookup_object('gcode')
+        stock = getattr(sv, 'cmd_SAVE_VARIABLE', None)
+        try:
+            gcode.register_command('SAVE_VARIABLE', None)
+            gcode.register_command(
+                'SAVE_VARIABLE', self._cmd_save_variable_atomic,
+                desc=getattr(sv, 'cmd_SAVE_VARIABLE_help',
+                             'Save arbitrary variables to disk'))
+            logging.info('[multiACE] SAVE_VARIABLE writes %s power-safe '
+                         '(temp file + sync + rename, backup %s.bak)'
+                         % (fn, os.path.basename(fn)))
+        except Exception:
+            logging.exception('[multiACE] power-safe SAVE_VARIABLE not '
+                              'installed - stock write stays')
+            if stock is not None:
+                try:
+                    gcode.register_command('SAVE_VARIABLE', None)
+                    gcode.register_command('SAVE_VARIABLE', stock)
+                except Exception:
+                    logging.exception('[multiACE] stock SAVE_VARIABLE '
+                                      'could not be re-registered')
+
+    @staticmethod
+    def _sv_write_atomic(path, data):
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        try:
+            dfd = os.open(os.path.dirname(path) or '.', os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _sv_read_variables(path):
+        """{name: value} of a save_variables file, or None when it is
+        missing, empty or does not parse."""
+        import ast
+        import configparser
+        try:
+            if os.path.getsize(path) <= 0:
+                return None
+            varfile = configparser.ConfigParser()
+            varfile.read(path)
+            if not varfile.has_section('Variables'):
+                return None
+            return {name: ast.literal_eval(val)
+                    for name, val in varfile.items('Variables')}
+        except Exception:
+            return None
+
+    def _sv_restore_from_backup(self, sv, fn):
+        self._sv_restored_from = None
+        if getattr(sv, 'allVariables', None):
+            return
+        bak = fn + '.bak'
+        saved = self._sv_read_variables(bak)
+        if not saved:
+            return
+        try:
+            with open(bak, 'r') as f:
+                data = f.read()
+            self._sv_write_atomic(fn, data)
+            sv.loadVariables()
+        except Exception:
+            logging.exception('[multiACE] restoring %s from %s failed'
+                              % (fn, bak))
+            return
+        self._sv_restored_from = bak
+        logging.warning('[multiACE] %s was empty or unreadable - restored '
+                        '%d variable(s) from %s'
+                        % (fn, len(sv.allVariables), bak))
+
+    def _cmd_save_variable_atomic(self, gcmd):
+        import ast
+        import configparser
+        import io
+        sv = self.save_variables
+        varname = gcmd.get('VARIABLE')
+        value = gcmd.get('VALUE')
+        try:
+            value = ast.literal_eval(value)
+        except ValueError:
+            raise gcmd.error("Unable to parse '%s' as a literal" % (value,))
+        newvars = dict(sv.allVariables)
+        newvars[varname] = value
+        varfile = configparser.ConfigParser()
+        varfile.add_section('Variables')
+        for name, val in sorted(newvars.items()):
+            varfile.set('Variables', name, repr(val))
+        buf = io.StringIO()
+        varfile.write(buf)
+        data = buf.getvalue()
+        try:
+            self._sv_write_atomic(sv.filename, data)
+        except Exception:
+            msg = "Unable to save variable"
+            logging.exception(msg)
+            raise gcmd.error(msg)
+        try:
+            self._sv_write_atomic(sv.filename + '.bak', data)
+        except Exception:
+            logging.exception('[multiACE] save_variables backup not written')
+        sv.loadVariables()

@@ -160,6 +160,13 @@ FEED_UNLOAD_PROBE_RETRACT                           = 150
 # before the device shows the motion, so is_ace_ready() may not end the
 # loop within this window. The SENSOR exit is not gated by it.
 FEED_READY_GUARD_S = 4.0
+# A unit that reports its own motion (status 'motion', the CFS Nano) can
+# run a feed far longer than load_length / feed_speed: it first waits for
+# the box's own pull-in of a spool inserted meanwhile (up to ~60 s) and
+# feeds at its own pace. While it reports that feed as running, the feed
+# deadline moves along, at most this far past the normal deadline (a
+# frozen status must still end the wait).
+FEED_UNIT_RUNNING_MAX_EXTRA_S = 120.0
 # [diag] passive: log the V2 ACE decoder (real filament movement) before/after
 # each unload retract to multiace_feedlog.log, to see whether the decoder
 # tracks the full retract length (candidate for a V2 decoder-based unload
@@ -1020,6 +1027,16 @@ class FilamentFeed:
         except Exception as e:
             logging.error("[feed] snapshot INNER_RESUME failed: %s", str(e))
 
+    def _load_feed_temp_drop(self):
+        """[ace] load_feed_temp_drop: how far below load temp the nozzle
+        waits while the MMU feeds. Stock 50; an older ace.py has no
+        attribute and keeps it."""
+        try:
+            v = int(getattr(self.ace, 'load_feed_temp_drop', 50))
+        except (TypeError, ValueError):
+            v = 50
+        return max(0, min(100, v))
+
     def _swap_probe_temp(self, cool_probe, filament_feed_temp):
         # Forward-probe temperature after the INNER tip-pull. Non-swap (or
         # cool_probe off): probe at the material feed temp (always
@@ -1400,7 +1417,8 @@ class FilamentFeed:
                             "M104 S%d\r\n" % (filament_feed_temp))
                     else:
                         self.gcode.run_script_from_command(
-                            "M104 S%d\r\n" % (filament_feed_temp - 50))
+                            "M104 S%d\r\n" % (filament_feed_temp
+                                                - self._load_feed_temp_drop()))
 
                     self._set_channel_state(ch, FEED_STA_LOAD_FEEDING)
                     self._put_into_drive(ch)
@@ -1546,6 +1564,7 @@ class FilamentFeed:
                                         self.ace.wait_ace_ready()
 
                                     _ll = self.ace.get_load_length(self.ace._active_device_index, _ace_slot)
+                                    _motion_seq0 = self._unit_motion_seq()
                                     self.ace._feed(_ace_slot, _ll, self.ace.feed_speed, 0)
                                     # No fixed pause before the poll loop any
                                     # more. The old 4.0 s wait existed for
@@ -1578,6 +1597,9 @@ class FilamentFeed:
                                     _feed_deadline = (self.reactor.monotonic()
                                         + _ll / max(self.ace.feed_speed, 1)
                                         + 30.0)
+                                    _feed_deadline_max = (_feed_deadline
+                                        + FEED_UNIT_RUNNING_MAX_EXTRA_S)
+                                    _extend_said = False
                                     _gate_skip_said = False
                                     load_found = False
                                     while 1:
@@ -1585,11 +1607,34 @@ class FilamentFeed:
                                         port_detect = self._port[ch].get_filament_detected()
                                         runout_detect = self.runout_sensor[ch].get_status(0)['filament_detected']
 
-                                        if self.reactor.monotonic() > _feed_deadline:
+                                        _now = self.reactor.monotonic()
+                                        if (_now > _feed_deadline
+                                                and _now < _feed_deadline_max
+                                                and self._unit_feed_running(
+                                                    _ace_slot, _motion_seq0)):
+                                            if not _extend_said:
+                                                logging.info(
+                                                    "[feed_loading] attempt %d: feed deadline"
+                                                    " reached but MMU %d still reports the"
+                                                    " feed running - waiting for it",
+                                                    load_attempt + 1,
+                                                    self.ace._active_device_index)
+                                                _extend_said = True
+                                            _feed_deadline = _now + 1.0
+                                        if _now > _feed_deadline:
                                             logging.info(
                                                 "[feed_loading] attempt %d: feed wait deadline hit"
                                                 " - treating as sensor-not-reached",
                                                 load_attempt + 1)
+                                            # The feed may still run: stop it
+                                            # before the retry retracts, else
+                                            # the retract can pull back a tip
+                                            # that arrives a moment later.
+                                            try:
+                                                self.ace._stop_feeding(_ace_slot)
+                                            except Exception:
+                                                logging.exception(
+                                                    "[feed_loading] stop after the deadline failed")
                                             break
                                         if runout_detect == True:
                                             self.ace._stop_feeding(_ace_slot)
@@ -1649,7 +1694,8 @@ class FilamentFeed:
 
                                     logging.info("[feed_loading] attempt %d: sensor not reached", load_attempt + 1)
                                     self._note_feed_verdict(_ace_slot, load_attempt,
-                                                            self.reactor.monotonic() - _feed_start)
+                                                            self.reactor.monotonic() - _feed_start,
+                                                            _motion_seq0)
 
                                 if not load_found and self.channel_error[ch] != FEED_ERR_NO_FILAMENT:
                                     self.channel_error[ch] = FEED_ERR_TIMEOUT
@@ -2976,6 +3022,7 @@ class FilamentFeed:
                                     # the short-retract note above - this rest
                                     # site is where the 60s stall actually hit).
                                     self.ace.wait_ace_ready()
+                                    _rmseq = self._unit_motion_seq()
                                     _rsp = self.ace._retract_with_decoder_span(
                                         self.ace._active_device_index, _ace_slot,
                                         lambda: self.ace._retract(
@@ -2995,6 +3042,10 @@ class FilamentFeed:
                                     # device's own 'success' - see the helper.
                                     if self._unload_dec_stalled(
                                             head_idx, _ace_slot, _rest, _rsp):
+                                        unload_ok = False
+                                        unload_reason = 'bowden_stall'
+                                    elif self._unit_retract_short(
+                                            head_idx, _ace_slot, _rmseq):
                                         unload_ok = False
                                         unload_reason = 'bowden_stall'
                             if not unload_ok:
@@ -3443,6 +3494,7 @@ class FilamentFeed:
                                     # the short-retract note above - this rest
                                     # site is where the 60s stall actually hit).
                                     self.ace.wait_ace_ready()
+                                    _rmseq = self._unit_motion_seq()
                                     _rsp = self.ace._retract_with_decoder_span(
                                         self.ace._active_device_index, _ace_slot,
                                         lambda: self.ace._retract(
@@ -3462,6 +3514,10 @@ class FilamentFeed:
                                     # device's own 'success' - see the helper.
                                     if self._unload_dec_stalled(
                                             head_idx, _ace_slot, _rest, _rsp):
+                                        unload_ok = False
+                                        unload_reason = 'bowden_stall'
+                                    elif self._unit_retract_short(
+                                            head_idx, _ace_slot, _rmseq):
                                         unload_ok = False
                                         unload_reason = 'bowden_stall'
                             if not unload_ok:
@@ -3725,7 +3781,75 @@ class FilamentFeed:
     # per-slot status (ACE Pro) carry no verdict and keep the old wording.
     FEED_VERDICT_WAIT_S = 1.5
 
-    def _note_feed_verdict(self, slot, attempt, elapsed):
+    def _unit_motion(self):
+        """The status 'motion' report of the active unit (units that
+        report their own distance, the CFS Nano), or None."""
+        try:
+            idx = self.ace._active_device_index
+            info = self.ace._info_per_ace.get(idx) or {}
+            m = info.get('motion')
+            return m if isinstance(m, dict) else None
+        except Exception:
+            return None
+
+    def _unit_motion_seq(self):
+        m = self._unit_motion()
+        try:
+            return int(m.get('seq', 0)) if m else 0
+        except Exception:
+            return 0
+
+    def _unit_feed_running(self, slot, seq0):
+        """True while the active unit reports a feed of this slot that
+        started after seq0 as still running."""
+        m = self._unit_motion()
+        if not m or not m.get('running'):
+            return False
+        try:
+            return (m.get('kind') == 'feed'
+                    and int(m.get('slot', -1)) == int(slot)
+                    and int(m.get('seq', 0)) > int(seq0))
+        except Exception:
+            return False
+
+    def _unit_retract_short(self, head, slot, seq0):
+        """True when the unit measured its bulk retract and reports it
+        short (units with a motion report, the CFS Nano: the wheel shows
+        the strand did not come back the full length, so the old tip can
+        still sit in a splitter)."""
+        m = self._unit_motion()
+        try:
+            if (not m or m.get('running') or m.get('kind') != 'retract'
+                    or int(m.get('slot', -1)) != int(slot)
+                    or int(m.get('seq', 0)) <= int(seq0)):
+                return False
+            short = float(m.get('short') or 0.0)
+        except Exception:
+            return False
+        if short <= 0.0:
+            return False
+        logging.warning(
+            '[multiACE] [feed][unload] head %d MMU slot %d: bulk retract came '
+            'back %.0f mm short of %.0f mm (measured by the MMU) - this '
+            'unload is NOT verified.'
+            % (head, slot, short, float(m.get('target') or 0.0)))
+        return True
+
+    def _unit_feed_stop(self, slot, seq0):
+        """Why the unit's own motion report says the feed of this slot
+        (started after seq0) ended: 'slip' (the wheel stood while the motor
+        ran), 'distance', or None (no report, still running, other job)."""
+        m = self._unit_motion()
+        try:
+            if (not m or m.get('running') or m.get('kind') != 'feed'
+                    or int(m.get('slot', -1)) != int(slot)
+                    or int(m.get('seq', 0)) <= int(seq0)):
+                return None
+        except Exception:
+            return None
+        return m.get('stop') or None
+
+    def _note_feed_verdict(self, slot, attempt, elapsed, motion_seq0=None):
         ace = self.ace
         idx = ace._active_device_index
         store = getattr(ace, '_load_feed_error', None)
@@ -3735,7 +3859,29 @@ class FilamentFeed:
         cap = getattr(ace, '_cap', None)
         read = getattr(ace, '_v2_get_slot_status', None)
         if cap is None or read is None or not cap(idx, 'has_slot_status_truth'):
-            store.pop(key, None)
+            # Units that report their own motion (the CFS Nano) give the
+            # same verdict through the stop reason of the feed job.
+            stop = None
+            if motion_seq0 is not None and self._unit_motion() is not None:
+                deadline = self.reactor.monotonic() + self.FEED_VERDICT_WAIT_S
+                while True:
+                    stop = self._unit_feed_stop(slot, motion_seq0)
+                    if stop is not None or self.reactor.monotonic() >= deadline:
+                        break
+                    self.reactor.pause(self.reactor.monotonic() + 0.1)
+            if stop == 'slip':
+                store[key] = self.reactor.monotonic()
+                logging.info(
+                    "[feed_loading] attempt %d: MMU %d stopped the feed after %.1fs"
+                    " - the wheel stood while the motor ran (slip at the MMU)",
+                    attempt + 1, idx, elapsed)
+            else:
+                store.pop(key, None)
+                if stop is not None:
+                    logging.info(
+                        "[feed_loading] attempt %d: MMU %d feed ended (%s) after %.1fs"
+                        " - filament moved but did not arrive (path downstream)",
+                        attempt + 1, idx, stop, elapsed)
             return
         deadline = self.reactor.monotonic() + self.FEED_VERDICT_WAIT_S
         status = None

@@ -1022,6 +1022,56 @@ def late_join_idle_rescan(**kw):
     return h.finish()
 
 
+def units_all_absent_then_back(**kw):
+    """Boot 1 writes the table (ACE 2 = place 0, ACE Pro = place 1). Boot
+    2 with the whole hub missing (both unplugged, startup_wait 3 s): no
+    soft-fail, both places stay 'absent:' and the normal start runs. The
+    hub returns at 10 s: the idle rescan connects both units on their own
+    places, no restart."""
+    ov = {'v2_order': 'first', 'startup_wait': '3.0'}
+    ov.update(kw.pop('overrides', None) or {})
+    e1, sv = _boot(_mixed, 2, overrides=ov, **kw)
+    h = _harness(_mixed, 2, overrides=ov,
+                 save_vars={'ace__unit_places': sv['ace__unit_places']}, **kw)
+    h.build()
+    h._unit('v1a').plugged = False
+    h._unit('v2a').plugged = False
+    h.ready()
+    h.run(6.0)
+    h.snapshot()
+    h.at(10.0, h.replug, 'v1a')
+    h.at(10.0, h.replug, 'v2a')
+    h.run(26.0)
+    h.snapshot()
+    return e1 + h.finish()
+
+
+def units_all_absent_back_in_print(**kw):
+    """As units_all_absent_then_back, but a print runs (a power-loss
+    restore): the idle rescan stays quiet, the hub returns at 10 s and the
+    next command that needs a unit (here ACE_SWITCH, in a print the swap's
+    own scan) connects it on its place without a restart."""
+    ov = {'v2_order': 'first', 'startup_wait': '3.0'}
+    ov.update(kw.pop('overrides', None) or {})
+    e1, sv = _boot(_mixed, 2, overrides=ov, **kw)
+    h = _harness(_mixed, 2, overrides=ov,
+                 save_vars={'ace__unit_places': sv['ace__unit_places']}, **kw)
+    h.build()
+    h._unit('v1a').plugged = False
+    h._unit('v2a').plugged = False
+    h.ready()
+    h.run(5.0)
+    h.print_start()
+    h.at(5.0, h.replug, 'v1a')
+    h.at(5.0, h.replug, 'v2a')
+    h.at(14.0, h.gcode_line, 'ACE_SWITCH TARGET=1 AUTOLOAD=0')
+    h.run(24.0)
+    h.snapshot()
+    h.print_end()
+    h.run(1.0)
+    return e1 + h.finish()
+
+
 def _legacy_table(sv):
     """The table as the first keyed builds wrote it: ACE 2 units keyed,
     ACE Pro entries present but without a key."""
@@ -1123,25 +1173,64 @@ def cfs_insert_remove(**kw):
     return h.finish()
 
 
-def cfs_motion_unsupported(**kw):
-    """ACE_FEED / ACE_RETRACT on the CFS: answered unsupported by the
-    link, nothing but status polls reaches the wire."""
+def cfs_feed_retract(**kw):
+    """ACE_FEED 2000 mm on the CFS: the box stops its init feed after
+    800 mm (bowden friction), the link resumes it twice and stops at the
+    length; ACE_RETRACT 600 mm waits for that and runs as 255+255+90."""
+    ov = {'enable_cfs': 'true'}
+    h = _harness(lambda c: _v2_and_cfs(c, init_limit=800.0), 2,
+                 overrides=ov, **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h.gcode_line, 'ACE_FEED INDEX=0 LENGTH=2000 SPEED=80 ACE=1')
+    h.at(6.0, h.gcode_line, 'ACE_RETRACT INDEX=0 LENGTH=600 SPEED=80 ACE=1')
+    h.run(90.0)
+    h.snapshot()
+    return h.finish()
+
+
+def cfs_stop_and_print_mode(**kw):
+    """A long CFS feed stopped by the host (the load's sensor stop): the
+    box locks, the next status poll unlocks; the feed-assist arm puts the
+    box into print mode (04 <mask> 00), the clutch frees."""
     ov = {'enable_cfs': 'true'}
     h = _harness(_v2_and_cfs, 2, overrides=ov, **kw)
     h.build()
     h.ready()
-    h.at(3.0, h.gcode_line, 'ACE_FEED INDEX=0 LENGTH=100 SPEED=50 ACE=1')
-    h.at(6.0, h.gcode_line, 'ACE_RETRACT INDEX=0 LENGTH=100 SPEED=50 ACE=1')
-    h.run(9.0)
+    h.at(3.0, h.gcode_line, 'ACE_FEED INDEX=0 LENGTH=2000 SPEED=80 ACE=1')
+    h.at(8.0, h.inst._stop_feeding, 0, 1)
+    h.at(15.0, setattr, h.inst, '_auto_feed_enabled', True)
+    h.at(15.0, h.inst._arm_fa_for, 1, 0)
+    h.run(35.0)
+    h.snapshot()
+    return h.finish()
+
+
+def cfs_unload_freewheel(**kw):
+    """An unload on a CFS head that was left unlocked (feed mode) by a
+    stopped feed: the unload hook switches the box into print mode
+    (04 <mask> 00) so the tip-form pull runs with the clutch free."""
+    ov = {'enable_cfs': 'true'}
+    h = _harness(_v2_and_cfs, 2, overrides=ov, **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h.gcode_line, 'ACE_FEED INDEX=0 LENGTH=2000 SPEED=80 ACE=1')
+    h.at(8.0, h.inst._stop_feeding, 0, 1)
+    h.at(15.0, h.inst._head_source.__setitem__, 0,
+         {'ace_index': 1, 'slot': 0})
+    h.at(15.0, h.inst._v2_arm_fa_for_unload, 0)
+    h.run(25.0)
     h.snapshot()
     return h.finish()
 
 
 SCENARIOS = {
+    'cfs_unload_freewheel': cfs_unload_freewheel,
     'connect_cfs': connect_cfs,
     'cfs_disabled': cfs_disabled,
     'cfs_insert_remove': cfs_insert_remove,
-    'cfs_motion_unsupported': cfs_motion_unsupported,
+    'cfs_feed_retract': cfs_feed_retract,
+    'cfs_stop_and_print_mode': cfs_stop_and_print_mode,
     'late_join_idle_rescan': late_join_idle_rescan,
     'unit_legacy_keyless_waited': unit_legacy_keyless_waited,
     'unit_legacy_keyless_gone': unit_legacy_keyless_gone,
@@ -1196,6 +1285,8 @@ SCENARIOS = {
     'head_mode_connect': head_mode_connect,
     'startup_wait_late_unit': startup_wait_late_unit,
     'startup_softfail': startup_softfail,
+    'units_all_absent_then_back': units_all_absent_then_back,
+    'units_all_absent_back_in_print': units_all_absent_back_in_print,
     'connect_v1': connect_v1,
     'connect_v2': connect_v2,
     'connect_mixed': connect_mixed,

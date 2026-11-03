@@ -1,4 +1,6 @@
 # multiACE: let Klipper (user lava) open USB-RS485 dongles that drive an
 # MMU (CFS Nano on a CH340, ACE 2 on a generic adapter). Without it the
-# tty is root:dialout 0660 and lava is not in dialout.
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666"
+# tty is root:dialout 0660 and lava is not in dialout. The rule matches
+# every CH340, so it keeps root:dialout access: a host without a lava user
+# (generic Klipper, CH340 mainboard) stays at its usual root:dialout 0660.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", OWNER="lava", GROUP="dialout", MODE="0660"
