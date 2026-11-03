@@ -1303,12 +1303,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if self._v2_chain:
             logging.info('[multiACE] V2 daisy chain enabled (opt-in): every '
                          'ACE 2 cable is driven as a bus')
-            # Enumerate in the bus threads while Klipper connects its MCUs.
-            try:
-                from . import ace_bus_v2
-                ace_bus_v2.start(AceProtocolV2._scan_v2_serial_paths())
-            except Exception:
-                logging.exception('[multiACE] V2 chain: bus start failed')
+        # The buses start further down, once the port exclusions are read.
         # USB ids a CFS dongle may carry (the CFS driver probes each such
         # port before it claims it). Read unconditionally.
         cfs_ids = self._parse_v2_extra_usb_ids(
@@ -1339,6 +1334,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # see _expected_ace_count().
         self._excluded_ace_present = set()
         self._expected_logged = None
+        self._setup_chain_buses()
         # Units held in a bootloader/shim (GET_INFO answered with a
         # non-application version): idx -> firmware string. Cleared per
         # (re)open, set by the connect handshake.
@@ -3748,13 +3744,54 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             out[os.path.realpath(path)] = '[ace] exclude_ports'
         return out
 
+    def _chain_cable_filter(self, cables):
+        """AceProtocolV2.CHAIN_CABLE_FILTER: the ACE 2 cables a chain bus
+        may open, i.e. not an [mcu] serial and not in [ace] exclude_ports."""
+        from . import ace_bus_v2
+        excluded = self._excluded_ports()
+        allowed = ace_bus_v2.chain_cables(cables, excluded)
+        for cable in cables:
+            if cable in allowed:
+                continue
+            real = os.path.realpath(cable)
+            if real not in self._excluded_logged:
+                self._excluded_logged.add(real)
+                logging.info('[multiACE] port %s excluded from the V2 chain '
+                             '(%s)' % (cable, excluded.get(real, 'excluded')))
+        return allowed
+
+    def _setup_chain_buses(self):
+        """Runs at every config load, so also on each RESTART /
+        FIRMWARE_RESTART in the same process: a bus is a module-level
+        thread and would otherwise outlive the option. Stops every bus the
+        current config does not allow (all of them with v2_chain off or the
+        ace_v2 driver disabled) and waits until it closed its cable, then
+        starts the allowed ones so they enumerate while Klipper connects
+        its MCUs."""
+        try:
+            from . import ace_bus_v2
+            if self._v2_chain and self._enable_ace_v2:
+                AceProtocolV2.CHAIN_CABLE_FILTER = self._chain_cable_filter
+                cables = AceProtocolV2.chain_cables()
+            else:
+                AceProtocolV2.CHAIN_CABLE_FILTER = None
+                cables = []
+            stopped = ace_bus_v2.stop_buses(keep=cables)
+            if stopped:
+                logging.info('[multiACE] V2 chain: stopped bus on %s'
+                             % ', '.join(stopped))
+            if cables:
+                ace_bus_v2.start(cables)
+        except Exception:
+            logging.exception('[multiACE] V2 chain: bus setup failed')
+
     def _wait_chain_first_scan(self):
         """V2 chain: give each bus its first enumeration before the startup
         scan, so a cold start sees every unit at once. Yields to the reactor
         (never blocks it), at most ace_bus_v2.FIRST_SCAN_WAIT_S, once per
         startup; usually zero because the buses start at config load."""
         from . import ace_bus_v2
-        cables = AceProtocolV2._scan_v2_serial_paths()
+        cables = AceProtocolV2.chain_cables()
         deadline = self.reactor.monotonic() + ace_bus_v2.FIRST_SCAN_WAIT_S
         while (ace_bus_v2.first_scan_pending(cables)
                and self.reactor.monotonic() < deadline):
@@ -4000,7 +4037,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             for path in discovered_by_protocol[protocol_cls]:
                 if path in ace_devices:
                     continue
-                real_path = os.path.realpath(path)
+                # A chain unit is excluded by its cable: '<cable>@<uid>'
+                # is no device and never matches a real port.
+                real_path = os.path.realpath(
+                    path.rpartition('@')[0]
+                    if AceProtocolV2.is_bus_path(path) else path)
                 if real_path in excluded:
                     excluded_ace.add(real_path)
                     if real_path not in self._excluded_logged:

@@ -54,6 +54,7 @@
 import collections
 import errno
 import logging
+import os
 import threading
 import time
 
@@ -85,6 +86,7 @@ LOST_PROBE_SLOW_S = 5.0    # ... and this often once it has been gone 10 s
 REOPEN_S = 1.0             # retry interval for a failed cable
 MAX_UNITS = 4              # multiACE places four units
 OPEN_WAIT_S = 3.0          # open_unit(): wait for a unit to (re)appear
+STOP_WAIT_S = 1.5          # stop_buses(): wait this long for a port close
 FIRST_SCAN_WAIT_S = 2.5    # longest a caller should wait (yielding) for
                            # the first enumeration of a new bus; this
                            # module itself never blocks a caller on it
@@ -338,6 +340,12 @@ class V2Bus(object):
     def stop(self):
         self._stop.set()
         self._wake.set()
+
+    def join(self, timeout=None):
+        """Wait for the bus thread to end; it closes the cable on its way
+        out. True when it has."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
 
     # ---- bus thread ---------------------------------------------------------
     def _run(self):
@@ -671,9 +679,31 @@ def uid_key_for(path):
     return 'uid:' + hexuid if hexuid else ''
 
 
-def stop_all():
+def chain_cables(cable_paths, excluded_realpaths=()):
+    """The cables the chain may drive: every ACE 2 cable except one whose
+    real device is excluded ([mcu] serial, [ace] exclude_ports). Compared by
+    real path, like the discovery's own exclusion."""
+    excluded = set(excluded_realpaths or ())
+    return [c for c in cable_paths if os.path.realpath(c) not in excluded]
+
+
+def stop_buses(keep=()):
+    """Stop and forget every bus whose cable is not in keep, and wait
+    (at most STOP_WAIT_S each) until its thread has closed the cable, so
+    the normal driver can open it next. Returns the stopped cables."""
+    keep = set(keep)
     with _buses_lock:
-        buses = list(_buses.values())
-        _buses.clear()
-    for bus in buses:
+        gone = [(c, b) for c, b in _buses.items() if c not in keep]
+        for cable, _ in gone:
+            del _buses[cable]
+    for _, bus in gone:
         bus.stop()
+    for cable, bus in gone:
+        if not bus.join(STOP_WAIT_S):
+            logging.info('[multiACE] v2 bus %s: thread still running after '
+                         'stop', cable)
+    return [c for c, _ in gone]
+
+
+def stop_all():
+    return stop_buses(())

@@ -555,6 +555,109 @@ class ManyUnitsAndCablesTest(unittest.TestCase):
             lambda: len(B.discover_units([cable1, cable2])) == 4))
 
 
+
+class ChainConfigTest(unittest.TestCase):
+    """decay71's review of #227: port exclusion and buses outliving the
+    option."""
+
+    def setUp(self):
+        patcher = mock.patch.multiple(B, **FAST)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(B.stop_all)
+        import tempfile, os
+        self.tmp = tempfile.mkdtemp()
+        self.os = os
+
+    def link(self, name, target):
+        """A by-path style symlink to a fake device node."""
+        dev = self.os.path.join(self.tmp, target)
+        open(dev, 'w').close()
+        path = self.os.path.join(self.tmp, name)
+        self.os.symlink(dev, path)
+        return path, dev
+
+    def test_excluded_cable_is_dropped_by_real_path(self):
+        c1, d1 = self.link('by-path-usb1', 'ttyACM0')
+        c2, d2 = self.link('by-path-usb2', 'ttyACM1')
+        # excluded by its real device, as _excluded_ports() reports it
+        self.assertEqual(B.chain_cables([c1, c2], {d2}), [c1])
+        self.assertEqual(B.chain_cables([c1, c2], {}), [c1, c2])
+
+    def test_stop_buses_stops_and_closes_all_but_kept(self):
+        chain1 = FakeChain(FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y'))
+        chain2 = FakeChain(FakeUnit(UID_C, 'x'), FakeUnit(UID_D, 'y'))
+        b1 = B.bus_for('/dev/serial/by-path/keep',
+                       serial_factory=lambda p: chain1)
+        b2 = B.bus_for('/dev/serial/by-path/drop',
+                       serial_factory=lambda p: chain2)
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline and not (
+                len(b1.present_paths()) == 2 and len(b2.present_paths()) == 2):
+            time.sleep(0.02)
+        frames_before = len(chain2.frames)
+        stopped = B.stop_buses(keep=['/dev/serial/by-path/keep'])
+        self.assertEqual(stopped, ['/dev/serial/by-path/drop'])
+        self.assertFalse(chain2.is_open)            # cable released
+        self.assertTrue(chain1.is_open)
+        time.sleep(B.KEEPALIVE_S * 3)
+        self.assertEqual(len(chain2.frames), frames_before)  # no keep-alives
+        self.assertNotIn('/dev/serial/by-path/drop', B._buses)
+        self.assertEqual(B.stop_all(), ['/dev/serial/by-path/keep'])
+        self.assertFalse(chain1.is_open)
+
+    def _ace_stub(self, chain_on, driver_on, cables, excluded=()):
+        """The MultiAce bits _setup_chain_buses() uses, without Klipper."""
+        from extras import ace as ace_mod
+        from extras.ace_protocol_v2 import AceProtocolV2
+        stub = mock.Mock()
+        stub._v2_chain = chain_on
+        stub._enable_ace_v2 = driver_on
+        stub._excluded_logged = set()
+        stub._excluded_ports = lambda: {self.os.path.realpath(e): '[ace] exclude_ports'
+                                        for e in excluded}
+        stub._chain_cable_filter = lambda c: ace_mod.MultiAce._chain_cable_filter(
+            stub, c)
+        self.addCleanup(setattr, AceProtocolV2, 'CHAIN_CABLE_FILTER', None)
+        scan = mock.patch.object(AceProtocolV2, '_scan_v2_serial_paths',
+                                 classmethod(lambda cls: list(cables)))
+        scan.start()
+        self.addCleanup(scan.stop)
+        return stub, ace_mod.MultiAce
+
+    def test_setup_never_opens_an_excluded_cable(self):
+        c1, _ = self.link('by-path-usb1', 'ttyACM0')
+        c2, d2 = self.link('by-path-usb2', 'ttyACM1')
+        started = []
+        with mock.patch.object(B, 'start', lambda cables: started.extend(cables)):
+            stub, cls = self._ace_stub(True, True, [c1, c2], excluded=[c2])
+            cls._setup_chain_buses(stub)
+        self.assertEqual(started, [c1])
+        from extras.ace_protocol_v2 import AceProtocolV2
+        self.assertEqual(AceProtocolV2.chain_cables(), [c1])
+
+    def test_setup_stops_buses_when_chain_or_driver_off(self):
+        for chain_on, driver_on in ((False, True), (True, False)):
+            chain = FakeChain(FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y'))
+            B.bus_for('/dev/serial/by-path/old', serial_factory=lambda p: chain)
+            stub, cls = self._ace_stub(chain_on, driver_on,
+                                       ['/dev/serial/by-path/old'])
+            with mock.patch.object(B, 'start') as start:
+                cls._setup_chain_buses(stub)
+                start.assert_not_called()
+            self.assertFalse(chain.is_open)
+            self.assertEqual(B._buses, {})
+
+    def test_setup_keeps_a_still_allowed_bus_across_restarts(self):
+        chain = FakeChain(FakeUnit(UID_A, 'x'), FakeUnit(UID_B, 'y'))
+        bus = B.bus_for('/dev/serial/by-path/cable',
+                        serial_factory=lambda p: chain)
+        stub, cls = self._ace_stub(True, True, ['/dev/serial/by-path/cable'])
+        cls._setup_chain_buses(stub)              # the restart's config load
+        self.assertIs(B._buses.get('/dev/serial/by-path/cable'), bus)
+        self.assertTrue(chain.is_open)
+
+
 def _raises_eio(fn):
     try:
         fn()

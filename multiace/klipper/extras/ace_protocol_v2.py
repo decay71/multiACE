@@ -257,8 +257,19 @@ class AceProtocolV2(AceProtocol):
     def discover(cls):
         if cls.CHAIN:
             from . import ace_bus_v2
-            return ace_bus_v2.discover_units(cls._scan_v2_serial_paths())
+            return ace_bus_v2.discover_units(cls.chain_cables())
         return cls._scan_v2_serial_paths()
+
+    # Set by ace.py when the chain is on: drops the cables the discovery
+    # must not open ([mcu] serial, [ace] exclude_ports) before a bus does.
+    CHAIN_CABLE_FILTER = None
+
+    @classmethod
+    def chain_cables(cls):
+        """The ACE 2 cables a chain bus may open."""
+        cables = cls._scan_v2_serial_paths()
+        filt = cls.CHAIN_CABLE_FILTER
+        return filt(cables) if filt is not None else cables
 
     @staticmethod
     def is_bus_path(path):
