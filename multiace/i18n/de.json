@@ -339,7 +339,7 @@
       "bg_swaps": "Background-Swaps",
       "bg_burst": "Burst-Purge",
       "bg_burst_label": "Hintergrund-Prime in Schüben mit Pause ausgeben",
-      "bg_burst_hint": "Standardmäßig aus. Der Prime im Hintergrund drückt den Purge in kurzen, schnellen Schüben mit kleinem Rückzug und einer Pause durch das offene Dock, sodass er als einzelne Tropfen fällt statt als langsamer Faden, der sich unter der Düse auftürmen kann. Die Purge-Menge bleibt gleich; jeder Wechsel dauert etwa 12 s länger. Wirkt sofort, kein Neustart.",
+      "bg_burst_hint": "Standardmäßig aus. Der Prime im Hintergrund drückt den Purge in kurzen, schnellen Schüben mit kleinem Rückzug und einer Pause durch das offene Dock, sodass er als einzelne Tropfen fällt statt als langsamer Faden, der sich unter der Düse auftürmen kann. Die Purge-Menge bleibt gleich; jeder Wechsel dauert bei der Standard-Primegeschwindigkeit etwa 3 s länger (mehr, wenn prime_speed erhöht wird). Wirkt sofort, kein Neustart.",
       "bg_bin": "Purge-Behälter",
       "bg_bin_line": "{g} g (~{m} m) seit {since} durch die Docks gedrückt, {swaps} Wechsel",
       "bg_bin_none": "Noch nichts gezählt",

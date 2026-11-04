@@ -338,7 +338,7 @@
       "bg_swaps": "Background Swaps",
       "bg_burst": "Burst purge",
       "bg_burst_label": "Push the background prime as bursts with a pause",
-      "bg_burst_hint": "Off by default. The background prime pushes the purge through the open dock as short fast bursts with a small retract and a pause between them, so it falls as separate blobs instead of one slow string that can pile up under the nozzle. The purge amount is unchanged; each swap takes about 12 s longer. Applies live, no restart.",
+      "bg_burst_hint": "Off by default. The background prime pushes the purge through the open dock as short fast bursts with a small retract and a pause between them, so it falls as separate blobs instead of one slow string that can pile up under the nozzle. The purge amount is unchanged; each swap takes about 3 s longer at the default prime speed (more if prime_speed is raised). Applies live, no restart.",
       "bg_bin": "Purge bin",
       "bg_bin_line": "{g} g (~{m} m) pushed through the docks in {swaps} swaps since {since}",
       "bg_bin_none": "Nothing counted yet",
