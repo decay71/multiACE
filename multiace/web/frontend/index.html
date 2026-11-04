@@ -2015,6 +2015,10 @@
                :src="thumbUrl(it.path)" @error="hideBrokenThumb">
           <div class="queue-main">
             <b class="queue-name" :title="it.filename">{{ it.filename }}</b>
+            <div v-if="queueEta(it)" class="queue-eta small" :title="t('ui.printqueue.eta_hint')">
+              <b>≈ {{ queueEta(it) }}</b>
+              <span v-if="it.estimate.swaps != null" class="muted"> · {{ t('ui.printqueue.swaps', {n: it.estimate.swaps}) }}</span>
+            </div>
             <div class="muted small">
               {{ t('ui.printqueue.staged_at', {time: new Date((it.ts || 0) * 1000).toLocaleString()}) }}
             </div>
@@ -2022,7 +2026,7 @@
               <span v-for="sl in it.slots" :key="it.id + '-' + sl.ace + '-' + sl.slot"
                     class="queue-slot" :title="queueSlotLabel(sl) + ' · ' + sl.material">
                 <span class="swatch" :style="{background: queueColor(sl.color)}"></span>
-                <span class="small">{{ queueSlotLabel(sl) }}</span>
+                <span class="small">{{ queueSlotLabel(sl) }} · {{ sl.material }}</span>
               </span>
             </div>
             <p v-if="it.changes && it.changes.length" class="queue-warn small">
@@ -2044,6 +2048,11 @@
                     @click="launchQueued(it)">
               {{ pq.launching === it.id ? t('ui.preflight.sending') : t('ui.printqueue.launch') }}
             </button>
+            <button :title="t('ui.printqueue.preview_hint')" @click="previewQueued(it)">
+              {{ t('ui.printqueue.preview') }}</button>
+            <button v-if="it.has_original && uiTheme === 'new'" :disabled="pq.launching !== '' || preflight.open"
+                    :title="t('ui.printqueue.reassign_hint')" @click="reassignQueued(it)">
+              {{ t('ui.printqueue.reassign') }}</button>
             <button :disabled="pq.launching !== ''" @click="removeQueued(it)">
               {{ t('ui.printqueue.remove') }}</button>
           </div>
@@ -4414,10 +4423,11 @@ reboot</pre>
         <button class="nt-cancel-r" @click="closePreflight"
                 :disabled="preflight.sending !== ''">{{ t('ui.common.cancel') }}</button>
         <button v-if="uiTheme === 'new' && pfSelected()" class="nt-queue-add"
+                :class="{primary: preflight.replaces}"
                 :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
-                :title="t('ui.printqueue.add_hint')"
-                @click="pfPrintSelected(true)">{{ t('ui.printqueue.add') }}</button>
-        <button v-if="uiTheme === 'new' && pfSelected()" class="primary nt-main"
+                :title="preflight.replaces ? t('ui.printqueue.replace_hint') : t('ui.printqueue.add_hint')"
+                @click="pfPrintSelected(true)">{{ preflight.replaces ? t('ui.printqueue.replace') : t('ui.printqueue.add') }}</button>
+        <button v-if="uiTheme === 'new' && pfSelected() && !preflight.replaces" class="primary nt-main"
                 :disabled="preflight.sending !== '' || !pfPlanFeasible(pfSelected())"
                 @click="pfPrintSelected()">{{ pfGoLabel() }}</button>
       </div>

@@ -1565,7 +1565,9 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                                   head_plan: str = "loadout",
                                   flow_cal: bool = False,
                                   head_copies: dict | None = None,
-                                  queue: bool = False) -> None:
+                                  queue: bool = False,
+                                  queue_snapshot: dict | None = None,
+                                  queue_replaces: str | None = None) -> None:
     state = _PREFLIGHT_JOBS[job_id]
     pp = _load_post_processor()
     src = _PREFLIGHT_DIR / (token + ".gcode")
@@ -1658,7 +1660,8 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                 preflight_core.used_ace_slots_file, str(cur))
             try:
                 await _queue_enqueue(safe_name, f"{_QUEUE_DIR}/{upload_name}",
-                                     mode, used_slots)
+                                     mode, used_slots, queue_snapshot,
+                                     replaces=queue_replaces, original_src=src)
             except HTTPException as e:
                 raise RuntimeError(str(e.detail))
 
@@ -1706,8 +1709,16 @@ class _PreflightPrint(BaseModel):
     # head choice matches the previewed swap count. None (older frontend)
     # -> the pipeline detects them from the loaded slots itself.
     head_copies: dict[str, list[str]] | None = None
+    # The estimate the preview showed, kept with a queued file (see
+    # _queue_snapshot). Ignored unless queue is set.
+    estimate: Any = None
+    swaps: Any = None
     # Stage the rewritten file in the print queue instead of starting it.
     queue: bool = False
+    # Queue only: id of the entry this one replaces (Reassign). The old
+    # entry, its staged file and its stored original go once the new one is
+    # in.
+    replaces: str | None = None
 
 @app.post("/api/preflight/print")
 async def preflight_print(req: _PreflightPrint) -> dict:
@@ -1740,7 +1751,9 @@ async def preflight_print(req: _PreflightPrint) -> dict:
     asyncio.create_task(_run_preflight_pipeline(
         job_id, req.token, req.mode, safe_name, req.bed_mesh, req.camera,
         req.remap, req.head_assignment, head_plan, req.flow_cal,
-        req.head_copies, req.queue))
+        req.head_copies, req.queue,
+        _queue_snapshot(req.estimate, req.swaps) if req.queue else None,
+        req.replaces if req.queue else None))
     return {"job_id": job_id, "filename": safe_name, "mode": req.mode}
 
 @app.get("/api/preflight/print/status")
@@ -6734,6 +6747,86 @@ class _QueueAdd(BaseModel):
     # [ace, slot] pairs the rewritten file swaps in (the ACE= / SLOT= of its
     # swap lines). None snapshots every identified slot.
     used_slots: list[list[int]] | None = None
+    # The preflight's estimate and swap count for this file, so the Queue tab
+    # can show them without the file being opened (see _queue_snapshot).
+    estimate: Any = None
+    swaps: Any = None
+    # Id of the entry this one replaces (Reassign), see _queue_replace.
+    replaces: str | None = None
+
+
+# The slicer export each entry came from, gzip-compressed, so Reassign can
+# reopen the preflight on it (the rewritten file cannot be turned back: the
+# rewrite drops and remaps lines). One file per entry id under the data
+# directory, removed with the entry. g-code packs to roughly 10-20 %.
+_QUEUE_ORIG_DIR = "queue_originals"
+_QUEUE_ORIG_MAX = 400 * 1024 * 1024      # compressed bytes accepted per entry
+_QUEUE_ORIG_HEADROOM = 200 * 1024 * 1024  # free space kept on top of the write
+_QUEUE_ID_RE = re.compile(r"[0-9a-f]{12}")
+
+
+def _queue_orig_path(queue_id: str) -> str | None:
+    if not _QUEUE_ID_RE.fullmatch(queue_id or ""):
+        return None
+    return os.path.join(MULTIACE_DATA_DIR, _QUEUE_ORIG_DIR,
+                        queue_id + ".gcode.gz")
+
+
+def _queue_orig_drop(queue_id: str) -> None:
+    p = _queue_orig_path(queue_id)
+    if p:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _queue_orig_room(size: int) -> bool:
+    d = os.path.join(MULTIACE_DATA_DIR, _QUEUE_ORIG_DIR)
+    try:
+        os.makedirs(d, exist_ok=True)
+        return shutil.disk_usage(d).free >= size + _QUEUE_ORIG_HEADROOM
+    except OSError:
+        return False
+
+
+def _queue_orig_store_file(queue_id: str, src) -> bool:
+    """Compress a source file on disk into the entry's original (the
+    printer-side preflight path). False when it does not fit or fails; the
+    entry then just has no Reassign."""
+    import gzip
+    dst = _queue_orig_path(queue_id)
+    if not dst:
+        return False
+    try:
+        if not _queue_orig_room(os.path.getsize(src) // 4):
+            return False
+        tmp = dst + ".tmp"
+        with open(src, "rb") as fi, gzip.open(tmp, "wb", compresslevel=6) as fo:
+            shutil.copyfileobj(fi, fo, 1024 * 1024)
+        os.replace(tmp, dst)
+        return True
+    except OSError:
+        _queue_orig_drop(queue_id)
+        return False
+
+
+def _queue_snapshot(estimate, swaps) -> dict | None:
+    """What the preflight said about a file when it was queued: the
+    estimated total and base seconds and the swap count. Sanitised, since it
+    comes from the browser; None when there is nothing usable (an older
+    client, or a file the model could not estimate)."""
+    out: dict = {}
+    if isinstance(estimate, dict):
+        for k in ("total_s", "base_s"):
+            v = estimate.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool)                     and 0 < v < 10_000_000:
+                out[k] = round(float(v), 1)
+    if "total_s" not in out:
+        out.pop("base_s", None)
+    if isinstance(swaps, int) and not isinstance(swaps, bool)             and 0 <= swaps < 100_000:
+        out["swaps"] = swaps
+    return out or None
 
 
 def _queue_path_ok(path: str) -> bool:
@@ -6742,28 +6835,52 @@ def _queue_path_ok(path: str) -> bool:
 
 
 def _queue_entry(filename: str, path: str, mode: str,
-                 used_slots: list[list[int]] | None, live: list[dict]) -> dict:
+                 used_slots: list[list[int]] | None, live: list[dict],
+                 snapshot: dict | None = None) -> dict:
     """A queue record with the identity of the slots the file uses."""
     if used_slots is None:
         used = list(live)
     else:
         want = {(int(p[0]), int(p[1])) for p in used_slots if len(p) == 2}
         used = [s for s in live if (s["ace"], s["slot"]) in want]
-    return {"id": uuid.uuid4().hex[:12], "filename": filename, "path": path,
-            "mode": mode, "ts": time.time(),
-            "slots": [{k: s[k] for k in ("ace", "slot", "material", "color")}
-                      for s in used]}
+    entry = {"id": uuid.uuid4().hex[:12], "filename": filename, "path": path,
+             "mode": mode, "ts": time.time(),
+             "slots": [{k: s[k] for k in ("ace", "slot", "material", "color")}
+                       for s in used]}
+    if snapshot:
+        entry["estimate"] = snapshot
+    return entry
 
 
 async def _queue_enqueue(filename: str, path: str, mode: str,
-                         used_slots: list[list[int]] | None) -> dict:
+                         used_slots: list[list[int]] | None,
+                         snapshot: dict | None = None,
+                         replaces: str | None = None,
+                         original_src=None) -> dict:
     entry = _queue_entry(filename, path, mode, used_slots,
-                         await _live_slots_async())
+                         await _live_slots_async(), snapshot)
     if not _require_history().add_queue_entry(MULTIACE_DATA_DIR, entry):
         await _queue_delete_file(path)
         raise HTTPException(status_code=409,
                             detail="queue is full or could not be saved")
+    if original_src is not None:
+        await asyncio.to_thread(_queue_orig_store_file, entry["id"],
+                                original_src)
+    if replaces:
+        await _queue_replace(replaces, entry["id"])
     return entry
+
+
+async def _queue_replace(old_id: str, new_id: str) -> None:
+    """Reassign: the new entry is in, so the one it replaces goes, with its
+    staged file and stored original. Only after the add succeeded, so a
+    failed re-queue never loses the old entry."""
+    if not old_id or old_id == new_id:
+        return
+    gone = _require_history().remove_queue_entry(MULTIACE_DATA_DIR, old_id)
+    if gone is not None:
+        await _queue_delete_file(gone.get("path") or "")
+    _queue_orig_drop(old_id)
 
 
 async def _queue_delete_file(path: str) -> None:
@@ -6785,8 +6902,14 @@ async def _queue_with_changes(entries: list[dict]) -> list[dict]:
         live = await _live_slots_async()
     except Exception:
         live = None
-    return [{**e, "changes": (None if live is None
-                              else hist.loadout_changes(e.get("slots"), live))}
+
+    def has_original(e) -> bool:
+        p = _queue_orig_path(str(e.get("id") or ""))
+        return bool(p) and os.path.isfile(p)
+
+    return [{**e, "has_original": has_original(e),
+             "changes": (None if live is None
+                         else hist.loadout_changes(e.get("slots"), live))}
             for e in entries]
 
 
@@ -6796,7 +6919,27 @@ async def queue_list(request: Request) -> dict:
         return {"queue": await _queue_with_changes(list(_mock_queue)),
                 "mock": True}
     entries = _require_history().load_queue(MULTIACE_DATA_DIR)
+    _queue_orig_sweep({str(e.get("id")) for e in entries})
     return {"queue": await _queue_with_changes(entries)}
+
+
+def _queue_orig_sweep(live_ids: set) -> None:
+    """Originals whose entry is gone (a crash between the two removals, or
+    an entry dropped by hand) would otherwise sit in the data folder
+    forever."""
+    d = os.path.join(MULTIACE_DATA_DIR, _QUEUE_ORIG_DIR)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        qid = n.split(".", 1)[0]
+        if qid not in live_ids and (n.endswith(".gcode.gz")
+                                    or n.endswith(".tmp")):
+            try:
+                os.remove(os.path.join(d, n))
+            except OSError:
+                pass
 
 
 @app.post("/api/queue")
@@ -6809,11 +6952,80 @@ async def queue_add(request: Request, req: _QueueAdd) -> dict:
         raise HTTPException(status_code=400, detail="invalid queue path")
     if _mock_enabled(request):
         entry = _queue_entry(req.filename, req.path, req.mode, req.used_slots,
-                             await _live_slots_async())
+                             await _live_slots_async(),
+                             _queue_snapshot(req.estimate, req.swaps))
         _mock_queue.append(entry)
+        if req.replaces:
+            _mock_queue[:] = [e for e in _mock_queue
+                              if e["id"] != req.replaces]
         return {"ok": True, "entry": entry, "mock": True}
-    entry = await _queue_enqueue(req.filename, req.path, req.mode, req.used_slots)
+    entry = await _queue_enqueue(req.filename, req.path, req.mode,
+                                 req.used_slots,
+                                 _queue_snapshot(req.estimate, req.swaps),
+                                 replaces=req.replaces)
     return {"ok": True, "entry": entry}
+
+
+@app.put("/api/queue/{queue_id}/original")
+async def queue_original_put(request: Request, queue_id: str) -> dict:
+    """Keep the slicer export an entry was made from (gzip, sent by the
+    browser) so Reassign can reopen it. Streamed to disk; refused when it is
+    too big or the printer's storage is short. The entry stays usable
+    without it."""
+    dst = _queue_orig_path(queue_id)
+    if not dst:
+        raise HTTPException(status_code=400, detail="invalid queue id")
+    if _mock_enabled(request):
+        entries = list(_mock_queue)
+    else:
+        entries = _require_history().load_queue(MULTIACE_DATA_DIR)
+    if not any(e.get("id") == queue_id for e in entries):
+        raise HTTPException(status_code=404, detail="queue entry not found")
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > _QUEUE_ORIG_MAX:
+        raise HTTPException(status_code=413, detail="original too large")
+    if not _queue_orig_room(declared):
+        raise HTTPException(status_code=507, detail="not enough free space")
+    tmp = dst + ".tmp"
+    size = 0
+    head = b""
+    try:
+        with open(tmp, "wb") as fh:
+            async for chunk in request.stream():
+                if len(head) < 2:
+                    head = (head + chunk)[:2]
+                size += len(chunk)
+                if size > _QUEUE_ORIG_MAX:
+                    raise HTTPException(status_code=413,
+                                        detail="original too large")
+                fh.write(chunk)
+        if size == 0 or head != b"\x1f\x8b":
+            raise HTTPException(status_code=400, detail="expected gzip data")
+        os.replace(tmp, dst)
+    except HTTPException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise HTTPException(status_code=507, detail=f"could not store: {e}")
+    return {"ok": True, "size": size}
+
+
+@app.get("/api/queue/{queue_id}/original")
+async def queue_original_get(queue_id: str):
+    p = _queue_orig_path(queue_id)
+    if not p or not os.path.isfile(p):
+        raise HTTPException(status_code=404, detail="no original kept")
+    return FileResponse(p, media_type="application/gzip")
 
 
 @app.post("/api/queue/{queue_id}/launch")
@@ -6850,6 +7062,7 @@ async def queue_launch(request: Request, queue_id: str) -> dict:
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"moonraker: {e}")
     hist.remove_queue_entry(MULTIACE_DATA_DIR, queue_id)
+    _queue_orig_drop(queue_id)
     return {"ok": True, "filename": entry["filename"]}
 
 
@@ -6862,6 +7075,7 @@ async def queue_remove(request: Request, queue_id: str) -> dict:
     if gone is None:
         raise HTTPException(status_code=404, detail="queue entry not found")
     await _queue_delete_file(gone.get("path") or "")
+    _queue_orig_drop(queue_id)
     return {"ok": True}
 
 
