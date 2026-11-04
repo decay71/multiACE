@@ -2416,7 +2416,8 @@
       </div>
       <div class="config-row">
         <label>{{ t('ui.config.bg_bin_warn') }}</label>
-        <input type="number" :value="bgBinWarnG()" min="0" max="2000" step="1" placeholder="0"
+        <input type="number" :value="bgBinWarnValue()" @input="bgBinWarnInput($event)"
+               min="0" max="2000" step="1" placeholder="0"
                @change="setBgBinWarn($event.target.value)">
       </div>
       <p v-if="state.bg_swap.bin.warn" class="bg-bin-full small config-row-hint">{{ t('ui.config.bg_bin_full') }}</p>

@@ -4540,10 +4540,27 @@ createApp({
       const w = ((state.bg_swap || {}).bin || {}).warn_mm;
       return w ? Math.round(w * BG_BIN_G_PER_MM) : 0;
     }
-    function setBgBinWarn(grams) {
+    // The field is bound to polled printer state, so a refresh landing
+    // mid-edit (arrow clicks, a pasted value) would overwrite it. Same edit
+    // buffer idea as the purge policy fields: while it is set it wins, and
+    // it is released after the state refresh that follows the send - unless
+    // a newer value was entered meanwhile (fast arrow clicks).
+    const bgBinWarnEdit = ref(null);
+    function bgBinWarnValue() {
+      return bgBinWarnEdit.value !== null ? bgBinWarnEdit.value : bgBinWarnG();
+    }
+    function bgBinWarnInput(ev) {
+      bgBinWarnEdit.value = ev.target.value;
+    }
+    async function setBgBinWarn(grams) {
       const g = Math.max(0, Number(grams) || 0);
-      return _bgCmd("ACE_BG_BIN",
-                    {WARN: g > 0 ? Math.round(g / BG_BIN_G_PER_MM) : 0});
+      bgBinWarnEdit.value = g;
+      try {
+        await _bgCmd("ACE_BG_BIN",
+                     {WARN: g > 0 ? Math.round(g / BG_BIN_G_PER_MM) : 0});
+      } finally {
+        if (bgBinWarnEdit.value === g) bgBinWarnEdit.value = null;
+      }
     }
     function resetBgBin() {
       if (!window.confirm(t("ui.config.bg_bin_reset_confirm"))) return;
@@ -9869,7 +9886,7 @@ createApp({
       slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setRememberFilament, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
-      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setBgBurst, bgBinLine, bgBinWarnG, setBgBinWarn, resetBgBin, setPurgePolicy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
+      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setBgBurst, bgBinLine, bgBinWarnG, bgBinWarnValue, bgBinWarnInput, setBgBinWarn, resetBgBin, setPurgePolicy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,
