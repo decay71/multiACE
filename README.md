@@ -6,7 +6,9 @@ Started as a SnapACE fork, it has grown to over 5 times the original size, with 
 
 🆕 **New: ready-made cable.** Connects an ACE Pro or ACE 2 to the U1 or other printers.
 
-[![Get the Cable](cablebutton.png)](https://postapocalyptic-diy.com/shop/) [![Buy on eBay](ebaybutton.png)](https://www.ebay.de/itm/820288441674)
+[![Get the Cable](cablebutton.png)](https://postapocalyptic-diy.com/shop/) [![Buy on eBay](ebaybutton.png)](https://www.ebay.de/itm/820289097531)
+
+
 
 [![Guides & Downloads](visitbutton.png)](https://postapocalyptic-diy.com/multiace/)
 
