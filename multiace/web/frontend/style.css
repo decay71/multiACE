@@ -2487,3 +2487,9 @@ body:has(.panel) .overlay .dialog {
 .cfgdiff-row.add { background: color-mix(in srgb, var(--ok) 18%, transparent); }
 .cfgdiff-row.del { background: color-mix(in srgb, var(--error) 22%, transparent); }
 .cfgdiff-row.gap { color: var(--muted); }
+
+/* Config > Notifications: the answer of a push test / a refused permission */
+.notify-msg { margin: .2rem 0 .6rem 0; color: var(--ok, #3fb950); }
+.notify-msg.err { color: var(--warn); font-weight: 600; }
+.notify-test { white-space: nowrap; }
+.nt-tile .config-row input[type=url] { width: 100%; max-width: none; min-width: 0; }
