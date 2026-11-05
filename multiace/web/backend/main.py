@@ -5715,7 +5715,162 @@ def _record_notification(text: str) -> dict | None:
             note["ttl"] = 8
     _notifications.append(note)
     _trace.info("notification %d captured: %s", note["id"], note["msg"])
+    _push_notification(note)
     return note
+
+# ---------------------------------------------------------------------------
+# Push notifications. The notifications above are captured here, in the
+# backend's Moonraker websocket loop, whether or not a browser is open. An
+# optional push URL forwards the errors (and, if chosen, the warnings) to a
+# phone: ntfy-style, one POST per message with the text as the body and the
+# title/priority/tags as headers. ntfy takes that as it is; any other
+# webhook receives the text body. Nothing is sent while the URL is empty.
+# Same directory and atomic-write pattern as OVERRIDE_FILE.
+# ---------------------------------------------------------------------------
+NOTIFY_FILE = os.environ.get(
+    "MULTIACE_NOTIFY_FILE",
+    os.path.join(_CFG_EXT_DIR, "multiace", "push_notify.json"),
+)
+_NOTIFY_LEVELS = ("error", "warn")      # error = errors only; warn = both
+_NOTIFY_URL_MAX = 500
+_NOTIFY_DEDUPE_S = 300.0                # the same text again within this
+_NOTIFY_BURST = (10, 60.0)              # at most 10 pushes per 60 s
+_notify_cfg: dict = {"url": "", "level": "error"}
+_notify_recent: dict = {}
+_notify_sent: deque = deque()
+
+def _notify_check_url(url: str) -> str:
+    """Normalised push URL or "" (off). http(s) only, no whitespace; anything
+    else is a 422."""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if len(url) > _NOTIFY_URL_MAX or re.search(r"\s", url):
+        raise HTTPException(status_code=422, detail="invalid push URL")
+    u = urllib.parse.urlsplit(url)
+    if u.scheme not in ("http", "https") or not u.netloc or not u.hostname:
+        raise HTTPException(status_code=422,
+                            detail="the push URL must start with http:// or https://")
+    return url
+
+def _notify_load() -> None:
+    try:
+        d = json.loads(Path(NOTIFY_FILE).read_text(encoding="utf-8"))
+        url = _notify_check_url(str(d.get("url") or ""))
+        level = d.get("level") if d.get("level") in _NOTIFY_LEVELS else "error"
+        _notify_cfg.update({"url": url, "level": level})
+    except Exception:
+        _notify_cfg.update({"url": "", "level": "error"})
+
+def _notify_save() -> None:
+    p = Path(NOTIFY_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(_notify_cfg, indent=2), encoding="utf-8")
+    os.replace(str(tmp), str(p))
+
+_notify_load()
+
+async def _notify_post(url: str, msg: str, level: str) -> tuple[bool, str]:
+    """One push. Never raises; (ok, short detail for the Test button)."""
+    heads = {
+        "Title": "multiACE warning" if level == "warn" else "multiACE error",
+        "Priority": "default" if level == "warn" else "high",
+        "Tags": "warning" if level == "warn" else "rotating_light",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as c:
+            r = await c.post(url, content=msg.encode("utf-8"), headers=heads)
+        if r.status_code >= 400:
+            return False, "HTTP %d" % r.status_code
+        return True, "HTTP %d" % r.status_code
+    except httpx.TimeoutException:
+        return False, "timeout"
+    except Exception as e:
+        _trace.info("push notification failed: %s", type(e).__name__)
+        return False, "connection failed"
+
+def _notify_wanted(note: dict, now: float) -> bool:
+    """Level filter, repeat filter and burst cap for one captured note."""
+    if not _notify_cfg["url"]:
+        return False
+    lvl = note.get("level")
+    if lvl == "error":
+        pass
+    elif lvl == "warn" and _notify_cfg["level"] == "warn":
+        pass
+    else:
+        return False
+    msg = str(note.get("msg") or "")
+    for k in [k for k, t in _notify_recent.items() if now - t > _NOTIFY_DEDUPE_S]:
+        del _notify_recent[k]
+    if msg in _notify_recent:
+        return False
+    while _notify_sent and now - _notify_sent[0] > _NOTIFY_BURST[1]:
+        _notify_sent.popleft()
+    if len(_notify_sent) >= _NOTIFY_BURST[0]:
+        return False
+    _notify_recent[msg] = now
+    _notify_sent.append(now)
+    return True
+
+_notify_tasks: set = set()
+
+async def _notify_deliver(url: str, msg: str, level: str) -> None:
+    """One push for a note _notify_wanted accepted. A failed send gives the
+    repeat reservation back, so the same error is retried the next time it
+    comes in instead of being suppressed for five minutes. (The burst cap
+    keeps counting the attempt, so a dead receiver stays bounded.)"""
+    ok, _detail = await _notify_post(url, msg, level)
+    if not ok:
+        _notify_recent.pop(msg, None)
+
+def _push_notification(note: dict) -> None:
+    """Forward a captured notification when a push URL is set. Fire and
+    forget on the running loop: a slow or dead receiver never holds up the
+    websocket loop."""
+    if not _notify_cfg["url"]:
+        return
+    if not _notify_wanted(note, time.time()):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # no loop to send on: undo the repeat reservation _notify_wanted made
+        _notify_recent.pop(str(note.get("msg") or ""), None)
+        return
+    t = loop.create_task(_notify_deliver(
+        _notify_cfg["url"], str(note.get("msg") or ""),
+        str(note.get("level") or "error")))
+    _notify_tasks.add(t)                  # asyncio keeps tasks only weakly
+    t.add_done_callback(_notify_tasks.discard)
+
+class _NotifySave(BaseModel):
+    url: str = ""
+    level: str = "error"
+
+@app.get("/api/notify-settings")
+async def get_notify_settings() -> dict:
+    return dict(_notify_cfg)
+
+@app.put("/api/notify-settings")
+async def put_notify_settings(req: _NotifySave) -> dict:
+    url = _notify_check_url(req.url)
+    if req.level not in _NOTIFY_LEVELS:
+        raise HTTPException(status_code=422, detail="level must be error or warn")
+    _notify_cfg.update({"url": url, "level": req.level})
+    _notify_save()
+    return {"ok": True, **_notify_cfg}
+
+@app.post("/api/notify-settings/test")
+async def test_notify_settings() -> dict:
+    """Send one test push to the SAVED url and report what the receiver
+    answered (the Config tab's Test button)."""
+    if not _notify_cfg["url"]:
+        raise HTTPException(status_code=409, detail="no push URL is set")
+    ok, detail = await _notify_post(
+        _notify_cfg["url"], "Test push from the multiACE web UI", "error")
+    return {"ok": ok, "detail": detail}
 
 _print_state_last = ""
 

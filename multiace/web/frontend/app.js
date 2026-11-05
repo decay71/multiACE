@@ -337,6 +337,7 @@ createApp({
         const dropped = notifications.value.splice(0, notifications.value.length - 20);
         for (const d of dropped) _notifIds.delete(d.id);
       }
+      _browserNotify(n);
     }
     function onGcodeError(m) {
       _addNotif({id: m.id, ts: m.ts, msg: m.msg, raw: m.raw, level: m.level || 'error',
@@ -349,6 +350,120 @@ createApp({
         const j = await r.json();
         for (const n of (j.notifications || [])) _addNotif(n);
       } catch (_) {}
+    }
+
+    // Alerts outside the page. Two independent ways, both off by default:
+    //  - browser notifications (per browser, kept in localStorage): an
+    //    error or warning that arrives while this tab is hidden pops a
+    //    system notification. Browsers allow this only on https or
+    //    localhost, so on a plain http://<printer-ip> page it is reported
+    //    as unavailable instead of silently doing nothing.
+    //  - a push URL (ntfy-style) the backend posts to, saved on the printer:
+    //    it works with the page closed, e.g. for a phone.
+    const _pageLoadMs = Date.now();
+    const BROWSER_NOTIFY_KEY = "multiace.browserNotify";
+    function _readBrowserNotify() {
+      try { return localStorage.getItem(BROWSER_NOTIFY_KEY) === "1"; }
+      catch (_) { return false; }
+    }
+    const browserNotify = ref(_readBrowserNotify());
+    const browserNotifyMsg = ref("");
+    const browserNotifySupported = computed(() =>
+      typeof window !== "undefined" && "Notification" in window &&
+      window.isSecureContext === true);
+    async function setBrowserNotify(on) {
+      browserNotifyMsg.value = "";
+      if (on) {
+        if (!browserNotifySupported.value) {
+          browserNotify.value = false;
+          browserNotifyMsg.value = t("ui.config.notify_browser_unavailable");
+          return;
+        }
+        let perm = Notification.permission;
+        try {
+          if (perm === "default") perm = await Notification.requestPermission();
+        } catch (_) {}
+        if (perm !== "granted") {
+          browserNotify.value = false;
+          browserNotifyMsg.value = t("ui.config.notify_browser_denied");
+          return;
+        }
+      }
+      browserNotify.value = !!on;
+      try { localStorage.setItem(BROWSER_NOTIFY_KEY, on ? "1" : "0"); } catch (_) {}
+    }
+    function _browserNotify(n) {
+      if (!browserNotify.value || !browserNotifySupported.value) return;
+      if (Notification.permission !== "granted") return;
+      if (n.level !== "error" && n.level !== "warn") return;
+      if (document.visibilityState === "visible") return;   // the toast shows
+      // Backlog the backend replays on connect is not news.
+      if (n.ts && n.ts * 1000 < _pageLoadMs - 5000) return;
+      try {
+        new Notification(n.level === "warn" ? t("ui.config.notify_title_warn")
+                                            : t("ui.config.notify_title_error"),
+                         {body: n.msg, tag: "multiace-" + n.id});
+      } catch (_) {}
+    }
+    const notifyPush = reactive({url: "", level: "error", busy: false, msg: "",
+                                 ok: true});
+    async function loadNotifyPush() {
+      try {
+        const r = await fetch(`${API}/notify-settings`);
+        if (!r.ok) return;
+        const j = await r.json();
+        notifyPush.url = j.url || "";
+        notifyPush.level = j.level === "warn" ? "warn" : "error";
+      } catch (_) {}
+    }
+    async function saveNotifyPush() {
+      notifyPush.msg = "";
+      notifyPush.busy = true;
+      try {
+        const r = await fetch(`${API}/notify-settings`, {
+          method: "PUT",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({url: notifyPush.url, level: notifyPush.level}),
+        });
+        const j = await r.json().catch(() => null);
+        if (!r.ok) {
+          notifyPush.ok = false;
+          notifyPush.msg = (j && typeof j.detail === "string") ? j.detail
+                                                               : `HTTP ${r.status}`;
+          return false;
+        }
+        notifyPush.url = j.url || "";
+        return true;
+      } catch (e) {
+        notifyPush.ok = false;
+        notifyPush.msg = String(e?.message || e);
+        return false;
+      } finally {
+        notifyPush.busy = false;
+      }
+    }
+    async function testNotifyPush() {
+      if (!(await saveNotifyPush())) return;
+      if (!notifyPush.url) {
+        notifyPush.ok = false;
+        notifyPush.msg = t("ui.config.notify_push_empty");
+        return;
+      }
+      notifyPush.busy = true;
+      try {
+        const r = await fetch(`${API}/notify-settings/test`, {method: "POST"});
+        const j = await r.json().catch(() => null);
+        notifyPush.ok = !!(r.ok && j && j.ok);
+        notifyPush.msg = notifyPush.ok
+          ? t("ui.config.notify_push_sent", {detail: j.detail})
+          : t("ui.config.notify_push_failed",
+              {detail: (j && (j.detail || "")) || `HTTP ${r.status}`});
+      } catch (e) {
+        notifyPush.ok = false;
+        notifyPush.msg = String(e?.message || e);
+      } finally {
+        notifyPush.busy = false;
+      }
     }
     async function dismissNotification(id) {
       const idx = notifications.value.findIndex(n => n.id === id);
@@ -9326,6 +9441,7 @@ createApp({
       await loadTipform();
       await loadMaterials();
       await loadNotifications();
+      await loadNotifyPush();
       await refreshDebugState();
       await refreshUpdateStatus();
       await refreshPlugins();
@@ -9889,7 +10005,7 @@ createApp({
       sendPrintControl,
       consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,
       plugins, refreshPlugins, pluginIframeSrc,
-      notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications,
+      notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications, browserNotify, browserNotifyMsg, browserNotifySupported, setBrowserNotify, notifyPush, saveNotifyPush, testNotifyPush,
       confirmDialog, okConfirm, altConfirm, cancelConfirm, confirmInputError,
       screenCanvas, floatScreenCanvas, screenPopout, toggleScreenPopout,
       popoutStyle, popoutDragStart, popoutDragMove, popoutDragEnd,

@@ -2373,6 +2373,35 @@
         uiTheme === 'new' ? t('ui.config.nt_airprint_detection_short') : t('ui.config.airprint_detection_hint') }}</p>
       </div>
       <div class="nt-tile">
+      <h3>{{ t('ui.config.notify_title') }}</h3>
+      <label class="pickup-clean-toggle">
+        <input type="checkbox" :checked="browserNotify"
+               @change="setBrowserNotify($event.target.checked)">
+        {{ t('ui.config.notify_browser_label') }}
+      </label>
+      <p class="muted small">{{ browserNotifySupported ? t('ui.config.notify_browser_hint') : t('ui.config.notify_browser_unavailable') }}</p>
+      <p v-if="browserNotifyMsg" class="small notify-msg err">{{ browserNotifyMsg }}</p>
+      <div class="config-row">
+        <label>{{ t('ui.config.notify_push_url') }}</label>
+        <input type="url" v-model="notifyPush.url" placeholder="https://ntfy.sh/..."
+               autocomplete="off" spellcheck="false" @change="saveNotifyPush()">
+      </div>
+      <div class="config-row">
+        <label>{{ t('ui.config.notify_push_level') }}</label>
+        <select v-model="notifyPush.level" @change="saveNotifyPush()">
+          <option value="error">{{ t('ui.config.notify_level_error') }}</option>
+          <option value="warn">{{ t('ui.config.notify_level_warn') }}</option>
+        </select>
+      </div>
+      <div class="config-row">
+        <label></label>
+        <button class="notify-test" :disabled="notifyPush.busy || !notifyPush.url"
+                @click="testNotifyPush()">{{ t('ui.config.notify_push_test') }}</button>
+      </div>
+      <p v-if="notifyPush.msg" class="small notify-msg" :class="{err: !notifyPush.ok}">{{ notifyPush.msg }}</p>
+      <p class="muted small config-row-hint">{{ t('ui.config.notify_push_hint') }}</p>
+      </div>
+      <div class="nt-tile">
       <h3>{{ t('ui.config.quad_replenish') }}</h3>
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="state.quad_replenish"
