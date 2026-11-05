@@ -198,6 +198,44 @@ class TestPipeline:
         asyncio.run(go("// [warn] [multiACE] purge bin is probably full"))
         assert len(fake.calls) == 1
 
+    def test_a_failed_send_does_not_suppress_the_same_error(self, fake, pn):
+        main, _c = pn
+        main._notify_cfg["url"] = "http://h/t"
+        fake.status = 503
+
+        async def go():
+            main._record_notification("!! [multiACE] Head 2: no flow")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(go())
+        assert len(fake.calls) == 1
+        fake.status = 200                       # the receiver is back
+        asyncio.run(go())
+        assert len(fake.calls) == 2             # not held back for 5 min
+        asyncio.run(go())
+        assert len(fake.calls) == 2             # a delivered one is
+
+    def test_a_pending_push_is_kept_alive(self, fake, pn):
+        main, _c = pn
+        main._notify_cfg["url"] = "http://h/t"
+
+        async def go():
+            main._record_notification("!! [multiACE] boom")
+            held = len(main._notify_tasks)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return held
+
+        assert asyncio.run(go()) == 1
+        assert main._notify_tasks == set()      # released when finished
+
+    def test_no_loop_leaves_no_repeat_reservation(self, fake, pn):
+        main, _c = pn
+        main._notify_cfg["url"] = "http://h/t"
+        main._record_notification("!! [multiACE] boom")
+        assert main._notify_recent == {}
+
     def test_without_a_url_nothing_is_sent(self, fake, pn):
         main, _c = pn
 

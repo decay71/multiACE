@@ -5814,6 +5814,17 @@ def _notify_wanted(note: dict, now: float) -> bool:
     _notify_sent.append(now)
     return True
 
+_notify_tasks: set = set()
+
+async def _notify_deliver(url: str, msg: str, level: str) -> None:
+    """One push for a note _notify_wanted accepted. A failed send gives the
+    repeat reservation back, so the same error is retried the next time it
+    comes in instead of being suppressed for five minutes. (The burst cap
+    keeps counting the attempt, so a dead receiver stays bounded.)"""
+    ok, _detail = await _notify_post(url, msg, level)
+    if not ok:
+        _notify_recent.pop(msg, None)
+
 def _push_notification(note: dict) -> None:
     """Forward a captured notification when a push URL is set. Fire and
     forget on the running loop: a slow or dead receiver never holds up the
@@ -5825,9 +5836,14 @@ def _push_notification(note: dict) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        # no loop to send on: undo the repeat reservation _notify_wanted made
+        _notify_recent.pop(str(note.get("msg") or ""), None)
         return
-    loop.create_task(_notify_post(_notify_cfg["url"], str(note.get("msg") or ""),
-                                  str(note.get("level") or "error")))
+    t = loop.create_task(_notify_deliver(
+        _notify_cfg["url"], str(note.get("msg") or ""),
+        str(note.get("level") or "error")))
+    _notify_tasks.add(t)                  # asyncio keeps tasks only weakly
+    t.add_done_callback(_notify_tasks.discard)
 
 class _NotifySave(BaseModel):
     url: str = ""
