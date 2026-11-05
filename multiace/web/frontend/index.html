@@ -2934,18 +2934,34 @@ reboot</pre>
         <p class="muted small">{{ t('ui.config.drivers_hint') }}</p>
         <table class="devices-table drivers-table">
           <tbody>
-            <tr v-for="drv in state.driver_switches" :key="drv.name"
-                :class="{'dev-absent': !drv.enabled}">
-              <td>
-                <label class="drv-switch">
-                  <input type="checkbox" :checked="drv.enabled"
-                         :disabled="isPrinting || driverOnlyActive(drv)"
-                         @change="driverToggle(drv, $event)">
-                  {{ drv.label }}
-                </label>
-              </td>
-              <td class="muted small">{{ driverNote(drv) }}</td>
-            </tr>
+            <template v-for="drv in state.driver_switches" :key="drv.name">
+              <tr :class="{'dev-absent': !drv.enabled}">
+                <td>
+                  <label class="drv-switch">
+                    <input type="checkbox" :checked="drv.enabled"
+                           :disabled="isPrinting || driverOnlyActive(drv)"
+                           @change="driverToggle(drv, $event)">
+                    {{ drv.label }}
+                  </label>
+                </td>
+                <td class="muted small">{{ driverNote(drv) }}</td>
+              </tr>
+              <!-- ACE 2 daisy chain: an option of the ACE 2 driver, nested
+                   under its row (greyed out with it). -->
+              <tr v-if="drv.name === 'ace_v2' && state.chain_switch"
+                  class="drv-sub"
+                  :class="{'dev-absent': !state.chain_switch.enabled || !drv.enabled}">
+                <td style="padding-left: 2em">
+                  <label class="drv-switch">
+                    <input type="checkbox" :checked="state.chain_switch.enabled"
+                           :disabled="isPrinting || chainBlocked()"
+                           @change="chainToggle($event)">
+                    {{ t('ui.config.chain_label') }}
+                  </label>
+                </td>
+                <td class="muted small">{{ chainNote() }}</td>
+              </tr>
+            </template>
           </tbody>
         </table>
         <p v-if="driversRestartNeeded && !state.units_restart_needed" class="restart-hint">
@@ -2970,9 +2986,11 @@ reboot</pre>
             <select v-model="acefw.ace">
               <option value="" disabled>{{ t('ui.common.select') }}</option>
               <option v-for="o in acefwCandidates" :key="'fw'+o.value"
-                      :value="o.value">{{ o.label }}</option>
+                      :value="o.value" :disabled="o.disabled">{{ o.label }}</option>
             </select>
           </div>
+          <p v-if="acefwChainedShared" class="muted small">{{ t('ui.config.acefw_chained_hint') }}</p>
+          <p v-else-if="acefwChainOn" class="muted small">{{ t('ui.config.acefw_chain_on_hint') }}</p>
           <div class="config-row">
             <label>{{ t('ui.config.acefw_file_label') }}</label>
             <span>

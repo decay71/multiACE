@@ -1354,6 +1354,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # Opt-in: several ACE 2 units daisy-chained on one cable
         # (ace_bus_v2.py). Read unconditionally.
         self._v2_chain = config.getboolean('v2_chain', False)
+        # What the config line says now; differs from _v2_chain after
+        # ACE_SET_V2_CHAIN until the next firmware restart.
+        self._v2_chain_cfg = self._v2_chain
         AceProtocolV2.CHAIN = self._v2_chain
         if self._v2_chain:
             logging.info('[multiACE] V2 daisy chain enabled (opt-in): every '
@@ -2319,6 +2322,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'ACE_SET_DRIVER', self.cmd_ACE_SET_DRIVER,
             desc=self.cmd_ACE_SET_DRIVER_help)
         self.gcode.register_command(
+            'ACE_SET_V2_CHAIN', self.cmd_ACE_SET_V2_CHAIN,
+            desc=self.cmd_ACE_SET_V2_CHAIN_help)
+        self.gcode.register_command(
             'ACE_LOCATE', self.cmd_ACE_LOCATE,
             desc=self.cmd_ACE_LOCATE_help)
         self.gcode.register_command(
@@ -3096,6 +3102,56 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                         'on' if self._drivers_enabled.get(drv.name) else 'off'))
         self.log_always(self._t('msg.driver_enabled' if enable
                                 else 'msg.driver_disabled', driver=drv.label))
+
+    cmd_ACE_SET_V2_CHAIN_help = (
+        '[multiACE] Switch the ACE 2 daisy chain on or off: ACE_SET_V2_CHAIN '
+        'ENABLE=0|1. Writes the v2_chain config line, takes effect at the '
+        'next firmware restart. Cannot be switched off while a cable still '
+        'carries more than one unit (unchain them first), nor while printing.')
+
+    def _chain_switch_status(self):
+        """Devices tab: the v2_chain switch, configured vs running, whether
+        the ACE 2 driver it belongs to is on, and how many cables carry
+        more than one unit right now."""
+        try:
+            from . import ace_bus_v2
+            chained = len(ace_bus_v2.chained_cables())
+        except Exception:
+            chained = 0
+        cfg = getattr(self, '_drivers_cfg', None) or {}
+        return {'enabled': bool(getattr(self, '_v2_chain_cfg', False)),
+                'active': bool(getattr(self, '_v2_chain', False)),
+                'available': bool(cfg.get('ace_v2', False)),
+                'chained_cables': chained}
+
+    def cmd_ACE_SET_V2_CHAIN(self, gcmd):
+        if self._is_actively_printing():
+            raise self._ace_error(gcmd, self._t('msg.chain_printing'), 200)
+        enable = bool(gcmd.get_int('ENABLE', 1, minval=0, maxval=1))
+        if enable and not (getattr(self, '_drivers_cfg', None) or {}).get(
+                'ace_v2', False):
+            raise self._ace_error(gcmd, self._t('msg.chain_needs_driver'), 200)
+        if not enable:
+            # Without the chain every unit on a shared cable answers at
+            # address 0 and acts on every command: slots flip, insert
+            # routines start on the wrong unit. Only once each unit is
+            # alone on its cable.
+            from . import ace_bus_v2
+            chained = ace_bus_v2.chained_cables()
+            if chained:
+                raise self._ace_error(gcmd, self._t(
+                    'msg.chain_off_chained', count=len(chained)), 200)
+        err = self._cfg_write_ace_option('v2_chain',
+                                         'true' if enable else 'false')
+        if err is not None:
+            raise self._ace_error(gcmd, '[multiACE] v2_chain not written: %s'
+                                  % err, 200)
+        self._v2_chain_cfg = enable
+        logging.info('[multiACE] v2_chain set %s in the config (running: %s)'
+                     % ('on' if enable else 'off',
+                        'on' if self._v2_chain else 'off'))
+        self.log_always(self._t('msg.chain_enabled' if enable
+                                else 'msg.chain_disabled'))
 
     def _reconcile_unit_state(self, why):
         """Re-file every per-index state by the device that holds the
@@ -22345,6 +22401,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'devices': self._unit_devices_status(),
             'units_restart_needed': bool(getattr(self, '_unit_table_dirty', False)),
             'driver_switches': self._driver_switches_status(),
+            'chain_switch': self._chain_switch_status(),
             'locate_busy': bool(getattr(self, '_locate_busy', False)),
             'settings_volatile': [str(_n) for _n, _cur, _cfgv in (
                 ('purge_matrix', getattr(self, 'purge_matrix', None),

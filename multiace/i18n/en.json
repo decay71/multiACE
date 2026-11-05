@@ -434,7 +434,14 @@
       "purge_floor": "Purge minimum (mm, 0 = 40)",
       "purge_cap": "Purge maximum (mm, 0 = off)",
       "purge_policy_hint": "Rescales every swap purge length (the per-pair stamp, the fixed length or the stock 80 mm) by the percent, then keeps it between the minimum and maximum (maximum 0 = no limit). The minimum (0 = 40 mm) also sets the smallest per-pair purge the next preflight writes. Tune the purge without re-slicing. Applies live, no restart.",
-      "purge_policy_range": "Value must be between {min} and {max}."
+      "purge_policy_range": "Value must be between {min} and {max}.",
+      "chain_label": "ACE 2 daisy chain (several units on one cable)",
+      "chain_note_chained": "cannot be switched off while units are chained",
+      "chain_note_no_driver": "needs the ACE 2 driver",
+      "acefw_chained": "daisy-chained",
+      "acefw_chain_on": "on the daisy chain",
+      "acefw_chained_hint": "A daisy-chained unit cannot be flashed: connect it alone on its cable, switch the ACE 2 daisy chain off (Devices) and restart the firmware.",
+      "acefw_chain_on_hint": "With the ACE 2 daisy chain on, no ACE 2 can be flashed: switch the chain off (Devices) and restart the firmware."
     },
     "dialog": {
       "load_already_loaded_title": "T{slot} is already loaded",
@@ -1414,6 +1421,11 @@
     "driver_printing": "[multiACE] Drivers cannot be switched while printing",
     "unit_forget_connected": "[multiACE] Unit {unit} is connected - remove it from its place instead (PLACE=NONE)",
     "unit_forgotten": "[multiACE] Unit {unit} forgotten (place, removed list and parked state cleared)",
-    "found_fewer_than_count": "[multiACE] Found {count} of {expected} unit(s) at startup - the rest joins when it appears on the bus"
+    "found_fewer_than_count": "[multiACE] Found {count} of {expected} unit(s) at startup - the rest joins when it appears on the bus",
+    "chain_enabled": "[multiACE] ACE 2 daisy chain switched on - restart the firmware to apply",
+    "chain_disabled": "[multiACE] ACE 2 daisy chain switched off - restart the firmware to apply",
+    "chain_printing": "[multiACE] The ACE 2 daisy chain cannot be switched while printing",
+    "chain_needs_driver": "[multiACE] The ACE 2 daisy chain needs the ACE 2 driver - switch the driver on first",
+    "chain_off_chained": "[multiACE] The ACE 2 daisy chain cannot be switched off: {count} cable(s) still carry more than one unit. Connect each unit alone on its cable first"
   }
 }

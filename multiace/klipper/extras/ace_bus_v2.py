@@ -679,6 +679,20 @@ def uid_key_for(path):
     return 'uid:' + hexuid if hexuid else ''
 
 
+def chained_cables():
+    """Cables whose bus has more than one unit answering right now. Such a
+    cable must stay a bus: without it every unit acts on every command."""
+    with _buses_lock:
+        buses = list(_buses.items())
+    out = []
+    for cable, bus in buses:
+        with bus._lock:
+            present = sum(1 for u in bus.units.values() if u.present)
+        if bus.alive and present > 1:
+            out.append(cable)
+    return out
+
+
 def chain_cables(cable_paths, excluded_realpaths=()):
     """The cables the chain may drive: every ACE 2 cable except one whose
     real device is excluded ([mcu] serial, [ace] exclude_ports). Compared by

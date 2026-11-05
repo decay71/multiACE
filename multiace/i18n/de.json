@@ -435,7 +435,14 @@
       "purge_floor": "Spül-Minimum (mm, 0 = 40)",
       "purge_cap": "Spül-Maximum (mm, 0 = aus)",
       "purge_policy_hint": "Skaliert jede Spüllänge eines Wechsels (Paar-Stempel, feste Länge oder Standard 80 mm) um den Prozentwert und hält sie dann zwischen Minimum und Maximum (Maximum 0 = keine Grenze). Das Minimum (0 = 40 mm) gilt auch für die kleinste Paar-Spülung, die die nächste Preflight schreibt. Spülung anpassen ohne neu zu slicen. Wirkt sofort, kein Neustart.",
-      "purge_policy_range": "Der Wert muss zwischen {min} und {max} liegen."
+      "purge_policy_range": "Der Wert muss zwischen {min} und {max} liegen.",
+      "chain_label": "ACE-2-Daisy-Chain (mehrere Einheiten an einem Kabel)",
+      "chain_note_chained": "nicht abschaltbar, solange Einheiten verkettet sind",
+      "chain_note_no_driver": "braucht den ACE-2-Treiber",
+      "acefw_chained": "verkettet",
+      "acefw_chain_on": "an der Daisy-Chain",
+      "acefw_chained_hint": "Eine verkettete Einheit lässt sich nicht flashen: allein an ihr Kabel anschließen, die ACE-2-Daisy-Chain ausschalten (Geräte) und die Firmware neu starten.",
+      "acefw_chain_on_hint": "Mit eingeschalteter ACE-2-Daisy-Chain lässt sich keine ACE 2 flashen: die Chain ausschalten (Geräte) und die Firmware neu starten."
     },
     "dialog": {
       "load_already_loaded_title": "T{slot} ist bereits geladen",
@@ -1415,6 +1422,11 @@
     "driver_printing": "[multiACE] Treiber lassen sich nicht während eines Drucks umschalten",
     "unit_forget_connected": "[multiACE] Einheit {unit} ist verbunden - stattdessen vom Platz nehmen (PLACE=NONE)",
     "unit_forgotten": "[multiACE] Einheit {unit} vergessen (Platz, Abwahlliste und geparkter Zustand gelöscht)",
-    "found_fewer_than_count": "[multiACE] {count} von {expected} Einheit(en) beim Start gefunden - der Rest kommt dazu, sobald er am Bus erscheint"
+    "found_fewer_than_count": "[multiACE] {count} von {expected} Einheit(en) beim Start gefunden - der Rest kommt dazu, sobald er am Bus erscheint",
+    "chain_enabled": "[multiACE] ACE-2-Daisy-Chain eingeschaltet - Firmware neu starten, damit es gilt",
+    "chain_disabled": "[multiACE] ACE-2-Daisy-Chain ausgeschaltet - Firmware neu starten, damit es gilt",
+    "chain_printing": "[multiACE] Die ACE-2-Daisy-Chain lässt sich nicht während eines Drucks umschalten",
+    "chain_needs_driver": "[multiACE] Die ACE-2-Daisy-Chain braucht den ACE-2-Treiber - zuerst den Treiber einschalten",
+    "chain_off_chained": "[multiACE] Die ACE-2-Daisy-Chain lässt sich nicht ausschalten: an {count} Kabel(n) hängt noch mehr als eine Einheit. Zuerst jede Einheit allein an ihr Kabel anschließen"
   }
 }

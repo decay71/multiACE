@@ -747,9 +747,24 @@ def _parse_state(status: dict) -> dict:
             # added to Klipper's get_status does not exist here until it is
             # passed through explicitly.
             "serial_path":  a.get("serial_path", ""),
+            # ACE 2 daisy chain (v2_chain): a unit on a chain bus has the
+            # virtual path '<cable>@<uid>', no device node. It cannot be
+            # flashed from here; chain_units = units sharing its cable.
+            "chained":      "@" in str(a.get("serial_path", "") or ""),
+            "chain_units":  0,
             "fw_hold":      bool(a.get("fw_hold")),
             "slots":        slots_out,
         })
+
+    _cables: dict = {}
+    for _a in aces_out:
+        if _a.get("chained"):
+            _c = str(_a.get("serial_path") or "").rpartition("@")[0]
+            _cables[_c] = _cables.get(_c, 0) + 1
+    for _a in aces_out:
+        if _a.get("chained"):
+            _a["chain_units"] = _cables.get(
+                str(_a.get("serial_path") or "").rpartition("@")[0], 0)
 
     if overrides_dirty:
         _save_overrides_to_disk()
@@ -908,6 +923,10 @@ def _parse_state(status: dict) -> dict:
         # test note, places served. Older ace.py: empty list, no block.
         "driver_switches": [d for d in (ace.get("driver_switches") or [])
                             if isinstance(d, dict)],
+        # v2_chain switch (Devices): configured vs running, ACE 2 driver on,
+        # cables with more than one unit. Older ace.py: None, no row.
+        "chain_switch": (ace.get("chain_switch")
+                         if isinstance(ace.get("chain_switch"), dict) else None),
         "locate_busy": bool(ace.get("locate_busy", False)),
         # [ace] tag_write_format - the picker's preselected write format.
         "tag_write_format": str(ace.get("tag_write_format") or "openspool"),
@@ -4267,6 +4286,22 @@ async def acefw_flash(payload: dict | None = None) -> dict:
     port = str(entry.get("serial_path") or "").strip()
     if not port:
         raise HTTPException(400, "MMU reports no serial path")
+    if "@" in port:
+        # A unit on the ACE 2 daisy chain: '<cable>@<uid>' is no device
+        # node, and flashing on a shared cable is refused by the bus
+        # anyway (a unit in its bootloader is back at address 0).
+        _n = sum(1 for a in (state.get("aces") or [])
+                 if str(a.get("serial_path") or "").rpartition("@")[0]
+                 == port.rpartition("@")[0])
+        if _n > 1:
+            raise HTTPException(409, (
+                f"MMU {ace} is daisy-chained: flash this unit alone on "
+                "its cable with v2_chain off (connect it alone, switch the "
+                "ACE 2 daisy chain off under Devices, restart the firmware)"))
+        raise HTTPException(409, (
+            f"MMU {ace} runs on the ACE 2 daisy chain: switch v2_chain "
+            "off (ACE 2 daisy chain under Devices) and restart the firmware "
+            "to flash it"))
     # Which generation owns this unit? The web sends the same payload for
     # both; the routing is by the protocol Klipper detected, never by a
     # client flag - a V1 image can never be fed to the ACE 2 engine.

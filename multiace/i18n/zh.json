@@ -216,7 +216,14 @@
       "remember_filament_label": "槽位变空时保留其标签和料盘绑定",
       "remember_filament_hint": "默认关闭。开启后，变空的槽位会保留手动设置的颜色/材料标签和料盘绑定，重新放入耗材时无需再次输入。新读取到的 RFID 芯片始终会替换保留的标签。需要注意两点：空槽位上保留的标签就是预检所依据的内容，因此在该处放入另一卷没有 RFID 的料盘，会按旧颜色打印；保留的绑定会把新料盘的用量（并推送到 Spoolman）记在旧料盘上，直到重新绑定。立即生效，无需保存，并保存在打印机上。",
       "nt_remember_filament_short": "槽位变空时保留其标签和料盘绑定。在该处放入另一卷没有 RFID 的料盘会被当作旧料盘。",
-      "purge_policy_range": "数值必须在 {min} 到 {max} 之间。"
+      "purge_policy_range": "数值必须在 {min} 到 {max} 之间。",
+      "chain_label": "ACE 2 菊花链（一根线缆连接多台设备）",
+      "chain_note_chained": "设备串联时无法关闭",
+      "chain_note_no_driver": "需要 ACE 2 驱动",
+      "acefw_chained": "已串联",
+      "acefw_chain_on": "在菊花链上",
+      "acefw_chained_hint": "串联的设备无法刷写：请将其单独接到线缆上，关闭 ACE 2 菊花链（设备）并重启固件。",
+      "acefw_chain_on_hint": "开启 ACE 2 菊花链时无法刷写任何 ACE 2：请关闭菊花链（设备）并重启固件。"
     },
     "dialog": {
       "load_already_loaded_title": "T{slot} 已经进料",
@@ -613,6 +620,11 @@
     "fa_test_no_ack_header": "[ACE_FA_TEST]   NO_ACK (固件从未响应):",
     "fa_test_no_ack_line": "[ACE_FA_TEST]     step={step} slot={slot}",
     "locate_jog_forward_left": "[multiACE] MMU {ace}: Slot {slot} 无法退回 - 向前多出 {mm}mm (无害, 线卷仍在入口)",
-    "tag_read_busy": "[multiACE] 标签读取仍在进行中"
+    "tag_read_busy": "[multiACE] 标签读取仍在进行中",
+    "chain_enabled": "[multiACE] ACE 2 菊花链已开启 - 重启固件后生效",
+    "chain_disabled": "[multiACE] ACE 2 菊花链已关闭 - 重启固件后生效",
+    "chain_printing": "[multiACE] 打印时无法切换 ACE 2 菊花链",
+    "chain_needs_driver": "[multiACE] ACE 2 菊花链需要 ACE 2 驱动 - 请先开启该驱动",
+    "chain_off_chained": "[multiACE] 无法关闭 ACE 2 菊花链：仍有 {count} 根线缆连接多台设备。请先将每台设备单独接到一根线缆上"
   }
 }

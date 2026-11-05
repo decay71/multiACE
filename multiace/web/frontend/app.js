@@ -284,6 +284,7 @@ createApp({
       pa_sync: true,
       rc522: false,
       devices: [], units_restart_needed: false, driver_switches: [],
+      chain_switch: null,
       locate_busy: false,
       tag_write_format: "openspool",
       tag_write_uid_sku: true,
@@ -489,6 +490,8 @@ createApp({
       devNameSettle(state.devices);
       state.units_restart_needed = !!s.units_restart_needed;
       state.driver_switches = Array.isArray(s.driver_switches) ? s.driver_switches : [];
+      state.chain_switch = (s.chain_switch && typeof s.chain_switch === "object")
+        ? s.chain_switch : null;
       state.locate_busy = !!s.locate_busy;
       state.auto_dry_masters = Array.isArray(s.auto_dry_masters)
         ? s.auto_dry_masters : [];
@@ -3020,14 +3023,25 @@ createApp({
         .filter(a => ["iap_v1", "ota_v2"].includes(aceFlashEngine(a)))
         .map(a => {
           const v1 = aceFlashEngine(a) === "iap_v1";
-          return {value: a.idx, v1: v1,
+          // A unit on the ACE 2 daisy chain cannot be flashed from here:
+          // listed, greyed out, with the steps in a hint below the picker.
+          const chained = !!a.chained;
+          const shared = chained && (a.chain_units || 0) > 1;
+          return {value: a.idx, v1: v1, disabled: chained, shared: shared,
                   label: "MMU " + dispIdx(a.idx)
                          + " · " + t(v1 ? "ui.config.acefw_gen1"
                                         : "ui.config.acefw_gen2")
                          + (a.firmware && a.firmware !== "Unknown"
                             ? " · " + a.firmware : "")
-                         + (a.connected ? "" : " " + t("ui.acefw.offline"))};
+                         + (a.connected ? "" : " " + t("ui.acefw.offline"))
+                         + (chained ? " · " + t(shared ? "ui.config.acefw_chained"
+                                                       : "ui.config.acefw_chain_on")
+                                    : "")};
         }));
+    const acefwChainedShared = computed(() =>
+      acefwCandidates.value.some(o => o.disabled && o.shared));
+    const acefwChainOn = computed(() =>
+      acefwCandidates.value.some(o => o.disabled && !o.shared));
     const acefwIsV1 = computed(() => {
       const c = acefwCandidates.value.find(o => o.value === acefw.ace);
       return !!(c && c.v1);
@@ -4478,7 +4492,34 @@ createApp({
       return parts.join(" · ");
     }
     const driversRestartNeeded = computed(() =>
-      (state.driver_switches || []).some(d => d.enabled !== d.active));
+      (state.driver_switches || []).some(d => d.enabled !== d.active)
+      || !!(state.chain_switch
+            && state.chain_switch.enabled !== state.chain_switch.active));
+    // ACE 2 daisy chain switch: the engine refuses it while printing,
+    // without the ACE 2 driver, and OFF while a cable still carries more
+    // than one unit; the checkbox only shows what the printer reports.
+    function chainBlocked() {
+      const c = state.chain_switch;
+      if (!c) return true;
+      if (!c.enabled) return !c.available;
+      return (c.chained_cables || 0) > 0;
+    }
+    function chainToggle(ev) {
+      const c = state.chain_switch || {};
+      ev.target.checked = !!c.enabled;
+      return unitMacro("ACE_SET_V2_CHAIN", {ENABLE: c.enabled ? 0 : 1});
+    }
+    function chainNote() {
+      const c = state.chain_switch;
+      if (!c) return "";
+      const parts = [];
+      if (c.enabled !== c.active) {
+        parts.push(t(c.enabled ? "ui.config.driver_pending_on" : "ui.config.driver_pending_off"));
+      }
+      if (c.enabled && (c.chained_cables || 0) > 0) parts.push(t("ui.config.chain_note_chained"));
+      if (!c.available) parts.push(t("ui.config.chain_note_no_driver"));
+      return parts.join(" · ");
+    }
     function deviceStatus(dev) {
       if (dev.removed) return t("ui.config.dev_removed");
       if (!dev.present) return t("ui.config.dev_not_connected");
@@ -9703,7 +9744,7 @@ createApp({
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
       panelMini, fullUiHref, uiTheme, uiThemeChoice, uiLight, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,
-      slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setRememberFilament, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
+      slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, chainBlocked, chainToggle, chainNote, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setRememberFilament, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
       spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
@@ -9722,7 +9763,7 @@ createApp({
       paCalibrate, paCanCalibrate, paCalibrating, paLoading, paSpoolHead, paSpoolLoadPlan,
       paSave, paDirty, paKeyValid, paValueValid, paKeyOptions, pickerPaDialog,
       spoolCreating, spoolNewForm,
-      acefw, acefwInput, acefwCandidates, acefwPickFile, acefwUpload,
+      acefw, acefwInput, acefwCandidates, acefwChainedShared, acefwChainOn, acefwPickFile, acefwUpload,
       acefwCanTest, acefwReady, acefwTest, acefwFlash, acefwStatusText,
       acefwStatusBad,
       acefwPatchTarget, acefwPatchTargets, acefwTargetLabel, acefwCanPatch,
