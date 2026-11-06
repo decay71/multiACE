@@ -14044,6 +14044,44 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return None
         return o
 
+    def _wait_for_slot_identity(self, ace_index, slot):
+        """Give the slot's RFID read up to 3 s before the load captures the
+        head's identity, unless the override already names all of it.
+
+        A fully declared override wins field by field over the tag
+        (_overlay_override), so the read cannot add anything and the load
+        does not wait for it. An untagged spool never reports a read, so
+        the wait used to run the full 3 s on every load of such a slot."""
+        if self._identity_fully_declared(ace_index, slot):
+            logging.info('[multiACE] LOAD_HEAD: slot %d identity fully '
+                         'declared - not waiting for the RFID read' % slot)
+            return
+        rfid_deadline = self.reactor.monotonic() + 3.0
+        while self.reactor.monotonic() < rfid_deadline:
+            if self._info['slots'][slot].get('rfid', 0) != 0:
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self._info['slots'][slot].get('rfid', 0) == 0:
+            logging.info('[multiACE] LOAD_HEAD: RFID not ready for slot '
+                         '%d after wait' % slot)
+
+    def _identity_fully_declared(self, ace_idx, slot_idx):
+        """True when the slot's override carries material, colour and brand.
+        The override wins field by field and the slot's RFID only fills what
+        it leaves out (_overlay_override), so with all three set a tag read
+        has nothing left to add. A partial override is not enough: the tag's
+        brand or colour would still fill the gap."""
+        try:
+            ov = self._override_for(ace_idx, slot_idx)
+            if not ov:
+                return False
+            return bool(
+                (ov.get('material') or '').strip()
+                and (ov.get('color') or '').strip().lstrip('#')
+                and (ov.get('brand') or '').strip())
+        except Exception:
+            return False
+
     def _override_color_to_rgba(self, hex_color):
         """Picker stores '#rrggbb'; display wants RRGGBBAA."""
         h = (hex_color or '').lstrip('#').upper()
@@ -19033,13 +19071,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self._audit_state('LOAD_HEAD', {'head': head, 'feeder': True})
             return
 
-        rfid_deadline = self.reactor.monotonic() + 3.0
-        while self.reactor.monotonic() < rfid_deadline:
-            if self._info['slots'][slot].get('rfid', 0) != 0:
-                break
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-        if self._info['slots'][slot].get('rfid', 0) == 0:
-            logging.info('[multiACE] LOAD_HEAD: RFID not ready for slot %d after wait' % slot)
+        self._wait_for_slot_identity(ace_index, slot)
 
         slot_info = self._info['slots'][slot]
         self._head_source[head] = self._inherit_prev_capture(
