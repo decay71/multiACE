@@ -226,6 +226,10 @@ class AceBgSwap:
         # (BG_LOAD_PRIME_EXTRA note). Read unconditionally.
         self.prime_extra = config.getfloat('prime_extra', BG_LOAD_PRIME_EXTRA,
                                            minval=0., maxval=100.)
+        # Scaling factor applied only to the background prime length
+        # (e.g. 0.60 = 40% shorter dock prime, while inline flushes stay at 100%).
+        self.prime_scale = config.getfloat('prime_scale', 1.0,
+                                           minval=0.05, maxval=2.0)
         # Unload-only switch: False disables the
         # bg LOAD half - ACE_BG_SWAP stamps run only the HW-proven unload
         # half, the arrival swap then loads INLINE with full phase3
@@ -2691,10 +2695,10 @@ class AceBgSwap:
                 _policy = getattr(ace, 'apply_purge_policy', None)
                 if _policy is not None:
                     purge = _policy(purge)
-                prime_target = float(purge) + self.prime_extra
+                prime_target = (float(purge) * self.prime_scale) + self.prime_extra
             else:
-                prime_target = (float(ace.get_purge_length() or 0) or 80.) \
-                    + self.prime_extra
+                base_purge = float(ace.get_purge_length() or 0) or 80.
+                prime_target = (base_purge * self.prime_scale) + self.prime_extra
             primed = 0.
             ooze_done = False
 
