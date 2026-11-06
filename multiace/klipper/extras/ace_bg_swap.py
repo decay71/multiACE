@@ -3113,6 +3113,24 @@ class AceBgSwap:
                 _s, _pend, _en = self.queue_move(ext, seg, _prime_speed,
                                                  CHOREO_ACCEL)
                 primed += seg
+                # Diagnostic (issue #86, slow prime): how far ahead of the
+                # real clock the chunk starts. start_lead = this chunk's
+                # start minus the MCU's "now"; buf = how much print the
+                # toolhead has queued ahead. A chunk that starts seconds
+                # late while buf is large means the prime waits behind the
+                # print buffer, not behind the extruder.
+                try:
+                    _est = toolhead.mcu.estimated_print_time(
+                        self.reactor.monotonic())
+                    logging.info(
+                        '[multiACE] [bg-prime-timing] head %d: %.1f/%.1f mm '
+                        'seg=%.1f speed=%.1f mm/s start_lead=%.2fs '
+                        'buf=%.2fs chunk_end_lead=%.2fs'
+                        % (self._dh(head), primed, prime_target, seg,
+                           _prime_speed, _s - _est,
+                           toolhead.print_time - _est, _pend - _est))
+                except Exception:
+                    pass
                 # Spool book-keeping: these are stealth moves on our OWN
                 # trapq, so the extruder axis the ace.py sampler watches
                 # never sees them - book the purge explicitly or a bg swap
