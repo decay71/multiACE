@@ -138,14 +138,14 @@ def test_notice_in_prime_marks_pending_and_check_docked_aborts():
     assert len(bg.said) == n
 
 
-@pytest.mark.parametrize('phase', ['HEAT', 'PULL', 'LD_FEED', 'LD_GRIP'])
+@pytest.mark.parametrize('phase', ['HEAT', 'PULL', 'LD_FEED'])
 def test_notice_in_every_polling_phase(phase):
     bg = _engine(phase)
     assert bg.request_pick_abort(0) is True
 
 
 @pytest.mark.parametrize('phase', ['QUEUED', 'FA_STOP', 'RETRACT', 'BOOKKEEP',
-                                   'DONE'])
+                                   'LD_GRIP', 'DONE'])
 def test_notice_outside_polling_phases_is_ignored(phase):
     bg = _engine(phase)
     assert bg.request_pick_abort(0) is False
