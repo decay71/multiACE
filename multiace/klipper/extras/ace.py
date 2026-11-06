@@ -1355,7 +1355,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # (ace_bus_v2.py). Read unconditionally.
         self._v2_chain = config.getboolean('v2_chain', False)
         # What the config line says now; differs from _v2_chain after
-        # ACE_SET_V2_CHAIN until the next firmware restart.
+        # ACE_SET_DAISY_CHAIN until the next firmware restart.
         self._v2_chain_cfg = self._v2_chain
         AceProtocolV2.CHAIN = self._v2_chain
         if self._v2_chain:
@@ -2322,8 +2322,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'ACE_SET_DRIVER', self.cmd_ACE_SET_DRIVER,
             desc=self.cmd_ACE_SET_DRIVER_help)
         self.gcode.register_command(
-            'ACE_SET_V2_CHAIN', self.cmd_ACE_SET_V2_CHAIN,
-            desc=self.cmd_ACE_SET_V2_CHAIN_help)
+            'ACE_SET_DAISY_CHAIN', self.cmd_ACE_SET_DAISY_CHAIN,
+            desc=self.cmd_ACE_SET_DAISY_CHAIN_help)
         self.gcode.register_command(
             'ACE_LOCATE', self.cmd_ACE_LOCATE,
             desc=self.cmd_ACE_LOCATE_help)
@@ -3103,8 +3103,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.log_always(self._t('msg.driver_enabled' if enable
                                 else 'msg.driver_disabled', driver=drv.label))
 
-    cmd_ACE_SET_V2_CHAIN_help = (
-        '[multiACE] Switch the ACE 2 daisy chain on or off: ACE_SET_V2_CHAIN '
+    cmd_ACE_SET_DAISY_CHAIN_help = (
+        '[multiACE] Switch the ACE 2 daisy chain on or off: ACE_SET_DAISY_CHAIN '
         'ENABLE=0|1. Writes the v2_chain config line, takes effect at the '
         'next firmware restart. Cannot be switched off while a cable still '
         'carries more than one unit (unchain them first), nor while printing.')
@@ -3124,7 +3124,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 'available': bool(cfg.get('ace_v2', False)),
                 'chained_cables': chained}
 
-    def cmd_ACE_SET_V2_CHAIN(self, gcmd):
+    def cmd_ACE_SET_DAISY_CHAIN(self, gcmd):
         if self._is_actively_printing():
             raise self._ace_error(gcmd, self._t('msg.chain_printing'), 200)
         enable = bool(gcmd.get_int('ENABLE', 1, minval=0, maxval=1))

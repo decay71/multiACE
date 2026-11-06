@@ -1,4 +1,4 @@
-"""ACE_SET_V2_CHAIN on stubs: the switch writes its v2_chain config line and
+"""ACE_SET_DAISY_CHAIN on stubs: the switch writes its v2_chain config line and
 only changes the configured state (the running buses keep their setting
 until the firmware restart); it is refused while printing, switched ON
 without the ACE 2 driver, and switched OFF while a cable still carries
@@ -35,7 +35,7 @@ def _rig(monkeypatch, running=True, configured=None, printing=False,
     monkeypatch.setattr(B, 'chained_cables', lambda: list(chained))
 
     class Ace(object):
-        cmd_ACE_SET_V2_CHAIN = A.MultiAce.cmd_ACE_SET_V2_CHAIN
+        cmd_ACE_SET_DAISY_CHAIN = A.MultiAce.cmd_ACE_SET_DAISY_CHAIN
         _chain_switch_status = A.MultiAce._chain_switch_status
 
         def _is_actively_printing(self):
@@ -65,7 +65,7 @@ def _rig(monkeypatch, running=True, configured=None, printing=False,
 
 
 def _set(ace, enable):
-    ace.cmd_ACE_SET_V2_CHAIN(FakeGcmd(ENABLE=enable))
+    ace.cmd_ACE_SET_DAISY_CHAIN(FakeGcmd(ENABLE=enable))
 
 
 def test_switch_off_writes_line_and_keeps_running_state(monkeypatch):
@@ -147,3 +147,29 @@ def test_every_message_exists_in_every_language():
             assert d['msg'][k], (lang, k)
         for k in ui:
             assert d['ui']['config'][k], (lang, k)
+
+
+def _klipper_command_of(line):
+    """The command Klipper's gcode.py derives from a line: it splits with
+    ([A-Z_]+|[A-Z*/]) and joins the first letters with the first number,
+    so a digit inside a name cuts it off (ACE_SET_V2_CHAIN -> ACE_SET_V2)."""
+    import re
+    parts = re.compile(r'([A-Z_]+|[A-Z*/])').split(line.upper())
+    if len(parts) >= 3 and parts[1] != 'N':
+        return parts[1] + parts[2].strip()
+    return ''
+
+
+def test_every_registered_command_survives_klippers_parser():
+    import pathlib, re
+    root = pathlib.Path(__file__).resolve().parents[2] / 'multiace'
+    names = set()
+    for py in (root / 'klipper' / 'extras').glob('*.py'):
+        names.update(re.findall(r"register_command\(\s*'([A-Z0-9_]+)'",
+                                py.read_text('utf-8')))
+    app = (root / 'web' / 'frontend' / 'app.js').read_text('utf-8')
+    names.update(re.findall(r'unitMacro\("([A-Z0-9_]+)"', app))
+    assert 'ACE_SET_DAISY_CHAIN' in names
+    broken = sorted(n for n in names
+                    if _klipper_command_of(n + ' ENABLE=1') != n)
+    assert broken == [], broken

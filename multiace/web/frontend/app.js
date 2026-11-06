@@ -4507,7 +4507,7 @@ createApp({
     function chainToggle(ev) {
       const c = state.chain_switch || {};
       ev.target.checked = !!c.enabled;
-      return unitMacro("ACE_SET_V2_CHAIN", {ENABLE: c.enabled ? 0 : 1});
+      return unitMacro("ACE_SET_DAISY_CHAIN", {ENABLE: c.enabled ? 0 : 1});
     }
     function chainNote() {
       const c = state.chain_switch;
