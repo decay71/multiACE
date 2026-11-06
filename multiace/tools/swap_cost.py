@@ -35,9 +35,11 @@ import re
 # None of these have been measured on a real machine. They were chosen so
 # that, with the shipped ace.cfg defaults (feed_speed/retract_speed 80,
 # load_length 2100, swap_retract_length 900, seat_overshoot_length 20,
-# swap_anti_ooze_retract 10), the modelled cost of an inline swap lands on
+# swap_anti_ooze_retract 10), the modelled cost of an inline swap landed on
 # about 210 s and a background swap on 30 s - the old whole-swap figures
-# of post_process_virtual_toolheads (now 146 / 56 s, measured). The purge
+# of post_process_virtual_toolheads (now 146 / 56 s, measured). Taking the
+# retract and feed out of ace_spool_change (they were billed twice) moved
+# the inline seed to about 172 s; the rest is still to be tuned. The purge
 # is NOT in these seeds: build_estimate bills it on top, so an estimate with
 # the default 80 mm flush reads about 28 s above the old inline figure.
 # Every later change is a deliberate constant edit.
@@ -46,11 +48,17 @@ import re
 # computed from the config, because that is the part we actually know.
 UNMEASURED_S = {
     # Tip forming: heat, wiggle, cool, break off. A whole macro sequence.
+    # With [ace_tipform] mode custom the pull part of it (the moves and
+    # pauses of the table) is computed from the tokens instead, see
+    # SwapCostModel.tip_form_seconds; this value is the stock sequence.
     "tip_form":         55.0,
-    # The ACE's own spool change: unwind the outgoing filament past the hub
-    # and feed the incoming one up to it. Internal to the unit, not visible
-    # as any length/speed pair we control.
-    "ace_spool_change": 62.0,
+    # What the ACE's own spool change costs BEYOND the retract and feed the
+    # model already bills from the config (swap_retract_length /
+    # retract_speed and load_length / feed_speed). It used to be 62 s and
+    # counted those two moves a second time: 62 - (900/80 + 2100/80) = 24.5
+    # at the shipped defaults. Hub handling and slot change that is not a
+    # length/speed pair we control.
+    "ace_spool_change": 24.5,
     # Seat/press dwell after the overshoot move (the move itself is computed).
     "seat_press":       6.0,
     # Waiting for the nozzle to recover the setpoint after a cold-ish load.
@@ -74,6 +82,33 @@ UNMEASURED_S = {
 
 SWAP_KINDS = ("same_ace", "cross_ace_inline", "cross_ace_bg", "first_load",
               "head_change")
+
+#: The stock pull choreography (CONTROL_RETRACT_ACTION, normal filament):
+#: (mm, feedrate mm/min). Same list as ace_bg_swap.COLD_PULL_NORMAL.
+STOCK_TIP_PULL = ((57.0, 400.0), (3.0, 1500.0), (-27.0, 2700.0),
+                  (-5.5, 40.0), (-37.5, 1500.0))
+
+
+def tip_pull_seconds(moves, pauses_s=0.0):
+    """Seconds the pull moves of a tip-forming table take: sum of
+    |mm| / (feedrate / 60), plus any pauses. `moves` is a list of
+    (mm, feedrate_mm_per_min); bad entries are skipped. Accel and the
+    temperature waits (waittemp) are not modelled."""
+    total = float(pauses_s or 0.0)
+    for mv in moves or ():
+        try:
+            mm, f = float(mv[0]), float(mv[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if f > 0:
+            total += abs(mm) / (f / 60.0)
+    return total
+
+
+#: The stock pull's duration (about 19 s). tip_form's 55 s is this plus a
+#: fixed frame (heat, cool + fan, scrape, clean, discard) that no table
+#: changes, so a custom table moves the estimate by the difference only.
+STOCK_TIP_PULL_S = tip_pull_seconds(STOCK_TIP_PULL)
 
 # How much of a background swap's LOAD half the engine does on the parked
 # head ([ace_bg_swap] load_enabled): "full" = feed, grip and prime (the
@@ -479,6 +514,20 @@ class SwapCostModel(object):
         self.swap_purge_length = float(p.get("swap_purge_length", 0) or 0)
         self.bg_prime_extra = float(
             p.get("bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM) or 0)
+        #: [ace_bg_swap] prime_scale (1.0 = off): scales the policy-resolved
+        #: purge before prime_extra is added, for the parked prime only.
+        _scale = p.get("bg_prime_scale")
+        try:
+            self.bg_prime_scale = float(_scale) if _scale else 1.0
+        except (TypeError, ValueError):
+            self.bg_prime_scale = 1.0
+        #: Seconds the pull moves of the [ace_tipform] default table take
+        #: (tip_pull_seconds), or None for the stock sequence.
+        _pull = p.get("tip_form_pull_s")
+        try:
+            self.tip_pull_s = float(_pull) if _pull is not None else None
+        except (TypeError, ValueError):
+            self.tip_pull_s = None
 
         # swap_purge_floor is the one minimum: the post-processor sizes its
         # stamps with it too (40 while it is 0).
@@ -590,6 +639,14 @@ class SwapCostModel(object):
                       + c["sensor_wait"])
         return extra
 
+    def tip_form_seconds(self):
+        """The tip-forming sequence: the fixed frame plus the pull of the
+        configured table. Without a custom table it is the stock constant."""
+        base = self.constants["tip_form"]
+        if self.tip_pull_s is None:
+            return base
+        return max(0.0, base - STOCK_TIP_PULL_S) + self.tip_pull_s
+
     def _constant_seconds(self, kind):
         c = self.constants
         if kind == "head_change":
@@ -599,7 +656,8 @@ class SwapCostModel(object):
         if kind == "first_load":
             return (c["tool_pickup"] + c["seat_press"] + c["heat_settle"]
                     + c["sensor_wait"] + c["first_load_extra"])
-        return (c["tip_form"] + c["ace_spool_change"] + c["seat_press"]
+        return (self.tip_form_seconds() + c["ace_spool_change"]
+                + c["seat_press"]
                 + c["heat_settle"] + c["tool_pickup"] + c["sensor_wait"])
 
     def calibrated_kinds(self):
@@ -676,7 +734,7 @@ class SwapCostModel(object):
         the real unload+load duration plus a margin.
         """
         seconds = (self._mechanical_seconds("cross_ace_inline", ace, slot)
-                   + self.constants["tip_form"]
+                   + self.tip_form_seconds()
                    + self.constants["ace_spool_change"]
                    + self.constants["sensor_wait"])
         return round((seconds * 1.25) / 60.0, 2)
@@ -799,7 +857,9 @@ def build_estimate(model, header, timeline, *, materials=None,
         # swap in transport mode or one that was aborted (`purge_inline`).
         bg_parked = kind == "cross_ace_bg" and not ev.get("purge_inline")
         if bg_parked and purge > 0:
-            purge += getattr(model, "bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM)
+            purge = (purge * getattr(model, "bg_prime_scale", 1.0)
+                     + getattr(model, "bg_prime_extra",
+                               BG_LOAD_PRIME_EXTRA_MM))
         added_s += float(seconds or 0.0)
         purge_mm_total += purge
         if not bg_parked:

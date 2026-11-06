@@ -1256,15 +1256,49 @@ class SwapMixin:
                 '[multiACE] dwell fan toggle failed (ignored): %s' % e)
             self._dwell_fan_prev = None
 
+    def _swap_kind_before(self, gcmd):
+        """The swap_cost kind of the ACE_SWAP_HEAD about to run, or None
+        when it is not worth timing (a head without an ACE, bad arguments,
+        or a swap onto the filament it already holds). Never raises."""
+        try:
+            head = gcmd.get_int('HEAD')
+            ace_index = gcmd.get_int('ACE')
+            slot = gcmd.get_int('SLOT', head)
+            if not self.head_uses_ace(head):
+                return None
+            if gcmd.get_int('INITIAL', 0):
+                return 'first_load'
+            source = self._head_source.get(head)
+            if source:
+                if (source['ace_index'] == ace_index
+                        and source['slot'] == slot
+                        and not source.get('load_failed')):
+                    # Already there: a head the background engine loaded is
+                    # the handover (cross_ace_bg), anything else a plain
+                    # pick that needs no filament change.
+                    return ('cross_ace_bg'
+                            if head in self._bg_load_unverified else None)
+                if source['ace_index'] == ace_index:
+                    return 'same_ace'
+            return 'cross_ace_inline'
+        except Exception:
+            return None
+
     def cmd_ACE_SWAP_HEAD(self, gcmd):
         # Wrapper: a bg-wait park (see _wait_bg_op park=True) must never
         # outlive the command - whatever exit the body takes, the head
         # returns to the print position unless a capture consumed it.
         self._bg_wait_parked = None
+        # What this swap is, read BEFORE the body consumes it: the head's
+        # current source and whether a finished background load is waiting
+        # on it. Recorded in the job history once the swap succeeded.
+        swap_t0 = time.monotonic()
+        swap_kind = self._swap_kind_before(gcmd)
         try:
             result = self._cmd_ACE_SWAP_HEAD_body(gcmd)
         finally:
             self._bg_wait_unpark()
+        self._job_note_swap(swap_kind, time.monotonic() - swap_t0)
         # Auto-load block: a flow calibration deferred for this head (it was
         # empty when the start gcode asked) runs now that it is loaded.
         if gcmd.get_int('INITIAL', 0):

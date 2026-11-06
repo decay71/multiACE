@@ -240,3 +240,112 @@ def test_errors_never_reach_klipper(ace, tmp_path):
     ace._job_note_end()
     ace._head_source.observer = lambda h, s: 1 / 0
     ace._head_source[2] = _src(0, 0, None)
+
+
+# ---------------------------------------------------------------------------
+# Per-swap times (the calibration input swap_cost / job_history read)
+# ---------------------------------------------------------------------------
+
+class _Gcmd:
+    def __init__(self, **args):
+        self.args = args
+
+    def get_int(self, name, default=None, **_kw):
+        if name in self.args:
+            return self.args[name]
+        if default is None:
+            raise KeyError(name)
+        return default
+
+
+def _finish(ace):
+    ace.ps.status['state'] = 'complete'
+    ace._job_note_end()
+    ace.reactor.run()
+
+
+def test_swap_times_are_written_with_the_record(ace, tmp_path):
+    ace._job_note_start()
+    ace._job_note_swap('cross_ace_inline', 154.04)
+    ace._job_note_swap('cross_ace_bg', 12.0)
+    _finish(ace)
+    (rec,) = _records(tmp_path)
+    assert rec['swaps'] == [{'kind': 'cross_ace_inline', 'seconds': 154.0},
+                            {'kind': 'cross_ace_bg', 'seconds': 12.0}]
+
+
+def test_a_print_without_swaps_writes_an_empty_list(ace, tmp_path):
+    ace._job_note_start()
+    _finish(ace)
+    (rec,) = _records(tmp_path)
+    assert rec['swaps'] == []
+
+
+def test_swaps_outside_a_print_are_not_recorded(ace, tmp_path):
+    ace._job_note_swap('same_ace', 80.0)             # no job open: no raise
+    assert ace._job is None
+
+
+def test_a_swap_with_no_kind_is_not_recorded(ace, tmp_path):
+    ace._job_note_start()
+    ace._job_note_swap(None, 4.0)
+    _finish(ace)
+    assert _records(tmp_path)[0]['swaps'] == []
+
+
+def test_swaps_per_job_are_capped(ace, tmp_path):
+    ace._job_note_start()
+    for _ in range(ace.JOB_SWAPS_MAX + 50):
+        ace._job_note_swap('same_ace', 70.0)
+    _finish(ace)
+    assert len(_records(tmp_path)[0]['swaps']) == ace.JOB_SWAPS_MAX
+
+
+def test_recorded_swaps_calibrate_the_estimate(ace, tmp_path):
+    """The point of recording them: job_history turns them into the medians
+    SwapCostModel.with_calibration prefers once there are enough."""
+    for i in range(5):
+        ace._job_note_start()
+        ace._job_note_swap('cross_ace_inline', 150.0 + i)
+        _finish(ace)
+        ace._job = None
+    hist = ace._job_history()
+    stats = hist.aggregate_swap_stats(hist.load_records(str(tmp_path)))
+    assert stats['cross_ace_inline']['n'] == 5
+    assert stats['cross_ace_inline']['median_s'] == 152.0
+    assert stats['cross_ace_inline']['calibrated'] is True
+
+
+@pytest.mark.parametrize('source,bg,args,kind', [
+    # nothing loaded yet, a different ACE, or the same ACE on another slot
+    (None, False, dict(HEAD=0, ACE=0, SLOT=1), 'cross_ace_inline'),
+    (_src(1, 0, 'FF0000'), False, dict(HEAD=0, ACE=0, SLOT=1),
+     'cross_ace_inline'),
+    (_src(0, 2, 'FF0000'), False, dict(HEAD=0, ACE=0, SLOT=1), 'same_ace'),
+    # the auto-load block before the print body
+    (None, False, dict(HEAD=0, ACE=0, SLOT=1, INITIAL=1), 'first_load'),
+    # already on that slot: a finished background load is the handover,
+    # anything else a pick that needs no filament change (not timed)
+    (_src(0, 1, 'FF0000'), True, dict(HEAD=0, ACE=0, SLOT=1), 'cross_ace_bg'),
+    (_src(0, 1, 'FF0000'), False, dict(HEAD=0, ACE=0, SLOT=1), None),
+    # a failed earlier load does not count as "already there"
+    (dict(_src(0, 1, 'FF0000'), load_failed=True), False,
+     dict(HEAD=0, ACE=0, SLOT=1), 'same_ace'),
+])
+def test_swap_kind_is_read_before_the_swap_runs(ace, source, bg, args, kind):
+    ace.head_uses_ace = lambda head: True
+    ace._bg_load_unverified = {0} if bg else set()
+    if source is not None:
+        ace._head_source[0] = source
+    assert ace._swap_kind_before(_Gcmd(**args)) == kind
+
+
+def test_a_head_without_an_ace_is_not_timed(ace):
+    ace.head_uses_ace = lambda head: False
+    ace._bg_load_unverified = set()
+    assert ace._swap_kind_before(_Gcmd(HEAD=2, ACE=0, SLOT=2)) is None
+
+
+def test_a_malformed_command_never_raises(ace):
+    ace.head_uses_ace = lambda head: True
+    assert ace._swap_kind_before(_Gcmd(HEAD=0)) is None     # no ACE=

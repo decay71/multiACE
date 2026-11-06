@@ -4845,6 +4845,12 @@ def _swap_cost_params() -> dict:
     pe = _as_float(_read_bg_option(text, "prime_extra"))
     if pe is not None:
         out["bg_prime_extra"] = pe
+    ps = _as_float(_read_bg_option(text, "prime_scale"))
+    if ps is not None and ps > 0:
+        out["bg_prime_scale"] = ps
+    tip_pull = _tipform_default_pull_s(text)
+    if tip_pull is not None:
+        out["tip_form_pull_s"] = tip_pull
     per: dict = {}
     for ace_idx, section in (per_ace or {}).items():
         vals = {}
@@ -4920,6 +4926,32 @@ def _extract_tipform(text: str) -> tuple[str, dict[str, str]]:
         else:
             tables[key] = val
     return mode, tables
+
+def _tipform_default_pull_s(text: str):
+    """Seconds the pull moves of the `default` [ace_tipform] table take, for
+    the swap estimate; None for the stock sequence (mode stock, no default
+    table, a table of parameters only, or anything that does not parse).
+    The estimate has no material per swap, so one table stands for all."""
+    try:
+        mode, tables = _extract_tipform(text)
+        raw = tables.get("default")
+        if mode != "custom" or not raw:
+            return None
+        mod = _load_tipform_module()
+        if mod is None:
+            return None
+        tokens = mod.parse_table(raw)[0]
+        moves = [(t[1], t[2]) for t in tokens if t[0] == "move"]
+        if not moves:
+            return None
+        _ensure_swap_cost()
+        sc = preflight_core._swap_cost
+        if sc is None or not hasattr(sc, "tip_pull_seconds"):
+            return None
+        pauses = sum(t[1] for t in tokens if t[0] == "pause")
+        return float(sc.tip_pull_seconds(moves, pauses))
+    except Exception:
+        return None
 
 def _rewrite_tipform_section(text: str, mode: str,
                              tables: dict[str, str]) -> str:

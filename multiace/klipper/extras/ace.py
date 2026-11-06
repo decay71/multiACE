@@ -6404,6 +6404,26 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self._job = None
             logging.info('[multiACE] history start failed (ignored): %s' % e)
 
+    # The history file is capped at 2 MB for 200 jobs, so a 1000-swap print
+    # must not eat it: the calibration only needs a few samples per kind
+    # (MIN_CALIBRATION_SAMPLES), ~40 bytes each.
+    JOB_SWAPS_MAX = 300
+
+    def _job_note_swap(self, kind, seconds):
+        """Record how long one ACE_SWAP_HEAD took (purge not included, it is
+        separate gcode) under its swap_cost kind. The history aggregates
+        these into the per-printer medians the estimate calibrates on."""
+        try:
+            job = self._job
+            if job is None or not kind:
+                return
+            swaps = job.setdefault('swaps', [])
+            if len(swaps) < self.JOB_SWAPS_MAX:
+                swaps.append({'kind': kind, 'seconds': round(seconds, 1)})
+        except Exception as e:
+            logging.info('[multiACE] history swap note failed (ignored): %s'
+                         % e)
+
     def _job_note_end(self):
         try:
             job = self._job
@@ -6475,6 +6495,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 'duration': now - job['start_time'],
                 'result': result,
                 'assignment': assignment,
+                'swaps': job.get('swaps', []),
             })
         except Exception as e:
             logging.info('[multiACE] history write failed (ignored): %s' % e)
