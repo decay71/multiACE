@@ -223,6 +223,12 @@ class AceBgSwap:
         # (BG_LOAD_PRIME_EXTRA note). Read unconditionally.
         self.prime_extra = config.getfloat('prime_extra', BG_LOAD_PRIME_EXTRA,
                                            minval=0., maxval=100.)
+        # Heat target (C) for a head whose filament identity is unknown
+        # (an undeclared spool with no RFID tag: print_task_config holds an
+        # empty type, so the filament DB answers with its 250 C default).
+        # 0 = off, the DB default applies as before. Does not override an
+        # [ace_tipform] temperature or a known material. Read unconditionally.
+        self.unknown_temp = self._read_unknown_temp(config)
         # Unload-only switch: False disables the
         # bg LOAD half - ACE_BG_SWAP stamps run only the HW-proven unload
         # half, the arrival swap then loads INLINE with full phase3
@@ -412,6 +418,46 @@ class AceBgSwap:
         return head in self._busy
 
     # -- helpers ----------------------------------------------------------
+    @staticmethod
+    def _read_unknown_temp(config):
+        value = config.getfloat('unknown_temp', 0., minval=0., maxval=350.)
+        if 0. < value < 175.:
+            raise config.error(
+                '[ace_bg_swap] unknown_temp must be 0 (off) or 175-350, '
+                'got %g' % value)
+        return value
+
+    def _unknown_identity_temp(self, ace, head, which):
+        """None when the head's filament is known or an [ace_tipform]
+        temperature (`which`: 'load' or 'unload') applies; otherwise the
+        unknown_temp setting (0 = off, the filament DB default stands).
+        An unknown identity is an empty or NONE type in print_task_config:
+        a spool with no RFID tag and no declared override."""
+        try:
+            ptc = self.printer.lookup_object('print_task_config', None)
+            ftype = str(ptc.get_status()['filament_type'][head]
+                        or '').strip().upper()
+            if ftype and ftype != 'NONE':
+                return None
+            fn = getattr(ace, 'tipform_%s_temp_for' % which, None)
+            if fn is not None and fn(head, soft=False):
+                return None
+        except Exception:
+            return None
+        return self.unknown_temp
+
+    def _say_unknown_temp(self, head, temp, which):
+        """Say why a swap heats to `temp` when the identity is unknown."""
+        if self.unknown_temp > 0.:
+            self._say('head %d: filament identity unknown - %s temp %.0f '
+                      'from [ace_bg_swap] unknown_temp'
+                      % (self._dh(head), which, temp))
+        else:
+            self._say('head %d: filament identity unknown - the filament '
+                      'DB default (%.0f) applies to the %s; declare the '
+                      'spool or set [ace_bg_swap] unknown_temp'
+                      % (self._dh(head), temp, which))
+
     def _say(self, msg):
         # Messages open with the display head number; add the T number
         # (internal index) so console and klippy.log read the same head
@@ -1374,6 +1420,11 @@ class AceBgSwap:
                     temp = float(_g(channel))
             except Exception:
                 pass
+            _ut = self._unknown_identity_temp(ace, head, 'unload')
+            if _ut is not None:
+                if _ut > 0.:
+                    temp = _ut
+                self._say_unknown_temp(head, temp, 'unload')
         soft = False
         try:
             ptc = self.printer.lookup_object('print_task_config', None)
@@ -1530,6 +1581,14 @@ class AceBgSwap:
                         u_temp = float(_g(channel))
             except Exception:
                 pass
+            _ut = self._unknown_identity_temp(ace, head, 'load')
+            if _ut is not None:
+                if _ut > 0.:
+                    temp = _ut
+                self._say_unknown_temp(head, temp, 'load')
+            _ut = self._unknown_identity_temp(ace, head, 'unload')
+            if _ut is not None and _ut > 0.:
+                u_temp = _ut
             if u_temp <= 0.:
                 u_temp = temp
         soft = False
