@@ -19,6 +19,8 @@
     "temp": 50
    },
    "auto_dry_running": false,
+   "chain_units": 0,
+   "chained": false,
    "community_fw": "",
    "connect_error": "",
    "connected": true,
@@ -139,6 +141,8 @@
     "temp": 50
    },
    "auto_dry_running": false,
+   "chain_units": 0,
+   "chained": false,
    "community_fw": "",
    "connect_error": "",
    "connected": true,
@@ -308,6 +312,12 @@
   "verify_search_mm": 200,
   "verify_sensor_mm": null,
   "verify_swap_mm": null
+ },
+ "chain_switch": {
+  "active": false,
+  "available": true,
+  "chained_cables": 0,
+  "enabled": false
  },
  "confirm_commands": false,
  "device_count": 2,

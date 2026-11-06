@@ -40,6 +40,7 @@ TRACKED_FILES=(
     "multiace/klipper/extras/ace_swap.py"
     "multiace/klipper/extras/ace_settings.py"
     "multiace/klipper/extras/ace_unit.py"
+    "multiace/klipper/extras/ace_bus_v2.py"
     "multiace/klipper/extras/ace_drivers.py"
     "multiace/klipper/extras/ace_macro_layout.py"
     "multiace/klipper/extras/ace_protocol.py"

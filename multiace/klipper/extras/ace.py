@@ -67,7 +67,8 @@ MULTIACE_BUNDLE_SHA1 = "e3d150b"
 # not give for these files. The same list in the repo is
 # tests/units/tools/modules.py core_files(); module_lists.py keeps both equal.
 CORE_FILES = (
-    'ace.py', 'ace_bg_swap.py', 'ace_display.py', 'ace_drivers.py',
+    'ace.py', 'ace_bg_swap.py', 'ace_bus_v2.py', 'ace_display.py',
+    'ace_drivers.py',
     'ace_gen1_tunnel.py', 'ace_macro_layout.py',
     'ace_protocol.py', 'ace_protocol_cfs.py', 'ace_protocol_v1.py',
     'ace_protocol_v2.py',
@@ -1350,6 +1351,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._v2_extra_usb_ids = self._parse_v2_extra_usb_ids(
             config.get('v2_extra_usb_ids', ''))
         AceProtocolV2.EXTRA_USB_IDS = self._v2_extra_usb_ids
+        # Opt-in: several ACE 2 units daisy-chained on one cable
+        # (ace_bus_v2.py). Read unconditionally.
+        self._v2_chain = config.getboolean('v2_chain', False)
+        # What the config line says now; differs from _v2_chain after
+        # ACE_SET_DAISY_CHAIN until the next firmware restart.
+        self._v2_chain_cfg = self._v2_chain
+        AceProtocolV2.CHAIN = self._v2_chain
+        if self._v2_chain:
+            logging.info('[multiACE] V2 daisy chain enabled (opt-in): every '
+                         'ACE 2 cable is driven as a bus')
+        # The buses start further down, once the port exclusions are read.
         # USB ids a CFS dongle may carry (the CFS driver probes each such
         # port before it claims it). Read unconditionally.
         cfs_ids = self._parse_v2_extra_usb_ids(
@@ -1380,6 +1392,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # see _expected_ace_count().
         self._excluded_ace_present = set()
         self._expected_logged = None
+        self._setup_chain_buses()
         # Units held in a bootloader/shim (GET_INFO answered with a
         # non-application version): idx -> firmware string. Cleared per
         # (re)open, set by the connect handshake.
@@ -2309,6 +2322,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'ACE_SET_DRIVER', self.cmd_ACE_SET_DRIVER,
             desc=self.cmd_ACE_SET_DRIVER_help)
         self.gcode.register_command(
+            'ACE_SET_DAISY_CHAIN', self.cmd_ACE_SET_DAISY_CHAIN,
+            desc=self.cmd_ACE_SET_DAISY_CHAIN_help)
+        self.gcode.register_command(
             'ACE_LOCATE', self.cmd_ACE_LOCATE,
             desc=self.cmd_ACE_LOCATE_help)
         self.gcode.register_command(
@@ -3086,6 +3102,56 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                         'on' if self._drivers_enabled.get(drv.name) else 'off'))
         self.log_always(self._t('msg.driver_enabled' if enable
                                 else 'msg.driver_disabled', driver=drv.label))
+
+    cmd_ACE_SET_DAISY_CHAIN_help = (
+        '[multiACE] Switch the ACE 2 daisy chain on or off: ACE_SET_DAISY_CHAIN '
+        'ENABLE=0|1. Writes the v2_chain config line, takes effect at the '
+        'next firmware restart. Cannot be switched off while a cable still '
+        'carries more than one unit (unchain them first), nor while printing.')
+
+    def _chain_switch_status(self):
+        """Devices tab: the v2_chain switch, configured vs running, whether
+        the ACE 2 driver it belongs to is on, and how many cables carry
+        more than one unit right now."""
+        try:
+            from . import ace_bus_v2
+            chained = len(ace_bus_v2.chained_cables())
+        except Exception:
+            chained = 0
+        cfg = getattr(self, '_drivers_cfg', None) or {}
+        return {'enabled': bool(getattr(self, '_v2_chain_cfg', False)),
+                'active': bool(getattr(self, '_v2_chain', False)),
+                'available': bool(cfg.get('ace_v2', False)),
+                'chained_cables': chained}
+
+    def cmd_ACE_SET_DAISY_CHAIN(self, gcmd):
+        if self._is_actively_printing():
+            raise self._ace_error(gcmd, self._t('msg.chain_printing'), 200)
+        enable = bool(gcmd.get_int('ENABLE', 1, minval=0, maxval=1))
+        if enable and not (getattr(self, '_drivers_cfg', None) or {}).get(
+                'ace_v2', False):
+            raise self._ace_error(gcmd, self._t('msg.chain_needs_driver'), 200)
+        if not enable:
+            # Without the chain every unit on a shared cable answers at
+            # address 0 and acts on every command: slots flip, insert
+            # routines start on the wrong unit. Only once each unit is
+            # alone on its cable.
+            from . import ace_bus_v2
+            chained = ace_bus_v2.chained_cables()
+            if chained:
+                raise self._ace_error(gcmd, self._t(
+                    'msg.chain_off_chained', count=len(chained)), 200)
+        err = self._cfg_write_ace_option('v2_chain',
+                                         'true' if enable else 'false')
+        if err is not None:
+            raise self._ace_error(gcmd, '[multiACE] v2_chain not written: %s'
+                                  % err, 200)
+        self._v2_chain_cfg = enable
+        logging.info('[multiACE] v2_chain set %s in the config (running: %s)'
+                     % ('on' if enable else 'off',
+                        'on' if self._v2_chain else 'off'))
+        self.log_always(self._t('msg.chain_enabled' if enable
+                                else 'msg.chain_disabled'))
 
     def _reconcile_unit_state(self, why):
         """Re-file every per-index state by the device that holds the
@@ -3971,6 +4037,59 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             out[os.path.realpath(path)] = '[ace] exclude_ports'
         return out
 
+    def _chain_cable_filter(self, cables):
+        """AceProtocolV2.CHAIN_CABLE_FILTER: the ACE 2 cables a chain bus
+        may open, i.e. not an [mcu] serial and not in [ace] exclude_ports."""
+        from . import ace_bus_v2
+        excluded = self._excluded_ports()
+        allowed = ace_bus_v2.chain_cables(cables, excluded)
+        for cable in cables:
+            if cable in allowed:
+                continue
+            real = os.path.realpath(cable)
+            if real not in self._excluded_logged:
+                self._excluded_logged.add(real)
+                logging.info('[multiACE] port %s excluded from the V2 chain '
+                             '(%s)' % (cable, excluded.get(real, 'excluded')))
+        return allowed
+
+    def _setup_chain_buses(self):
+        """Runs at every config load, so also on each RESTART /
+        FIRMWARE_RESTART in the same process: a bus is a module-level
+        thread and would otherwise outlive the option. Stops every bus the
+        current config does not allow (all of them with v2_chain off or the
+        ace_v2 driver disabled) and waits until it closed its cable, then
+        starts the allowed ones so they enumerate while Klipper connects
+        its MCUs."""
+        try:
+            from . import ace_bus_v2
+            if self._v2_chain and self._enable_ace_v2:
+                AceProtocolV2.CHAIN_CABLE_FILTER = self._chain_cable_filter
+                cables = AceProtocolV2.chain_cables()
+            else:
+                AceProtocolV2.CHAIN_CABLE_FILTER = None
+                cables = []
+            stopped = ace_bus_v2.stop_buses(keep=cables)
+            if stopped:
+                logging.info('[multiACE] V2 chain: stopped bus on %s'
+                             % ', '.join(stopped))
+            if cables:
+                ace_bus_v2.start(cables)
+        except Exception:
+            logging.exception('[multiACE] V2 chain: bus setup failed')
+
+    def _wait_chain_first_scan(self):
+        """V2 chain: give each bus its first enumeration before the startup
+        scan, so a cold start sees every unit at once. Yields to the reactor
+        (never blocks it), at most ace_bus_v2.FIRST_SCAN_WAIT_S, once per
+        startup; usually zero because the buses start at config load."""
+        from . import ace_bus_v2
+        cables = AceProtocolV2.chain_cables()
+        deadline = self.reactor.monotonic() + ace_bus_v2.FIRST_SCAN_WAIT_S
+        while (ace_bus_v2.first_scan_pending(cables)
+               and self.reactor.monotonic() < deadline):
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+
     def _expected_ace_count(self):
         """ace_device_count minus the excluded ports the last scan saw
         present as ACE hardware. An ACE handed to another driver is still
@@ -4213,7 +4332,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             for path in discovered_by_protocol[protocol_cls]:
                 if path in ace_devices:
                     continue
-                real_path = os.path.realpath(path)
+                # A chain unit is excluded by its cable: '<cable>@<uid>'
+                # is no device and never matches a real port.
+                real_path = os.path.realpath(
+                    path.rpartition('@')[0]
+                    if AceProtocolV2.is_bus_path(path) else path)
                 if real_path in excluded:
                     excluded_ace.add(real_path)
                     if real_path not in self._excluded_logged:
@@ -4222,7 +4345,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                      'discovery (%s)' % (path, excluded[real_path]))
                     continue
                 if protocol_cls is AceProtocolV2:
-                    if real_path not in active_paths:
+                    if AceProtocolV2.is_bus_path(path):
+                        pass                # a unit on a verified bus
+                    elif real_path not in active_paths:
                         official = AceProtocolV2.is_official_usb_path(path)
                         real_dev = os.path.basename(real_path)
                         usb_ids = AceProtocolV2._read_usb_ids(real_dev)
@@ -4250,6 +4375,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._excluded_ace_present = excluded_ace
 
         if (self._enable_ace_v2 and self._v2_probe_generic_usb
+                and not self._v2_chain
                 and self._is_printer_idle_for_generic_probe()):
             known_paths = set(discovered_by_protocol.get(
                 AceProtocolV1, ()))
@@ -5026,6 +5152,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 else:
                     legacy += 1
         want_legacy = min(MAX_ACE_UNITS, keyed + legacy) if legacy else 0
+        if self._v2_chain:
+            self._wait_chain_first_scan()
         self._refresh_ace_devices('startup')
 
         table_known = self._startup_table_existed
@@ -5202,6 +5330,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 self._disconnect_from(idx)
             except Exception:
                 pass
+        # A daisy-chain bus (ace_bus_v2) is NOT stopped here: a Klipper
+        # restart stays in this process, and the bus keeps its units
+        # addressed across it, so the restarted host finds them at once.
         self._queue = None
 
     def get_load_length(self, ace_idx, slot):
@@ -8589,7 +8720,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             except Exception:
                 timers.pop(idx, None)
                 return self.reactor.NEVER
-            if not os.path.exists(path):
+            if not AceProtocolV2.device_present(path):
                 return nxt
             self._reconnecting_per_ace[idx] = True
             try:
@@ -22270,6 +22401,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'devices': self._unit_devices_status(),
             'units_restart_needed': bool(getattr(self, '_unit_table_dirty', False)),
             'driver_switches': self._driver_switches_status(),
+            'chain_switch': self._chain_switch_status(),
             'locate_busy': bool(getattr(self, '_locate_busy', False)),
             'settings_volatile': [str(_n) for _n, _cur, _cfgv in (
                 ('purge_matrix', getattr(self, 'purge_matrix', None),
