@@ -216,6 +216,9 @@
    "swap_dwell_fan": [
     "AceBgSwap._dwell_fan"
    ],
+   "tipform_bg_prime_speed_for": [
+    "AceBgSwap._load_core"
+   ],
    "tipform_bg_temp_for": [
     "AceBgSwap.cmd_ACE_BG_SWAP"
    ],

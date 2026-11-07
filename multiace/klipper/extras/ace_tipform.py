@@ -58,6 +58,11 @@
 #                     may run hotter than the inline purge that can
 #                     pause over the part. Without it: loadtemp. Range
 #                     175-350.
+#   bgprimespeed:<f>  Parameter: the feedrate (mm/min, like every move
+#                     here) of the BACKGROUND prime through the open
+#                     dock. Without it: [ace_bg_swap] prime_speed (4 mm/s
+#                     = 240). 60-1200. Soft filament keeps its own slow
+#                     prime whatever this says.
 #   prime:<mm>[@<f>]  Parameter: a HOT PRE-PURGE right before the tip
 #   primetemp:<C>     forms - heat to primetemp (default: loadtemp),
 #                     push <mm> into the discard (inline) / through the
@@ -104,6 +109,9 @@ MIN_WAITTEMP = 100.
 # move AFTER a waittemp below this margin fails as 'custom gcode error'
 # mid-unload. Reject it at parse time instead.
 MIN_MOVE_TEMP = 175.
+# bgprimespeed: (mm/min): 1-20 mm/s. The stock bg prime is 4 mm/s.
+MIN_BG_PRIME_F = 60.
+MAX_BG_PRIME_F = 1200.
 
 
 def parse_table(raw):
@@ -116,6 +124,7 @@ def parse_table(raw):
     unload_temp = None
     load_temp = None
     bg_temp = None
+    bg_prime_f = None
     prime_temp = None
     prime_mm = None
     prime_f = 300.
@@ -178,6 +187,15 @@ def parse_table(raw):
                 raise ValueError('bgtemp out of range (%d-%d C): %r'
                                  % (int(MIN_MOVE_TEMP), int(MAX_TEMP), part))
             bg_temp = c
+        elif low.startswith('bgprimespeed:'):
+            # Parameter: feedrate (mm/min, the unit of every move token)
+            # of the background prime through the open dock.
+            f = float(low.split(':', 1)[1])
+            if not MIN_BG_PRIME_F <= f <= MAX_BG_PRIME_F:
+                raise ValueError('bgprimespeed out of range (%d-%d mm/min): '
+                                 '%r' % (int(MIN_BG_PRIME_F),
+                                         int(MAX_BG_PRIME_F), part))
+            bg_prime_f = f
         elif low.startswith('primetemp:'):
             # Parameter pair with prime: temperature of the pre-purge.
             c = float(low.split(':', 1)[1])
@@ -229,7 +247,8 @@ def parse_table(raw):
             raise ValueError("unrecognised token %r (expected mm@feedrate, "
                              "pause:ms, temp:C, waittemp:C, fan:0-255, "
                              "unloadtemp:C, loadtemp:C, bgtemp:C, "
-                             "prime:mm or primetemp:C)"
+                             "bgprimespeed:mm/min, prime:mm or "
+                             "primetemp:C)"
                              % part)
     if tokens and not any(t[0] == TOKEN_MOVE for t in tokens):
         raise ValueError('table has no moves')
@@ -237,14 +256,15 @@ def parse_table(raw):
         raise ValueError('primetemp:%d needs a prime:<mm> length'
                          % int(prime_temp))
     if (not tokens and unload_temp is None and load_temp is None
-            and bg_temp is None and prime_mm is None):
+            and bg_temp is None and bg_prime_f is None
+            and prime_mm is None):
         raise ValueError('table has no moves')
     if net > 0.:
         raise ValueError('table pushes a NET %+.1f mm - the tip must end '
                          'retracted out of the melt zone' % net)
     prime = ((prime_temp, prime_mm, prime_f) if prime_mm is not None
              else None)
-    return tokens, unload_temp, load_temp, bg_temp, prime
+    return tokens, unload_temp, load_temp, bg_temp, prime, bg_prime_f
 
 
 class AceTipform:
@@ -259,6 +279,7 @@ class AceTipform:
         self.unload_temps = {}
         self.load_temps = {}
         self.bg_temps = {}
+        self.bg_prime_speeds = {}
         self.primes = {}
         # Every option in the section is a table (keys are free-form
         # material names); read them ALL so Klipper's every-option-must-be-
@@ -281,11 +302,15 @@ class AceTipform:
         editor is the strict gate). Built into locals first, so a
         reload that dies mid-parse cannot leave half-swapped state."""
         tables, unload_temps, load_temps, bg_temps = {}, {}, {}, {}
+        bg_prime_speeds = {}
         primes = {}
         dropped = []
         for opt, raw in items:
             try:
-                _toks, _utemp, _ltemp, _btemp, _prime = parse_table(raw)
+                (_toks, _utemp, _ltemp, _btemp, _prime,
+                 _bgpf) = parse_table(raw)
+                if _bgpf is not None:
+                    bg_prime_speeds[opt.strip().lower()] = _bgpf
                 if _prime is not None:
                     primes[opt.strip().lower()] = _prime
                 if _toks:
@@ -305,16 +330,20 @@ class AceTipform:
         self.unload_temps = unload_temps
         self.load_temps = load_temps
         self.bg_temps = bg_temps
+        self.bg_prime_speeds = bg_prime_speeds
         self.primes = primes
         logging.info('[multiACE] ace_tipform: mode=%s tables=%s '
-                     'unload_temps=%s load_temps=%s bg_temps=%s primes=%s'
+                     'unload_temps=%s load_temps=%s bg_temps=%s '
+                     'bg_prime_speeds=%s primes=%s'
                      % (self.mode, sorted(self.tables.keys()) or 'none',
                         sorted(self.unload_temps.keys()) or 'none',
                         sorted(self.load_temps.keys()) or 'none',
                         sorted(self.bg_temps.keys()) or 'none',
+                        sorted(self.bg_prime_speeds.keys()) or 'none',
                         sorted(self.primes.keys()) or 'none'))
         if ((self.unload_temps or self.load_temps or self.bg_temps
-                or self.primes) and self.mode != 'custom'):
+                or self.bg_prime_speeds or self.primes)
+                and self.mode != 'custom'):
             # A set-but-inert knob must be LOUD, never silently skipped.
             logging.error(
                 "[multiACE] ace_tipform: unloadtemp/loadtemp set for %s but "
@@ -323,6 +352,7 @@ class AceTipform:
                 % sorted(set(self.unload_temps.keys())
                          | set(self.load_temps.keys())
                          | set(self.bg_temps.keys())
+                         | set(self.bg_prime_speeds.keys())
                          | set(self.primes.keys())))
         return dropped
 
@@ -395,7 +425,7 @@ class AceTipform:
                % (self.mode,
                   len(set(self.tables) | set(self.unload_temps)
                       | set(self.load_temps) | set(self.bg_temps)
-                      | set(self.primes)),
+                      | set(self.bg_prime_speeds) | set(self.primes)),
                   (', DROPPED invalid: %s' % ', '.join(dropped))
                   if dropped else ''))
         gcmd.respond_info(msg)
@@ -464,6 +494,14 @@ class AceTipform:
         or None = no pre-purge."""
         return self._lookup(self.primes, material, vendor, soft, device)
 
+    def bg_prime_speed_for(self, material, vendor=None, soft=False,
+                           device=None):
+        """The custom BACKGROUND prime feedrate (mm/min), or None = use
+        [ace_bg_swap] prime_speed. Same precedence and mode gate as
+        bg_temp_for."""
+        return self._lookup(self.bg_prime_speeds, material, vendor, soft,
+                            device)
+
     def get_status(self, eventtime):
         # tables = UNION of move-tables and param-only (unloadtemp:/
         # loadtemp:) keys - the web's restart-pending banner compares cfg
@@ -475,10 +513,12 @@ class AceTipform:
                              | set(self.unload_temps.keys())
                              | set(self.load_temps.keys())
                              | set(self.bg_temps.keys())
+                             | set(self.bg_prime_speeds.keys())
                              | set(self.primes.keys())),
             'unload_temps': dict(self.unload_temps),
             'load_temps': dict(self.load_temps),
             'bg_temps': dict(self.bg_temps),
+            'bg_prime_speeds': dict(self.bg_prime_speeds),
             'primes': {k: list(v) for k, v in self.primes.items()},
         }
 

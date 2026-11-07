@@ -18310,6 +18310,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # the DB load temp for freeing power).
         return self._tipform_param_for(head, 'load_temp_for', soft)
 
+    def tipform_bg_prime_speed_for(self, head, soft=False):
+        # Per-material/vendor BACKGROUND prime feedrate in mm/min
+        # ('bgprimespeed:' token). None = use [ace_bg_swap] prime_speed.
+        return self._tipform_param_for(head, 'bg_prime_speed_for', soft)
+
     def tipform_bg_temp_for(self, head, soft=False):
         # BACKGROUND-load temp ('bgtemp:'): the bg engine's load half runs
         # at it instead of the load temp.
