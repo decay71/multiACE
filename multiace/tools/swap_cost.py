@@ -479,6 +479,7 @@ class SwapCostModel(object):
         self.swap_purge_length = float(p.get("swap_purge_length", 0) or 0)
         self.bg_prime_extra = float(
             p.get("bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM) or 0)
+        self.bg_prime_scale = float(p.get("bg_prime_scale", 1.0) or 1.0)
 
         # swap_purge_floor is the one minimum: the post-processor sizes its
         # stamps with it too (40 while it is 0).
@@ -799,6 +800,9 @@ def build_estimate(model, header, timeline, *, materials=None,
         # swap in transport mode or one that was aborted (`purge_inline`).
         bg_parked = kind == "cross_ace_bg" and not ev.get("purge_inline")
         if bg_parked and purge > 0:
+            scale = getattr(model, "bg_prime_scale", 1.0)
+            if scale != 1.0:
+                purge = model.apply_purge_policy(purge * scale)
             purge += getattr(model, "bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM)
         added_s += float(seconds or 0.0)
         purge_mm_total += purge

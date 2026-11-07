@@ -4845,6 +4845,9 @@ def _swap_cost_params() -> dict:
     pe = _as_float(_read_bg_option(text, "prime_extra"))
     if pe is not None:
         out["bg_prime_extra"] = pe
+    ps = _as_float(_read_bg_option(text, "prime_scale"))
+    if ps is not None:
+        out["bg_prime_scale"] = ps
     per: dict = {}
     for ace_idx, section in (per_ace or {}).items():
         vals = {}
