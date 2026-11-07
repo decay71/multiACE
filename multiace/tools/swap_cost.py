@@ -75,6 +75,14 @@ UNMEASURED_S = {
 SWAP_KINDS = ("same_ace", "cross_ace_inline", "cross_ace_bg", "first_load",
               "head_change")
 
+# How much of a background swap's LOAD half the engine does on the parked
+# head ([ace_bg_swap] load_enabled): "full" = feed, grip and prime (the
+# arrival only hands over), "transport" = unload + feed to the toolhead
+# sensor, the arrival heats, presses, grips and primes, "none" = unload
+# only, the arrival does the whole load. The same words the stamp's LOAD=
+# takes. A stamp can only lower the configured mode.
+BG_LOAD_MODES = ("full", "transport", "none")
+
 #: Kinds whose cost lands on the print's critical path in full.
 INLINE_KINDS = ("same_ace", "cross_ace_inline")
 
@@ -558,6 +566,30 @@ class SwapCostModel(object):
                 + self._p("swap_anti_ooze_retract", ace, slot, 0.0))
         return pull / retract + load_len / feed + (2.0 * seat) / feed
 
+    def bg_load_extra_seconds(self, load_mode, ace=None, slot=None):
+        """What a background swap leaves for the ARRIVAL when the engine
+        loads less than the full filament on the parked head.
+
+        full      nothing (the handover constants already cover it).
+        transport the nozzle still has to heat, the tip is pressed and
+                  gripped through the gears (the seat overshoot, both
+                  ways): heat_settle + seat_press + 2*seat/feed. The
+                  prime is billed as the inline purge.
+        none      on top of that the whole bowden feed to the sensor and
+                  the sensor wait: load_length/feed + sensor_wait.
+        Same unmeasured constants and the same config-derived lengths as
+        every other kind, so a changed speed or length moves it too."""
+        if load_mode not in ("transport", "none"):
+            return 0.0
+        feed = max(1.0, self._p("feed_speed", ace, slot, 80.0))
+        seat = self._p("seat_overshoot_length", ace, slot, 0.0)
+        c = self.constants
+        extra = c["heat_settle"] + c["seat_press"] + (2.0 * seat) / feed
+        if load_mode == "none":
+            extra += (self._p("load_length", ace, slot, 0.0) / feed
+                      + c["sensor_wait"])
+        return extra
+
     def _constant_seconds(self, kind):
         c = self.constants
         if kind == "head_change":
@@ -602,7 +634,8 @@ class SwapCostModel(object):
         return self._mechanical_seconds(kind, ace, slot) \
             + self._constant_seconds(kind)
 
-    def bg_swap_seconds(self, ace=None, slot=None, window_min=None):
+    def bg_swap_seconds(self, ace=None, slot=None, window_min=None,
+                        load_mode="full"):
         """Critical-path seconds of a background swap given the minutes its
         head sat parked, excluding purge.
 
@@ -613,6 +646,11 @@ class SwapCostModel(object):
         under BG_EARLY_ABORT_S is aborted and the arrival swaps inline. An
         unknown window (no M73 time) counts as a fit, the same way the
         rewrite stamps it. A measured median wins over all of this.
+
+        `load_mode` is how much of the load the engine does in the
+        background (BG_LOAD_MODES): a lighter one leaves the rest on the
+        arrival (bg_load_extra_seconds), which shrinks what the window can
+        hide too. Unknown text counts as "full".
         """
         base = self.swap_seconds("cross_ace_bg", ace, slot)
         measured = self.calibration.get("cross_ace_bg")
@@ -620,6 +658,7 @@ class SwapCostModel(object):
                 and int(measured.get("n", 0) or 0) >= self.min_calibration_samples
                 and measured.get("median_s") is not None):
             return base
+        base += self.bg_load_extra_seconds(load_mode, ace, slot)
         if window_min is None:
             return base
         inline = self.swap_seconds("cross_ace_inline", ace, slot)
@@ -735,6 +774,7 @@ def build_estimate(model, header, timeline, *, materials=None,
     per_tool_purge_mm = {}
     purging_swaps = 0
     added_purge_s = 0.0
+    light_bg = {}          # lighter background load mode -> swaps
 
     for ev in timeline or []:
         kind = ev.get("kind")
@@ -771,6 +811,8 @@ def build_estimate(model, header, timeline, *, materials=None,
             per_tool_purge_mm[t] = per_tool_purge_mm.get(t, 0.0) + purge
         if kind == "cross_ace_bg":
             counts["bg"] += 1
+            if ev.get("load_mode") in ("transport", "none"):
+                light_bg[ev["load_mode"]] = light_bg.get(ev["load_mode"], 0) + 1
         elif kind == "first_load":
             counts["first_load"] += 1
         elif kind == "head_change":
@@ -803,6 +845,16 @@ def build_estimate(model, header, timeline, *, materials=None,
             "no prime-tower or flush setting found in the header - the "
             "slicer's own purge destination is unknown (informational "
             "only; the MMU-swap purge below is unaffected)")
+    if light_bg.get("transport"):
+        assumptions.append(
+            "%d background swap(s) only stage the filament at the toolhead "
+            "sensor (load_enabled: transport, or a window under the full-"
+            "load minimum): the arrival heats, grips and primes inline"
+            % light_bg["transport"])
+    if light_bg.get("none"):
+        assumptions.append(
+            "%d background swap(s) only unload (load_enabled: false): the "
+            "arrival loads the new filament inline" % light_bg["none"])
     if purging_swaps:
         assumptions.append(
             "%d MMU swap(s) purge through the chute - %.1f g added to "

@@ -319,6 +319,17 @@ def _bg_purge_inline(main):
     return str(main.get("bg_load", "true")).strip().lower() != "true"
 
 
+def _bg_load_mode(main):
+    """[ace_bg_swap] load_enabled as the engine's load mode: "full"
+    (true, the default), "transport" or "none" (false)."""
+    v = str(main.get("bg_load", "true")).strip().lower()
+    if v == "transport":
+        return "transport"
+    if v == "true":
+        return "full"
+    return "none"
+
+
 def make_estimate_ctx(pp, header_text, *, cost_params=None, calibration=None,
                       event_times=None, bg_heads=None, flush_matrix=None,
                       stamp_matrix=None):
@@ -362,6 +373,10 @@ def make_estimate_ctx(pp, header_text, *, cost_params=None, calibration=None,
         # False or transport): the arrival loads inline with the full
         # flush, so a bg swap's purge is on the critical path.
         "bg_purge_inline": _bg_purge_inline(main),
+        # How much of the load the engine does on the parked head: a
+        # lighter mode leaves heat/grip/prime (or the whole feed) to the
+        # arrival, which the timeline bills (see build_swap_timeline).
+        "bg_load_mode": _bg_load_mode(main),
         "flush_matrix": flush_matrix,
         "stamp_matrix": stamp_matrix,
         #: id(plan dict) -> {events, assignment, copies}: what each plan was
@@ -376,11 +391,16 @@ def ctx_timeline(ctx, events, assignment, copies=None):
     matrix = ctx.get("stamp_matrix")
     if matrix is None:
         matrix = ctx.get("flush_matrix")
-    return ctx["_pp"].build_swap_timeline(
-        events, assignment, event_times=ctx["event_times"],
-        bg_heads=ctx["bg_heads"], cost_model=ctx["model"],
-        flush_matrix=matrix, bg_purge_inline=ctx["bg_purge_inline"],
-        copies=copies or None)
+    kw = dict(event_times=ctx["event_times"],
+              bg_heads=ctx["bg_heads"], cost_model=ctx["model"],
+              flush_matrix=matrix, bg_purge_inline=ctx["bg_purge_inline"],
+              copies=copies or None)
+    try:
+        return ctx["_pp"].build_swap_timeline(
+            events, assignment, bg_load_mode=ctx.get("bg_load_mode"), **kw)
+    except TypeError:
+        # a post-processor from before the load modes
+        return ctx["_pp"].build_swap_timeline(events, assignment, **kw)
 
 
 def attach_estimate(ctx, plan, events, assignment, copies=None):
@@ -459,6 +479,7 @@ def ctx_with_params(ctx, cost_params):
     out = dict(ctx)
     out["model"] = _swap_cost.SwapCostModel.from_params(main, per_ace)
     out["bg_purge_inline"] = _bg_purge_inline(main)
+    out["bg_load_mode"] = _bg_load_mode(main)
     return out
 
 
