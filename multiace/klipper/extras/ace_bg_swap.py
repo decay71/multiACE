@@ -118,6 +118,8 @@ BG_LOAD_PRIME_CHUNK = 5.
 # announced by ace.py (request_pick_abort) stops the op at the next move
 # boundary while the head is STILL DOCKED. RETRACT is deliberately absent
 # (the bulk rollback never aborts) and so are the bookkeeping phases.
+# LD_GRIP is included: request_pick_abort returns True and sets _pick_pending,
+# but the grip loop is allowed to finish before stopping at LD_PRIME.
 PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_GRIP', 'LD_PRIME')
 # Extra prime on TOP of the inline purge knob (get_purge_length, default 80).
 # The inline swap purges MORE than its nominal 80: phase3 probe-extrudes
@@ -514,9 +516,13 @@ class AceBgSwap:
             return False
         if head not in self._pick_pending:
             self._pick_pending.add(head)
-            self._say('head %d: toolchange announced during %s - stopping '
-                      'at the next move boundary, handing over before the '
-                      'pick' % (self._dh(head), phase))
+            if phase == 'LD_GRIP':
+                self._say('head %d: toolchange announced during LD_GRIP - '
+                          'completing grip before handover' % self._dh(head))
+            else:
+                self._say('head %d: toolchange announced during %s - stopping '
+                          'at the next move boundary, handing over before the '
+                          'pick' % (self._dh(head), phase))
         return True
 
     def is_busy(self, head):
@@ -585,17 +591,18 @@ class AceBgSwap:
             self._last_gating_decision[head] = details
             return False, details
 
-        # Check PULL, RETRACT, BOOKKEEP, and LD_FEED eligibility:
-        # All these phases are actively progressing toward loading the new filament.
+        # Check PULL, RETRACT, BOOKKEEP, LD_FEED, and LD_GRIP eligibility:
+        # All these phases are actively progressing toward loading and gripping the new filament.
         # Holding the active head at the discard chute allows the new filament to reach
-        # the toolhead sensor and enter LD_GRIP before releasing. This prevents the
-        # firmware from falling back to an inline feed which commands the carriage to
-        # travel to the front of the bed (X=150 Y=5), eliminating unnecessary travel moves.
-        if cur_phase in ('PULL', 'RETRACT', 'BOOKKEEP', 'LD_FEED') or \
+        # the toolhead sensor and seat through the extruder gears (LD_PRIME) before releasing.
+        # This prevents the firmware from falling back to an inline feed which commands the carriage
+        # to travel to the front of the bed (X=150 Y=5), eliminating unnecessary travel moves.
+        if cur_phase in ('PULL', 'RETRACT', 'BOOKKEEP', 'LD_FEED', 'LD_GRIP') or \
                 cur_phase.startswith('PULL') or cur_phase.startswith('RETRACT') or \
-                cur_phase.startswith('BOOKKEEP') or cur_phase.startswith('LD_FEED'):
+                cur_phase.startswith('BOOKKEEP') or cur_phase.startswith('LD_FEED') or \
+                cur_phase.startswith('LD_GRIP'):
             details['eligible'] = True
-            details['reason'] = ('background swap progressing toward toolhead sensor (target: LD_GRIP, cur: %s)'
+            details['reason'] = ('background swap progressing toward gear grip/prime (target: LD_PRIME, cur: %s)'
                                  % cur_phase)
             self._last_gating_decision[head] = details
             return True, details
@@ -638,8 +645,8 @@ class AceBgSwap:
             self._last_gating_decision[head] = details
             return False, details
 
-        # Ineligible if already at or past LD_GRIP (filament already at head)
-        details['reason'] = 'phase %s is already at or past LD_GRIP; arrival hold not applicable' % cur_phase
+        # Ineligible if already at or past LD_PRIME (filament gripped and seated in gears)
+        details['reason'] = 'phase %s is already at or past LD_PRIME; arrival hold not applicable' % cur_phase
         self._last_gating_decision[head] = details
         return False, details
 
@@ -969,6 +976,10 @@ class AceBgSwap:
             raise RuntimeError('head %d was PICKED mid-sequence - aborted, '
                                'inline paths take over' % self._dh(head))
         if head in self._pick_pending:
+            # During LD_GRIP, allow the grip loop to finish seating the filament into
+            # the gears so the head is loaded before stopping at LD_PRIME.
+            if str(self.state.get(head, '')) == 'LD_GRIP':
+                return
             raise RuntimeError('head %d is about to be PICKED - stopped '
                                'before the toolchange, inline paths take '
                                'over' % self._dh(head))
@@ -1759,7 +1770,7 @@ class AceBgSwap:
 
     cmd_ACE_BG_WAIT_help = (
         '[multiACE] Hold the arriving toolhead until a background swap on a '
-        'docked HEAD reaches LD_GRIP (filament at head sensor). ACE_BG_WAIT HEAD=0-3 [RESTORE_POS=0|1]. '
+        'docked HEAD reaches LD_PRIME (filament gripped and seated in gears). ACE_BG_WAIT HEAD=0-3 [RESTORE_POS=0|1]. '
         'Parks at the discard position while waiting. By default (RESTORE_POS=0), '
         'the active toolhead remains parked over the discard chute so the subsequent '
         'T macro can dock it directly without redundant bed travel. Set RESTORE_POS=1 '
@@ -1831,16 +1842,19 @@ class AceBgSwap:
                             heat_rem = max(3.0, (delta / 4.0)) if cur_phase.startswith('HEAT') else 0.0
                             wait_budget = heat_rem + 135.0
                         elif cur_phase in ('RETRACT', 'BOOKKEEP') or cur_phase.startswith('RETRACT') or cur_phase.startswith('BOOKKEEP'):
-                            # During rollback/bookkeeping: bulk retract (~25s) + bowden feed (~30s) + margin
-                            wait_budget = 70.0
+                            # During rollback/bookkeeping: bulk retract (~25s) + bowden feed (~30s) + grip (~5s) + margin
+                            wait_budget = 75.0
+                        elif cur_phase == 'LD_FEED' or cur_phase.startswith('LD_FEED'):
+                            # During LD_FEED: bowden feed to sensor (~30s) + grip (~5s) + margin
+                            wait_budget = 50.0
                         else:
-                            # During LD_FEED: bowden feed to sensor (~30s) + margin
-                            wait_budget = 45.0
+                            # During LD_GRIP: nip press & gear grip (~5s) + margin
+                            wait_budget = 15.0
 
                     dwell = gcmd.get_float('DWELL', None)
                     wait_start = self.reactor.monotonic()
                     deadline = wait_start + wait_budget
-                    release_target = 'LD_GRIP'
+                    release_target = 'LD_PRIME'
                     release_idx = self.PHASE_ORDER.index(release_target)
                     released_reason = 'timeout'
 
@@ -1856,7 +1870,7 @@ class AceBgSwap:
                         while self.reactor.monotonic() < deadline:
                             now_phase = self.phase(head).upper()
                             base_p = now_phase.split(':')[0]
-                            # Release condition: reached LD_GRIP or any subsequent phase (filament at sensor/gears)
+                            # Release condition: reached LD_PRIME or any subsequent phase (filament gripped and seated in gears)
                             if base_p in self.PHASE_ORDER:
                                 if self.PHASE_ORDER.index(base_p) >= release_idx:
                                     released_reason = 'reached %s' % now_phase
