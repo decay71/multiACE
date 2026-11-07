@@ -118,10 +118,9 @@ BG_LOAD_PRIME_CHUNK = 5.
 # announced by ace.py (request_pick_abort) stops the op at the next move
 # boundary while the head is STILL DOCKED. RETRACT is deliberately absent
 # (the bulk rollback never aborts) and so are the bookkeeping phases.
-# LD_GRIP is deliberately absent: once filament hits the toolhead sensor,
-# the ~2s nip press and gear grip must complete so the head is loaded
-# before handover, avoiding the stock front-bed taxi (X=150 Y=5).
-PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_PRIME')
+# LD_GRIP is included: request_pick_abort returns True and sets _pick_pending,
+# but the grip loop is allowed to finish before stopping at LD_PRIME.
+PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_GRIP', 'LD_PRIME')
 # Extra prime on TOP of the inline purge knob (get_purge_length, default 80).
 # The inline swap purges MORE than its nominal 80: phase3 probe-extrudes
 # (>=20mm) fill the melt zone BEFORE the flush, so the full 80 is real purge
@@ -513,9 +512,13 @@ class AceBgSwap:
             return False
         if head not in self._pick_pending:
             self._pick_pending.add(head)
-            self._say('head %d: toolchange announced during %s - stopping '
-                      'at the next move boundary, handing over before the '
-                      'pick' % (self._dh(head), phase))
+            if phase == 'LD_GRIP':
+                self._say('head %d: toolchange announced during LD_GRIP - '
+                          'completing grip before handover' % self._dh(head))
+            else:
+                self._say('head %d: toolchange announced during %s - stopping '
+                          'at the next move boundary, handing over before the '
+                          'pick' % (self._dh(head), phase))
         return True
 
     def is_busy(self, head):
@@ -969,6 +972,10 @@ class AceBgSwap:
             raise RuntimeError('head %d was PICKED mid-sequence - aborted, '
                                'inline paths take over' % self._dh(head))
         if head in self._pick_pending:
+            # During LD_GRIP, allow the grip loop to finish seating the filament into
+            # the gears so the head is loaded before stopping at LD_PRIME.
+            if str(self.state.get(head, '')) == 'LD_GRIP':
+                return
             raise RuntimeError('head %d is about to be PICKED - stopped '
                                'before the toolchange, inline paths take '
                                'over' % self._dh(head))

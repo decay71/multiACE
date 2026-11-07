@@ -78,6 +78,7 @@ def _engine(phase=None, busy=True):
         request_pick_abort = BG.AceBgSwap.request_pick_abort
         _check_docked = BG.AceBgSwap._check_docked
         is_busy = BG.AceBgSwap.is_busy
+        phase = BG.AceBgSwap.phase
 
         def __init__(self):
             self.said = []
@@ -138,19 +139,35 @@ def test_notice_in_prime_marks_pending_and_check_docked_aborts():
     assert len(bg.said) == n
 
 
-@pytest.mark.parametrize('phase', ['HEAT', 'PULL', 'LD_FEED'])
+@pytest.mark.parametrize('phase', ['HEAT', 'PULL', 'LD_FEED', 'LD_GRIP'])
 def test_notice_in_every_polling_phase(phase):
     bg = _engine(phase)
     assert bg.request_pick_abort(0) is True
 
 
 @pytest.mark.parametrize('phase', ['QUEUED', 'FA_STOP', 'RETRACT', 'BOOKKEEP',
-                                   'LD_GRIP', 'DONE'])
+                                   'DONE'])
 def test_notice_outside_polling_phases_is_ignored(phase):
     bg = _engine(phase)
     assert bg.request_pick_abort(0) is False
     assert 0 not in bg._pick_pending
     bg._check_docked(FakeToolhead(None), object(), 0)   # no raise
+
+
+def test_notice_in_grip_completes_grip_and_primes_cushion():
+    bg = _engine('LD_GRIP')
+    assert bg.request_pick_abort(0) is True
+    assert 0 in bg._pick_pending
+    assert any('toolchange announced during LD_GRIP' in s for s in bg.said)
+    # _check_docked must NOT raise during LD_GRIP
+    ext = object()
+    bg._check_docked(FakeToolhead(None), ext, 0)
+
+    # When phase transitions to LD_PRIME, prime loop detects _pick_pending
+    bg.state[0] = 'LD_PRIME'
+    with pytest.raises(RuntimeError) as ei:
+        bg._check_docked(FakeToolhead(None), ext, 0)
+    assert 'before the toolchange' in str(ei.value)
 
 
 def test_notice_on_idle_head_is_a_noop():
@@ -183,6 +200,22 @@ def test_t_wrapper_waits_for_the_handover():
     ace._notify_bg_pick(0)
     assert not bg.is_busy(0)
     assert ace.reactor.now < 100.0 + A.BG_PICK_NOTICE_WAIT
+    assert ace.said == []                             # no timeout line
+
+
+def test_t_wrapper_waits_longer_for_grip_handover():
+    bg = _engine('LD_GRIP')
+    ace, A = _ace(bg)
+
+    def handover(reactor):
+        # the grip loop finishes and hands over after 12 s (> 8 s normal wait)
+        if reactor.now >= 112.0:
+            bg._busy.discard(0)
+            bg._pick_pending.discard(0)
+    ace.reactor.on_pause = handover
+    ace._notify_bg_pick(0)
+    assert not bg.is_busy(0)
+    assert 100.0 + A.BG_PICK_NOTICE_WAIT < ace.reactor.now < 100.0 + A.BG_PICK_NOTICE_WAIT_GRIP
     assert ace.said == []                             # no timeout line
 
 
