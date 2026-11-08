@@ -798,6 +798,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.load_feed_temp_drop = config.getint(
             'load_feed_temp_drop', 50, minval=0, maxval=100)
         self.swap_purge_cap = config.getint('swap_purge_cap', 0, minval=0, maxval=200)
+        # Lean flush & wipe: routes inline print flushes to ACE_LEAN_FLUSH
+        # (beehive coil, no M104 S0 temp drop, fast brush pass, blade cutoff,
+        # and skips redundant bed taxi / post-load rough clean). Defaults to False.
+        self.lean_flush = config.getboolean('lean_flush', False)
 
         self.seat_overshoot_length = config.getint('seat_overshoot_length', 0, minval=0, maxval=100)
         # Name of a gcode macro that cuts the filament at the toolhead (a

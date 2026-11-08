@@ -314,6 +314,12 @@ class AceBgSwap:
         # (e.g. 0.60 = 40% shorter dock prime, while inline flushes stay at 100%).
         self.prime_scale = config.getfloat('prime_scale', 1.0,
                                            minval=0.05, maxval=2.0)
+        # Target phase for arrival hold: LD_GRIP (hold until gripped into gears)
+        # or LD_PRIME (hold through dock purge).
+        _tgt = (config.get('bg_wait_target', 'LD_GRIP') or '').strip().upper()
+        if _tgt not in ('LD_GRIP', 'LD_PRIME'):
+            _tgt = 'LD_GRIP'
+        self.bg_wait_target = _tgt
         # Unload-only switch: False disables the
         # bg LOAD half - ACE_BG_SWAP stamps run only the HW-proven unload
         # half, the arrival swap then loads INLINE with full phase3
@@ -613,7 +619,7 @@ class AceBgSwap:
         # Check PULL, RETRACT, BOOKKEEP, LD_FEED, and LD_GRIP eligibility:
         # All these phases are actively progressing toward loading and gripping the new filament.
         # Holding the active head at the discard chute allows the new filament to reach
-        # the toolhead sensor and seat through the extruder gears (LD_PRIME) before releasing.
+        # the toolhead sensor and seat through the extruder gears before releasing.
         # This prevents the firmware from falling back to an inline feed which commands the carriage
         # to travel to the front of the bed (X=150 Y=5), eliminating unnecessary travel moves.
         if cur_phase in ('PULL', 'RETRACT', 'BOOKKEEP', 'LD_FEED', 'LD_GRIP') or \
@@ -621,8 +627,8 @@ class AceBgSwap:
                 cur_phase.startswith('BOOKKEEP') or cur_phase.startswith('LD_FEED') or \
                 cur_phase.startswith('LD_GRIP'):
             details['eligible'] = True
-            details['reason'] = ('background swap progressing toward gear grip/prime (target: LD_PRIME, cur: %s)'
-                                 % cur_phase)
+            details['reason'] = ('background swap progressing toward gear grip/prime (target: %s, cur: %s)'
+                                 % (self.bg_wait_target, cur_phase))
             self._last_gating_decision[head] = details
             return True, details
 
@@ -1873,7 +1879,8 @@ class AceBgSwap:
                     dwell = gcmd.get_float('DWELL', None)
                     wait_start = self.reactor.monotonic()
                     deadline = wait_start + wait_budget
-                    release_target = 'LD_PRIME'
+                    target_arg = gcmd.get('TARGET', self.bg_wait_target).strip().upper()
+                    release_target = target_arg if target_arg in self.PHASE_ORDER else self.bg_wait_target
                     release_idx = self.PHASE_ORDER.index(release_target)
                     released_reason = 'timeout'
 

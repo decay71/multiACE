@@ -1912,8 +1912,16 @@ class SwapMixin:
                          if saved_heater_target >= SWAP_MIN_EXTRUDE_TEMP
                          else swap_temp)
             self.gcode.run_script_from_command('M109 S%d' % wipe_temp)
-            self.gcode.run_script_from_command('ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD')
-            self.toolhead.wait_moves()
+            # Skip redundant stock wipe when lean flush routine is active
+            _sv_obj = self.printer.lookup_object('save_variables', None)
+            _lean_active = bool(getattr(self, 'lean_flush', False))
+            if _sv_obj is not None and 'ace__lean_wipe' in _sv_obj.allVariables:
+                _lean_active = bool(_sv_obj.allVariables.get('ace__lean_wipe', 1))
+            if not _lean_active:
+                self.gcode.run_script_from_command('ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD')
+                self.toolhead.wait_moves()
+            else:
+                logging.info('[multiACE] Swap: post-load stock wipe skipped (lean flush active)')
 
             self._fa_log.info(
                 '[swap-trace] POST_LOAD last_pos=%.3f delta_from_entry=%+.3f'
