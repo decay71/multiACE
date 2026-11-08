@@ -438,6 +438,8 @@ def _simulate(soft=False, **knobs):
     bg._last_end = {}
     bg.prime_speed = knobs.get('prime_speed', BG.BG_LOAD_PRIME_SPEED_DEFAULT)
     bg.prime_extra = knobs.get('prime_extra', BG.BG_LOAD_PRIME_EXTRA)
+    bg.prime_scale = knobs.get('prime_scale', 1.0)
+
     bg.pull_early_start = knobs.get('early', BG.BG_PULL_EARLY_START_C)
     bg.pull_push = knobs.get('push', 0.)
     bg.gcode = types.SimpleNamespace(respond_raw=lambda m: None)

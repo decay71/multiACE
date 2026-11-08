@@ -431,6 +431,10 @@ class AceBgSwap:
         self.gcode.register_command('ACE_BG_AWAIT_PHASE',
                                     self.cmd_ACE_BG_AWAIT_PHASE,
                                     desc=self.cmd_ACE_BG_AWAIT_PHASE_help)
+        self.gcode.register_command('ACE_BG_SET_PRIME_SCALE',
+                                    self.cmd_ACE_BG_SET_PRIME_SCALE,
+                                    desc=self.cmd_ACE_BG_SET_PRIME_SCALE_help)
+
 
 
     def get_status(self, eventtime):
@@ -489,6 +493,21 @@ class AceBgSwap:
                      else 'disabled',
                      [self._dh(h) for h in sorted(self.enabled_heads)]
                      or 'NONE', sfx))
+
+    cmd_ACE_BG_SET_PRIME_SCALE_help = (
+        '[multiACE] Set the dock background prime scaling multiplier (0.05-2.0). '
+        'ACE_BG_SET_PRIME_SCALE SCALE=0.xx [PERSIST=0|1] - writes [ace_bg_swap] '
+        'prime_scale (PERSIST=0 = until restart).')
+    def cmd_ACE_BG_SET_PRIME_SCALE(self, gcmd):
+        scale = gcmd.get_float('SCALE', minval=0.05, maxval=2.0)
+        self.prime_scale = scale
+        _ace = self.printer.lookup_object('ace', None)
+        _wt = getattr(_ace, '_wt_persist', None)
+        if _wt is not None:
+            sfx = _wt(gcmd, 'prime_scale', str(scale), section='ace_bg_swap')
+        else:
+            sfx = ''
+        self._say('dock background prime_scale set to %.2f%s' % (scale, sfx))
 
     def request_pick_abort(self, head):
         """Toolchange notice from ace.py's T0-T3 wrapper, sent BEFORE the
