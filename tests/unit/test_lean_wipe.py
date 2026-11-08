@@ -22,10 +22,10 @@ def test_ace_cfg_lean_flush_contract():
 
     block = content.split("[gcode_macro ACE_LEAN_FLUSH]")[1].split("[gcode_macro")[0]
 
-    # Defaults: LENGTH=80 (stock contract), feed_rate=450 (7.5 mm/s), stroke=30.0mm
+    # Defaults: LENGTH=80 (stock contract), feed_rate=450 (7.5 mm/s), stroke=25.0mm
     assert "params.LENGTH|default(80.0)" in block
     assert "feed_rate = 450" in block
-    assert "y_stroke = 30.0" in block
+    assert "y_stroke = 25.0" in block
 
     # Two-stage fan control: Stage 1 fan OFF (M107), Stage 2 fan ON (M106 S255)
     assert "M107" in block
@@ -34,9 +34,9 @@ def test_ace_cfg_lean_flush_contract():
     # Pre-wipe anti-ooze retract
     assert "G1 E-0.8 F1800" in block
 
-    # Single fast silicone brush sweep (F6000)
-    assert "G1 Y{y_stroke} F6000" in block
-    assert "G1 Y-{y_stroke} F6000" in block
+    # Single silicone brush sweep (F3000)
+    assert "G1 Y{y_stroke} F3000" in block
+    assert "G1 Y-{y_stroke} F3000" in block
 
     # Cutoff blade snap (ACTION=2)
     assert "INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD ACTION=2" in block
