@@ -349,6 +349,9 @@ class AceBgSwap:
         self.prime_speed = config.getfloat(
             'prime_speed', BG_LOAD_PRIME_SPEED_DEFAULT, minval=1.,
             maxval=12.)
+        # Dock prime string chunking & micro-retract pulse (0 = disabled by default upstream)
+        self.prime_chunk = config.getfloat('prime_chunk', 0.0, minval=0.0, maxval=50.0)
+        self.prime_retract = config.getfloat('prime_retract', 0.0, minval=0.0, maxval=10.0)
         # pull_early_start: degrees below the pull temperature at which the
         # cold-pull begins (0 = wait for the full temperature).
         self.pull_early_start = config.getfloat(
@@ -3157,6 +3160,20 @@ class AceBgSwap:
                 except Exception:
                     pass
             _pend = None
+            _since_pulse = 0.
+            _chunk_size = float(getattr(self, 'prime_chunk', 0.0))
+            _retract_size = float(getattr(self, 'prime_retract', 0.0))
+            try:
+                _tcf = getattr(ace, 'tipform_bg_chunk_for', None)
+                _tc = _tcf(head, soft=False) if _tcf is not None else None
+                if _tc is not None:
+                    _chunk_size = float(_tc)
+                _trf = getattr(ace, 'tipform_bg_retract_for', None)
+                _tr = _trf(head, soft=False) if _trf is not None else None
+                if _tr is not None:
+                    _retract_size = float(_tr)
+            except Exception:
+                pass
             while primed < prime_target - 1e-6:
                 if _pend is not None:
                     self._wait_lead(toolhead, _pend)
@@ -3171,6 +3188,16 @@ class AceBgSwap:
                 _s, _pend, _en = self.queue_move(ext, seg, _prime_speed,
                                                  CHOREO_ACCEL)
                 primed += seg
+                _since_pulse += seg
+                # Pulse micro-retract to break long continuous purge strings
+                if _chunk_size > 0. and _retract_size > 0. and _since_pulse >= _chunk_size and primed < prime_target - 1.0:
+                    self._wait_move(toolhead, _pend)
+                    _rs, _rend, _ren = self.queue_move(ext, -_retract_size, BG_LOAD_RETRACT_SPEED, CHOREO_ACCEL)
+                    self._wait_move(toolhead, _rend)
+                    self._pause(0.15)
+                    _us, _uend, _uen = self.queue_move(ext, _retract_size, BG_LOAD_RETRACT_SPEED, CHOREO_ACCEL)
+                    _pend = _uend
+                    _since_pulse = 0.
                 # Spool book-keeping: these are stealth moves on our OWN
                 # trapq, so the extruder axis the ace.py sampler watches
                 # never sees them - book the purge explicitly or a bg swap

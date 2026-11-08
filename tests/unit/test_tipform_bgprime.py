@@ -24,14 +24,15 @@ def _mod(tf, mode, **tables):
 
 
 def test_the_token_is_a_parameter_not_a_step(tf):
-    toks, ut, lt, bt, prime, bgpf = tf.parse_table(
-        "57@400, -57@1500, bgprimespeed:360")
+    toks, ut, lt, bt, prime, bgpf, bgchunk, bgretract = tf.parse_table(
+        "57@400, -57@1500, bgprimespeed:360, bgchunk:12, bgretract:2.0")
     assert toks == [("move", 57.0, 400.0), ("move", -57.0, 1500.0)]
-    assert bgpf == 360.0 and ut is lt is bt is prime is None
+    assert bgpf == 360.0 and bgchunk == 12.0 and bgretract == 2.0
+    assert ut is lt is bt is prime is None
 
 
 def test_it_may_be_the_only_content_of_a_table(tf):
-    toks, *_rest, bgpf = tf.parse_table("bgprimespeed:300")
+    toks, ut, lt, bt, prime, bgpf, *_rest = tf.parse_table("bgprimespeed:300")
     assert toks == [] and bgpf == 300.0
 
 
@@ -42,8 +43,8 @@ def test_out_of_range_is_refused(tf, bad):
 
 
 def test_the_range_edges_are_allowed(tf):
-    assert tf.parse_table("bgprimespeed:60")[-1] == 60.0
-    assert tf.parse_table("bgprimespeed:1200")[-1] == 1200.0
+    assert tf.parse_table("bgprimespeed:60")[5] == 60.0
+    assert tf.parse_table("bgprimespeed:1200")[5] == 1200.0
 
 
 def test_it_follows_the_material_vendor_soft_default_lookup(tf):

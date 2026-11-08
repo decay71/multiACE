@@ -18323,6 +18323,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # ('bgprimespeed:' token). None = use [ace_bg_swap] prime_speed.
         return self._tipform_param_for(head, 'bg_prime_speed_for', soft)
 
+    def tipform_bg_chunk_for(self, head, soft=False):
+        # Per-material/vendor dock prime chunk length ('bgchunk:' token)
+        return self._tipform_param_for(head, 'bg_chunk_for', soft)
+
+    def tipform_bg_retract_for(self, head, soft=False):
+        # Per-material/vendor dock prime pulse micro-retract ('bgretract:' token)
+        return self._tipform_param_for(head, 'bg_retract_for', soft)
+
     def tipform_bg_temp_for(self, head, soft=False):
         # BACKGROUND-load temp ('bgtemp:'): the bg engine's load half runs
         # at it instead of the load temp.

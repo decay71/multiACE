@@ -112,6 +112,12 @@ MIN_MOVE_TEMP = 175.
 # bgprimespeed: (mm/min): 1-20 mm/s. The stock bg prime is 4 mm/s.
 MIN_BG_PRIME_F = 60.
 MAX_BG_PRIME_F = 1200.
+# bgchunk: 2-50 mm dock prime segment length before micro-retract pulse
+MIN_BG_CHUNK_MM = 2.
+MAX_BG_CHUNK_MM = 50.
+# bgretract: 0-10 mm dock prime pulse retract length
+MIN_BG_RETRACT_MM = 0.
+MAX_BG_RETRACT_MM = 10.
 
 
 def parse_table(raw):
@@ -125,6 +131,8 @@ def parse_table(raw):
     load_temp = None
     bg_temp = None
     bg_prime_f = None
+    bg_chunk_mm = None
+    bg_retract_mm = None
     prime_temp = None
     prime_mm = None
     prime_f = 300.
@@ -196,6 +204,20 @@ def parse_table(raw):
                                  '%r' % (int(MIN_BG_PRIME_F),
                                          int(MAX_BG_PRIME_F), part))
             bg_prime_f = f
+        elif low.startswith('bgchunk:'):
+            # Parameter: dock prime segment length (mm) between pulse micro-retracts
+            c = float(low.split(':', 1)[1])
+            if not MIN_BG_CHUNK_MM <= c <= MAX_BG_CHUNK_MM:
+                raise ValueError('bgchunk out of range (%d-%d mm): %r'
+                                 % (int(MIN_BG_CHUNK_MM), int(MAX_BG_CHUNK_MM), part))
+            bg_chunk_mm = c
+        elif low.startswith('bgretract:'):
+            # Parameter: dock prime pulse micro-retract length (mm)
+            r = float(low.split(':', 1)[1])
+            if not MIN_BG_RETRACT_MM <= r <= MAX_BG_RETRACT_MM:
+                raise ValueError('bgretract out of range (%d-%d mm): %r'
+                                 % (int(MIN_BG_RETRACT_MM), int(MAX_BG_RETRACT_MM), part))
+            bg_retract_mm = r
         elif low.startswith('primetemp:'):
             # Parameter pair with prime: temperature of the pre-purge.
             c = float(low.split(':', 1)[1])
@@ -247,8 +269,8 @@ def parse_table(raw):
             raise ValueError("unrecognised token %r (expected mm@feedrate, "
                              "pause:ms, temp:C, waittemp:C, fan:0-255, "
                              "unloadtemp:C, loadtemp:C, bgtemp:C, "
-                             "bgprimespeed:mm/min, prime:mm or "
-                             "primetemp:C)"
+                             "bgprimespeed:mm/min, bgchunk:mm, bgretract:mm, "
+                             "prime:mm or primetemp:C)"
                              % part)
     if tokens and not any(t[0] == TOKEN_MOVE for t in tokens):
         raise ValueError('table has no moves')
@@ -257,6 +279,7 @@ def parse_table(raw):
                          % int(prime_temp))
     if (not tokens and unload_temp is None and load_temp is None
             and bg_temp is None and bg_prime_f is None
+            and bg_chunk_mm is None and bg_retract_mm is None
             and prime_mm is None):
         raise ValueError('table has no moves')
     if net > 0.:
@@ -264,7 +287,7 @@ def parse_table(raw):
                          'retracted out of the melt zone' % net)
     prime = ((prime_temp, prime_mm, prime_f) if prime_mm is not None
              else None)
-    return tokens, unload_temp, load_temp, bg_temp, prime, bg_prime_f
+    return tokens, unload_temp, load_temp, bg_temp, prime, bg_prime_f, bg_chunk_mm, bg_retract_mm
 
 
 class AceTipform:
@@ -280,6 +303,8 @@ class AceTipform:
         self.load_temps = {}
         self.bg_temps = {}
         self.bg_prime_speeds = {}
+        self.bg_chunks = {}
+        self.bg_retracts = {}
         self.primes = {}
         # Every option in the section is a table (keys are free-form
         # material names); read them ALL so Klipper's every-option-must-be-
@@ -302,15 +327,19 @@ class AceTipform:
         editor is the strict gate). Built into locals first, so a
         reload that dies mid-parse cannot leave half-swapped state."""
         tables, unload_temps, load_temps, bg_temps = {}, {}, {}, {}
-        bg_prime_speeds = {}
+        bg_prime_speeds, bg_chunks, bg_retracts = {}, {}, {}
         primes = {}
         dropped = []
         for opt, raw in items:
             try:
                 (_toks, _utemp, _ltemp, _btemp, _prime,
-                 _bgpf) = parse_table(raw)
+                 _bgpf, _bgchunk, _bgretract) = parse_table(raw)
                 if _bgpf is not None:
                     bg_prime_speeds[opt.strip().lower()] = _bgpf
+                if _bgchunk is not None:
+                    bg_chunks[opt.strip().lower()] = _bgchunk
+                if _bgretract is not None:
+                    bg_retracts[opt.strip().lower()] = _bgretract
                 if _prime is not None:
                     primes[opt.strip().lower()] = _prime
                 if _toks:
@@ -331,18 +360,22 @@ class AceTipform:
         self.load_temps = load_temps
         self.bg_temps = bg_temps
         self.bg_prime_speeds = bg_prime_speeds
+        self.bg_chunks = bg_chunks
+        self.bg_retracts = bg_retracts
         self.primes = primes
         logging.info('[multiACE] ace_tipform: mode=%s tables=%s '
                      'unload_temps=%s load_temps=%s bg_temps=%s '
-                     'bg_prime_speeds=%s primes=%s'
+                     'bg_prime_speeds=%s bg_chunks=%s bg_retracts=%s primes=%s'
                      % (self.mode, sorted(self.tables.keys()) or 'none',
                         sorted(self.unload_temps.keys()) or 'none',
                         sorted(self.load_temps.keys()) or 'none',
                         sorted(self.bg_temps.keys()) or 'none',
                         sorted(self.bg_prime_speeds.keys()) or 'none',
+                        sorted(self.bg_chunks.keys()) or 'none',
+                        sorted(self.bg_retracts.keys()) or 'none',
                         sorted(self.primes.keys()) or 'none'))
         if ((self.unload_temps or self.load_temps or self.bg_temps
-                or self.bg_prime_speeds or self.primes)
+                or self.bg_prime_speeds or self.bg_chunks or self.bg_retracts or self.primes)
                 and self.mode != 'custom'):
             # A set-but-inert knob must be LOUD, never silently skipped.
             logging.error(
@@ -502,6 +535,14 @@ class AceTipform:
         return self._lookup(self.bg_prime_speeds, material, vendor, soft,
                             device)
 
+    def bg_chunk_for(self, material, vendor=None, soft=False, device=None):
+        """Custom dock prime chunk segment length (mm), or None."""
+        return self._lookup(self.bg_chunks, material, vendor, soft, device)
+
+    def bg_retract_for(self, material, vendor=None, soft=False, device=None):
+        """Custom dock prime pulse micro-retract length (mm), or None."""
+        return self._lookup(self.bg_retracts, material, vendor, soft, device)
+
     def get_status(self, eventtime):
         # tables = UNION of move-tables and param-only (unloadtemp:/
         # loadtemp:) keys - the web's restart-pending banner compares cfg
@@ -514,11 +555,15 @@ class AceTipform:
                              | set(self.load_temps.keys())
                              | set(self.bg_temps.keys())
                              | set(self.bg_prime_speeds.keys())
+                             | set(self.bg_chunks.keys())
+                             | set(self.bg_retracts.keys())
                              | set(self.primes.keys())),
             'unload_temps': dict(self.unload_temps),
             'load_temps': dict(self.load_temps),
             'bg_temps': dict(self.bg_temps),
             'bg_prime_speeds': dict(self.bg_prime_speeds),
+            'bg_chunks': dict(self.bg_chunks),
+            'bg_retracts': dict(self.bg_retracts),
             'primes': {k: list(v) for k, v in self.primes.items()},
         }
 
