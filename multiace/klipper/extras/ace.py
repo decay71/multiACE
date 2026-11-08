@@ -49,10 +49,9 @@ VIRTUAL_PRELOAD_SCAN_MAX = 16 * 1024 * 1024
 # answer in time the toolchange runs anyway and the engine aborts at
 # extruder activation as before.
 BG_PICK_NOTICE_WAIT = 8.0
-# When a toolchange is announced during LD_GRIP, the engine waits for the
-# grip loop (nip press and gear grip, ~12 s) to finish seating the tip so the
-# head is fully loaded before handing over at LD_PRIME.
-BG_PICK_NOTICE_WAIT_GRIP = 20.0
+# When a toolchange is announced during LD_GRIP, the engine aborts the docked
+# loading op immediately so the arrival carriage takes over inline at the discard chute.
+BG_PICK_NOTICE_WAIT_GRIP = 3.0
 # After a restart with a STAGED head, how long to wait for its unit to
 # connect before the stop of a possibly still running feed is given up.
 BG_STAGED_STOP_WINDOW = 180.0

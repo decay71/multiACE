@@ -1004,10 +1004,6 @@ class AceBgSwap:
             raise RuntimeError('head %d was PICKED mid-sequence - aborted, '
                                'inline paths take over' % self._dh(head))
         if head in self._pick_pending:
-            # During LD_GRIP, allow the grip loop to finish seating the filament into
-            # the gears so the head is loaded before stopping at LD_PRIME.
-            if str(self.state.get(head, '')) == 'LD_GRIP':
-                return
             raise RuntimeError('head %d is about to be PICKED - stopped '
                                'before the toolchange, inline paths take '
                                'over' % self._dh(head))
