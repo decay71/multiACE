@@ -504,7 +504,7 @@ class AceBgSwap:
         _ace = self.printer.lookup_object('ace', None)
         _wt = getattr(_ace, '_wt_persist', None)
         if _wt is not None:
-            sfx = _wt(gcmd, 'prime_scale', str(scale), section='ace_bg_swap')
+            sfx = _wt(gcmd, 'prime_scale', str(scale), None, section='ace_bg_swap')
         else:
             sfx = ''
         self._say('dock background prime_scale set to %.2f%s' % (scale, sfx))
