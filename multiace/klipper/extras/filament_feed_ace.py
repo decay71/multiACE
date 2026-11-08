@@ -1426,16 +1426,22 @@ class FilamentFeed:
 
                     if self.runout_sensor[ch].get_status(0)['filament_detected'] == False:
 
-                        try:
+                        # If lean_flush is enabled during print swaps, stay at discard chute
+                        # and eliminate redundant front-bed carriage taxiing (G0 Y5 X150).
+                        _is_lean = bool(self.ace and getattr(self.ace, 'lean_flush', False))
+                        if not _is_lean:
+                            try:
+                                self.toolhead.wait_moves()
+                                self.gcode.run_script_from_command( \
+                                    f"G90\nG0 Y{self._feed_load_position_y} F18000\r\n")
+                                self.gcode.run_script_from_command( \
+                                    f"G90\nG0 X{self._feed_load_position_x} F18000\r\n")
+                                self.toolhead.wait_moves()
+                            except:
+                                self.channel_error[ch] = FEED_ERR_MOVE
+                                raise
+                        else:
                             self.toolhead.wait_moves()
-                            self.gcode.run_script_from_command( \
-                                f"G90\nG0 Y{self._feed_load_position_y} F18000\r\n")
-                            self.gcode.run_script_from_command( \
-                                f"G90\nG0 X{self._feed_load_position_x} F18000\r\n")
-                            self.toolhead.wait_moves()
-                        except:
-                            self.channel_error[ch] = FEED_ERR_MOVE
-                            raise
 
                         self.reactor.pause(self.reactor.monotonic() + 0.105)
                         wheel_cnt_a_0 = self.wheel[ch].get_counts()
@@ -2424,8 +2430,9 @@ class FilamentFeed:
                         # (swap_purge_length / Pro override); 0 omits it so the
                         # stock macro uses its default (80mm).
                         _purge_len = self.ace.get_purge_length() if self.ace else 0
-                        _flush_cmd = ("INNER_FLUSH_FILAMENT TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f" %
-                                      (filament_feed_temp, int(filament_soft),
+                        _macro_name = "ACE_LEAN_FLUSH" if (self.ace and getattr(self.ace, 'lean_flush', False)) else "INNER_FLUSH_FILAMENT"
+                        _flush_cmd = ("%s TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f" %
+                                      (_macro_name, filament_feed_temp, int(filament_soft),
                                        self.toolhead.get_extruder().nozzle_diameter))
                         if _purge_len and _purge_len > 0:
                             _flush_cmd += " LENGTH=%d" % _purge_len
