@@ -49,6 +49,10 @@ VIRTUAL_PRELOAD_SCAN_MAX = 16 * 1024 * 1024
 # answer in time the toolchange runs anyway and the engine aborts at
 # extruder activation as before.
 BG_PICK_NOTICE_WAIT = 8.0
+# When a toolchange is announced during LD_GRIP, the engine waits for the
+# grip loop (nip press and gear grip, ~12 s) to finish seating the tip so the
+# head is fully loaded before handing over at LD_PRIME.
+BG_PICK_NOTICE_WAIT_GRIP = 20.0
 # After a restart with a STAGED head, how long to wait for its unit to
 # connect before the stop of a possibly still running feed is given up.
 BG_STAGED_STOP_WINDOW = 180.0
@@ -794,6 +798,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.load_feed_temp_drop = config.getint(
             'load_feed_temp_drop', 50, minval=0, maxval=100)
         self.swap_purge_cap = config.getint('swap_purge_cap', 0, minval=0, maxval=200)
+        # Lean flush & wipe: routes inline print flushes to ACE_LEAN_FLUSH
+        # (beehive coil, no M104 S0 temp drop, fast brush pass, blade cutoff,
+        # and skips redundant bed taxi / post-load rough clean). Defaults to False.
+        self.lean_flush = config.getboolean('lean_flush', False)
 
         self.seat_overshoot_length = config.getint('seat_overshoot_length', 0, minval=0, maxval=100)
         # Name of a gcode macro that cuts the filament at the toolhead (a
@@ -20120,7 +20128,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return
         if not fn(head):
             return
-        deadline = self.reactor.monotonic() + BG_PICK_NOTICE_WAIT
+        phase = getattr(bg, 'phase', lambda h: '')(head)
+        wait_s = BG_PICK_NOTICE_WAIT_GRIP if str(phase).upper() == 'LD_GRIP' else BG_PICK_NOTICE_WAIT
+        deadline = self.reactor.monotonic() + wait_s
         while self.reactor.monotonic() < deadline:
             if not bg.is_busy(head):
                 logging.info('[multiACE] head %d: background op handed '
@@ -20130,7 +20140,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.log_always('[multiACE] head %d: background op did not hand '
                         'over within %.0fs - toolchange proceeds, the '
                         'engine aborts on pick as before'
-                        % (self._disp(head), BG_PICK_NOTICE_WAIT))
+                        % (self._disp(head), wait_s))
 
     def _sniff_virtual_tool_file(self):
         """(colours, types) of the slicer filaments when the print file is
