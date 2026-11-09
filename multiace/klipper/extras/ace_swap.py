@@ -845,7 +845,16 @@ class SwapMixin:
                     dip = (c0 - mn) if c0 is not None else None
                     up = (mx - c0) if c0 is not None else None
                     return c0, mn, mx, dip, up
-                if _deficit is not None:
+                # If lean_flush is active and the head completed its background prime in the dock
+                # (no deficit), skip the redundant 20mm chute push and go straight to the wipe.
+                _skip_push = bool(getattr(self, 'lean_flush', False) and _deficit is None)
+                if _skip_push:
+                    self.log_always(
+                        '[multiACE] [pick-check] head %d: background prime confirmed '
+                        '(lean_flush active) - skipping redundant chute purge'
+                        % self._disp(head))
+                    push = 0.
+                elif _deficit is not None:
                     # Prime top-up: finish the purge the pick cut short. The
                     # abort path never ran its anti-ooze retract, so the
                     # cushion is still IN the nozzle - do NOT re-push it on
@@ -863,8 +872,11 @@ class SwapMixin:
                     # absolute threshold unsafe.
                     push = max(float(anti_ooze) + PICK_CHECK_FLOW_PUSH,
                                PICK_CHECK_MIN_PUSH)
-                coil_start, coil_min, coil_max, coil_delta, coil_up = \
-                    _measure(push)
+                if push > 0.:
+                    coil_start, coil_min, coil_max, coil_delta, coil_up = \
+                        _measure(push)
+                else:
+                    coil_start = coil_min = coil_max = coil_delta = coil_up = None
                 # Turbulence guard: a large up-swing = the coil was measured
                 # inside a chew/bind episode -> the dip cannot
                 # be trusted. Settle + re-measure ONCE so the verdict judges
@@ -1000,13 +1012,24 @@ class SwapMixin:
                     self.toolhead.wait_moves()
                 # Nozzle wipe (BG_PICK_WIPE): the bg load could not wipe while
                 # docked, so scrape the strings off here - the head is at the
-                # discard position and hot, the stock clean does the wipe
-                # strokes. E moves in it are absorbed by the finally's e_diff
+                # discard position and hot.
+                # If lean_flush is active, run our calibrated brush sweep (Y=25 at F3000)
+                # plus blade cutoff (ACTION=2); position restore in finally then flies directly
+                # back to the saved prime tower / print coordinates with safe Z hop.
+                # E moves in it are absorbed by the finally's e_diff
                 # bookkeeping. Fail-open: a wipe error never blocks the print.
                 if BG_PICK_WIPE:
                     try:
-                        self.gcode.run_script_from_command(
-                            'INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD ACTION=2')
+                        if getattr(self, 'lean_flush', False):
+                            self.gcode.run_script_from_command('G91')
+                            self.gcode.run_script_from_command('G1 Y25.0 F3000')
+                            self.gcode.run_script_from_command('G1 Y-25.0 F3000')
+                            self.gcode.run_script_from_command('G90')
+                            self.gcode.run_script_from_command(
+                                'INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD ACTION=2')
+                        else:
+                            self.gcode.run_script_from_command(
+                                'INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD ACTION=2')
                         self.toolhead.wait_moves()
                         logging.info('[multiACE] [pick-check] nozzle wipe '
                                      'done (head %d)' % self._raw(head))
