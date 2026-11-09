@@ -52,8 +52,8 @@ BG_SWAP_VERSION = 'v1.0'
 # alone cannot push through the stationary gears). The V2 decoder span is
 # logged ('bg-feed') as telemetry only - its flat-detect false-fired
 # mid-bowden as a stop criterion (span 1512 of ~1970 on a snag).
-BG_LOAD_GRIP_SEAT = 60.      # grip: sensor -> through the gears + seat
-BG_LOAD_GRIP_SPEED = 5.      # mm/s
+BG_LOAD_GRIP_SEAT = 38.      # grip: sensor -> through gears to melt zone entrance (no premature oozing)
+BG_LOAD_GRIP_SPEED = 7.5     # mm/s (calibrated hotend melt rate; reliable torque, saves ~4s over stock 5 mm/s)
 # PRESS-then-grip: the sensor-stop feed
 # releases the ACE motor the moment the sensor fires, so the tip stands just
 # ABOVE the gear nip with no press - during the grip only the spongy
@@ -118,6 +118,8 @@ BG_LOAD_PRIME_CHUNK = 5.
 # announced by ace.py (request_pick_abort) stops the op at the next move
 # boundary while the head is STILL DOCKED. RETRACT is deliberately absent
 # (the bulk rollback never aborts) and so are the bookkeeping phases.
+# LD_GRIP is included: request_pick_abort returns True and sets _pick_pending,
+# but the grip loop is allowed to finish before stopping at LD_PRIME.
 PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_GRIP', 'LD_PRIME')
 # Extra prime on TOP of the inline purge knob (get_purge_length, default 80).
 # The inline swap purges MORE than its nominal 80: phase3 probe-extrudes
@@ -308,6 +310,16 @@ class AceBgSwap:
         # (BG_LOAD_PRIME_EXTRA note). Read unconditionally.
         self.prime_extra = config.getfloat('prime_extra', BG_LOAD_PRIME_EXTRA,
                                            minval=0., maxval=100.)
+        # Scaling factor applied only to the background prime length
+        # (e.g. 0.60 = 40% shorter dock prime, while inline flushes stay at 100%).
+        self.prime_scale = config.getfloat('prime_scale', 1.0,
+                                           minval=0.05, maxval=2.0)
+        # Target phase for arrival hold: LD_GRIP (hold until gripped into gears)
+        # or LD_PRIME (hold through dock purge).
+        _tgt = (config.get('bg_wait_target', 'LD_GRIP') or '').strip().upper()
+        if _tgt not in ('LD_GRIP', 'LD_PRIME'):
+            _tgt = 'LD_GRIP'
+        self.bg_wait_target = _tgt
         # Unload-only switch: False disables the
         # bg LOAD half - ACE_BG_SWAP stamps run only the HW-proven unload
         # half, the arrival swap then loads INLINE with full phase3
@@ -337,6 +349,9 @@ class AceBgSwap:
         self.prime_speed = config.getfloat(
             'prime_speed', BG_LOAD_PRIME_SPEED_DEFAULT, minval=1.,
             maxval=12.)
+        # Dock prime string chunking & micro-retract pulse (0 = disabled by default upstream)
+        self.prime_chunk = config.getfloat('prime_chunk', 0.0, minval=0.0, maxval=50.0)
+        self.prime_retract = config.getfloat('prime_retract', 0.0, minval=0.0, maxval=10.0)
         # pull_early_start: degrees below the pull temperature at which the
         # cold-pull begins (0 = wait for the full temperature).
         self.pull_early_start = config.getfloat(
@@ -425,6 +440,10 @@ class AceBgSwap:
         self.gcode.register_command('ACE_BG_AWAIT_PHASE',
                                     self.cmd_ACE_BG_AWAIT_PHASE,
                                     desc=self.cmd_ACE_BG_AWAIT_PHASE_help)
+        self.gcode.register_command('ACE_BG_SET_PRIME_SCALE',
+                                    self.cmd_ACE_BG_SET_PRIME_SCALE,
+                                    desc=self.cmd_ACE_BG_SET_PRIME_SCALE_help)
+
 
 
     def get_status(self, eventtime):
@@ -484,6 +503,21 @@ class AceBgSwap:
                      [self._dh(h) for h in sorted(self.enabled_heads)]
                      or 'NONE', sfx))
 
+    cmd_ACE_BG_SET_PRIME_SCALE_help = (
+        '[multiACE] Set the dock background prime scaling multiplier (0.05-2.0). '
+        'ACE_BG_SET_PRIME_SCALE SCALE=0.xx [PERSIST=0|1] - writes [ace_bg_swap] '
+        'prime_scale (PERSIST=0 = until restart).')
+    def cmd_ACE_BG_SET_PRIME_SCALE(self, gcmd):
+        scale = gcmd.get_float('SCALE', minval=0.05, maxval=2.0)
+        self.prime_scale = scale
+        _ace = self.printer.lookup_object('ace', None)
+        _wt = getattr(_ace, '_wt_persist', None)
+        if _wt is not None:
+            sfx = _wt(gcmd, 'prime_scale', str(scale), None, section='ace_bg_swap')
+        else:
+            sfx = ''
+        self._say('dock background prime_scale set to %.2f%s' % (scale, sfx))
+
     def request_pick_abort(self, head):
         """Toolchange notice from ace.py's T0-T3 wrapper, sent BEFORE the
         stock macro parks the old head and picks this one. Without it the
@@ -510,9 +544,13 @@ class AceBgSwap:
             return False
         if head not in self._pick_pending:
             self._pick_pending.add(head)
-            self._say('head %d: toolchange announced during %s - stopping '
-                      'at the next move boundary, handing over before the '
-                      'pick' % (self._dh(head), phase))
+            if phase == 'LD_GRIP':
+                self._say('head %d: toolchange announced during LD_GRIP - '
+                          'completing grip before handover' % self._dh(head))
+            else:
+                self._say('head %d: toolchange announced during %s - stopping '
+                          'at the next move boundary, handing over before the '
+                          'pick' % (self._dh(head), phase))
         return True
 
     def is_busy(self, head):
@@ -581,18 +619,19 @@ class AceBgSwap:
             self._last_gating_decision[head] = details
             return False, details
 
-        # Check PULL, RETRACT, BOOKKEEP, and LD_FEED eligibility:
-        # All these phases are actively progressing toward loading the new filament.
+        # Check PULL, RETRACT, BOOKKEEP, LD_FEED, and LD_GRIP eligibility:
+        # All these phases are actively progressing toward loading and gripping the new filament.
         # Holding the active head at the discard chute allows the new filament to reach
-        # the toolhead sensor and enter LD_GRIP before releasing. This prevents the
-        # firmware from falling back to an inline feed which commands the carriage to
-        # travel to the front of the bed (X=150 Y=5), eliminating unnecessary travel moves.
-        if cur_phase in ('PULL', 'RETRACT', 'BOOKKEEP', 'LD_FEED') or \
+        # the toolhead sensor and seat through the extruder gears before releasing.
+        # This prevents the firmware from falling back to an inline feed which commands the carriage
+        # to travel to the front of the bed (X=150 Y=5), eliminating unnecessary travel moves.
+        if cur_phase in ('PULL', 'RETRACT', 'BOOKKEEP', 'LD_FEED', 'LD_GRIP') or \
                 cur_phase.startswith('PULL') or cur_phase.startswith('RETRACT') or \
-                cur_phase.startswith('BOOKKEEP') or cur_phase.startswith('LD_FEED'):
+                cur_phase.startswith('BOOKKEEP') or cur_phase.startswith('LD_FEED') or \
+                cur_phase.startswith('LD_GRIP'):
             details['eligible'] = True
-            details['reason'] = ('background swap progressing toward toolhead sensor (target: LD_GRIP, cur: %s)'
-                                 % cur_phase)
+            details['reason'] = ('background swap progressing toward gear grip/prime (target: %s, cur: %s)'
+                                 % (self.bg_wait_target, cur_phase))
             self._last_gating_decision[head] = details
             return True, details
 
@@ -634,8 +673,8 @@ class AceBgSwap:
             self._last_gating_decision[head] = details
             return False, details
 
-        # Ineligible if already at or past LD_GRIP (filament already at head)
-        details['reason'] = 'phase %s is already at or past LD_GRIP; arrival hold not applicable' % cur_phase
+        # Ineligible if already at or past LD_PRIME (filament gripped and seated in gears)
+        details['reason'] = 'phase %s is already at or past LD_PRIME; arrival hold not applicable' % cur_phase
         self._last_gating_decision[head] = details
         return False, details
 
@@ -1755,7 +1794,7 @@ class AceBgSwap:
 
     cmd_ACE_BG_WAIT_help = (
         '[multiACE] Hold the arriving toolhead until a background swap on a '
-        'docked HEAD reaches LD_GRIP (filament at head sensor). ACE_BG_WAIT HEAD=0-3 [RESTORE_POS=0|1]. '
+        'docked HEAD reaches LD_PRIME (filament gripped and seated in gears). ACE_BG_WAIT HEAD=0-3 [RESTORE_POS=0|1]. '
         'Parks at the discard position while waiting. By default (RESTORE_POS=0), '
         'the active toolhead remains parked over the discard chute so the subsequent '
         'T macro can dock it directly without redundant bed travel. Set RESTORE_POS=1 '
@@ -1827,16 +1866,20 @@ class AceBgSwap:
                             heat_rem = max(3.0, (delta / 4.0)) if cur_phase.startswith('HEAT') else 0.0
                             wait_budget = heat_rem + 135.0
                         elif cur_phase in ('RETRACT', 'BOOKKEEP') or cur_phase.startswith('RETRACT') or cur_phase.startswith('BOOKKEEP'):
-                            # During rollback/bookkeeping: bulk retract (~25s) + bowden feed (~30s) + margin
-                            wait_budget = 70.0
+                            # During rollback/bookkeeping: bulk retract (~25s) + bowden feed (~30s) + grip (~5s) + margin
+                            wait_budget = 75.0
+                        elif cur_phase == 'LD_FEED' or cur_phase.startswith('LD_FEED'):
+                            # During LD_FEED: bowden feed to sensor (~30s) + grip (~5s) + margin
+                            wait_budget = 50.0
                         else:
-                            # During LD_FEED: bowden feed to sensor (~30s) + margin
-                            wait_budget = 45.0
+                            # During LD_GRIP: nip press & gear grip (~5s) + margin
+                            wait_budget = 15.0
 
                     dwell = gcmd.get_float('DWELL', None)
                     wait_start = self.reactor.monotonic()
                     deadline = wait_start + wait_budget
-                    release_target = 'LD_GRIP'
+                    target_arg = gcmd.get('TARGET', self.bg_wait_target).strip().upper()
+                    release_target = target_arg if target_arg in self.PHASE_ORDER else self.bg_wait_target
                     release_idx = self.PHASE_ORDER.index(release_target)
                     released_reason = 'timeout'
 
@@ -1852,7 +1895,7 @@ class AceBgSwap:
                         while self.reactor.monotonic() < deadline:
                             now_phase = self.phase(head).upper()
                             base_p = now_phase.split(':')[0]
-                            # Release condition: reached LD_GRIP or any subsequent phase (filament at sensor/gears)
+                            # Release condition: reached LD_PRIME or any subsequent phase (filament gripped and seated in gears)
                             if base_p in self.PHASE_ORDER:
                                 if self.PHASE_ORDER.index(base_p) >= release_idx:
                                     released_reason = 'reached %s' % now_phase
@@ -2928,14 +2971,36 @@ class AceBgSwap:
             # arrival pick-check tops that up, see _bg_prime_deficit).
             # Per-pair PURGE= from the stamp wins (see cmd_ACE_BG_SWAP);
             # fallback = the global override/config knob, as before.
+            # prime_scale scales the dock prime before passing through
+            # apply_purge_policy, so swap_purge_floor and cap still have the
+            # last word. Per-material bgprimescale: token in [ace_tipform] overrides prime_scale.
+            _scale = getattr(self, 'prime_scale', 1.0)
+            try:
+                _psf = getattr(ace, 'tipform_bg_prime_scale_for', None)
+                _ps = _psf(head, soft=False) if _psf is not None else None
+                if _ps is not None:
+                    _scale = float(_ps)
+            except Exception:
+                pass
             if purge is not None:
+                base_purge = float(purge) * _scale
                 _policy = getattr(ace, 'apply_purge_policy', None)
                 if _policy is not None:
-                    purge = _policy(purge)
+                    purge = _policy(base_purge)
+                else:
+                    purge = base_purge
                 prime_target = float(purge) + self.prime_extra
             else:
-                prime_target = (float(ace.get_purge_length() or 0) or 80.) \
-                    + self.prime_extra
+                base_len = ace.get_raw_purge_length() if hasattr(ace, 'get_raw_purge_length') \
+                    else (ace._purge_length_override if getattr(ace, '_purge_length_override', None) is not None
+                          else getattr(ace, 'swap_purge_length', 0) or 80.)
+                base_purge = float(base_len) * _scale
+                _policy = getattr(ace, 'apply_purge_policy', None)
+                if _policy is not None:
+                    purge = _policy(base_purge)
+                else:
+                    purge = base_purge
+                prime_target = float(purge) + self.prime_extra
             primed = 0.
             ooze_done = False
 
@@ -3053,8 +3118,31 @@ class AceBgSwap:
             # verify here: the pin is a presence gate, a perfect grip reads
             # the same 0 edges as a failed one (EDGE-VERIFY POST-MORTEM).
             grip = BG_LOAD_GRIP_SEAT
+            try:
+                _stf = getattr(ace, 'tipform_bg_seat_for', None)
+                _st = _stf(head, soft=False) if _stf is not None else None
+                if _st is not None:
+                    grip = float(_st)
+            except Exception:
+                pass
+            _chunk_size = float(getattr(self, 'prime_chunk', 0.0))
+            _retract_size = float(getattr(self, 'prime_retract', 0.0))
+            try:
+                _tcf = getattr(ace, 'tipform_bg_chunk_for', None)
+                _tc = _tcf(head, soft=False) if _tcf is not None else None
+                if _tc is not None:
+                    _chunk_size = float(_tc)
+                _trf = getattr(ace, 'tipform_bg_retract_for', None)
+                _tr = _trf(head, soft=False) if _trf is not None else None
+                if _tr is not None:
+                    _retract_size = float(_tr)
+            except Exception:
+                pass
+
             seg = grip / 4.
             _gend = None
+            _grip_fed = 0.
+            _since_grip_pulse = 0.
             for _i in range(4):
                 # Chained (BG_CHAIN_LEAD): the abort check still runs once
                 # per segment, one lead before the previous one ends.
@@ -3064,6 +3152,19 @@ class AceBgSwap:
                 _s, _gend, _en = self.queue_move(ext, seg,
                                                  BG_LOAD_GRIP_SPEED,
                                                  CHOREO_ACCEL)
+                _grip_fed += seg
+                # Once entering the hot melt zone (past the first 30mm of gears/throat),
+                # apply chunk pulse if configured so the molten strand segments cleanly into the bin
+                if _chunk_size > 0. and _retract_size > 0. and _grip_fed >= 30.0:
+                    _since_grip_pulse += seg
+                    if _since_grip_pulse >= _chunk_size and _grip_fed < grip - 2.0:
+                        self._wait_move(toolhead, _gend)
+                        _rs, _rend, _ren = self.queue_move(ext, -_retract_size, BG_LOAD_RETRACT_SPEED, CHOREO_ACCEL)
+                        self._wait_move(toolhead, _rend)
+                        self._pause(0.15)
+                        _us, _uend, _uen = self.queue_move(ext, _retract_size, BG_LOAD_RETRACT_SPEED, CHOREO_ACCEL)
+                        _gend = _uend
+                        _since_grip_pulse = 0.
             self._wait_move(toolhead, _gend)
             gripped = True
 
@@ -3099,6 +3200,20 @@ class AceBgSwap:
                 except Exception:
                     pass
             _pend = None
+            _since_pulse = 0.
+            _chunk_size = float(getattr(self, 'prime_chunk', 0.0))
+            _retract_size = float(getattr(self, 'prime_retract', 0.0))
+            try:
+                _tcf = getattr(ace, 'tipform_bg_chunk_for', None)
+                _tc = _tcf(head, soft=False) if _tcf is not None else None
+                if _tc is not None:
+                    _chunk_size = float(_tc)
+                _trf = getattr(ace, 'tipform_bg_retract_for', None)
+                _tr = _trf(head, soft=False) if _trf is not None else None
+                if _tr is not None:
+                    _retract_size = float(_tr)
+            except Exception:
+                pass
             while primed < prime_target - 1e-6:
                 if _pend is not None:
                     self._wait_lead(toolhead, _pend)
@@ -3131,6 +3246,16 @@ class AceBgSwap:
                            toolhead.print_time - _est, _pend - _est))
                 except Exception:
                     pass
+                _since_pulse += seg
+                # Pulse micro-retract to break long continuous purge strings
+                if _chunk_size > 0. and _retract_size > 0. and _since_pulse >= _chunk_size and primed < prime_target - 1.0:
+                    self._wait_move(toolhead, _pend)
+                    _rs, _rend, _ren = self.queue_move(ext, -_retract_size, BG_LOAD_RETRACT_SPEED, CHOREO_ACCEL)
+                    self._wait_move(toolhead, _rend)
+                    self._pause(0.15)
+                    _us, _uend, _uen = self.queue_move(ext, _retract_size, BG_LOAD_RETRACT_SPEED, CHOREO_ACCEL)
+                    _pend = _uend
+                    _since_pulse = 0.
                 # Spool book-keeping: these are stealth moves on our OWN
                 # trapq, so the extruder axis the ace.py sampler watches
                 # never sees them - book the purge explicitly or a bg swap

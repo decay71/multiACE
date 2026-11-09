@@ -49,10 +49,9 @@ VIRTUAL_PRELOAD_SCAN_MAX = 16 * 1024 * 1024
 # answer in time the toolchange runs anyway and the engine aborts at
 # extruder activation as before.
 BG_PICK_NOTICE_WAIT = 8.0
-# When a toolchange is announced during LD_GRIP, the engine waits for the
-# grip loop (nip press and gear grip, ~12 s) to finish seating the tip so the
-# head is fully loaded before handing over at LD_PRIME.
-BG_PICK_NOTICE_WAIT_GRIP = 20.0
+# When a toolchange is announced during LD_GRIP, the engine aborts the docked
+# loading op immediately so the arrival carriage takes over inline at the discard chute.
+BG_PICK_NOTICE_WAIT_GRIP = 3.0
 # After a restart with a STAGED head, how long to wait for its unit to
 # connect before the stop of a possibly still running feed is given up.
 BG_STAGED_STOP_WINDOW = 180.0
@@ -18322,6 +18321,22 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # Per-material/vendor BACKGROUND prime feedrate in mm/min
         # ('bgprimespeed:' token). None = use [ace_bg_swap] prime_speed.
         return self._tipform_param_for(head, 'bg_prime_speed_for', soft)
+
+    def tipform_bg_chunk_for(self, head, soft=False):
+        # Per-material/vendor dock prime chunk length ('bgchunk:' token)
+        return self._tipform_param_for(head, 'bg_chunk_for', soft)
+
+    def tipform_bg_retract_for(self, head, soft=False):
+        # Per-material/vendor dock prime pulse micro-retract ('bgretract:' token)
+        return self._tipform_param_for(head, 'bg_retract_for', soft)
+
+    def tipform_bg_prime_scale_for(self, head, soft=False):
+        # Per-material/vendor dock prime scale ('bgprimescale:' token)
+        return self._tipform_param_for(head, 'bg_prime_scale_for', soft)
+
+    def tipform_bg_seat_for(self, head, soft=False):
+        # Per-material/vendor mechanical gear grip seating distance ('bgseat:' token)
+        return self._tipform_param_for(head, 'bg_seat_for', soft)
 
     def tipform_bg_temp_for(self, head, soft=False):
         # BACKGROUND-load temp ('bgtemp:'): the bg engine's load half runs
