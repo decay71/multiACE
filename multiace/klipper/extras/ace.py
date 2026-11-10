@@ -49,6 +49,9 @@ VIRTUAL_PRELOAD_SCAN_MAX = 16 * 1024 * 1024
 # answer in time the toolchange runs anyway and the engine aborts at
 # extruder activation as before.
 BG_PICK_NOTICE_WAIT = 8.0
+# When a toolchange is announced during LD_GRIP, the engine aborts the docked
+# loading op immediately so the arrival carriage takes over inline at the discard chute.
+BG_PICK_NOTICE_WAIT_GRIP = 3.0
 # After a restart with a STAGED head, how long to wait for its unit to
 # connect before the stop of a possibly still running feed is given up.
 BG_STAGED_STOP_WINDOW = 180.0
@@ -794,6 +797,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.load_feed_temp_drop = config.getint(
             'load_feed_temp_drop', 50, minval=0, maxval=100)
         self.swap_purge_cap = config.getint('swap_purge_cap', 0, minval=0, maxval=200)
+        # Lean flush & wipe: routes inline print flushes to ACE_LEAN_FLUSH
+        # (beehive coil, no M104 S0 temp drop, fast brush pass, blade cutoff,
+        # and skips redundant bed taxi / post-load rough clean). Defaults to False.
+        self.lean_flush = config.getboolean('lean_flush', False)
 
         self.seat_overshoot_length = config.getint('seat_overshoot_length', 0, minval=0, maxval=100)
         # Name of a gcode macro that cuts the filament at the toolhead (a
@@ -18315,6 +18322,22 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # ('bgprimespeed:' token). None = use [ace_bg_swap] prime_speed.
         return self._tipform_param_for(head, 'bg_prime_speed_for', soft)
 
+    def tipform_bg_chunk_for(self, head, soft=False):
+        # Per-material/vendor dock prime chunk length ('bgchunk:' token)
+        return self._tipform_param_for(head, 'bg_chunk_for', soft)
+
+    def tipform_bg_retract_for(self, head, soft=False):
+        # Per-material/vendor dock prime pulse micro-retract ('bgretract:' token)
+        return self._tipform_param_for(head, 'bg_retract_for', soft)
+
+    def tipform_bg_prime_scale_for(self, head, soft=False):
+        # Per-material/vendor dock prime scale ('bgprimescale:' token)
+        return self._tipform_param_for(head, 'bg_prime_scale_for', soft)
+
+    def tipform_bg_seat_for(self, head, soft=False):
+        # Per-material/vendor mechanical gear grip seating distance ('bgseat:' token)
+        return self._tipform_param_for(head, 'bg_seat_for', soft)
+
     def tipform_bg_temp_for(self, head, soft=False):
         # BACKGROUND-load temp ('bgtemp:'): the bg engine's load half runs
         # at it instead of the load temp.
@@ -20120,7 +20143,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return
         if not fn(head):
             return
-        deadline = self.reactor.monotonic() + BG_PICK_NOTICE_WAIT
+        phase = getattr(bg, 'phase', lambda h: '')(head)
+        wait_s = BG_PICK_NOTICE_WAIT_GRIP if str(phase).upper() == 'LD_GRIP' else BG_PICK_NOTICE_WAIT
+        deadline = self.reactor.monotonic() + wait_s
         while self.reactor.monotonic() < deadline:
             if not bg.is_busy(head):
                 logging.info('[multiACE] head %d: background op handed '
@@ -20130,7 +20155,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.log_always('[multiACE] head %d: background op did not hand '
                         'over within %.0fs - toolchange proceeds, the '
                         'engine aborts on pick as before'
-                        % (self._disp(head), BG_PICK_NOTICE_WAIT))
+                        % (self._disp(head), wait_s))
 
     def _sniff_virtual_tool_file(self):
         """(colours, types) of the slicer filaments when the print file is
