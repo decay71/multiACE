@@ -426,6 +426,14 @@ class TestEstimateBlock:
         # the grams still count, with the bg prime on top of the purge
         assert parked["purge"]["mm"] == 100 + sc.BG_LOAD_PRIME_EXTRA_MM
 
+    def test_a_parked_background_purge_respects_prime_scale(self):
+        m = sc.SwapCostModel.from_params(dict(CFG, bg_prime_scale=0.5, bg_prime_extra=10))
+        header = self._header("; enable_prime_tower = 0\n")
+        bg = [{"t": 0, "kind": "cross_ace_bg", "window_min": 9.0, "purge_mm": 100}]
+        parked = sc.build_estimate(m, header, bg)
+        # 100 * 0.5 = 50 mm, clamped to default floor 40 mm -> 50 mm + 10 extra = 60 mm
+        assert parked["purge"]["mm"] == 60
+
     def test_an_inline_background_purge_is_billed(self, model):
         header = self._header("; enable_prime_tower = 0\n")
         bg = [{"t": 0, "kind": "cross_ace_bg", "window_min": 9.0,
