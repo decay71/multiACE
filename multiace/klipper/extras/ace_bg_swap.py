@@ -104,6 +104,10 @@ BG_PULL_HEAT_RATE_MIN = 2.0     # C/s, conservative (measured ~2.5)
 # Deferred ACE_BG_SWAP requests (a QUIET stamp that finds another bg op
 # running is held and started when it ends instead of being dropped).
 BG_DEFER_MAX_AGE_S = 600.
+# Minimum temperature (C) considered hot/holding for parked idle evaluation
+BG_PARKED_MIN_TEMP = 150.0
+# Periodic tick interval (seconds) for evaluating parked head timeouts
+BG_PARKED_CHECK_INTERVAL = 5.0
 # Prime chunk size = the pick-abort granularity of the PRIME phase. A queued
 # stealth move cannot be cancelled and _check_docked only fires BETWEEN
 # moves, so a pick mid-chunk keeps extruding for the REST of that chunk
@@ -300,6 +304,16 @@ class AceBgSwap:
         # are echoed to the console on every arrival (same as passing DEBUG=1).
         # False = quiet console, decisions logged to klippy.log only. Read unconditionally.
         self.debug = config.getboolean('debug', False)
+        # Parked head idle timeout: seconds a docked head may sit hot (>=150C)
+        # before dropping its temperature to parked_standby_temp (0 = disabled).
+        self.parked_head_timeout = config.getfloat('parked_head_timeout', 0.0, minval=0.0)
+        # Temperature to set when parked_head_timeout expires (default 0C = off).
+        self.parked_standby_temp = config.getfloat('parked_standby_temp', 0.0, minval=0.0, maxval=300.0)
+        # Tracking per parked head: head -> monotonic timestamp when it entered park
+        self._parked_since = {}
+        # Saved pre-timeout target temp per head to restore on reheat
+        self._saved_parked_target = {}
+        self._parked_timer = None
         # Arrival holds (ACE_BG_WAIT, stamped by the preflight before a
         # toolchange to a head with a running background op). False turns
         # every stamp into a no-op, so the same processed file prints with
@@ -444,6 +458,11 @@ class AceBgSwap:
                                     self.cmd_ACE_BG_SET_PRIME_SCALE,
                                     desc=self.cmd_ACE_BG_SET_PRIME_SCALE_help)
 
+        if self.parked_head_timeout > 0:
+            self._parked_timer = self.reactor.register_timer(
+                self._parked_timeout_tick, self.reactor.monotonic() + BG_PARKED_CHECK_INTERVAL)
+
+
 
 
     def get_status(self, eventtime):
@@ -462,6 +481,8 @@ class AceBgSwap:
             'state': {str(h): str(v) for h, v in self.state.items()},
             'debug': bool(self.debug),
             'arrival_wait': bool(self.arrival_wait),
+            'parked_head_timeout': float(self.parked_head_timeout),
+            'parked_standby_temp': float(self.parked_standby_temp),
         }
 
     cmd_ACE_BG_SET_HEAD_help = (
@@ -530,6 +551,7 @@ class AceBgSwap:
         path. Returns True when the caller may wait for the handover
         (a phase that polls _check_docked), False when nothing runs on
         this head or the phase never aborts (bulk retract)."""
+        self.on_head_active(head)
         _drop = getattr(self, '_drop_deferred', None)
         if _drop is not None and _drop(head):
             # A held swap for the head that is about to be picked: it would
@@ -773,6 +795,92 @@ class AceBgSwap:
 
     def _ext_name(self, head):
         return 'extruder' if head == 0 else 'extruder%d' % head
+
+    def _get_active_head(self):
+        try:
+            toolhead = self.printer.lookup_object('toolhead', None)
+            if toolhead is None:
+                return None
+            ext = toolhead.get_extruder()
+            if ext is None:
+                return None
+            idx = getattr(ext, 'extruder_index', getattr(ext, 'extruder_num', None))
+            if idx is not None:
+                return int(idx)
+            name = getattr(ext, 'name', '') or (ext.get_name() if hasattr(ext, 'get_name') else '')
+            if name == 'extruder':
+                return 0
+            if name.startswith('extruder'):
+                return int(name.replace('extruder', ''))
+        except Exception:
+            pass
+        return None
+
+    def on_head_active(self, head):
+        """Called when a head becomes active or is picked to print.
+        Resets the parked timer and re-heats if it timed out to standby."""
+        self._parked_since.pop(head, None)
+        saved = self._saved_parked_target.pop(head, None)
+        if saved is not None and saved > 0:
+            try:
+                ext = self.printer.lookup_object(self._ext_name(head), None)
+                pheaters = self.printer.lookup_object('heaters', None)
+                ace = self.printer.lookup_object('ace', None)
+                if ext is not None and pheaters is not None:
+                    heater = ext.get_heater()
+                    cur_tgt = float(getattr(heater, 'target_temp', 0.) or 0.)
+                    if cur_tgt < saved:
+                        self._set_heat(ace, pheaters, heater, saved)
+                        self._say('head %d: reheating from standby (%.0fC -> %.0fC)'
+                                  % (self._dh(head), cur_tgt, saved))
+            except Exception as e:
+                logging.info('[multiACE] [parked-timer] head %d restore heat failed: %s' % (head, e))
+
+    def _parked_timeout_tick(self, eventtime):
+        if self.parked_head_timeout <= 0:
+            return self.reactor.NEVER
+        try:
+            if not self._print_active():
+                self._parked_since.clear()
+                return eventtime + BG_PARKED_CHECK_INTERVAL
+
+            active_h = self._get_active_head()
+            now = self.reactor.monotonic()
+            pheaters = self.printer.lookup_object('heaters', None)
+            ace = self.printer.lookup_object('ace', None)
+
+            for h in range(4):
+                if h == active_h:
+                    self._parked_since.pop(h, None)
+                    continue
+                # If head is actively running a background operation, skip standby drop
+                if h in self._busy:
+                    self._parked_since.pop(h, None)
+                    continue
+
+                ext = self.printer.lookup_object(self._ext_name(h), None)
+                if ext is None:
+                    continue
+                heater = ext.get_heater()
+                target = float(getattr(heater, 'target_temp', 0.) or 0.)
+
+                if target >= BG_PARKED_MIN_TEMP:
+                    if h not in self._parked_since:
+                        self._parked_since[h] = now
+                    elif (now - self._parked_since[h]) >= self.parked_head_timeout:
+                        # Timeout expired while sitting hot in dock
+                        self._saved_parked_target[h] = target
+                        self._set_heat(ace, pheaters, heater, self.parked_standby_temp)
+                        self._say('head %d: parked hot for %.0fs - dropping heater from %.0fC to %.0fC (idle standby)'
+                                  % (self._dh(h), now - self._parked_since[h], target, self.parked_standby_temp))
+                        self._parked_since.pop(h, None)
+                else:
+                    self._parked_since.pop(h, None)
+        except Exception as e:
+            logging.info('[multiACE] [parked-timer] tick error: %s' % e)
+
+        return eventtime + BG_PARKED_CHECK_INTERVAL
+
 
     def _raw(self, idx):
         # Internal (0-based) index for internal log lines.
@@ -1810,6 +1918,8 @@ class AceBgSwap:
             return
         # Clear any residual abort request from previous cycles
         self._abort_requested.discard(head)
+        # Notify parked timer that head is actively arriving/being waited for
+        self.on_head_active(head)
         # Defaults to [ace_bg_swap] debug config (False by default = quiet console)
         debug = gcmd.get_int('DEBUG', 1 if self.debug else 0)
         # RESTORE_POS: 0 = leave at discard chute for direct arrival dock; 1 = restore coordinates
@@ -2974,7 +3084,7 @@ class AceBgSwap:
             # prime_scale scales the dock prime before passing through
             # apply_purge_policy, so swap_purge_floor and cap still have the
             # last word. Per-material bgprimescale: token in [ace_tipform] overrides prime_scale.
-            _scale = getattr(self, 'prime_scale', 1.0)
+            _scale = self.prime_scale
             try:
                 _psf = getattr(ace, 'tipform_bg_prime_scale_for', None)
                 _ps = _psf(head, soft=False) if _psf is not None else None
@@ -3228,24 +3338,6 @@ class AceBgSwap:
                 _s, _pend, _en = self.queue_move(ext, seg, _prime_speed,
                                                  CHOREO_ACCEL)
                 primed += seg
-                # Diagnostic (issue #86, slow prime): how far ahead of the
-                # real clock the chunk starts. start_lead = this chunk's
-                # start minus the MCU's "now"; buf = how much print the
-                # toolhead has queued ahead. A chunk that starts seconds
-                # late while buf is large means the prime waits behind the
-                # print buffer, not behind the extruder.
-                try:
-                    _est = toolhead.mcu.estimated_print_time(
-                        self.reactor.monotonic())
-                    logging.info(
-                        '[multiACE] [bg-prime-timing] head %d: %.1f/%.1f mm '
-                        'seg=%.1f speed=%.1f mm/s start_lead=%.2fs '
-                        'buf=%.2fs chunk_end_lead=%.2fs'
-                        % (self._dh(head), primed, prime_target, seg,
-                           _prime_speed, _s - _est,
-                           toolhead.print_time - _est, _pend - _est))
-                except Exception:
-                    pass
                 _since_pulse += seg
                 # Pulse micro-retract to break long continuous purge strings
                 if _chunk_size > 0. and _retract_size > 0. and _since_pulse >= _chunk_size and primed < prime_target - 1.0:

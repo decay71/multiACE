@@ -17980,6 +17980,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             })
             return
 
+        # Parked head idle timeout reset: notify ace_bg_swap that head_index is active
+        try:
+            _bg = self.printer.lookup_object('ace_bg_swap', None)
+            if _bg is not None and hasattr(_bg, 'on_head_active'):
+                _bg.on_head_active(head_index)
+        except Exception:
+            pass
+
+
         # Per-spool pressure advance: the toolchange is the one moment that
         # covers load, swap AND resume, so the bound spool's stored value
         # for the head's current nozzle is applied here (cached - one
