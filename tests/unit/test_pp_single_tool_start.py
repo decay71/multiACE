@@ -108,3 +108,20 @@ def test_head_mode_single_colour_loads_the_assigned_slot(pp, tmp_path):
     block = _block(c.read_text())
     assert 'ACE_SWAP_HEAD HEAD=2 ACE=3 SLOT=1 INITIAL=1' in block
     assert 'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=2 FORCE=1' in block
+
+
+def test_same_head_consecutive_standby_cooldown_is_dropped(pp, tmp_path):
+    gcode = """T0
+M104 S220 T0
+G1 X10 Y10 E1
+M104 S200 T0 ; set nozzle temperature ;cooldown
+T0
+M109 S220 T0
+G1 X20 Y20 E1
+"""
+    src = tmp_path / 'test_cooldown.gcode'
+    src.write_text(gcode)
+    danger = pp.scan_cooling_standbys(str(src), lambda t: 0)
+    # Line 3 (0-indexed: "M104 S200 T0 ; set nozzle temperature ;cooldown") must be dropped
+    assert 3 in danger
+

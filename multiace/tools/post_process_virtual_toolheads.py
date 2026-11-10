@@ -1695,30 +1695,23 @@ STANDBY_MIN_EXTRUDE_C = 170
 
 def scan_cooling_standbys(in_path, head_of_tool):
     """Line numbers of M104/M109 lines that PROVABLY leave the printing head
-    below min_extrude_temp - the ones the rewrite has to drop.
+    below min_extrude_temp OR prematurely cool a head that immediately
+    continues with another toolchange on the same physical toolhead.
 
     Slicers with ooze prevention set every INACTIVE tool to a standby
     temperature (OrcaSlicer: nozzle_temperature + standby_temperature_delta,
-    e.g. 240-150=90). Those lines address a slicer TOOL, and the remap
-    collapses several tools onto one physical head - so a standby meant for a
-    parked colour can land on the head that prints the next one.
+    e.g. 240-150=90 or 205-5=200). Those lines address a slicer TOOL, and the
+    remap collapses several tools onto one physical head - so a standby meant
+    for an inactive tool can land on the head that prints the next one.
 
-    Most of them are HARMLESS and must be kept: a pre-toolchange cooldown
-    parks its own head (the anti-ooze measure against dock drooling),
-    and even after a collision the arriving tool's M109 overrides it one line
-    later. A 6-colour Snapmaker Orca file with the same setting and two
-    colours on one head has 831 of them and 0 of 1,024,850 extrusions below
-    the limit. Dangerous is only the case where nothing re-heats before the
-    head extrudes again: at an object start in print-by-object mode the
-    slicer sets all OTHER tools to standby AFTER the change, and the head
-    then cools through the limit mid-object (one field file: 144
-    extrusions at target 90 instead of 245, an under-temp error).
-
-    Telling those apart needs the forward view, not a per-line test, so this
-    replays the file: track the active head and each head's target, and when
-    an extruding move runs on a head whose target is below the limit, blame
-    the line that set it. Only lines actually blamed get dropped, so a file
-    without the collision comes out byte-identical.
+    Two cases are filtered:
+    1. Sub-min-extrude: any target below STANDBY_MIN_EXTRUDE_C that leaves the
+       head cold before it extrudes again without re-heating.
+    2. Same-head consecutive swap: when an M104 cooldown targets a physical head H,
+       but the very next toolchange (T<n>) in the file uses that SAME physical
+       head H, dropping temperature only to immediately reheat it adds 15-20s of
+       idle thermal waiting. We drop those intermediate same-head cooldowns so
+       the nozzle maintains its active temperature smoothly.
     """
     danger = set()
     # Per head, the sub-limit setters that have NOT been superseded by a
@@ -1730,9 +1723,35 @@ def scan_cooling_standbys(in_path, head_of_tool):
     active = None
     t_re = re.compile(r'^T(\d{1,2})\s*$')
     m_re = re.compile(r'^M10[49]\b')
+
+    # Pre-scan: track the sequence of toolchanges (line_no -> physical_head)
+    # so we know what physical head is active at or immediately after any line.
+    t_events = []  # list of (line_no, phys_head)
     with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
         for no, line in enumerate(fin):
             code = line.split(';')[0].strip()
+            if not code:
+                continue
+            mt = t_re.match(code)
+            if mt:
+                h = head_of_tool(int(mt.group(1)))
+                if h is not None:
+                    t_events.append((no, h))
+
+    # Helper: get next physical toolhead change after line_no
+    t_idx = 0
+    def next_phys_head(after_line):
+        nonlocal t_idx
+        while t_idx < len(t_events) and t_events[t_idx][0] <= after_line:
+            t_idx += 1
+        if t_idx < len(t_events):
+            return t_events[t_idx][1]
+        return None
+
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
+        for no, line in enumerate(fin):
+            raw = line.rstrip('\r\n')
+            code = raw.split(';')[0].strip()
             if not code:
                 continue
             mt = t_re.match(code)
@@ -1751,6 +1770,17 @@ def scan_cooling_standbys(in_path, head_of_tool):
                     continue
                 val = int(ms.group(1))
                 target[h] = val
+
+                # Check for same-head consecutive toolchange cooldown
+                # (Orca emits ';cooldown' comment or drops target below active printing temp)
+                is_cooldown = ('cooldown' in raw.lower()) or (val < target.get(h, 200))
+                nxt_h = next_phys_head(no)
+                if is_cooldown and nxt_h is not None and nxt_h == h:
+                    # Next toolchange is on the SAME physical head: dropping temp
+                    # adds redundant reheat delay. Drop this cooldown.
+                    danger.add(no)
+                    continue
+
                 if 0 < val < STANDBY_MIN_EXTRUDE_C:
                     cold_setters.setdefault(h, []).append(no)
                 else:
