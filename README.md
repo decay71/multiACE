@@ -86,9 +86,7 @@ auto-dry soft start, preflight and web UI fixes, installer fixes.
 
 >  Use at your own risk. Please report issues and share your experience to help improve multiACE for everyone.
 
-> **Important Note:** Both the Snapmaker U1 and the Anycubic ACE Pro have their own quirks with filament loading/unloading, RFID detection (possibly related to tag sticker positioning), and occasional mechanical issues. Some filaments like to stick in the toolhead after a few operations (Sunlu and Jayo for example). Not every problem encountered is a multiACE issue - many are inherent to the underlying hardware. This is a beta release, not a production-ready solution. Whether these U1 and ACE Pro limitations can be resolved in the future remains to be seen. 
-
-**This is NO AMS-like solution with 1000s of reliable swaps, and I don't think it ever will be. But it recovers to a pause if it fails. That does not not mean there is no room for improvements, so report errors and any ideas are welcome.**
+**This is NO AMS-like solution with 1000s of reliable swaps all the time. But it recovers to a pause if it fails.
 
 ## What is multiACE?
 
