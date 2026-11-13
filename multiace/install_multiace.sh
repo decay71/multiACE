@@ -77,6 +77,7 @@ for f in \
     "klipper/extras/ace_settings.py" \
     "klipper/extras/ace_swap.py" \
     "klipper/extras/ace_unit.py" \
+    "klipper/extras/ace_bus_v2.py" \
     "klipper/extras/ace_drivers.py" \
     "klipper/kinematics/extruder_ace.py" \
     "config/extended/ace.cfg" \
@@ -180,8 +181,9 @@ cp "$INSTALL_DIR/klipper/extras/ace_swap.py" "$EXTRAS_DIR/ace_swap.py"
 cp "$INSTALL_DIR/klipper/extras/ace_settings.py" "$EXTRAS_DIR/ace_settings.py"
 # Unit capabilities (UnitCaps, caps_for) - imported by ace.py
 cp "$INSTALL_DIR/klipper/extras/ace_unit.py" "$EXTRAS_DIR/ace_unit.py"
+cp "$INSTALL_DIR/klipper/extras/ace_bus_v2.py" "$EXTRAS_DIR/ace_bus_v2.py"
 cp "$INSTALL_DIR/klipper/extras/ace_drivers.py" "$EXTRAS_DIR/ace_drivers.py"
-chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/ace_macro_layout.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/ace_protocol_cfs.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py" "$EXTRAS_DIR/ace_tipform.py" "$EXTRAS_DIR/ace_rc522.py" "$EXTRAS_DIR/ace_gen1_tunnel.py" "$EXTRAS_DIR/ace_resistance.py" "$EXTRAS_DIR/ace_display.py" "$EXTRAS_DIR/ace_spool.py" "$EXTRAS_DIR/ace_swap.py" "$EXTRAS_DIR/ace_settings.py" "$EXTRAS_DIR/ace_unit.py" "$EXTRAS_DIR/ace_drivers.py"
+chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/ace_macro_layout.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/ace_protocol_cfs.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py" "$EXTRAS_DIR/ace_tipform.py" "$EXTRAS_DIR/ace_rc522.py" "$EXTRAS_DIR/ace_gen1_tunnel.py" "$EXTRAS_DIR/ace_resistance.py" "$EXTRAS_DIR/ace_display.py" "$EXTRAS_DIR/ace_spool.py" "$EXTRAS_DIR/ace_swap.py" "$EXTRAS_DIR/ace_settings.py" "$EXTRAS_DIR/ace_unit.py" "$EXTRAS_DIR/ace_bus_v2.py" "$EXTRAS_DIR/ace_drivers.py"
 log "  Klipper extras installed"
 cp "$INSTALL_DIR/klipper/kinematics/extruder_ace.py" "$KINEMATICS_DIR/extruder_ace.py"
 chmod 644 "$KINEMATICS_DIR/extruder_ace.py"

@@ -231,6 +231,10 @@ class AceProtocolV2(AceProtocol):
     # Anycubic CH343 cable (1a86:55d3). Empty by default - the strict
     # 55d3 match stays the default so unrelated CH340 devices are ignored.
     EXTRA_USB_IDS = ()
+    # Opt-in daisy chain, set from ace.py from [ace] v2_chain. When on, every
+    # ACE 2 cable is driven by a bus (ace_bus_v2.py) and each unit on it is
+    # one virtual path '<cable>@<uid>'. Off: one port per unit, as before.
+    CHAIN = False
     SERIAL_KWARGS = {
         'timeout': 0.1,
     }
@@ -254,8 +258,36 @@ class AceProtocolV2(AceProtocol):
 
     @classmethod
     def discover(cls):
-
+        if cls.CHAIN:
+            from . import ace_bus_v2
+            return ace_bus_v2.discover_units(cls.chain_cables())
         return cls._scan_v2_serial_paths()
+
+    # Set by ace.py when the chain is on: drops the cables the discovery
+    # must not open ([mcu] serial, [ace] exclude_ports) before a bus does.
+    CHAIN_CABLE_FILTER = None
+
+    @classmethod
+    def chain_cables(cls):
+        """The ACE 2 cables a chain bus may open."""
+        cables = cls._scan_v2_serial_paths()
+        filt = cls.CHAIN_CABLE_FILTER
+        return filt(cables) if filt is not None else cables
+
+    @staticmethod
+    def is_bus_path(path):
+        """True for a unit on a daisy-chain bus ('<cable>@<uid>')."""
+        return AceProtocolV2.CHAIN and '@' in str(path or '')
+
+    @staticmethod
+    def device_present(path):
+        """Whether the device behind path is there to be opened: the device
+        file for a normal port, the unit answering on its bus for a chain
+        path (which is no file, so os.path.exists() is always False)."""
+        if AceProtocolV2.is_bus_path(path):
+            from . import ace_bus_v2
+            return ace_bus_v2.unit_present(path)
+        return os.path.exists(str(path))
 
     @classmethod
     def discover_usb_serial_candidates(cls):
@@ -505,6 +537,11 @@ class AceProtocolV2(AceProtocol):
         bootloader, not an ACE 2), reason = the probe's failure category
         and error text; the caller then treats the unit as keyless for
         this scan."""
+        if cls.is_bus_path(path):
+            # the bus knows the unit by its uid; no extra wire traffic
+            from . import ace_bus_v2
+            key = ace_bus_v2.uid_key_for(path)
+            return key, ('' if key else 'bus path without uid')
         res = cls.probe_device(path, query_timeout=query_timeout) or {}
         if res.get('ok'):
             return cls.uid_key(res.get('uid') or ()), ''
@@ -513,7 +550,9 @@ class AceProtocolV2(AceProtocol):
 
     @classmethod
     def open_transport(cls, path, baud, **kwargs):
-
+        if cls.is_bus_path(path):
+            from . import ace_bus_v2
+            return ace_bus_v2.open_unit(path)
         import serial
         return serial.Serial(
             port=path,

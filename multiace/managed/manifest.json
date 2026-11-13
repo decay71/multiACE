@@ -21,6 +21,7 @@
     "klipper/extras/ace_protocol.py",
     "klipper/extras/ace_protocol_v1.py",
     "klipper/extras/ace_protocol_v2.py",
+    "klipper/extras/ace_bus_v2.py",
     "klipper/extras/ace_protocol_cfs.py",
     "klipper/extras/ace_bg_swap.py",
     "klipper/extras/ace_tipform.py",
