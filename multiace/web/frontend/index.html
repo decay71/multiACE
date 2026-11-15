@@ -362,6 +362,14 @@
             :title="t('ui.inbox.dismiss')">&times;</button>
   </div>
   <main v-if="!panelMode">
+    <section v-if="tab==='dashboard' && state.mode === 'normal'" class="normal-mode-hint">
+      <h3>{{ t('ui.dashboard.normal_mode_title') }}</h3>
+      <p>{{ t('ui.dashboard.normal_mode_msg') }}</p>
+      <div class="mode-row">
+        <button v-for="m in ['multi','head']" :key="m"
+                @click="setMode(m)">{{ m }}</button>
+      </div>
+    </section>
     <section v-show="tab==='dashboard' && state.mode !== 'normal'">
       <p v-if="loadError" class="error">{{ loadError }}</p>
       <div class="status-row">
@@ -519,7 +527,7 @@
                 <!-- Humidity control, ACE 2: it has the reading, so it owns
                      the thresholds. An invalid pair frames BOTH fields red
                      and is not sent (autoDryPairInvalid). -->
-                <div class="dry-row auto-dry" v-if="ace.auto_dry && ace.protocol === 'v2' && aceHasDryer(ace)">
+                <div class="dry-row auto-dry" v-if="ace.auto_dry && (ace.has_humidity !== undefined ? ace.has_humidity : ace.protocol === 'v2') && aceHasDryer(ace)">
                   <label class="config-inline-check">
                     <input type="checkbox" :checked="ace.auto_dry.enabled"
                            @change="autoDryEnable(ace.idx, $event, ace.auto_dry)">
@@ -544,7 +552,7 @@
                      FOLLOWS one ACE 2 - picked here, with its own drying
                      temperature and its own run-on time (a Pro is sealed
                      worse, so it keeps going after its master is done). -->
-                <div class="dry-row auto-dry" v-if="ace.auto_dry && ace.protocol !== 'v2' && aceHasDryer(ace)">
+                <div class="dry-row auto-dry" v-if="ace.auto_dry && !(ace.has_humidity !== undefined ? ace.has_humidity : ace.protocol === 'v2') && aceHasDryer(ace)">
                   <label class="config-inline-check">
                     <!-- No master picked = nothing could ever start this unit,
                          so the box stays out of reach until one is chosen
@@ -710,6 +718,13 @@
                      :disabled="t_.head_source_known || t_.filament_at_extruder"
                      @change="headToggle($event, t_.manual, v => setHeadManual(t_.idx, v))">
               <span>{{ t('ui.dashboard.manual') }}</span>
+            </label>
+            <label class="th-manual th-bg"
+                   v-if="t_.module_exist && state.mode === 'multi' && !t_.manual && multiBgPossible()"
+                   :title="t('ui.dashboard.bg_hint_multi')">
+              <input type="checkbox" :checked="bgEnabledFor(t_.idx)"
+                     @change="headToggle($event, bgEnabledFor(t_.idx), v => setBgHead(t_.idx, v))">
+              <span>{{ t('ui.dashboard.bg') }}</span>
             </label>
             <label class="th-manual" v-if="t_.module_exist && state.mode === 'head'"
                    :class="{disabled: t_.head_source_known || t_.filament_at_extruder}"
@@ -2374,13 +2389,24 @@
       </div>
       <div class="nt-tile">
       <h3>{{ t('ui.config.notify_title') }}</h3>
+      <!-- Browsers allow system notifications only on https or localhost;
+           the printer serves plain http, so the choice only shows where
+           the browser offers it. -->
+      <template v-if="browserNotifySupported">
       <label class="pickup-clean-toggle">
         <input type="checkbox" :checked="browserNotify"
                @change="setBrowserNotify($event.target.checked)">
         {{ t('ui.config.notify_browser_label') }}
       </label>
-      <p class="muted small">{{ browserNotifySupported ? t('ui.config.notify_browser_hint') : t('ui.config.notify_browser_unavailable') }}</p>
+      <p class="muted small">{{ t('ui.config.notify_browser_hint') }}</p>
       <p v-if="browserNotifyMsg" class="small notify-msg err">{{ browserNotifyMsg }}</p>
+      </template>
+      <label class="pickup-clean-toggle">
+        <input type="checkbox" :checked="notifyPush.on"
+               @change="setNotifyPushOn($event.target.checked)">
+        {{ t('ui.config.notify_push_label') }}
+      </label>
+      <template v-if="notifyPush.on">
       <div class="config-row">
         <label>{{ t('ui.config.notify_push_url') }}</label>
         <input type="url" v-model="notifyPush.url" placeholder="https://ntfy.sh/..."
@@ -2400,6 +2426,7 @@
       </div>
       <p v-if="notifyPush.msg" class="small notify-msg" :class="{err: !notifyPush.ok}">{{ notifyPush.msg }}</p>
       <p class="muted small config-row-hint">{{ t('ui.config.notify_push_hint') }}</p>
+      </template>
       </div>
       <div class="nt-tile">
       <h3>{{ t('ui.config.quad_replenish') }}</h3>
@@ -2418,6 +2445,19 @@
       </label>
       <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.stock_first_hint') : null">{{
         uiTheme === 'new' ? t('ui.config.nt_stock_first_short') : t('ui.config.stock_first_hint') }}</p>
+      </div>
+      <div class="nt-tile" v-if="(state.mode === 'head' || multiBgPossible()) && state.bg_swap?.available && state.bg_swap?.load_mode">
+      <h3>{{ t('ui.config.bg_mode') }}</h3>
+      <div class="config-row">
+        <select :value="bgMode()" @change="setBgMode($event)"
+                :disabled="(state.bg_swap?.busy || []).length > 0">
+          <option value="full">{{ t('ui.config.bg_mode_full') }}</option>
+          <option value="transport">{{ t('ui.config.bg_mode_transport') }}</option>
+          <option value="unload">{{ t('ui.config.bg_mode_unload') }}</option>
+        </select>
+      </div>
+      <p class="muted small" :title="uiTheme === 'new' ? t('ui.config.bg_mode_hint') : null">{{
+        uiTheme === 'new' ? t('ui.config.nt_bg_mode_short') : t('ui.config.bg_mode_hint') }}</p>
       </div>
       <div class="nt-tile">
       <h3>{{ t('ui.config.pickup_cleaning') }}</h3>
@@ -2539,11 +2579,6 @@
         </div>
         <div class="config-sep"></div>
         <div class="nt-pgroup nt-pg-purge">
-        <div class="config-row">
-          <label>{{ t('ui.config.swap_purge_length') }}</label>
-          <input type="number" v-model.number="configForm.swap_purge_length"
-                 min="0" max="200" step="1" placeholder="0">
-        </div>
         <!-- Live like the spoolman/confirm toggles (write-through setter,
              no Save/restart): off makes the engine ignore the preflight's
              per-pair purge stamps, also on already-processed files. -->
@@ -2556,24 +2591,25 @@
           </label>
         </div>
         <p class="muted small config-row-hint">{{ t('ui.config.purge_matrix_hint') }}</p>
-        <!-- Live like the matrix toggle: the engine rescales and bounds
-             every resolved purge length (stamp, swap_purge_length or the
-             stock 80 mm). The preflight estimate follows. -->
+        <!-- One control for the purge amount: percent on every resolved
+             purge length (per-pair stamp or the stock 80 mm), inline and
+             in the dock. Live, no Save or restart. -->
         <div class="config-row">
           <label>{{ t('ui.config.purge_scale') }}</label>
-          <input type="number" :value="purgePolicyValue('SCALE', state.purge_scale)" @input="purgePolicyInput('SCALE', $event)" min="25" max="200" step="5"
-                 @change="setPurgePolicy('SCALE', $event.target.value)">
+          <span class="purge-slider">
+            <span class="muted small">{{ t('ui.config.purge_faster') }}</span>
+            <input type="range" min="25" max="200" step="5"
+                   :disabled="state.purge_custom"
+                   :value="state.purge_custom ? 100 : purgePolicyValue('SCALE', state.purge_scale)"
+                   @input="purgePolicyInput('SCALE', $event)"
+                   @change="setPurgePolicy('SCALE', $event.target.value)">
+            <span class="muted small">{{ t('ui.config.purge_cleaner') }}</span>
+            <strong v-if="!state.purge_custom">{{ purgePolicyValue('SCALE', state.purge_scale) }} %</strong>
+          </span>
         </div>
-        <div class="config-row">
-          <label>{{ t('ui.config.purge_floor') }}</label>
-          <input type="number" :value="purgePolicyValue('FLOOR', state.purge_floor)" @input="purgePolicyInput('FLOOR', $event)" min="0" max="200" step="1" placeholder="0"
-                 @change="setPurgePolicy('FLOOR', $event.target.value)">
-        </div>
-        <div class="config-row">
-          <label>{{ t('ui.config.purge_cap') }}</label>
-          <input type="number" :value="purgePolicyValue('CAP', state.purge_cap)" @input="purgePolicyInput('CAP', $event)" min="0" max="200" step="1" placeholder="0"
-                 @change="setPurgePolicy('CAP', $event.target.value)">
-        </div>
+        <p v-if="state.purge_custom" class="small config-row-hint purge-custom-note">{{ t('ui.config.purge_custom_note') }}
+          <button class="purge-reset" :disabled="purgeResetBusy"
+                  @click="resetPurgeCustom()">{{ t('ui.config.purge_custom_reset') }}</button></p>
         <p class="muted small config-row-hint">{{ t('ui.config.purge_policy_hint') }}</p>
         </div>
         <div class="config-sep"></div>
@@ -3001,7 +3037,10 @@ reboot</pre>
         <h4>{{ t('ui.config.acefw_title') }}</h4>
         <p class="muted small">{{ acefwIsV1
           ? t('ui.config.acefw_gen1_intro')
-          : t('ui.config.acefw_intro') }}</p>
+          : acefwMode
+            ? t('ui.config.acefw_ace2k_intro',
+                {v: (acefwAce2k.flasher || {}).version || '?'})
+            : t('ui.config.acefw_intro') }}</p>
         <div class="config-form">
           <div class="config-row">
             <label>{{ t('ui.config.acefw_ace') }}</label>
@@ -3021,6 +3060,22 @@ reboot</pre>
                      @change="acefwUpload($event.target.files)">
             </span>
           </div>
+          <!-- ace2k images from tobecwb's GitHub releases, for every ACE 2
+               (stock, ACE2-Open or ace2k): the listed versions only, the
+               backend checks the release sha256. -->
+          <div class="config-row" v-if="!acefwIsV1 && acefwDownloads.length">
+            <label>{{ t('ui.config.acefw_dl_label') }}</label>
+            <span class="acefw-dl">
+              <select v-model="acefwDl.version" :disabled="acefwDl.busy || acefw.busy">
+                <option v-for="v in acefwDownloads" :key="'dl'+v.version"
+                        :value="v.version">ace2k {{ v.version }}</option>
+              </select>
+              <button :disabled="!acefwDl.version || acefwDl.busy || acefw.busy"
+                      @click="acefwDownload()">{{ acefwDl.busy
+                        ? t('ui.config.acefw_dl_busy')
+                        : t('ui.config.acefw_dl_btn') }}</button>
+            </span>
+          </div>
           <!-- Only TESTED images are offered (one allowlist per generation)
                - the byte gate in the matching backend (ace2_ota.py for the
                ACE 2, ace1_flash.py for the Gen 1) refuses anything that
@@ -3028,7 +3083,16 @@ reboot</pre>
                version = dry run with the new package, read size/CRC/MD5
                off the result, add the entry to the matching
                KNOWN_FIRMWARE. -->
-          <div class="config-row">
+          <!-- ace2k image: the file carries its version, so the row shows
+               it instead of a dropdown. -->
+          <div class="config-row" v-if="acefwMode === 'ace2k'">
+            <label>{{ t('ui.config.acefw_version_label') }}</label>
+            <span>ace2k {{ acefw.ace2kImage.version || '?' }}
+              <span v-if="acefw.ace2kImage.error" class="warn">{{ acefw.ace2kImage.error }}</span>
+              <span v-else-if="!acefw.ace2kImage.known" class="warn">{{ t('ui.config.acefw_ace2k_unknown') }}</span>
+            </span>
+          </div>
+          <div class="config-row" v-else>
             <label>{{ t('ui.config.acefw_version_label') }}</label>
             <select v-model="acefw.version" class="acefw-version">
               <option value="" disabled>{{ t('ui.common.select') }}</option>
@@ -3061,7 +3125,8 @@ reboot</pre>
              class="muted small acefw-danger">{{ t('ui.config.acefw_patch_warn2') }}</p>
           <!-- Gen 1 has no .swu packaging: raw .bin only, so the password
                field is a Gen-2 thing. -->
-          <div class="config-row" v-if="!acefwIsV1">
+          <p v-if="acefwMode === 'ace2k_back'" class="muted small">{{ t('ui.config.acefw_ace2k_back') }}</p>
+          <div class="config-row" v-if="!acefwIsV1 && acefwMode !== 'ace2k'">
             <label>{{ t('ui.config.acefw_pw_label') }}</label>
             <input v-model="acefw.password" class="acefw-pw"
                    :placeholder="t('ui.config.acefw_pw_ph')">
@@ -3071,7 +3136,7 @@ reboot</pre>
                bypassed - the allowlist byte gate always applies. Gen 1 has
                no same-version skip at all (a version string does not
                identify a Gen-1 image), so the field is Gen-2 only. -->
-          <div class="config-row" v-if="!acefwIsV1">
+          <div class="config-row" v-if="!acefwIsV1 && !acefwMode">
             <label>{{ t('ui.config.acefw_force') }}</label>
             <label class="acefw-force-row">
               <input type="checkbox" v-model="acefw.force">
@@ -3087,9 +3152,26 @@ reboot</pre>
                   @click="acefwFlash()">{{ t('ui.config.acefw_flash') }}</button>
           <span class="small" :class="acefwStatusBad ? 'acefw-err' : 'muted'"
                 >{{ acefwStatusText }}</span>
+          <a v-if="acefw.status && acefw.status.calibration" class="small"
+             :href="acefwCalibUrl(acefw.status.calibration)"
+             :download="acefw.status.calibration">{{ t('ui.config.acefw_calib_get') }}</a>
         </div>
       </div>
       <p v-if="!acefwCandidates.length" class="muted small">{{ t('ui.config.acefw_none') }}</p>
+      <!-- Factory calibrations the ace2k flasher saved before writing. -->
+      <div class="update-card" v-if="acefwCalibs.length">
+        <h4>{{ t('ui.config.acefw_calib_title') }}</h4>
+        <p class="muted small">{{ t('ui.config.acefw_calib_intro') }}</p>
+        <table class="devices-table acefw-calib-table">
+          <tbody>
+            <tr v-for="f in acefwCalibs" :key="f.name">
+              <td>{{ acefwCalibUnit(f) }}</td>
+              <td class="muted small">{{ acefwCalibStamp(f) }}</td>
+              <td><a :href="acefwCalibUrl(f.name)" :download="f.name">{{ t('ui.config.acefw_calib_dl') }}</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
     <section v-for="p in plugins.items" :key="'sec-'+p.name"
              v-show="tab===('plugin:'+p.name)"

@@ -46,6 +46,7 @@ jobs:
             multiace/klipper/extras/ace_unit.py \
             multiace/klipper/extras/ace_drivers.py \
             multiace/klipper/extras/ace_protocol_cfs.py \
+            multiace/klipper/extras/ace_protocol_ace2k.py \
             multiace/web/backend/i18n_path.py \
             multiace/web/backend/main.py \
             multiace/web/backend/orca_profile.py \

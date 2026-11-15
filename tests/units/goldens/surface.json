@@ -17,14 +17,15 @@
     "AceBgSwap._dh"
    ],
    "_feed_assist_per_ace": [
-    "AceBgSwap._ace_feed_to_gears",
-    "AceBgSwap._ace_quiesce",
-    "AceBgSwap._fa_on",
-    "AceBgSwap._load_core",
+    "AceBgSwap._fa_cache_clear",
+    "AceBgSwap._fa_cache_mark",
     "AceBgSwap._unload_core"
    ],
    "_ghost_heads": [
     "AceBgSwap._load_bookkeeping"
+   ],
+   "_head_sensor_present": [
+    "AceBgSwap.cmd_ACE_BG_COIL_TEST"
    ],
    "_head_source": [
     "AceBgSwap._load_bookkeeping",
@@ -34,6 +35,8 @@
    ],
    "_info_per_ace": [
     "AceBgSwap._load_bookkeeping",
+    "AceBgSwap._move_report",
+    "AceBgSwap._slot_motion",
     "AceBgSwap._slot_status"
    ],
    "_is_actively_printing": [
@@ -60,6 +63,9 @@
     "AceBgSwap.cmd_ACE_BG_SWAP",
     "AceBgSwap.cmd_ACE_BG_UNLOAD"
    ],
+   "_retract_pending_clear": [
+    "AceBgSwap._unload_core._do_rest"
+   ],
    "_retract_with_decoder_span": [
     "AceBgSwap._load_core",
     "AceBgSwap._unload_core"
@@ -84,6 +90,9 @@
    "_v2_get_slot_status": [
     "AceBgSwap._slot_status"
    ],
+   "_wiggle_log": [
+    "AceBgSwap.cmd_ACE_BG_COIL_TEST"
+   ],
    "book_spool_use": [
     "AceBgSwap._load_core"
    ],
@@ -91,9 +100,6 @@
     "AceBgSwap._load_core"
    ],
    "get_load_length": [
-    "AceBgSwap._load_core"
-   ],
-   "get_purge_length": [
     "AceBgSwap._load_core"
    ],
    "get_retract_length": [
@@ -157,6 +163,10 @@
    "_bg_arrival_waiting": [
     "AceBgSwap._unload_core"
    ],
+   "_bg_dock_coil": [
+    "AceBgSwap._dock_coil_report",
+    "AceBgSwap._load_core"
+   ],
    "_bg_prime_deficit": [
     "AceBgSwap._load_core",
     "AceBgSwap._run_swap",
@@ -164,7 +174,8 @@
    ],
    "_bg_staged": [
     "AceBgSwap._clear_staged",
-    "AceBgSwap._mark_staged"
+    "AceBgSwap._mark_staged",
+    "AceBgSwap.cmd_ACE_BG_SWAP"
    ],
    "_cap": [
     "AceBgSwap._cap"
@@ -175,8 +186,17 @@
    "_inherit_prev_capture": [
     "AceBgSwap._load_bookkeeping"
    ],
+   "_object_exclusion_suspended": [
+    "AceBgSwap.cmd_ACE_BG_WAIT"
+   ],
    "_overlay_override": [
     "AceBgSwap._load_bookkeeping"
+   ],
+   "_purge_length_override": [
+    "AceBgSwap._load_core"
+   ],
+   "_retract_pending_mark": [
+    "AceBgSwap._unload_core._do_rest"
    ],
    "_save_bg_staged": [
     "AceBgSwap._clear_staged",
@@ -189,8 +209,12 @@
    "_tipform_device_for": [
     "AceBgSwap._unload_core"
    ],
+   "_wiggle_log": [
+    "AceBgSwap._dock_coil_report"
+   ],
    "_wt_persist": [
-    "AceBgSwap.cmd_ACE_BG_SET_HEAD"
+    "AceBgSwap.cmd_ACE_BG_SET_HEAD",
+    "AceBgSwap.cmd_ACE_BG_SET_MODE"
    ],
    "apply_purge_policy": [
     "AceBgSwap._load_core"
@@ -207,6 +231,12 @@
    "note_seat_press_span": [
     "AceBgSwap._load_core"
    ],
+   "purge_desc": [
+    "AceBgSwap._load_core"
+   ],
+   "purge_shrink": [
+    "AceBgSwap._load_core"
+   ],
    "seat_overshoot_length": [
     "AceBgSwap._load_core"
    ],
@@ -215,6 +245,9 @@
    ],
    "swap_dwell_fan": [
     "AceBgSwap._dwell_fan"
+   ],
+   "swap_purge_length": [
+    "AceBgSwap._load_core"
    ],
    "tipform_bg_prime_speed_for": [
     "AceBgSwap._load_core"
@@ -353,13 +386,14 @@
     "FilamentFeed.cmd_FEED_AUTO"
    ],
    "_ace_slot_for_head": [
-    "FeedPort.get_filament_detected",
+    "FeedPort._ace_gate_value",
     "FilamentFeed._do_feed",
     "FilamentFeed.get_status"
    ],
    "_active_device_index": [
     "FilamentFeed._do_feed",
     "FilamentFeed._note_feed_verdict",
+    "FilamentFeed._slot_left_unit",
     "FilamentFeed._unit_motion"
    ],
    "_arm_fa_for": [
@@ -414,19 +448,26 @@
     "FilamentFeed._do_feed"
    ],
    "_gate_status_per_ace": [
-    "FeedPort.get_filament_detected",
-    "FilamentFeed._do_feed"
+    "FeedPort._ace_gate_value",
+    "FilamentFeed._do_feed",
+    "FilamentFeed._slot_left_unit"
    ],
    "_ghost_heads": [
     "FilamentFeed._do_feed"
+   ],
+   "_head_filament_present": [
+    "FilamentFeed._ace_head_holds_filament"
    ],
    "_head_is_loaded": [
     "FilamentFeed._virtual_preload"
    ],
    "_head_source": [
-    "FeedPort.get_filament_detected",
+    "FeedPort._ace_gate_value",
+    "FilamentFeed._ace_head_holds_filament",
     "FilamentFeed._do_feed",
-    "FilamentFeed._restore_print_fa_gate"
+    "FilamentFeed._restore_print_fa_gate",
+    "FilamentFeed._slot_left_unit",
+    "FilamentFeed.cmd_FEED_AUTO"
    ],
    "_info_per_ace": [
     "FilamentFeed._do_feed",
@@ -436,6 +477,9 @@
     "FilamentFeed._do_feed"
    ],
    "_last_unload_reason": [
+    "FilamentFeed._do_feed"
+   ],
+   "_lean_flush_ran": [
     "FilamentFeed._do_feed"
    ],
    "_machine_state_after_feed_op": [
@@ -511,7 +555,7 @@
     "FilamentFeed._do_feed"
    ],
    "gate_status": [
-    "FeedPort.get_filament_detected",
+    "FeedPort._ace_gate_value",
     "FilamentFeed.get_status"
    ],
    "get_load_length": [
@@ -524,7 +568,7 @@
     "FilamentFeed._do_feed"
    ],
    "head_ace_for": [
-    "FeedPort.get_filament_detected"
+    "FeedPort._ace_gate_value"
    ],
    "head_load_retry": [
     "FilamentFeed._do_feed"
@@ -533,7 +577,7 @@
     "FilamentFeed._do_feed"
    ],
    "head_uses_ace": [
-    "FeedPort.get_filament_detected",
+    "FeedPort._ace_gate_value",
     "FilamentFeed._do_feed",
     "FilamentFeed._restore_print_fa_gate",
     "FilamentFeed._virtual_preload",
@@ -577,7 +621,7 @@
     "FilamentFeed.cmd_FEED_AUTO"
    ],
    "_ace_mode": [
-    "FeedPort.get_filament_detected",
+    "FeedPort._ace_gate_value",
     "FilamentFeed._do_feed",
     "FilamentFeed._localized_feed_head",
     "FilamentFeed.cmd_FEED_AUTO"
@@ -591,6 +635,9 @@
    "_feedlog": [
     "FilamentFeed._do_feed",
     "FilamentFeed._unload_dec_log"
+   ],
+   "_gate_flip_ts": [
+    "FilamentFeed._slot_left_unit"
    ],
    "_head_source": [
     "FilamentFeed._emit_feed_pause",
@@ -622,6 +669,7 @@
    ],
    "_swap_in_progress": [
     "FilamentFeed._do_feed",
+    "FilamentFeed._lean_flush_swap",
     "FilamentFeed._runout_evt_handle",
     "FilamentFeed.cmd_FEED_RUNOUT_EVENT_HANDLE"
    ],
@@ -648,6 +696,9 @@
    ],
    "head_uses_ace": [
     "FilamentFeed._localized_feed_head"
+   ],
+   "lean_flush": [
+    "FilamentFeed._lean_flush_swap"
    ],
    "load_feed_temp_drop": [
     "FilamentFeed._load_feed_temp_drop"

@@ -49,6 +49,9 @@ SHIPPED_ACE_CFG = os.path.join(REPO, 'multiace', 'config', 'extended',
 GOLDENS = os.path.join(HERE, 'goldens')
 
 PKG = 'multiace_h0_extras'
+# Units whose codec runs a link inside the writer thread (half duplex,
+# the device answers within the write that asked).
+LINK_KINDS = ('cfs', 'ace2k')
 
 # Import-time environment of ace.py: the managed marker must not depend on
 # the machine the tests run on.
@@ -931,7 +934,7 @@ class FakeSerial:
                 data = bytes(self.rx[:size])
                 del self.rx[:size]
                 return data
-            if (self.unit.kind == 'cfs' and self.is_open and not self.rx
+            if (self.unit.kind in LINK_KINDS and self.is_open and not self.rx
                     and self.fail_read is None and not self._gone()):
                 # The CFS link reads inside the writer thread (half duplex)
                 # and its box answers within the write that asked, so an
@@ -951,7 +954,7 @@ class FakeSerial:
                 waited += 1
                 # A CFS link waits for its reply inside the writer thread
                 # (half duplex); its misses count, keep them short.
-                if waited >= (1 if self.unit.kind == 'cfs' else 10):
+                if waited >= (1 if self.unit.kind in LINK_KINDS else 10):
                     return b''
             if not self.is_open:
                 return b''
@@ -976,7 +979,7 @@ class FakeSerial:
         if self.mute or getattr(self.unit, 'unpowered', False):
             return len(data)
         for latency, reply in self.unit.device.on_bytes(data):
-            if self.unit.kind == 'cfs':
+            if self.unit.kind in LINK_KINDS:
                 # The CFS link blocks the writer thread on its reply, so
                 # the clock cannot move meanwhile: the box answers at once.
                 self._inject(reply)
@@ -1199,7 +1202,7 @@ class Harness:
             # Discovery decided the protocol; a mismatch here is a harness
             # bug, not a device behaviour.
             raise RuntimeError('unit %s opened as %s' % (unit.label, kind))
-        ser = FakeSerial(self, unit, threaded=(kind in ('v2', 'cfs')))
+        ser = FakeSerial(self, unit, threaded=(kind in ('v2',) + LINK_KINDS))
         unit.serial = ser
         self.trace('serial', 'open', unit.label)
         return ser
@@ -1223,17 +1226,23 @@ class Harness:
         PC = sys.modules[PKG + '.ace_protocol_cfs']
         self._patch(PC, 'time', time_shim)
         self._patch(PC, 'queue', make_queue_shim(self))
+        PK = sys.modules[PKG + '.ace_protocol_ace2k']
+        self._patch(PK, 'time', time_shim)
+        self._patch(PK, 'queue', make_queue_shim(self))
         h = self
 
         def discover_v1(cls):
             return [u.path for u in h.units if u.kind == 'v1' and u.plugged]
 
         def discover_v2(cls):
-            return [u.path for u in h.units if u.kind == 'v2' and u.plugged]
+            # An ace2k unit carries the ACE 2's USB id: the V2 discovery
+            # lists its port too (the port protection keeps V2 off it).
+            return [u.path for u in h.units
+                    if u.kind in ('v2', 'ace2k') and u.plugged]
 
         def is_official(cls, path):
             u = h.by_path.get(path)
-            return bool(u and u.kind == 'v2' and u.plugged)
+            return bool(u and u.kind in ('v2', 'ace2k') and u.plugged)
 
         def read_usb_ids(real_dev):
             for u in h.units:
@@ -1292,6 +1301,37 @@ class Harness:
                     'firmware': '13680000140289S226GSHT', 'uid': words,
                     'addr': 0x35}
 
+        def discover_ace2k(cls):
+            plugged = set(u.path for u in h.units
+                          if u.kind == 'ace2k' and u.plugged)
+            return [p for p in cls.PORTS if p in plugged]
+
+        def open_raw_ace2k(cls, path, baud):
+            return h.open_transport(path, 'ace2k')
+
+        def probe_ace2k(cls, path, query_timeout=0.5):
+            # The pre-claim key probe (dictionary + uid): a plugged,
+            # powered unit answers its device id; anything else is silent.
+            # The real probe is tested against FakeAce2k in
+            # test_ace2k_codec.py.
+            u = h.by_path.get(path)
+            dev = getattr(u, 'device', None)
+            ok = bool(u and u.kind == 'ace2k' and u.plugged
+                      and not getattr(u, 'unpowered', False))
+            words = PK.chip_words(dev.uid) if ok else ()
+            h.trace('probe', 'ace2k', path, PK.uid_key(words))
+            if not ok:
+                return {'ok': False, 'category': 'no_response',
+                        'error': 'no data dictionary at 250000 baud'}
+            return {'ok': True, 'category': 'verified', 'model': PK.MODEL,
+                    'firmware': 'ace2k v0.13.0', 'uid': words}
+
+        self._patch(PK.AceProtocolAce2k, 'discover',
+                    classmethod(discover_ace2k))
+        self._patch(PK.AceProtocolAce2k, 'open_raw',
+                    classmethod(open_raw_ace2k))
+        self._patch(PK.AceProtocolAce2k, 'probe_device',
+                    classmethod(probe_ace2k))
         self._patch(PC.AceProtocolCfs, 'discover', classmethod(discover_cfs))
         self._patch(PC.AceProtocolCfs, 'open_raw', classmethod(open_raw_cfs))
         self._patch(PC.AceProtocolCfs, 'probe_device', classmethod(probe_cfs))

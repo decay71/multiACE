@@ -168,6 +168,7 @@ def test_prime_time_for_a_142mm_prime():
 class Held(object):
     cmd_ACE_BG_SWAP = BG.AceBgSwap.cmd_ACE_BG_SWAP
     _finish = BG.AceBgSwap._finish
+    _lanes_of_ops = BG.AceBgSwap._lanes_of_ops
     _defer_swap = BG.AceBgSwap._defer_swap
     _drop_deferred = BG.AceBgSwap._drop_deferred
     _run_deferred = BG.AceBgSwap._run_deferred
@@ -438,6 +439,8 @@ def _simulate(soft=False, **knobs):
     bg._last_end = {}
     bg.prime_speed = knobs.get('prime_speed', BG.BG_LOAD_PRIME_SPEED_DEFAULT)
     bg.prime_extra = knobs.get('prime_extra', BG.BG_LOAD_PRIME_EXTRA)
+    bg.grip_length = knobs.get('grip_length', BG.BG_LOAD_GRIP_SEAT)
+    bg.grip_speed = knobs.get('grip_speed', BG.BG_LOAD_GRIP_SPEED)
     bg.pull_early_start = knobs.get('early', BG.BG_PULL_EARLY_START_C)
     bg.pull_push = knobs.get('push', 0.)
     bg.gcode = types.SimpleNamespace(respond_raw=lambda m: None)
@@ -455,7 +458,8 @@ def _simulate(soft=False, **knobs):
                  '_heat_claim'):
         setattr(bg, name, lambda *a, **k: None)
     bg._gpio_diag = lambda *a: False
-    bg._cap = lambda *a: True
+    # An ACE 2: every cap of the V2 path, one lane at a time.
+    bg._cap = lambda ace, idx, name: name != 'lanes_concurrent'
     bg._slot_status = lambda *a: 'ready'
     bg._fa_on = lambda *a, **k: True
     bg._set_heat = lambda a, p, h, t: h.set(t)
@@ -467,7 +471,8 @@ def _simulate(soft=False, **knobs):
         return {'code': 0, 'msg': 'OK'}
     bg._ace_send = send
 
-    def unwind(a, idx, slot, length, speed, wait=True, retries=3):
+    def unwind(a, idx, slot, length, speed, wait=True, retries=3,
+               report=None):
         ev.append((clk.now, 'UNWIND %d' % length))
         clk.pause(clk.now + 0.4)
         return True

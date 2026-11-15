@@ -1083,7 +1083,7 @@ def head_mode_flush_cost(events, assignment, flush_matrix):
     return total
 
 def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None,
-                       copies=None):
+                       copies=None, bg_units=None):
     """Background-unload balance of a head-mode assignment: for every unload
     the rewrite WOULD stamp (same conditions as rewrite_head_mode_to_file -
     a released ACE head whose next arrival needs a different slot), classify
@@ -1093,7 +1093,10 @@ def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None,
       unknown  - no M73 time info (stamped; engine abort = safety net)
       disabled - head not bg-enabled (no open dock declared)
     event_times = per-event remaining minutes (parse_toolchanges_with_times),
-    bg_heads = bg-enabled head indices. Returns {'unloads','bg_ok','bg_small',
+    bg_heads = bg-enabled head indices. bg_units = the MMUs a bg op may move
+    (multi topology: the lane-concurrent ones), None = every unit (head
+    mode); an unload whose old or new unit is outside counts as disabled
+    (detail verdict 'unit'). Returns {'unloads','bg_ok','bg_small',
     'bg_unknown','bg_disabled','saved_s','details':[{head,window,verdict}]}."""
     if copies:
         # With colour copies the head printing an event is the per-event
@@ -1148,6 +1151,10 @@ def head_mode_bg_stats(events, assignment, event_times=None, bg_heads=None,
                                      and r_nxt is not None) else None
         if head not in bg_set:
             verdict = 'disabled'
+            stats['bg_disabled'] += 1
+        elif bg_units is not None and not (loaded_now[0] in bg_units
+                                           and nxt[0] in bg_units):
+            verdict = 'unit'
             stats['bg_disabled'] += 1
         elif window is None:
             verdict = 'unknown'
@@ -1668,13 +1675,24 @@ BG_INITIAL_LOAD = True
 # 6: stamped ACE_BG_WAIT arrival holds before toolchanges.
 # 7: flush_multiplier applied in both directions to the purge stamps.
 # 8: ACE_BG_SWAP LOAD=transport on short parked windows.
-PP_FORMAT_VERSION = 8
+# 9: multi files can carry ACE_BG_SWAP stamps (lane-concurrent units).
+# 10: a cooldown of the printing head is dropped when the next toolchange
+# stays on that head (scan_cooling_standbys).
+# 11: the start tool's prime in the auto-load block carries TEMP=.
+PP_FORMAT_VERSION = 11
 
 # Written by both rewrites right after the pre-body tool select. A one-colour
 # export has no tool change in the body (Orca writes no change_filament_gcode
 # then), so this is the only place the start tool's ACE slot survives into
 # inject_auto_load_to_file.
 START_TOOL_MARK = '; multiACE start tool: HEAD=%d ACE=%d SLOT=%d\n'
+# Temperature of the start tool's prime in the auto-load block: the head's
+# last heater target before the block, or (when that is only a preheat below
+# BLOCK_PRIME_MIN_TEMP) its first target at or above it after the block; BLOCK_PRIME_DEFAULT_TEMP (stock's own
+# fallback) when the file names none.
+BLOCK_PRIME_MIN_TEMP = 180.0
+BLOCK_PRIME_DEFAULT_TEMP = 220.0
+
 START_TOOL_RE = re.compile(
     r'^;\s*multiACE start tool: HEAD=(\d+) ACE=(\d+) SLOT=(\d+)')
 
@@ -1717,8 +1735,17 @@ def scan_cooling_standbys(in_path, head_of_tool):
     Telling those apart needs the forward view, not a per-line test, so this
     replays the file: track the active head and each head's target, and when
     an extruding move runs on a head whose target is below the limit, blame
-    the line that set it. Only lines actually blamed get dropped, so a file
-    without the collision comes out byte-identical.
+    the line that set it.
+
+    A second case is dropped as well: a pre-toolchange cooldown of the
+    PRINTING head when the next toolchange stays on that same physical head
+    (two slicer tools remapped onto one head, i.e. a swap). The head never
+    parks there, so the cooldown only costs a re-heat wait after the swap.
+    A standby for a head that is not printing is never touched by this
+    rule: that head sits in its dock and the cooldown is its ooze guard.
+
+    Only lines that match one of the two cases get dropped, so a file
+    without them comes out byte-identical.
     """
     danger = set()
     # Per head, the sub-limit setters that have NOT been superseded by a
@@ -1730,6 +1757,17 @@ def scan_cooling_standbys(in_path, head_of_tool):
     active = None
     t_re = re.compile(r'^T(\d{1,2})\s*$')
     m_re = re.compile(r'^M10[49]\b')
+    # First pass: the head of every toolchange, in file order, so the main
+    # pass can ask which head the NEXT toolchange picks.
+    t_heads = []        # (line_no, head)
+    with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
+        for no, line in enumerate(fin):
+            mt = t_re.match(line.split(';')[0].strip())
+            if mt:
+                h = head_of_tool(int(mt.group(1)))
+                if h is not None:
+                    t_heads.append((no, h))
+    t_pos = 0
     with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
         for no, line in enumerate(fin):
             code = line.split(';')[0].strip()
@@ -1750,6 +1788,22 @@ def scan_cooling_standbys(in_path, head_of_tool):
                 if h is None:
                     continue
                 val = int(ms.group(1))
+                # Cooldown of the printing head although the next
+                # toolchange stays on it: drop it and keep the target the
+                # head had, so the replay below sees what the head will
+                # really hold.
+                if h == active and val > 0:
+                    prev = target.get(h)
+                    cooling = ('cooldown' in line.lower()
+                               or (prev is not None and val < prev))
+                    if cooling:
+                        while (t_pos < len(t_heads)
+                               and t_heads[t_pos][0] <= no):
+                            t_pos += 1
+                        if (t_pos < len(t_heads)
+                                and t_heads[t_pos][1] == h):
+                            danger.add(no)
+                            continue
                 target[h] = val
                 if 0 < val < STANDBY_MIN_EXTRUDE_C:
                     cold_setters.setdefault(h, []).append(no)
@@ -2013,7 +2067,8 @@ def _scan_body_tools(in_path):
 
 def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                               progress=None, pickup_cleaning=False,
-                              copies=None, bg_heads=None, bg_stamps=True):
+                              copies=None, bg_heads=None, bg_stamps=True,
+                              bg_units=None):
     """Streaming head-mode rewrite of the ORIGINAL slicer gcode. Each slicer
     T<n> is rewritten per `assignment` (compute_head_mode_layout):
       - 'pin' -> T<pin_head>                       (feeder head, no swap)
@@ -2037,7 +2092,12 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
     simulate_dynamic_swaps over the body sequence, and every lookup below
     (M104/preextrude head, the body T, the bg look-ahead) reads that plan
     by position instead of the static entry. No copies -> the plan is the
-    static assignment at every position, byte-identical output."""
+    static assignment at every position, byte-identical output.
+
+    `bg_units` (multi topology): the MMUs a background swap may move - one
+    unit feeds several heads there, so only lane-concurrent units qualify.
+    A swap whose old or new unit is outside gets no ACE_BG_SWAP stamp.
+    None = every unit (head mode, one MMU per head)."""
     def head_of(n):
         e = assignment.get(n)
         if not e:
@@ -2230,9 +2290,8 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                 # next time (or never used again) -> no stamp.
                 if (in_body and bt_idx < len(body_tools)
                         and body_tools[bt_idx] == n):
-                    # bg_stamps False = the multi topology (one ACE feeds
-                    # several heads, no background swaps): no ACE_BG_SWAP
-                    # lines at all.
+                    # bg_stamps False = no ACE_BG_SWAP lines at all (multi
+                    # topology without lane-concurrent units).
                     if bt_idx > 0 and bg_stamps:
                         rel_tool = body_tools[bt_idx - 1]
                         ae_rel = ace_entry_at(bt_idx - 1)
@@ -2247,7 +2306,18 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
                                     nxt = (e2[1], e2[2])
                                     nxt_j = j
                                     break
-                            if nxt is not None and nxt != loaded_now:
+                            if (nxt is not None and nxt != loaded_now
+                                    and bg_units is not None
+                                    and not (loaded_now[0] in bg_units
+                                             and nxt[0] in bg_units)):
+                                # Multi: a unit that cannot move one lane
+                                # while another feeds stays inline.
+                                fout.write(
+                                    '; multiACE bg-swap HEAD=%d skipped: '
+                                    'MMU %d -> MMU %d not lane-concurrent\n'
+                                    % (ae_rel[0], loaded_now[0] + 1,
+                                       nxt[0] + 1))
+                            elif nxt is not None and nxt != loaded_now:
                                 # M73 window look-ahead: only stamp when the
                                 # released head stays parked long enough (see
                                 # BG_UNLOAD_MIN_WINDOW_MIN; the overlap with
@@ -4208,6 +4278,12 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
         r'^ACE_SWAP_HEAD HEAD=(\d+) ACE=(\d+) SLOT=(\d+)(?:\s+\S+=\S+)*\s*$')
     bare_t_re  = re.compile(r'^T([0-3])\s*$')
     auto_load_re = re.compile(r'^;\s*multiACE auto-load:\s')
+    heat_re    = re.compile(r'^M10[49]\b[^;]*?\bS(\d+(?:\.\d+)?)')
+    heat_t_re  = re.compile(r'^M10[49]\b[^;]*?\bT(\d+)')
+    # First print temperature per head after the anchor (None = no T given).
+    print_temp: dict = {}
+    # Last heater target per head before the anchor.
+    pre_temp: dict = {}
 
     first_huaqi   = None
     first_chg     = None
@@ -4308,6 +4384,12 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                     break
                 if line_no in in_block_set:
                     continue
+                m_h = heat_re.match(line.strip())
+                if m_h:
+                    # LAST target before the block = what the head is at.
+                    m_ht = heat_t_re.match(line.strip())
+                    pre_temp[int(m_ht.group(1)) if m_ht else None] = (
+                        float(m_h.group(1)))
                 m_s = swap_re.match(line.strip())
                 if m_s:
                     initial[int(m_s.group(1))] = (int(m_s.group(2)),
@@ -4323,6 +4405,13 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                 if line_no in in_block_set:
                     continue
                 stripped = line.strip()
+
+                m_h = heat_re.match(stripped)
+                if m_h and float(m_h.group(1)) >= BLOCK_PRIME_MIN_TEMP:
+                    m_ht = heat_t_re.match(stripped)
+                    print_temp.setdefault(
+                        int(m_ht.group(1)) if m_ht else None,
+                        float(m_h.group(1)))
 
                 if pending_t_head is not None:
                     # Skip blank/comment lines AND the head-mode background-swap
@@ -4466,8 +4555,17 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
         # own start-gcode preextrude line instead).
         if (only_heads is not None and first_seen_head is not None
                 and first_seen_head in initial):
+            # TEMP= makes stock heat before it extrudes. Without it stock
+            # primes at the current target, and a start gcode that only
+            # preheated the head sits right at min_extrude_temp there.
+            prime_temp = pre_temp.get(first_seen_head, pre_temp.get(None))
+            if prime_temp is None or prime_temp < BLOCK_PRIME_MIN_TEMP:
+                prime_temp = print_temp.get(
+                    first_seen_head,
+                    print_temp.get(None, BLOCK_PRIME_DEFAULT_TEMP))
             inject_block.append('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d '
-                                'FORCE=1\n' % first_seen_head)
+                                'FORCE=1 TEMP=%d\n'
+                                % (first_seen_head, int(round(prime_temp))))
         inject_block.append('; multiACE auto-load: end\n')
 
     seen = 0

@@ -1183,7 +1183,9 @@ class SpoolMixin:
         filter, the hand-assignment-wins rule, the duplicate-code stop and
         the occupied-slot refusal apply exactly as on a V2."""
         try:
-            if not self._cap(idx, 'tag_identity_in_status'):
+            if (not self._cap(idx, 'tag_identity_in_status')
+                    or self._cap(idx, 'host_tag_session')):
+                # A host-read unit binds in its own ingest (card UID first).
                 return
             seen = self._v1_tag_seen.setdefault(idx, {})
             # TWO passes on purpose. _spool_bind_by_tag proves a binding

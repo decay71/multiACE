@@ -185,7 +185,13 @@ def _swap(floor=0, scale=100, cap=0):
 
     class Ace(object):
         apply_purge_policy = S.SwapMixin.apply_purge_policy
+        purge_shrink = S.SwapMixin.purge_shrink
+        purge_custom = S.SwapMixin.purge_custom
+        purge_scale_effective = S.SwapMixin.purge_scale_effective
+        swap_purge_length = 0
     a = Ace()
+    a.printer = type('P', (), {'lookup_object':
+                               staticmethod(lambda n, d=None: d)})()
     a.swap_purge_floor, a.swap_purge_scale, a.swap_purge_cap = \
         floor, scale, cap
     return a
@@ -194,7 +200,9 @@ def _swap(floor=0, scale=100, cap=0):
 def test_engine_policy_uses_the_floor_instead_of_the_fixed_40():
     assert _swap().apply_purge_policy(12) == 12          # defaults: untouched
     assert _swap().apply_purge_policy(0) == 0
-    assert _swap(scale=50).apply_purge_policy(60) == 40  # floor 0 = 40
+    # below 100 % the 40 mm minimum shrinks with the scale (50 % = 20)
+    assert _swap(scale=50).apply_purge_policy(60) == 30
+    assert _swap(scale=50).apply_purge_policy(30) == 20
     assert _swap(floor=10).apply_purge_policy(12) == 12
     assert _swap(floor=10).apply_purge_policy(5) == 10
     assert _swap(floor=10).apply_purge_policy(0) == 80   # unstamped = stock
@@ -211,7 +219,8 @@ def test_cost_model_mirrors_the_engine():
     assert m.apply_purge_policy(5) == 10
     assert m.swap_purge_min == 10
     m0 = sc.SwapCostModel({'swap_purge_scale': 50})
-    assert m0.apply_purge_policy(60) == 40
+    assert m0.apply_purge_policy(60) == 30
+    assert m0.apply_purge_policy(30) == 20
     assert sc.SwapCostModel({}).swap_purge_min == 40
 
 

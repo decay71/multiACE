@@ -107,4 +107,85 @@ def test_head_mode_single_colour_loads_the_assigned_slot(pp, tmp_path):
     pp.inject_auto_load_to_file(str(b), str(c), only_heads={2})
     block = _block(c.read_text())
     assert 'ACE_SWAP_HEAD HEAD=2 ACE=3 SLOT=1 INITIAL=1' in block
-    assert 'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=2 FORCE=1' in block
+    assert 'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=2 FORCE=1 TEMP=240' in block
+
+
+def _scan(pp, tmp_path, gcode, head_of):
+    src = tmp_path / 'cool.gcode'
+    src.write_text(gcode)
+    return pp.scan_cooling_standbys(str(src), head_of)
+
+
+def test_cooldown_dropped_when_next_toolchange_stays_on_the_head(pp, tmp_path):
+    gcode = ("T0\nM104 S220 T0\nG1 X10 Y10 E1\n"
+             "M104 S200 T0 ; set nozzle temperature ;cooldown\n"
+             "T1\nM109 S220 T1\nG1 X20 Y20 E1\n")
+    assert _scan(pp, tmp_path, gcode, lambda t: 0) == {3}
+
+
+def test_cooldown_without_comment_is_seen_by_the_lower_target(pp, tmp_path):
+    gcode = ("T0\nM104 S220 T0\nG1 X10 Y10 E1\nM104 S200 T0\n"
+             "T1\nM109 S220 T1\nG1 X20 Y20 E1\n")
+    assert _scan(pp, tmp_path, gcode, lambda t: 0) == {3}
+
+
+def test_cooldown_kept_when_the_next_toolchange_parks_the_head(pp, tmp_path):
+    gcode = ("T0\nM104 S220 T0\nG1 X10 Y10 E1\n"
+             "M104 S200 T0 ;cooldown\nT1\nM109 S220 T1\nG1 X20 Y20 E1\n")
+    assert _scan(pp, tmp_path, gcode, lambda t: t) == set()
+
+
+def test_standby_of_a_parked_head_is_kept(pp, tmp_path):
+    # T2 shares head 1 with T1 and is the next toolchange, but head 1 is
+    # parked while head 0 prints: its standby is the ooze guard.
+    gcode = ("T1\nM104 S220 T1\nG1 X5 Y5 E1\nT0\nM109 S220 T0\n"
+             "M104 S200 T1 ;cooldown\nG1 X10 Y10 E1\n"
+             "T2\nM109 S220 T2\nG1 X20 Y20 E1\n")
+    assert _scan(pp, tmp_path, gcode, {0: 0, 1: 1, 2: 1}.get) == set()
+
+
+def test_shutdown_of_the_printing_head_is_never_dropped(pp, tmp_path):
+    gcode = ("T0\nM104 S220 T0\nG1 X10 Y10 E1\nM104 S0 T0\n"
+             "T1\nM109 S220 T1\nG1 X20 Y20 E1\n")
+    assert _scan(pp, tmp_path, gcode, lambda t: 0) == set()
+
+
+def test_dropped_cooldown_does_not_count_as_the_head_target(pp, tmp_path):
+    # The S90 line is dropped, so the head stays at 220 and the extrusion
+    # after the swap is not an under-temperature case of its own.
+    gcode = ("T0\nM104 S220 T0\nG1 X10 Y10 E1\nM104 S90 T0 ;cooldown\n"
+             "T1\nG1 X20 Y20 E1\n")
+    assert _scan(pp, tmp_path, gcode, lambda t: 0) == {3}
+
+
+def _prime(pp, tmp_path, gcode):
+    src = tmp_path / 'p.gcode'
+    src.write_text(gcode)
+    out = tmp_path / 'p_out.gcode'
+    pp.inject_auto_load_to_file(str(src), str(out), only_heads={0, 1})
+    return [l for l in _block(out.read_text())
+            if l.startswith('SM_PRINT_PREEXTRUDE')]
+
+
+def test_block_prime_takes_the_print_temp_after_a_170_preheat(pp, tmp_path):
+    gcode = ("M104 S170 T0\n\n; draw the starting line\n"
+             "T0\nACE_SWAP_HEAD HEAD=0 ACE=0 SLOT=0\nM109 S215 T0\n"
+             "G1 X10 Y10 E1\nT1\nACE_SWAP_HEAD HEAD=1 ACE=0 SLOT=1\n"
+             "M109 S250 T1\nG1 X20 Y20 E1\n")
+    assert _prime(pp, tmp_path, gcode) == [
+        'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=0 FORCE=1 TEMP=215']
+
+
+def test_block_prime_keeps_a_print_temp_set_before_the_block(pp, tmp_path):
+    gcode = ("M109 S240 T0\n\n; draw the starting line\n"
+             "T0\nACE_SWAP_HEAD HEAD=0 ACE=0 SLOT=0\nM104 S220 T0\n"
+             "G1 X10 Y10 E1\n")
+    assert _prime(pp, tmp_path, gcode) == [
+        'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=0 FORCE=1 TEMP=240']
+
+
+def test_block_prime_falls_back_to_220_without_a_target(pp, tmp_path):
+    gcode = ("M104 S170 T0\n\n; draw the starting line\n"
+             "T0\nACE_SWAP_HEAD HEAD=0 ACE=0 SLOT=0\nG1 X10 Y10 E1\n")
+    assert _prime(pp, tmp_path, gcode) == [
+        'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=0 FORCE=1 TEMP=220']

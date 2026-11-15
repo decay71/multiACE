@@ -177,11 +177,12 @@ section 3).
     {
       "idx": 0,
       "connected": true,
-      "protocol": "v1|v2|cfs",      // codec; further kinds may appear - gate on caps, not on "not v2"
-      "kind": "v1|v2|cfs",          // = protocol (additive, 1.30b)
+      "protocol": "v1|v2|cfs|ace2k", // codec; further kinds may appear - gate on caps, not on "not v2"
+      "kind": "v1|v2|cfs|ace2k",    // = protocol (additive, 1.30b)
       "caps": { "presence_sensor": true, "has_decoder": false, "has_dryer": true,
                 "flash_engine": "iap_v1|ota_v2|none", "rc522_tunnel": false,
-                "has_stable_id": true, ... },
+                "has_stable_id": true, "tag_read": true,
+                "host_tag_session": false, ... },
                                     // additive capability record (ace_unit.py): str keys,
                                     // bool/str/list/null values; what the unit can do
       "unit_place": 0,              // saved place of this index (0..3), additive 1.30b

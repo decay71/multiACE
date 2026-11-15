@@ -33,26 +33,31 @@ class TestModelPurgePolicy:
         assert m.resolve_swap_purge_mm() == 40
         assert m.resolve_swap_purge_mm(stamp_mm=100) == 50
 
-    def test_scale_applies_to_swap_purge_length(self):
+    def test_an_own_fixed_length_switches_the_scale_off(self):
         assert _model(swap_purge_length=100,
-                      swap_purge_scale=150).resolve_swap_purge_mm() == 150
+                      swap_purge_scale=150).resolve_swap_purge_mm() == 100
 
-    def test_floor_then_cap_bound_the_scaled_length(self):
-        m = _model(swap_purge_scale=50, swap_purge_floor=60)
+    def test_floor_and_cap_bound_the_length_and_switch_the_scale_off(self):
+        # stock 80 mm, the scale no longer applies next to an own bound
+        m = _model(swap_purge_scale=50, swap_purge_floor=90)
+        assert m.resolve_swap_purge_mm() == 90
+        m = _model(swap_purge_scale=200, swap_purge_cap=60)
         assert m.resolve_swap_purge_mm() == 60
-        m = _model(swap_purge_scale=200, swap_purge_cap=100)
-        assert m.resolve_swap_purge_mm() == 100
 
     def test_the_cap_wins_over_a_higher_floor(self):
         m = _model(swap_purge_floor=120, swap_purge_cap=90)
         assert m.resolve_swap_purge_mm() == 90
 
-    def test_never_below_40_mm_whatever_scale_floor_or_cap_say(self):
-        assert _model(swap_purge_scale=25).resolve_swap_purge_mm(
-            stamp_mm=40) == 40
-        assert _model(swap_purge_scale=25, swap_purge_cap=10
-                      ).resolve_swap_purge_mm(stamp_mm=100) == 40
+    def test_minimum_is_40_mm_and_shrinks_with_a_scale_below_100(self):
         assert _model(swap_purge_cap=20).resolve_swap_purge_mm() == 40
+        assert _model(swap_purge_scale=150, swap_purge_cap=20
+                      ).resolve_swap_purge_mm(stamp_mm=100) == 40
+        # 25 % shrinks the minimum to 10 mm
+        assert _model(swap_purge_scale=25).resolve_swap_purge_mm(
+            stamp_mm=40) == 10
+        # an own cap switches the control off: scale counts as 100
+        assert _model(swap_purge_scale=25, swap_purge_cap=5
+                      ).resolve_swap_purge_mm(stamp_mm=100) == 40
 
     def test_floor_is_an_extra_minimum_above_40(self):
         m = _model(swap_purge_scale=25, swap_purge_floor=55)
@@ -66,7 +71,7 @@ class TestModelPurgePolicy:
         assert m.resolve_swap_purge_mm() == sc.PURGE_LENGTH_MAX_MM
 
     def test_the_scale_is_kept_inside_its_range(self):
-        assert _model(swap_purge_scale=1).resolve_swap_purge_mm() == 40
+        assert _model(swap_purge_scale=1).resolve_swap_purge_mm() == 20
         assert _model(swap_purge_scale=900).resolve_swap_purge_mm() == 160
 
     def test_estimate_grams_follow_the_policy(self):
@@ -89,6 +94,8 @@ class TestEnginePurgePolicy:
             swap_purge_scale = 100
             swap_purge_floor = 0
             swap_purge_cap = 0
+            printer = type('P', (), {'lookup_object':
+                                     staticmethod(lambda n, d=None: d)})()
         return Stub()
 
     def test_defaults_keep_the_zero_meaning_stock(self, engine):
@@ -100,11 +107,14 @@ class TestEnginePurgePolicy:
         engine.swap_purge_scale = 50
         assert engine.get_purge_length() == 40
 
-    def test_never_below_40_mm_once_a_policy_is_set(self, engine):
+    def test_minimum_shrinks_with_a_scale_below_100(self, engine):
         engine._purge_length_override = 40
         engine.swap_purge_scale = 25
-        assert engine.get_purge_length() == 40
-        engine.swap_purge_cap = 15
+        assert engine.get_purge_length() == 10
+        engine.swap_purge_scale = 150
+        assert engine.get_purge_length() == 60
+        # an own cap switches the control off: scale counts as 100
+        engine.swap_purge_cap = 5
         assert engine.get_purge_length() == 40
 
     def test_floor_raises_the_minimum_above_40(self, engine):
@@ -120,8 +130,10 @@ class TestEnginePurgePolicy:
     def test_the_stamp_override_goes_through_the_policy(self, engine):
         engine._purge_length_override = 100
         engine.swap_purge_scale = 150
-        engine.swap_purge_cap = 120
-        assert engine.get_purge_length() == 120
+        assert engine.get_purge_length() == 150
+        # an own cap switches the scale off and bounds the stamp
+        engine.swap_purge_cap = 90
+        assert engine.get_purge_length() == 90
 
     def test_engine_and_model_agree(self, engine):
         for scale, floor, cap, stamp in [(50, 0, 0, 0), (130, 70, 0, 60),

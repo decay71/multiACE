@@ -549,8 +549,11 @@ def mapping_from_info(info: dict) -> list:
 
 
 def _real_swap_count(events, mapping):
+    """Mid-print swaps of a multi plan. A head's first slot is loaded by
+    the auto-load block before the print, so it is free, whichever MMU it
+    comes from (the optimizer counts the same way)."""
     by_t = {m["t"]: m["slot"] for m in mapping if m.get("slot")}
-    head_current = {h: (0, h) for h in range(4)}
+    head_current = {}
     swaps = 0
     for t in events:
         slot = by_t.get(t)
@@ -558,10 +561,137 @@ def _real_swap_count(events, mapping):
             continue
         h = slot["slot"]
         key = (slot["ace"], slot["slot"])
-        if head_current.get(h) != key:
+        if h not in head_current:
+            head_current[h] = key
+        elif head_current[h] != key:
             swaps += 1
             head_current[h] = key
     return swaps
+
+
+def _check_remap_materials(remap, slicer_types, live_slots):
+    """Last check before a multi print: every remapped filament must land
+    on a loaded slot carrying its material. A slot the printer did not
+    report is left to the load itself (it refuses an empty gate)."""
+    by_key = {}
+    for sl in live_slots or []:
+        try:
+            by_key[(int(sl["ace"]), int(sl["slot"]))] = (
+                sl.get("material") or "").strip().lower()
+        except (KeyError, TypeError, ValueError):
+            continue
+    bad = []
+    for c, target in (remap or {}).items():
+        want = ((slicer_types or {}).get(c) or "").strip().lower()
+        try:
+            key = (int(target) // 4, int(target) % 4)
+        except (TypeError, ValueError):
+            continue
+        have = by_key.get(key)
+        if want and have and have != want:
+            bad.append("T%s %s -> MMU %d slot %d (%s)"
+                       % (c, want.upper(), key[0] + 1, key[1] + 1,
+                          have.upper()))
+    if bad:
+        raise PreflightRejected(
+            "material mismatch, the print would load the wrong filament: "
+            + "; ".join(bad))
+
+
+def material_gate(slicer_types, live_slots, nozzle_groups=None,
+                  skip_heads=()):
+    """{T: set(heads)} for the multi optimize/layer search. In multi mode
+    slot N feeds head N, so a filament can only go to a head whose slot
+    index carries its material on some MMU. Intersected with the mixed-
+    nozzle gate. A filament without a material may go to any head with a
+    loaded slot; skip_heads (hand-fed heads) never take an MMU colour."""
+    loaded = {h: set() for h in range(4)}
+    for sl in live_slots or []:
+        try:
+            h = int(sl.get("slot"))
+        except (TypeError, ValueError):
+            continue
+        if h in loaded and h not in skip_heads:
+            loaded[h].add((sl.get("material") or "").strip().lower())
+    gate = {}
+    for t, typ in (slicer_types or {}).items():
+        m = (typ or "").strip().lower()
+        heads = {h for h, mats in loaded.items()
+                 if mats and (not m or m in mats)}
+        if nozzle_groups and t in nozzle_groups:
+            heads &= set(nozzle_groups[t])
+        gate[t] = heads
+    for t, hs in (nozzle_groups or {}).items():
+        if t not in gate:
+            gate[t] = set(hs) - set(skip_heads)
+    return gate
+
+
+def _rgb(hexs):
+    s = (hexs or "").strip().lower().lstrip("#")
+    if len(s) < 6:
+        return None
+    try:
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    except ValueError:
+        return None
+
+
+def _live_layout(c2h, slicer_colors, slicer_types, live_slots):
+    """{color: head} -> {color: live slot dict}. The colours of one head go
+    to distinct MMUs at that slot index, material-strict, closest colour
+    first. None when the loaded spools cannot carry this head assignment."""
+    from itertools import permutations
+    per_head = {}
+    for c, h in c2h.items():
+        per_head.setdefault(h, []).append(c)
+    out = {}
+    for h, cols in per_head.items():
+        cols = sorted(cols)
+        cands = [sl for sl in (live_slots or []) if sl.get("slot") == h]
+        best = None
+        for perm in permutations(cands, len(cols)):
+            cost = 0
+            for c, sl in zip(cols, perm):
+                m = (slicer_types.get(c) or "").strip().lower()
+                if m and (sl.get("material") or "").strip().lower() != m:
+                    cost = None
+                    break
+                a, b = _rgb(slicer_colors.get(c)), _rgb(sl.get("color"))
+                cost += (sum((x - y) ** 2 for x, y in zip(a, b))
+                         if a and b else 3 * 255 ** 2)
+            if cost is not None and (best is None or cost < best[0]):
+                best = (cost, perm)
+        if best is None:
+            return None
+        for c, sl in zip(cols, best[1]):
+            out[c] = sl
+    return out
+
+
+def _layout_from_live(c2h, slicer_colors, slicer_types, live_slots):
+    """Mapping rows for a multi optimize/layer plan from the loaded spools,
+    or None when the head assignment does not fit them."""
+    picked = _live_layout(c2h, slicer_colors, slicer_types, live_slots)
+    if picked is None:
+        return None
+    rows = []
+    for c, sl in picked.items():
+        same = ((_rgb(slicer_colors.get(c)) or 0)
+                == (_rgb(sl.get("color")) or 1))
+        rows.append((sl["ace"], sl["slot"], c, {
+            "t":    c,
+            "slot": {
+                "ace":      sl["ace"],
+                "slot":     sl["slot"],
+                "material": sl.get("material") or "",
+                "color":    (sl.get("color") or "").lower(),
+            },
+            "tier":      "exact_hex" if same else "fallback",
+            "loose_mat": False,
+        }))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    return [r[3] for r in rows]
 
 
 def _layout_from_head_assignment(c2h, slicer_colors, slicer_types):
@@ -607,16 +737,40 @@ def _swap_aware(pp, events, *, num_aces, layer_color_sets=None,
 
 def build_one_plan(pp, plan_name, result, mapping,
                    slicer_colors=None, slicer_types=None, num_aces=4,
-                   nozzle_groups=None, estimate_ctx=None):
+                   nozzle_groups=None, estimate_ctx=None,
+                   live_slots=None, skip_heads=()):
     """One of the three multi-mode plans (slicer / optimize / layer).
 
     nozzle_groups ({T: allowed heads}) is the mixed-nozzle gate. The slicer
     plan gets it through match_colors_to_slots; optimize and layer build
     their own layout and would otherwise be free to move a filament onto a
     wrong-diameter nozzle.
+
+    live_slots: with them, optimize and layer plan on the loaded spools
+    (material gate per head, then a real slot per colour) and are printable
+    as shown. Without them (old callers) they stay a loadout suggestion.
     """
     slicer_colors = slicer_colors or {}
     slicer_types  = slicer_types  or {}
+    if live_slots is not None and plan_name != "slicer":
+        nozzle_groups = material_gate(slicer_types, live_slots,
+                                      nozzle_groups, skip_heads)
+
+    def _mapping_for(c2h):
+        if live_slots is None:
+            return _layout_from_head_assignment(
+                c2h, slicer_colors, slicer_types)
+        return _layout_from_live(c2h, slicer_colors, slicer_types,
+                                 live_slots)
+
+    def _no_fit(reason):
+        return {
+            "feasible":     False,
+            "swaps":        0,
+            "tool_changes": tool_changes,
+            "mapping":      [],
+            "reason":       reason,
+        }
     events = result.get("events") or []
     tool_changes = int(result.get("total_changes") or 0)
 
@@ -645,8 +799,9 @@ def build_one_plan(pp, plan_name, result, mapping,
                 "mapping":      [],
                 "reason":       "no feasible head assignment",
             }
-        opt_mapping = _layout_from_head_assignment(
-            c2h, slicer_colors, slicer_types)
+        opt_mapping = _mapping_for(c2h)
+        if opt_mapping is None:
+            return _no_fit("loaded spools do not fit this layout")
         return attach_estimate(
             estimate_ctx,
             {
@@ -680,8 +835,9 @@ def build_one_plan(pp, plan_name, result, mapping,
             "mapping":      [],
             "reason":       reason,
         }
-    layer_mapping = _layout_from_head_assignment(
-        c2h, slicer_colors, slicer_types)
+    layer_mapping = _mapping_for(c2h)
+    if layer_mapping is None:
+        return _no_fit("loaded spools do not fit this layout")
     return attach_estimate(
         estimate_ctx,
         {
@@ -738,12 +894,57 @@ def manual_head_list(head_ctx) -> list:
 
 def multi_assignment_shape(head_ctx) -> bool:
     """Multi mode uses the head-mode assignment pipeline (one target per
-    colour, copies, pins) once colour copies are allowed or a hand-fed head
-    exists; otherwise the classic synthetic-T pipeline runs, byte-identical
-    to before."""
+    colour, copies, pins, background-swap stamps) once colour copies are
+    allowed, a hand-fed head exists or background swaps are possible;
+    otherwise the classic synthetic-T pipeline runs, byte-identical to
+    before."""
     if not is_multi_ctx(head_ctx):
         return False
-    return max_copies(head_ctx) > 1 or bool(manual_head_list(head_ctx))
+    return (max_copies(head_ctx) > 1 or bool(manual_head_list(head_ctx))
+            or multi_bg_possible(head_ctx))
+
+
+def multi_bg_units(head_ctx):
+    """Multi mode: the connected MMUs a background swap may move, i.e. the
+    lane-concurrent ones (one unit feeds several heads there, so a bg op
+    can run next to the printing lane only on such a unit). None in head
+    mode = no limit (one MMU per head)."""
+    if not is_multi_ctx(head_ctx):
+        return None
+    try:
+        units = {int(a) for a in
+                 ((head_ctx or {}).get("concurrent_aces") or [])}
+    except (TypeError, ValueError):
+        return set()
+    conn = connected_aces(head_ctx)
+    if conn is not None:
+        units &= conn
+    return units
+
+
+def multi_bg_possible(head_ctx) -> bool:
+    """Multi mode with background swaps: a swap there moves two units (old
+    and new slot of the head), both lane-concurrent - so at least two such
+    units, the bg engine and a bg-enabled head."""
+    if not is_multi_ctx(head_ctx):
+        return False
+    ctx = head_ctx or {}
+    return (bool(ctx.get("bg_available")) and bool(ctx.get("bg_heads"))
+            and len(multi_bg_units(ctx) or ()) >= 2)
+
+
+def bg_heads_of(head_ctx) -> list:
+    """The bg-enabled heads a plan may use: the persisted list, empty in
+    multi mode unless background swaps are possible there."""
+    heads = []
+    for h in ((head_ctx or {}).get("bg_heads") or []):
+        try:
+            heads.append(int(h))
+        except (TypeError, ValueError):
+            continue
+    if is_multi_ctx(head_ctx) and not multi_bg_possible(head_ctx):
+        return []
+    return heads
 
 
 def connected_aces(head_ctx: dict):
@@ -1078,12 +1279,13 @@ def _bg_context(pp, head_ctx, plan_proxy, events):
     parser, a file without M73, or a misaligned event list simply yield
     event_times=None (bg windows unknown - everything reports/optimizes
     like before)."""
-    bg_heads = [int(h) for h in ((head_ctx or {}).get("bg_heads") or [])]
+    bg_heads = bg_heads_of(head_ctx)
     bg_available = bool((head_ctx or {}).get("bg_available"))
-    if is_multi_ctx(head_ctx):
-        # No background swaps in multi (one ACE feeds several heads), even
-        # when the persisted bg head list still carries ticks.
-        bg_heads, bg_available = [], False
+    if is_multi_ctx(head_ctx) and not multi_bg_possible(head_ctx):
+        # Multi: one MMU feeds several heads, so background swaps need two
+        # lane-concurrent units; without them none, even when the persisted
+        # bg head list still carries ticks.
+        bg_available = False
     parse_t = getattr(pp, "parse_toolchanges_with_times", None)
     event_times = None
     if parse_t is not None:
@@ -1097,8 +1299,18 @@ def _bg_context(pp, head_ctx, plan_proxy, events):
     return event_times, bg_heads, bg_available
 
 
+def _bg_stamp_kw(bg_stamps, bg_units):
+    """Rewriter kwargs for the bg stamps: bg_units only when there is a
+    limit (multi), so a post-processor without the param still runs the
+    head-mode rewrite unchanged."""
+    kw = {"bg_stamps": bool(bg_stamps)}
+    if bg_units is not None:
+        kw["bg_units"] = sorted(bg_units)
+    return kw
+
+
 def _bg_stats_for(pp, events, assignment, event_times, bg_heads,
-                  copies=None):
+                  copies=None, bg_units=None):
     """head_mode_bg_stats, soft-degrading (older pp -> None). Details are
     dropped from the wire format (the counts drive the UI line). With
     copies the stats follow the dynamic plan (an older pp without the
@@ -1108,8 +1320,13 @@ def _bg_stats_for(pp, events, assignment, event_times, bg_heads,
         return None
     try:
         try:
-            st = fn(events, assignment, event_times=event_times,
-                    bg_heads=bg_heads, copies=copies)
+            if bg_units is not None:
+                st = fn(events, assignment, event_times=event_times,
+                        bg_heads=bg_heads, copies=copies,
+                        bg_units=bg_units)
+            else:
+                st = fn(events, assignment, event_times=event_times,
+                        bg_heads=bg_heads, copies=copies)
         except TypeError:
             st = fn(events, assignment, event_times=event_times,
                     bg_heads=bg_heads)
@@ -1185,7 +1402,8 @@ def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
         m.get("head") if m.get("head") is not None else 99,
         m.get("t", 0)))
     out = {"feasible": feasible, "swaps": swaps, "mapping": mapping}
-    bg = _bg_stats_for(pp, events, assignment, event_times, bg_heads, copies)
+    bg = _bg_stats_for(pp, events, assignment, event_times, bg_heads, copies,
+                       bg_units=multi_bg_units(head_ctx))
     if bg is not None:
         out["bg"] = bg
     # Same-nozzle transition volume (colour objective) for plan comparison:
@@ -1279,7 +1497,7 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
             "mapping": loadout_mapping},
     }
     bg_loadout = _bg_stats_for(pp, events, assignment, event_times, bg_heads,
-                               copies)
+                               copies, bg_units=multi_bg_units(head_ctx))
     if bg_loadout is not None:
         plans["loadout"]["bg"] = bg_loadout
     attach_estimate(estimate_ctx, plans["loadout"], events, assignment,
@@ -1347,6 +1565,9 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
             for s in sorted(ace_slots or [],
                             key=lambda x: (x["ace"], x["slot"]))],
         "bg_swap": {"available": bg_available, "enabled_heads": bg_heads,
+                    # multi: the MMUs a bg swap may move (None = all)
+                    "units": (sorted(multi_bg_units(head_ctx))
+                              if multi else None),
                     "have_times": event_times is not None,
                     "min_window_min": getattr(
                         pp, "BG_UNLOAD_MIN_WINDOW_MIN", 3),
@@ -1518,7 +1739,8 @@ def build_report(pp, *, slicer_colors, slicer_types, num_aces, plan_proxy,
                 pp, mode, result, mapping,
                 slicer_colors=slicer_colors, slicer_types=slicer_types,
                 num_aces=num_aces, nozzle_groups=nz_groups,
-                estimate_ctx=estimate_ctx)
+                estimate_ctx=estimate_ctx, live_slots=live_slots,
+                skip_heads={m["head"] for m in manual_head_list(head_ctx)})
     return out
 
 
@@ -1629,8 +1851,10 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
         targets = head_mode_targets(pp, feeders, live_slots, ace_head_of_ace)
         # bg-enabled heads (for the optimizer AND the bg initial-load) - defined
         # for every head plan so the inject_auto_load call below always has it.
-        hm_bg_heads = ([] if hm_multi else
-                       [int(h) for h in ((head_ctx or {}).get("bg_heads") or [])])
+        hm_bg_heads = bg_heads_of(head_ctx)
+        # multi: only lane-concurrent units carry bg stamps (None = all)
+        hm_bg_units = multi_bg_units(head_ctx)
+        hm_bg_stamps = (not hm_multi) or bool(hm_bg_heads)
         if head_plan in ("optimize", "layer", "color"):
             set_stage(head_plan, 1.0)
             hm_result = pp.plan_loadout_from_file(str(src_path), num_aces) or {}
@@ -1734,7 +1958,7 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
                         str(src_path), str(tmp_a), assignment, None,
                         stage_cb(10.0, 60.0), pickup_cleaning=_pc,
                         copies=copies, bg_heads=hm_bg_heads,
-                        bg_stamps=not hm_multi)
+                        **_bg_stamp_kw(hm_bg_stamps, hm_bg_units))
                 except TypeError:
                     # Older post-processor: plan without the bg tie-break.
                     pp.rewrite_head_mode_to_file(
@@ -1746,7 +1970,7 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
                     pp.rewrite_head_mode_to_file(
                         str(src_path), str(tmp_a), assignment, None,
                         stage_cb(10.0, 60.0), pickup_cleaning=_pc,
-                        bg_stamps=not hm_multi)
+                        **_bg_stamp_kw(hm_bg_stamps, hm_bg_units))
                 except TypeError:
                     pp.rewrite_head_mode_to_file(
                         str(src_path), str(tmp_a), assignment, None,
@@ -1801,18 +2025,25 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
         if mode == "layer":
             lcs = (sa_result.get("layer_info") or {}).get("layer_color_sets") or []
             sa_layer_sets = [set(s) for s in lcs] if lcs else None
+        # Same gate and slot choice as build_one_plan, so the print loads
+        # exactly the slots the preview showed.
+        skip = {m["head"] for m in manual_head_list(head_ctx)}
         c2h, _sa_swaps = _swap_aware(
             pp, sa_events, num_aces=num_aces,
             layer_color_sets=sa_layer_sets,
-            allowed_heads=nozzle_context(pp, meta, head_ctx)[0])
+            allowed_heads=material_gate(
+                slicer_types, live_slots,
+                nozzle_context(pp, meta, head_ctx)[0], skip))
         if c2h is None:
             raise RuntimeError("no feasible head assignment for %s mode" % mode)
-        head_ace_counter = {h: 0 for h in range(4)}
-        remap = {}
-        for c in sorted(c2h.keys(), key=lambda x: (c2h[x], x)):
-            h = c2h[c]
-            remap[c] = head_ace_counter[h] * 4 + h
-            head_ace_counter[h] += 1
+        picked = _live_layout(c2h, slicer_colors or {}, slicer_types or {},
+                              live_slots)
+        if picked is None:
+            raise RuntimeError("loaded spools do not fit the %s layout"
+                               % mode)
+        remap = {c: sl["ace"] * 4 + sl["slot"] for c, sl in picked.items()}
+
+    _check_remap_materials(remap, slicer_types, live_slots)
 
     set_stage("apply_remap", 5.0)
     pp.apply_remap_to_file(str(src_path), str(tmp_a), remap, stage_cb(5.0, 25.0))

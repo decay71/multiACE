@@ -17,9 +17,39 @@
 #
 # This module imports no ace.py symbol (ace.py imports it).
 
+import logging
+
+from .ace_protocol import AceProtocol
 from .ace_protocol_v1 import AceProtocolV1
 from .ace_protocol_v2 import AceProtocolV2
 from .ace_protocol_cfs import AceProtocolCfs
+
+
+def _unavailable_codec(name, err):
+    """Stand-in for a driver module that failed to import: it discovers
+    nothing, so a broken optional driver disables itself instead of
+    stopping multiACE. Its option is still read (see read_enabled_drivers)."""
+    reason = '%s: %s' % (type(err).__name__, err)
+    logging.error('[multiACE] driver %s unavailable (%s)', name, reason)
+
+    class _Unavailable(AceProtocol):
+        NAME = name
+        UNAVAILABLE = reason
+        PORTS = ()
+
+        @classmethod
+        def discover(cls):
+            return []
+
+    return _Unavailable
+
+
+# Optional drivers import guarded: an import error in one of them must not
+# take multiACE down with it.
+try:
+    from .ace_protocol_ace2k import AceProtocolAce2k
+except Exception as _e:
+    AceProtocolAce2k = _unavailable_codec('ace2k', _e)
 
 
 class Driver(object):
@@ -47,6 +77,13 @@ class Driver(object):
 DRIVERS = (
     Driver('ace_v1', AceProtocolV1, 'enable_ace_v1', True,
            tested='ACE Pro, in the field since 0.9x', label='AceV1'),
+    # ACE 2 Pro on the community firmware ace2k, own Klipper session (Weg
+    # B). Ahead of ace_v2: its ports ([ace] ace2k_ports) carry the ACE 2's
+    # USB id, and the first codec that claims a path takes it. Presence,
+    # load/unload, the follow as feed assist and tag reading (the host
+    # decodes); no dryer yet; no field time.
+    Driver('ace2k', AceProtocolAce2k, 'enable_ace2k', False,
+           label='CFW - Ace2k'),
     # The code default stays False (the historical value); the shipped
     # ace.cfg turns it on.
     Driver('ace_v2', AceProtocolV2, 'enable_ace_v2', False,
@@ -91,11 +128,13 @@ def enabled_codecs(enabled):
 
 
 def describe(enabled):
-    """One log line: `ace_v1 on, ace_v2 off (untested, opt-in)`."""
+    """One log line: `ace_v1 on, ace_v2 off (new, opt-in)`."""
     parts = []
     for d in DRIVERS:
         state = 'on' if enabled.get(d.name, False) else 'off'
-        if not d.tested:
-            state += ' (untested, opt-in)'
+        if getattr(d.codec, 'UNAVAILABLE', None):
+            state += ' (unavailable: %s)' % d.codec.UNAVAILABLE
+        elif not d.tested:
+            state += ' (new, opt-in)'
         parts.append('%s %s' % (d.name, state))
     return ', '.join(parts)

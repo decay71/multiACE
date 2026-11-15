@@ -46,6 +46,7 @@ TRACKED_FILES=(
     "multiace/klipper/extras/ace_protocol_v1.py"
     "multiace/klipper/extras/ace_protocol_v2.py"
     "multiace/klipper/extras/ace_protocol_cfs.py"
+    "multiace/klipper/extras/ace_protocol_ace2k.py"
     "multiace/klipper/extras/filament_feed_ace.py"
     "multiace/klipper/extras/filament_switch_sensor_ace.py"
     "multiace/klipper/kinematics/extruder_ace.py"

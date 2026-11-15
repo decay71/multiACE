@@ -156,7 +156,8 @@ def neighbours():
             if os.path.basename(p) not in ('ace.py', 'ace_protocol.py',
                                            'ace_protocol_v1.py',
                                            'ace_protocol_v2.py',
-                                           'ace_protocol_cfs.py')]
+                                           'ace_protocol_cfs.py',
+                                           'ace_protocol_ace2k.py')]
 
 
 def collect():

@@ -35,6 +35,18 @@ AIRLOG_EMIT_S = 10.0
 AIRLOG_CHEW_DELTA = 25000.
 AIRLOG_CHEW_WINDOWS = 2
 AIRLOG_CHEW_MIN_MOVING = 3
+# --- Airlog AIR detector: the low side of the same windows. A head that
+# extrudes with almost no back-pressure prints air (strand not gripped or
+# broken above the extruder). Trigger: AIRLOG_AIR_WINDOWS windows of one
+# head with coil_delta < AIRLOG_AIR_DELTA while the extruder moved in at
+# least AIRLOG_AIR_MIN_MOVING samples at a mean of AIRLOG_AIR_MIN_VEL mm/s
+# or more. Slow or mostly idle windows read low on a healthy head too, so
+# they neither count nor reset; a window with normal back-pressure resets.
+# Same suppression, latch and pause switch as the chew detector.
+AIRLOG_AIR_DELTA = 500.
+AIRLOG_AIR_WINDOWS = 3
+AIRLOG_AIR_MIN_MOVING = 5
+AIRLOG_AIR_MIN_VEL = 2.0
 # --- Resistance watch -------------------------------------------------------
 # The coil measures the binding lever = BACK-PRESSURE, so a load-time delta
 # far ABOVE a lane's own baseline is not "excellent flow" but the extruder
@@ -144,11 +156,24 @@ class ResistanceMixin:
                     ('%.0f' % st['cmax']) if st['cmax'] is not None else '-',
                     ('%.0f' % delta) if delta is not None else '-')
                 self._airlog_chew_eval(head, delta, st['nmove'])
+                self._airlog_air_eval(head, delta, st['nmove'],
+                                      st['vsum'] / st['n'], eventtime)
                 self._airlog_state = None
         except Exception:
             logging.exception('[multiACE] airlog tick failed')
             self._airlog_state = None
         return eventtime + AIRLOG_SAMPLE_S
+
+    def _airlog_not_printing(self, head):
+        """The extruder moves, but not for the print: the print is paused
+        (a load or unload by hand runs its tip form and probes there), or
+        a load is running on this head. Such windows are no flow reading."""
+        try:
+            if not self._is_actively_printing():
+                return True
+            return head in (getattr(self, '_loading_heads', None) or ())
+        except Exception:
+            return False
 
     def _airlog_chew_eval(self, head, delta, nmove):
         """CHEW detector on a closed airlog window (AIRLOG_CHEW_* const
@@ -158,6 +183,9 @@ class ResistanceMixin:
         stripe printed). WARN always; resumable PAUSE only with [ace]
         resistance_pause on. Never raises."""
         try:
+            if self._airlog_not_printing(head):
+                self._airlog_chew_run.pop(head, None)
+                return
             if (self._swap_in_progress or self._pickcheck_active
                     or getattr(self, '_swap_phase', 'idle')
                     not in ('idle', 'done')):
@@ -193,39 +221,94 @@ class ResistanceMixin:
                     'delta=%.0f (Air-Print Detection off - log only)'
                     % (head, delta))
                 return
-            detail = self._t('msg.airlog_chew_pause',
-                             head=self._disp(head), delta=int(delta))
-            # Whose pause: the resume clears only this head's strikes/latches
-            # (per-head reset in _on_print_start).
-            self._resistance_pause_source_head = head
-            # Same resumable-pause pattern as the FA-exhaust / comms-loss
-            # give-up (RESPOND + structured exception + PAUSE, marshalled
-            # to a reactor timer - we are inside the airlog timer here).
-            def _do_pause(eventtime):
-                try:
-                    self.gcode.run_script(
-                        'RESPOND TYPE=error MSG="%s"'
-                        % detail.replace('"', "'"))
-                except Exception:
-                    pass
-                try:
-                    em = self.printer.lookup_object(
-                        'exception_manager', None)
-                    if em is not None:
-                        em.raise_exception_async(
-                            id=em.list.MODULE_ID_FEEDING, index=head,
-                            code=210, message=detail, oneshot=1, level=2)
-                except Exception:
-                    pass
-                try:
-                    self.gcode.run_script('PAUSE')
-                except Exception as pe:
-                    logging.info(
-                        '[multiACE] airlog-chew PAUSE failed: %s' % str(pe))
-                return self.reactor.NEVER
-            self.reactor.register_timer(_do_pause, self.reactor.NOW)
+            self._airlog_pause(head, self._t(
+                'msg.airlog_chew_pause', head=self._disp(head),
+                delta=int(delta)), 'airlog-chew')
         except Exception:
             logging.exception('[multiACE] airlog chew eval failed')
+
+    def _airlog_air_eval(self, head, delta, nmove, vel_mean, eventtime):
+        """AIR detector on a closed airlog window (AIRLOG_AIR_* const note).
+        WARN always; resumable PAUSE only with [ace] resistance_pause on.
+        Never raises."""
+        try:
+            runs = self._airlog_air_run
+            if self._airlog_not_printing(head):
+                runs.pop(head, None)
+                self._airlog_air_seen.pop(head, None)
+                return
+            prev = self._airlog_air_seen.get(head)
+            self._airlog_air_seen[head] = eventtime
+            if (prev is None
+                    or eventtime - prev > 2.5 * AIRLOG_EMIT_S
+                    or self._swap_in_progress or self._pickcheck_active
+                    or getattr(self, '_swap_phase', 'idle')
+                    not in ('idle', 'done')):
+                # The head was away, or a swap / pick-check owns the nozzle.
+                runs.pop(head, None)
+                if (self._swap_in_progress or self._pickcheck_active
+                        or getattr(self, '_swap_phase', 'idle')
+                        not in ('idle', 'done')):
+                    return
+            if (delta is None or nmove < AIRLOG_AIR_MIN_MOVING
+                    or vel_mean < AIRLOG_AIR_MIN_VEL):
+                return
+            if delta >= AIRLOG_AIR_DELTA:
+                runs.pop(head, None)
+                return
+            run = runs.get(head, 0) + 1
+            runs[head] = run
+            logging.warning(
+                '[multiACE] [airlog] AIR window head=%d delta=%.0f '
+                'vel=%.1f run=%d/%d'
+                % (head, delta, vel_mean, run, AIRLOG_AIR_WINDOWS))
+            if run < AIRLOG_AIR_WINDOWS or head in self._airlog_air_latched:
+                return
+            self._airlog_air_latched.add(head)
+            self._ace_event('airlog_air', head=head, delta=int(delta),
+                            run=run)
+            if not self.resistance_pause:
+                logging.warning(
+                    '[multiACE] [airlog] air episode latched head=%d '
+                    'delta=%.0f (Air-Print Detection off - log only)'
+                    % (head, delta))
+                return
+            self._airlog_pause(head, self._t(
+                'msg.airlog_air_pause', head=self._disp(head),
+                delta=int(delta)), 'airlog-air')
+        except Exception:
+            logging.exception('[multiACE] airlog air eval failed')
+
+    def _airlog_pause(self, head, detail, what):
+        """Resumable pause from the airlog timer: RESPOND + structured
+        exception + PAUSE, marshalled to a reactor timer."""
+        # Whose pause: the resume clears only this head's strikes/latches
+        # (per-head reset in _on_print_start).
+        self._resistance_pause_source_head = head
+
+        def _do_pause(eventtime):
+            try:
+                self.gcode.run_script(
+                    'RESPOND TYPE=error MSG="%s"'
+                    % detail.replace('"', "'"))
+            except Exception:
+                pass
+            try:
+                em = self.printer.lookup_object(
+                    'exception_manager', None)
+                if em is not None:
+                    em.raise_exception_async(
+                        id=em.list.MODULE_ID_FEEDING, index=head,
+                        code=210, message=detail, oneshot=1, level=2)
+            except Exception:
+                pass
+            try:
+                self.gcode.run_script('PAUSE')
+            except Exception as pe:
+                logging.info(
+                    '[multiACE] %s PAUSE failed: %s' % (what, str(pe)))
+            return self.reactor.NEVER
+        self.reactor.register_timer(_do_pause, self.reactor.NOW)
 
     def _resistance_note(self, site, head, ace_idx, slot, delta, push=0,
                          noisy=False):

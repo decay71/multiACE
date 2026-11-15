@@ -1628,6 +1628,10 @@ body.panel-embedded .sm-right { font-size: .68rem; }
   background: #111; color: var(--fg); border: 1px solid var(--border);
   border-radius: 4px; cursor: pointer; text-align: left; }
 .acefw-file-btn:hover { border-color: var(--accent); }
+/* Version picker + download button side by side. */
+.acefw-dl { display: inline-flex; gap: .4rem; align-items: center;
+  flex-wrap: wrap; }
+.acefw-calib-table td { padding: .25rem .6rem .25rem 0; }
 .acefw-card p { overflow-wrap: anywhere; }
 /* The BIG RED own-risk box inside the confirm dialog. */
 .acefw-danger { color: #ff5252; border: 2px solid #ff5252;
@@ -2488,8 +2492,17 @@ body:has(.panel) .overlay .dialog {
 .cfgdiff-row.del { background: color-mix(in srgb, var(--error) 22%, transparent); }
 .cfgdiff-row.gap { color: var(--muted); }
 
+/* Dashboard in normal mode: the hint how to switch the mode */
+.normal-mode-hint { max-width: 640px; margin: 1rem auto; padding: 1rem; }
+.normal-mode-hint .mode-row { display: flex; gap: .5rem; }
+
 /* Config > Notifications: the answer of a push test / a refused permission */
 .notify-msg { margin: .2rem 0 .6rem 0; color: var(--ok, #3fb950); }
 .notify-msg.err { color: var(--warn); font-weight: 600; }
 .notify-test { white-space: nowrap; }
 .nt-tile .config-row input[type=url] { width: 100%; max-width: none; min-width: 0; }
+
+/* Purge amount slider (Config tab): faster | slider | more colour-accurate */
+.purge-slider { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.purge-slider input[type="range"] { width: 12rem; }
+.purge-slider strong { min-width: 3.5rem; text-align: right; }

@@ -11,7 +11,9 @@
 # HARD REQUIREMENTS:
 #   - HEAD MODE with 1:1 head<->ACE wiring: the bg ACE must not be the
 #     printing head's ACE (an ACE cannot push one slot and roll back another
-#     at the same time).
+#     at the same time). OR MULTI MODE on lane-concurrent units (caps
+#     lanes_concurrent, ace2k): one unit feeds several heads there, so every
+#     unit the op moves must drive one lane while another feeds.
 #   - The head's dock must be OPEN below: the cold-pull PUSHES ~60mm of
 #     molten filament first and the prime purges through the dock. Enabling
 #     a head for bg (ACE_BG_SET_HEAD / [ace_bg_swap] heads) is that
@@ -76,6 +78,17 @@ BG_LOAD_PRESS_SPEED = 20.    # mm/s
 # False on the ACE Pro, which is what the fallback in _cap reproduces.
 BG_CAP_FALLBACK_V2 = ('has_slot_status_truth', 'no_freewheel',
                       'self_stops_on_resistance')
+# Staged filament (transport, or a feed that stopped short) sits in the
+# path of a parked head with no assist on its lane. A unit with the
+# buffer_relax cap (ace2k) then often holds that lane's plunger at full: the
+# feed stopped against the cold gears and the slack piles up in the buffer.
+# The pulled switches of the four lanes share one input, so the unit pauses
+# the forward assist of every lane while one is full - HW 2026-11-09, the
+# printing head on the same unit starved for ~1 min while a staged lane
+# held full. The engine rolls the staged lane back until the plunger reads
+# rest (the unit ends the move itself), at most this far.
+BG_RELAX_MAX_MM = 40
+BG_RELAX_SPEED = 15
 # The press directly follows a motor stop (feed and/or assist) - on V1 that
 # window is deterministically FORBIDDEN, so the press gets a paced busy
 # retry like the other V1 motor commands; still busy after the ladder -> skip
@@ -132,6 +145,9 @@ PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_GRIP', 'LD_PRIME')
 # Default of [ace_bg_swap] prime_extra.
 BG_LOAD_PRIME_EXTRA = 40.
 BG_LOAD_RETRACT_SPEED = 25.  # mm/s anti-ooze end retract
+# A retry (retract N mm, push again) the unit ends 'blocked' within this of
+# N came back to the place the attempt before stopped at.
+BG_SAME_PLACE_TOL_MM = 10.0
 BG_FEED_MIN_MOVE = 100       # V2: span below this = nothing demonstrably moved
 # EDGE-VERIFY POST-MORTEM: the eN toolhead sensor pin is a
 # PRESENCE GATE, not a motion-pulse encoder - edges fire ONLY on tip-arrival
@@ -192,6 +208,18 @@ BG_UNLOAD_PROBE_RETRACT = 150.
 # that slips past is still caught by the rest's own _ace_unwind verify. Tune up
 # once real bg-short span data confirms the healthy short magnitude.
 BG_UNLOAD_STALL_FRAC = 0.3
+# Units that report their own moves (ace2k per lane, the CFS Nano per
+# unit) have no slot status and no decoder, so a retract used to be paced
+# open loop and counted as done (HW 2026-11-09, multi mode, two ace2k: the
+# bulk retract of MMU 1 / Slot 1 ended 'stuck' after 21 mm and 0 mm, the
+# toolhead pin was already clear, the unload was bookkept done, and the
+# transport of MMU 2 / Slot 1 ran into the strand still in the shared path).
+# The engine now waits for the unit's end report: a retract that ends short
+# of its length (the strand held) fails the unload half, head_source stays,
+# and the arrival swap unloads inline. A feed the unit ended without
+# reaching the sensor stops the wait at once. This is how long past the
+# open-loop pacing a running move may still report its end.
+BG_MOVE_END_GRACE = 15.
 
 # --- stall-free move mechanic (merged from the former ace_bg_move module) ---
 # Never schedule closer to "now" than this - covers reactor jitter + the
@@ -296,6 +324,9 @@ class AceBgSwap:
         # of logging only. False = the pre-gate LOG-ONLY behaviour. Read
         # unconditionally.
         self.pick_gate = config.getboolean('pick_gate', True)
+        # False = an arrival skips the flow check at the chute when the
+        # dock prime already read flow and ran to its full length.
+        self.arrival_check = config.getboolean('arrival_check', False)
         # Debug console logging: when True, arrival hold decisions and breakdowns
         # are echoed to the console on every arrival (same as passing DEBUG=1).
         # False = quiet console, decisions logged to klippy.log only. Read unconditionally.
@@ -345,6 +376,12 @@ class AceBgSwap:
             maxval=12.)
         # pull_early_start: degrees below the pull temperature at which the
         # cold-pull begins (0 = wait for the full temperature).
+        # The grip of a background load: the extruder pulls the tip through
+        # its gears (mm, mm/s). Not in the shipped config.
+        self.grip_length = config.getfloat('grip_length', BG_LOAD_GRIP_SEAT,
+                                           minval=20., maxval=100.)
+        self.grip_speed = config.getfloat('grip_speed', BG_LOAD_GRIP_SPEED,
+                                          minval=1., maxval=15.)
         self.pull_early_start = config.getfloat(
             'pull_early_start', BG_PULL_EARLY_START_C, minval=0.,
             maxval=30.)
@@ -392,6 +429,12 @@ class AceBgSwap:
         # {head: state string} - IDLE/HEAT/PULL/RETRACT/DONE/FAILED:<reason>
         self.state = {}
         self._busy = set()
+        # head -> (stop, mm) of the unit's own end report of the last
+        # feed to the sensor (None: arrived, or no report).
+        self._feed_unit_end = {}
+        # {head: {(ace_idx, slot), ...}} - the lanes a running op moves
+        # (lanes_in_use, read by ace.py for lane-concurrent units)
+        self._op_lanes = {}
         # Heads whose toolchange was announced (request_pick_abort) and
         # whose op has not handed over yet; cleared with _busy.
         self._pick_pending = set()
@@ -421,8 +464,13 @@ class AceBgSwap:
                                     desc=self.cmd_ACE_BG_STATUS_help)
         self.gcode.register_command('ACE_BG_MOVE', self.cmd_ACE_BG_MOVE,
                                     desc=self.cmd_ACE_BG_MOVE_help)
+        self.gcode.register_command('ACE_BG_COIL_TEST',
+                                    self.cmd_ACE_BG_COIL_TEST,
+                                    desc=self.cmd_ACE_BG_COIL_TEST_help)
         self.gcode.register_command('ACE_BG_SET_HEAD', self.cmd_ACE_BG_SET_HEAD,
                                     desc=self.cmd_ACE_BG_SET_HEAD_help)
+        self.gcode.register_command('ACE_BG_SET_MODE', self.cmd_ACE_BG_SET_MODE,
+                                    desc=self.cmd_ACE_BG_SET_MODE_help)
 
         self.gcode.register_command('ACE_BG_SWAP', self.cmd_ACE_BG_SWAP,
                                     desc=self.cmd_ACE_BG_SWAP_help)
@@ -449,7 +497,46 @@ class AceBgSwap:
             'state': {str(h): str(v) for h, v in self.state.items()},
             'debug': bool(self.debug),
             'arrival_wait': bool(self.arrival_wait),
+            'load_mode': str(self.load_mode),
         }
+
+    # Web/gcode names of the three load modes and the config value each
+    # writes into [ace_bg_swap] load_enabled.
+    MODE_CONFIG = {'full': 'True', 'transport': 'transport',
+                   'unload': 'False'}
+    MODE_INTERNAL = {'full': 'full', 'transport': 'transport',
+                     'unload': 'none'}
+
+    cmd_ACE_BG_SET_MODE_help = (
+        '[multiACE] Background swap mode: ACE_BG_SET_MODE MODE=full|'
+        'transport|unload (full = load, grip and prime in the background,'
+        ' transport = unload + feed to the toolhead sensor, unload = unload'
+        ' only). Live, refused while printing; write-through: writes the'
+        ' [ace_bg_swap] load_enabled line (PERSIST=0 = until restart).')
+    def cmd_ACE_BG_SET_MODE(self, gcmd):
+        mode = gcmd.get('MODE', '').strip().lower()
+        if mode not in self.MODE_CONFIG:
+            raise self._bg_error(gcmd,
+                '[bg-unload] MODE must be full, transport or unload'
+                ' (got %r)' % mode)
+        if self._print_active():
+            raise self._bg_error(gcmd,
+                '[bg-unload] background swap mode cannot change while a'
+                ' print runs (the preflight planned with the current mode)')
+        self.load_mode = self.MODE_INTERNAL[mode]
+        self.load_enabled = self.load_mode != 'none'
+        _ace = self.printer.lookup_object('ace', None)
+        _wt = getattr(_ace, '_wt_persist', None)
+        if _wt is not None:
+            sfx = _wt(gcmd, 'load_enabled', self.MODE_CONFIG[mode], None,
+                      section='ace_bg_swap')
+        else:
+            sfx = (' - not saved (multiACE core too old for write-through),'
+                   ' set [ace_bg_swap] load_enabled: %s by hand'
+                   % self.MODE_CONFIG[mode])
+        self._say('background swap mode %s%s' % (mode.upper(), sfx))
+        logging.info('[multiACE] [bg-unload] mode set to %s%s'
+                     % (mode, sfx))
 
     cmd_ACE_BG_SET_HEAD_help = (
         '[multiACE] Declare a head bg-swap capable (= its dock is OPEN below,'
@@ -534,6 +621,22 @@ class AceBgSwap:
         # filament out of the ACE gears.
         return head in self._busy
 
+    def lanes_in_use(self):
+        """(ace_idx, slot) of every lane a running bg op moves. ace.py lets
+        the host act on a lane-concurrent unit while only these lanes hold
+        it busy."""
+        out = set()
+        ops = self._lanes_of_ops()
+        for h in self._busy:
+            out |= set(ops.get(h) or ())
+        return out
+
+    def _lanes_of_ops(self):
+        ops = self.__dict__.get('_op_lanes')
+        if ops is None:
+            ops = self._op_lanes = {}
+        return ops
+
     # -- helpers ----------------------------------------------------------
     def _say(self, msg):
         # Messages open with the display head number; add the T number
@@ -560,9 +663,11 @@ class AceBgSwap:
     def is_wait_eligible(self, head):
         """Milestone 3 gating helper: returns (eligible: bool, details: dict).
         A docked head is eligible to hold the arriving toolhead if:
-          1. It is in the PULL phase (cold pull active), OR
+          1. It is in PULL, RETRACT, BOOKKEEP or LD_FEED (the swap is on
+             its way to LD_GRIP, the new filament at the head sensor), OR
           2. It is in late HEAT where (target - current_temp) <= 25.0°C.
-        All other phases return eligible=False to let inline paths take over cleanly."""
+        Early HEAT and LD_GRIP onwards return eligible=False and leave
+        the swap to the inline paths."""
         cur_phase = self.phase(head).upper()
         now = self.reactor.monotonic()
         details = {
@@ -804,6 +909,7 @@ class AceBgSwap:
         """An op on `head` is over: release it and start the next deferred
         request, if one is waiting."""
         self._busy.discard(head)
+        self._lanes_of_ops().pop(head, None)
         self._pick_pending.discard(head)
         if self._deferred:
             self.reactor.register_async_callback(
@@ -891,10 +997,7 @@ class AceBgSwap:
         monitors re-arm canonically instead of fighting the stop. Runs
         BEFORE the finally releases _busy, so the waiting arrival sees a
         quiesced unit. Never raises."""
-        try:
-            ace._feed_assist_per_ace[ace_idx] = -1
-        except Exception:
-            pass
+        self._fa_cache_clear(ace, ace_idx, slot)
         for method in ('stop_feed_assist', 'stop_feed_filament'):
             try:
                 ok = False
@@ -926,7 +1029,7 @@ class AceBgSwap:
             resp = self._ace_send(ace, ace_idx, {
                 'method': 'start_feed_assist', 'params': {'index': slot}})
             if not self._resp_rejected(resp):
-                ace._feed_assist_per_ace[ace_idx] = slot
+                self._fa_cache_mark(ace, ace_idx, slot)
                 return True
             if attempt < retries - 1:
                 self._pause(backoff)
@@ -961,6 +1064,175 @@ class AceBgSwap:
                     _sv()
         except Exception:
             pass
+
+    def _slot_motion(self, ace, ace_idx, slot):
+        """The status motion report of this slot's own move (units that
+        report one per lane, ace2k), or None."""
+        try:
+            info = ace._info_per_ace.get(ace_idx) or {}
+            slots = info.get('slots') or []
+            if 0 <= slot < len(slots) and isinstance(slots[slot], dict):
+                m = slots[slot].get('motion')
+                if isinstance(m, dict):
+                    return m
+        except Exception:
+            pass
+        return None
+
+    def _move_report(self, ace, ace_idx, slot):
+        """The unit's report of the newest move of this slot: the per-lane
+        report (ace2k), else the unit report when it names this slot (CFS
+        Nano, one motor), else None (units without one)."""
+        m = self._slot_motion(ace, ace_idx, slot)
+        if m is not None:
+            return m
+        try:
+            info = ace._info_per_ace.get(ace_idx) or {}
+            m = info.get('motion')
+            if isinstance(m, dict) and int(m.get('slot', -1)) == int(slot):
+                return m
+        except Exception:
+            pass
+        return None
+
+    def _move_seq(self, ace, ace_idx, slot):
+        m = self._move_report(ace, ace_idx, slot)
+        try:
+            return int(m.get('seq', 0)) if m else 0
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _blocked_same_place(prev, cur, back_mm):
+        """A retry feed ran into the same hard stop as the attempt before
+        it: both ended by the unit itself (prev blocked or slip, this one
+        blocked) and this one moved just the retry's retract. prev/cur =
+        (stop, mm) or None (no motion report: every retry runs)."""
+        try:
+            if not prev or not cur:
+                return False
+            if prev[0] not in ('blocked', 'slip') or cur[0] != 'blocked':
+                return False
+            return abs(float(cur[1]) - float(back_mm)) <= BG_SAME_PLACE_TOL_MM
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    def _new_move_end(self, ace, ace_idx, slot, seq0, kind):
+        """The unit's report of a `kind` move of this slot that started
+        after seq0 and has ended, else None."""
+        m = self._move_report(ace, ace_idx, slot)
+        try:
+            if (m is None or m.get('running') or m.get('kind') != kind
+                    or int(m.get('seq', 0)) <= int(seq0)):
+                return None
+        except Exception:
+            return None
+        return m
+
+    def _await_unwind_end(self, ace, ace_idx, slot, seq0, length, speed):
+        """Wait for a retract sent to a unit without slot status. A unit
+        that reports its moves is waited for until its end report (early
+        when it ends early, up to BG_MOVE_END_GRACE past the pacing when it
+        runs long); without a report this is the open-loop pacing as
+        before. Returns the end report or None."""
+        t0 = self.reactor.monotonic()
+        pace = length / float(max(speed, 1)) + 2.0
+        while True:
+            m = self._move_report(ace, ace_idx, slot)
+            try:
+                ours = (m is not None and m.get('kind') == 'retract'
+                        and int(m.get('seq', 0)) > int(seq0))
+            except Exception:
+                ours = False
+            if ours and not m.get('running'):
+                return m
+            now = self.reactor.monotonic()
+            if not ours and now - t0 >= pace:
+                return None
+            if now - t0 >= pace + BG_MOVE_END_GRACE:
+                return None
+            self._pause(0.2)
+
+    @staticmethod
+    def _retract_held(m):
+        """Text when a unit's end report of a retract says it came back
+        short of its length (the strand held), else None. A runout end (the
+        tail left the unit) counts as back."""
+        if (not isinstance(m, dict) or m.get('kind') != 'retract'
+                or m.get('running')):
+            return None
+        try:
+            short = float(m.get('short') or 0.0)
+            moved = float(m.get('mm') or 0.0)
+            target = float(m.get('target') or (moved + short))
+        except (TypeError, ValueError):
+            return None
+        if short <= 0.0 or m.get('stop') == 'runout':
+            return None
+        return ('%.0f of %.0f mm, %s'
+                % (moved, target, m.get('stop') or m.get('why') or 'short'))
+
+    def _relax_buffer(self, ace, ace_idx, slot, head):
+        """Take the slack out of a staged lane whose buffer stands full
+        (see BG_RELAX_MAX_MM). The unit rolls the lane back and ends the
+        move at rest; staged filament stays position agnostic, so a tip
+        that leaves the toolhead sensor on the way is fine (the arrival load
+        feeds to the sensor again). Never raises."""
+        try:
+            if not self._cap(ace, ace_idx, 'buffer_relax'):
+                return
+            m0 = self._slot_motion(ace, ace_idx, slot)
+            seq0 = int((m0 or {}).get('seq', 0))
+            resp = self._ace_send(ace, ace_idx, {
+                'method': 'relax_buffer',
+                'params': {'index': slot, 'length': BG_RELAX_MAX_MM,
+                           'speed': BG_RELAX_SPEED}})
+            if resp is None or resp.get('code', 0) != 0:
+                self._say('head %d: buffer relax on MMU %d slot %d not '
+                          'started (%s)'
+                          % (self._dh(head), self._dh(ace_idx),
+                             self._dh(slot),
+                             (resp or {}).get('msg', 'no answer')))
+                return
+            if not (resp.get('result') or {}).get('started'):
+                logging.info('[multiACE] [bg-unload] head %d: MMU %d slot %d '
+                             'buffer not full - no relax needed'
+                             % (self._dh(head), self._dh(ace_idx),
+                                self._dh(slot)))
+                return
+            deadline = (self.reactor.monotonic()
+                        + float(BG_RELAX_MAX_MM) / BG_RELAX_SPEED + 6.0)
+            m = None
+            while self.reactor.monotonic() < deadline:
+                self._pause(0.3)
+                m = self._slot_motion(ace, ace_idx, slot)
+                if (m and int(m.get('seq', 0)) > seq0
+                        and not m.get('running')):
+                    break
+            else:
+                m = None
+            if m is None:
+                self._say('head %d: buffer relax on MMU %d slot %d did not '
+                          'report an end' % (self._dh(head),
+                                             self._dh(ace_idx),
+                                             self._dh(slot)))
+                return
+            why = m.get('stop') or m.get('why') or '?'
+            if why in ('at_rest', 'held'):
+                self._say('head %d: MMU %d slot %d buffer relaxed after '
+                          '%.0f mm (%s)'
+                          % (self._dh(head), self._dh(ace_idx),
+                             self._dh(slot), float(m.get('mm', 0.0)), why))
+            else:
+                self._say('head %d: MMU %d slot %d buffer still full after '
+                          '%.0f mm back (%s) - the other lanes of this unit '
+                          'may get no assist until the arrival load'
+                          % (self._dh(head), self._dh(ace_idx),
+                             self._dh(slot), float(m.get('mm', 0.0)), why))
+            self._gpio_diag(head, 'after buffer relax')
+        except Exception:
+            logging.exception('[multiACE] [bg-unload] head %d: buffer relax '
+                              'failed' % self._dh(head))
 
     def _check_docked(self, toolhead, ext, head):
         # Toolchange & wait interlock, engine-side: if a T picked this head while
@@ -1054,6 +1326,41 @@ class AceBgSwap:
             return bool(ace._is_v2_idx(ace_idx))
         return False
 
+    def _fa_cache_mark(self, ace, ace_idx, slot):
+        """Host FA cache after the engine armed `slot`. The cache holds one
+        slot per unit; a lane-concurrent unit can follow another lane for
+        the printing head at the same time (multi mode), so the engine's
+        own follow stays out of the cache there - a tool change on that
+        unit then never stops the bg lane, and the printing lane stays the
+        one ace.py tracks."""
+        if self._cap(ace, ace_idx, 'lanes_concurrent'):
+            return
+        ace._feed_assist_per_ace[ace_idx] = slot
+
+    def _fa_cache_clear(self, ace, ace_idx, slot):
+        """Host FA cache after the engine stopped `slot`. On a lane-concurrent
+        unit only an entry for the bg lane itself is cleared."""
+        try:
+            if (self._cap(ace, ace_idx, 'lanes_concurrent')
+                    and ace._feed_assist_per_ace.get(ace_idx, -1) != slot):
+                return
+            ace._feed_assist_per_ace[ace_idx] = -1
+        except Exception:
+            pass
+
+    def _multi_units_ok(self, ace, units):
+        """Multi mode: one MMU feeds several heads, so every unit a bg op
+        moves may also feed the printing head (now, or after a tool change
+        mid-op). Only lane-concurrent units drive one lane while another
+        follows. Returns None when all may, else the first unit that may
+        not."""
+        for idx in units:
+            if idx is None:
+                continue
+            if not self._cap(ace, idx, 'lanes_concurrent'):
+                return idx
+        return None
+
     def _slot_status(self, ace, ace_idx, slot):
         # V2 slot truth = _v2_get_slot_status (the [fa-diag] source). The
         # _info_per_ace slot 'status' stays 'unknown' on a V2, polling it
@@ -1105,12 +1412,13 @@ class AceBgSwap:
         return 'TIMEOUT'
 
     def _ace_unwind(self, ace, ace_idx, slot, length, speed, wait=True,
-                    retries=3):
+                    retries=3, report=None):
         """Unwind with the V2 rollback-lock release, RESP-code check,
         busy-retry and optional device-truth completion wait. ace._retract
         sends stop_feed_assist UNCONDITIONALLY before every unwind ('release
         rollback-lock') - skipping it when the FA cache is empty makes the
-        device drop ALL unwinds."""
+        device drop ALL unwinds. With `report` (a dict) and wait, a unit
+        that reports its moves leaves its end report in report['end']."""
         if not self._cap(ace, ace_idx, 'has_slot_status_truth'):
             # V1: no per-slot motor state to poll - open-loop time pacing,
             # but WITH the retry loop: a too-early send is answered
@@ -1118,6 +1426,7 @@ class AceBgSwap:
             # must be re-sent after a pause, and the dwell is generous
             # (+2s, the FW start/stop overhead exceeds length/speed).
             for attempt in range(1, retries + 1):
+                seq0 = self._move_seq(ace, ace_idx, slot)
                 resp = self._ace_send(ace, ace_idx, {
                     'method': 'unwind_filament',
                     'params': {'index': slot, 'length': int(length),
@@ -1130,7 +1439,10 @@ class AceBgSwap:
                     self._pause(2.0)
                     continue
                 if wait:
-                    self._pause(length / max(speed, 1) + 2.0)
+                    end = self._await_unwind_end(ace, ace_idx, slot, seq0,
+                                                 length, speed)
+                    if report is not None:
+                        report['end'] = end
                 return True
             return False
         for attempt in range(1, retries + 1):
@@ -1249,6 +1561,7 @@ class AceBgSwap:
         # after a pause instead of mis-reading it as 'nothing to do'.
         self._ace_send(ace, ace_idx, {
             'method': 'stop_feed_assist', 'params': {'index': slot}})
+        seq0 = self._move_seq(ace, ace_idx, slot)
         resp = None
         for _try in range(3):
             resp = self._ace_send(ace, ace_idx, {
@@ -1263,15 +1576,32 @@ class AceBgSwap:
             self._pause(2.0)
         if self._resp_rejected(resp):
             return 'none', (None, 0, None, None)
+        _ends = getattr(self, '_feed_unit_end', None)
+        if _ends is None:
+            _ends = self._feed_unit_end = {}
+        _ends[head] = None
         dmin = dmax = None
         n = 0
         arrived = False
         device_idle_since = None
+        unit_end = None
         deadline = self.reactor.monotonic() + length / max(speed, 1) + 15.
         while self.reactor.monotonic() < deadline:
             if _detected():
                 arrived = True
                 break
+            if not is_v2:
+                # A unit that reports its moves (ace2k, CFS Nano) ended
+                # this feed itself (blocked, slip, distance): the same
+                # short grace for a lagging sensor, then stop waiting.
+                m = self._new_move_end(ace, ace_idx, slot, seq0, 'feed')
+                if m is not None:
+                    unit_end = m
+                    if device_idle_since is None:
+                        device_idle_since = self.reactor.monotonic()
+                    elif (self.reactor.monotonic() - device_idle_since
+                          >= 2.0):
+                        break
             if is_v2:
                 d = ace._read_decoder(ace_idx, slot)
                 if d is not None:
@@ -1298,6 +1628,22 @@ class AceBgSwap:
                                  and dmin is not None) else None
         if arrived:
             return 'ok', (span, n, dmin, dmax)
+        if unit_end is not None:
+            # The unit judged the path itself (an obstacle ends it blocked,
+            # a slip at the unit 'slip'); a forward assist cannot push past
+            # what the feed motor could not, so no FA rescue.
+            try:
+                moved = float(unit_end.get('mm') or 0.0)
+            except (TypeError, ValueError):
+                moved = 0.0
+            _ends[head] = (unit_end.get('stop'), moved)
+            self._say('head %d: MMU %d slot %d feed ended by the MMU after '
+                      '%.0f mm (%s) without reaching the toolhead sensor'
+                      % (self._dh(head), self._dh(ace_idx), self._dh(slot),
+                         moved, unit_end.get('stop')
+                         or unit_end.get('why') or 'ended'))
+            return ('none' if moved < BG_FEED_MIN_MOVE else 'partial'), (
+                span, n, dmin, dmax)
         if is_v2 and (span is None or span < BG_FEED_MIN_MOVE):
             return 'none', (span, n, dmin, dmax)
         # Mid-bowden stop without arrival: FA RESCUE first (forward-assist
@@ -1305,7 +1651,7 @@ class AceBgSwap:
         resp = self._ace_send(ace, ace_idx, {
             'method': 'start_feed_assist', 'params': {'index': slot}})
         if not self._resp_rejected(resp):
-            ace._feed_assist_per_ace[ace_idx] = slot
+            self._fa_cache_mark(ace, ace_idx, slot)
             rescue_deadline = self.reactor.monotonic() + BG_FEED_FA_RESCUE
             while self.reactor.monotonic() < rescue_deadline:
                 if _detected():
@@ -1317,7 +1663,7 @@ class AceBgSwap:
             return 'ok', (span, n, dmin, dmax)
         self._ace_send(ace, ace_idx, {
             'method': 'stop_feed_assist', 'params': {'index': slot}})
-        ace._feed_assist_per_ace[ace_idx] = -1
+        self._fa_cache_clear(ace, ace_idx, slot)
         # Moved (V2: measured; V1: open-loop, assume moved) but the sensor
         # never fired even with FA -> the caller retries or stages it in
         # place (every follow-up feed is sensor-gated, staged model).
@@ -1451,12 +1797,85 @@ class AceBgSwap:
         logging.info('[multiACE] %s (start=%.3f end=%.3f print_time=%.3f)'
                      % (msg, start, end, toolhead.print_time))
 
+    cmd_ACE_BG_COIL_TEST_help = (
+        '[diagnostic] Run the background prime on a PARKED head and log '
+        'its coil: ACE_BG_COIL_TEST HEAD=0-3 [LENGTH=20] [SPEED=4]. Once on '
+        'an empty head (air) and once on a loaded one (flow) shows whether '
+        'the dock reading separates the two. Not in a print; the head must '
+        'be hot and stay docked, a loaded head primes through the dock.')
+
+    def cmd_ACE_BG_COIL_TEST(self, gcmd):
+        head = gcmd.get_int('HEAD', minval=0, maxval=3)
+        length = gcmd.get_float('LENGTH', 20., above=0., maxval=120.)
+        speed = gcmd.get_float('SPEED', BG_LOAD_PRIME_SPEED_DEFAULT,
+                               minval=1., maxval=20.)
+        force = gcmd.get_int('FORCE', 0)
+        name = self._ext_name(head)
+        ext = self.printer.lookup_object(name, None)
+        if ext is None:
+            raise self._bg_error(gcmd, '[bg-coil] %s not configured' % name,
+                                 head=head)
+        toolhead = self.printer.lookup_object('toolhead')
+        if toolhead.get_extruder() is ext:
+            raise self._bg_error(gcmd,
+                '[bg-coil] head %d is the ACTIVE head - park it first'
+                % self._dh(head), head=head)
+        if self._print_active() or head in self._busy:
+            raise self._bg_error(gcmd,
+                '[bg-coil] not while a print or a background operation runs',
+                head=head)
+        heater = ext.get_heater()
+        if not force and not bool(getattr(heater, 'can_extrude', True)):
+            raise self._bg_error(gcmd,
+                '[bg-coil] %s is below min_extrude_temp - heat it first '
+                '(M104 S<temp> T%d A0) or pass FORCE=1' % (name, head),
+                head=head)
+        ace = self.printer.lookup_object('ace', None)
+        present = None
+        try:
+            present = ace._head_sensor_present(head)
+        except Exception:
+            pass
+        try:
+            start = self._dock_coil_read(ext)
+        except Exception as e:
+            raise self._bg_error(gcmd,
+                '[bg-coil] no coil reading on %s: %s' % (name, str(e)),
+                head=head)
+        dock = {'start': start, 'min': start, 'max': start, 'n': 0}
+        done = 0.
+        end = None
+        while done < length - 1e-6:
+            if end is not None:
+                self._wait_lead(toolhead, end)
+                self._dock_coil_sample(dock, ext)
+            seg = min(BG_LOAD_PRIME_CHUNK, length - done)
+            _s, end, _en = self.queue_move(ext, seg, speed, CHOREO_ACCEL)
+            done += seg
+        if end is not None:
+            self._wait_move(toolhead, end)
+            self._dock_coil_sample(dock, ext)
+        line = ('dockcoil-test head=%d filament=%s len=%.0f speed=%.1f '
+                'temp=%.0f n=%d coil_start=%.0f coil_min=%.0f coil_max=%.0f '
+                'dip=%.0f up=%.0f'
+                % (head, {True: 'present', False: 'none'}.get(present, '?'),
+                   done, speed, float(getattr(heater, 'smoothed_temp', 0.)),
+                   dock['n'], dock['start'], dock['min'], dock['max'],
+                   dock['start'] - dock['min'], dock['max'] - dock['start']))
+        gcmd.respond_info('[bg-coil] ' + line)
+        logging.info('[multiACE] [bg-dock-coil] ' + line)
+        try:
+            ace._wiggle_log.info(line)
+        except Exception:
+            pass
+
     # -- command ----------------------------------------------------------
     cmd_ACE_BG_UNLOAD_help = (
         '[EXPERIMENTAL] Unload a PARKED MMU head in the background (heat + '
         'cold-pull via bg moves + MMU retract) while printing. '
-        'ACE_BG_UNLOAD HEAD=0-3 [TEMP=<feed temp>]. Requires head mode, 1:1 '
-        'wiring, an OPEN dock below the head (purges ~60mm!), and the head '
+        'ACE_BG_UNLOAD HEAD=0-3 [TEMP=<feed temp>]. Requires head mode '
+        '(1:1 wiring) or multi mode on lane-concurrent MMUs, an OPEN dock '
+        'below the head (purges ~60mm!), and the head '
         'must stay docked for the whole ~3min sequence.')
 
     def cmd_ACE_BG_UNLOAD(self, gcmd):
@@ -1497,8 +1916,9 @@ class AceBgSwap:
                            'serialized (shared move queue), one at a time'
                            % ', '.join(str(self._dh(h))
                                        for h in sorted(self._busy)))
-        if getattr(ace, '_ace_mode', 'multi') != 'head':
-            return _refuse('v0 requires head mode (1:1 MMU per head)')
+        mode = getattr(ace, '_ace_mode', 'multi')
+        if mode not in ('head', 'multi'):
+            return _refuse('requires head or multi mode')
         _cut_for = getattr(ace, 'unload_cut_macro_for', None)
         if _cut_for is not None and _cut_for(head):
             return _refuse('head %d has a cutter (unload_cut_macro) - a '
@@ -1523,18 +1943,26 @@ class AceBgSwap:
         slot = source.get('slot')
         if ace_idx is None or slot is None:
             return _refuse('head %d head_source incomplete' % self._dh(head))
-        # The bg ACE must not be the ACE of the currently printing head.
-        try:
-            act_name = toolhead.get_extruder().get_name()
-            act_head = (0 if act_name == 'extruder'
-                        else int(act_name.replace('extruder', '')))
-            act_src = ace._head_source.get(act_head)
-            if act_src and act_src.get('ace_index') == ace_idx:
-                return _refuse(
-                    'MMU %d also feeds the printing head %d (1:1 wiring '
-                    'violated?)' % (self._dh(ace_idx), self._dh(act_head)))
-        except Exception:
-            pass
+        if mode == 'multi':
+            bad = self._multi_units_ok(ace, [ace_idx])
+            if bad is not None:
+                return _refuse('multi mode needs lane-concurrent MMUs - '
+                               'MMU %d cannot move one lane while another '
+                               'feeds' % self._dh(bad))
+        # The bg ACE must not be the ACE of the currently printing head
+        # (head mode; in multi the unit is lane-concurrent, checked above).
+        if mode == 'head':
+            try:
+                act_name = toolhead.get_extruder().get_name()
+                act_head = (0 if act_name == 'extruder'
+                            else int(act_name.replace('extruder', '')))
+                act_src = ace._head_source.get(act_head)
+                if act_src and act_src.get('ace_index') == ace_idx:
+                    return _refuse(
+                        'MMU %d also feeds the printing head %d (1:1 wiring '
+                        'violated?)' % (self._dh(ace_idx), self._dh(act_head)))
+            except Exception:
+                pass
         if ace._serial_failed_per_ace.get(ace_idx, False) or \
                 ace._reconnecting_per_ace.get(ace_idx, False):
             return _refuse('MMU %d comms not healthy' % self._dh(ace_idx))
@@ -1567,6 +1995,7 @@ class AceBgSwap:
         self._pull_start_time.pop(head, None)
         self._abort_requested.discard(head)
 
+        self._lanes_of_ops()[head] = {(ace_idx, slot)}
         self._busy.add(head)
         self._set_state(head, 'QUEUED')
         self._say('head %d: bg unload queued [%s] (MMU %d slot %d, '
@@ -1647,8 +2076,14 @@ class AceBgSwap:
                            'serialized (shared move queue), one at a time'
                            % ', '.join(str(self._dh(h))
                                        for h in sorted(self._busy)))
-        if getattr(ace, '_ace_mode', 'multi') != 'head':
-            return _refuse('requires head mode (1:1 MMU per head)')
+        mode = getattr(ace, '_ace_mode', 'multi')
+        if mode not in ('head', 'multi'):
+            return _refuse('requires head or multi mode')
+        if mode == 'multi' and (ace_ld < 0 or slot_ld != head):
+            # Multi wiring: slot N feeds head N, and the unit is the only
+            # free choice - the stamp must name it.
+            return _refuse('multi mode needs ACE= and SLOT=%d for head %d'
+                           % (head, self._dh(head)))
         _cut_for = getattr(ace, 'unload_cut_macro_for', None)
         if _cut_for is not None and _cut_for(head):
             return _refuse('head %d has a cutter (unload_cut_macro) - a '
@@ -1687,18 +2122,51 @@ class AceBgSwap:
                            'nothing to do'
                            % (self._dh(head), self._dh(ace_ld),
                               self._dh(slot_ld)))
-        # The bg ACE must not be the ACE of the currently printing head.
-        try:
-            act_name = toolhead.get_extruder().get_name()
-            act_head = (0 if act_name == 'extruder'
-                        else int(act_name.replace('extruder', '')))
-            act_src = ace._head_source.get(act_head)
-            if act_src and act_src.get('ace_index') == ace_ld:
-                return _refuse(
-                    'MMU %d also feeds the printing head %d (1:1 wiring '
-                    'violated?)' % (self._dh(ace_ld), self._dh(act_head)))
-        except Exception:
-            pass
+        # An unloaded head with filament staged at its toolhead (an earlier
+        # transport): the same slot has nothing left to do, another slot
+        # must not be fed into the path the staged strand occupies.
+        st = getattr(ace, '_bg_staged', {}).get(head) if un is None else None
+        if st is not None:
+            try:
+                st = (int(st[0]), int(st[1]))
+            except (TypeError, ValueError, IndexError):
+                st = None
+        if st is not None and st == (ace_ld, slot_ld):
+            return _refuse('head %d already has MMU %d slot %d staged at '
+                           'the toolhead - nothing to do'
+                           % (self._dh(head), self._dh(ace_ld),
+                              self._dh(slot_ld)))
+        if st is not None:
+            return _refuse('head %d has MMU %d slot %d staged at the '
+                           'toolhead (fed in, not loaded) - unload head %d '
+                           'first, then swap'
+                           % (self._dh(head), self._dh(st[0]),
+                              self._dh(st[1]), self._dh(head)))
+        if mode == 'multi':
+            bad = self._multi_units_ok(ace, [un[0] if un else None, ace_ld])
+            if bad is not None:
+                return _refuse('multi mode needs lane-concurrent MMUs - '
+                               'MMU %d cannot move one lane while another '
+                               'feeds' % self._dh(bad))
+            if un is not None and (
+                    ace._serial_failed_per_ace.get(un[0], False) or
+                    ace._reconnecting_per_ace.get(un[0], False)):
+                return _refuse('MMU %d comms not healthy'
+                               % self._dh(un[0]))
+        # The bg ACE must not be the ACE of the currently printing head
+        # (head mode; in multi the units are lane-concurrent, see above).
+        if mode == 'head':
+            try:
+                act_name = toolhead.get_extruder().get_name()
+                act_head = (0 if act_name == 'extruder'
+                            else int(act_name.replace('extruder', '')))
+                act_src = ace._head_source.get(act_head)
+                if act_src and act_src.get('ace_index') == ace_ld:
+                    return _refuse(
+                        'MMU %d also feeds the printing head %d (1:1 wiring '
+                        'violated?)' % (self._dh(ace_ld), self._dh(act_head)))
+            except Exception:
+                pass
         if ace._serial_failed_per_ace.get(ace_ld, False) or \
                 ace._reconnecting_per_ace.get(ace_ld, False):
             return _refuse('MMU %d comms not healthy' % self._dh(ace_ld))
@@ -1752,6 +2220,8 @@ class AceBgSwap:
         self._pull_start_time.pop(head, None)
         self._abort_requested.discard(head)
 
+        self._lanes_of_ops()[head] = set(
+            l for l in (un, (ace_ld, slot_ld)) if l is not None)
         self._busy.add(head)
         self._set_state(head, 'QUEUED')
         self._say('head %d: bg SWAP queued [%s] (%s -> MMU %d slot %d, '
@@ -1777,6 +2247,16 @@ class AceBgSwap:
         'to restore original print coordinates before returning.')
 
     def cmd_ACE_BG_WAIT(self, gcmd):
+        # The park at the chute is a gcode move: inside the block of an
+        # excluded object stock would drop it.
+        suspend = getattr(self.printer.lookup_object('ace', None),
+                          '_object_exclusion_suspended', None)
+        if suspend is None:
+            return self._cmd_ACE_BG_WAIT_body(gcmd)
+        with suspend('ACE_BG_WAIT'):
+            return self._cmd_ACE_BG_WAIT_body(gcmd)
+
+    def _cmd_ACE_BG_WAIT_body(self, gcmd):
         # HEAD is required and must be a valid toolhead index (0-3), same
         # contract as the other ACE_BG_* commands.
         head = gcmd.get_int('HEAD', minval=0, maxval=3)
@@ -2010,6 +2490,83 @@ class AceBgSwap:
     # found target or 0. Print end/cancel turn the heaters off past the
     # observer (turn_off_all_heaters -> heater.set_temp), so once the
     # print is neither printing nor paused the intent is 0.
+    # --- Dock coil reading ----------------------------------------------
+    # Reads the docked head's own coil while the background prime runs. An
+    # empty head reads a dip near 0, a flowing one several thousand, so the
+    # dip tells flow from air in the dock. The result is kept per head for
+    # the arrival, which logs it next to its own verdict; nothing decides
+    # on it yet. The docked head is never the probing head, so the read
+    # cannot meet a bed-probe query on the same coil.
+    DOCK_COIL_MAX_READ_S = 0.2
+    DOCK_COIL_FLOW_DIP = 1000.
+
+    def _dock_coil_read(self, ext):
+        return float(ext.binding_probe.sensor.get_coil_freq())
+
+    def _dock_coil_start(self, ace, ext):
+        """Baseline read before the first prime chunk. None = not sampling
+        (no coil on this head, or the read is too slow to sit between two
+        chained chunks)."""
+        try:
+            t0 = self.reactor.monotonic()
+            f = self._dock_coil_read(ext)
+            took = self.reactor.monotonic() - t0
+        except Exception as e:
+            logging.info('[multiACE] [bg-dock-coil] no reading: %s' % str(e))
+            return None
+        if took > self.DOCK_COIL_MAX_READ_S:
+            logging.info('[multiACE] [bg-dock-coil] read took %.2fs - not '
+                         'sampling this prime' % took)
+            return None
+        return {'start': f, 'min': f, 'max': f, 'n': 0}
+
+    def _dock_coil_sample(self, dock, ext):
+        if dock is None:
+            return
+        try:
+            f = self._dock_coil_read(ext)
+        except Exception:
+            return
+        dock['n'] += 1
+        dock['min'] = min(dock['min'], f)
+        dock['max'] = max(dock['max'], f)
+
+    def _dock_coil_report(self, ace, dock, head, ace_idx, slot, primed,
+                          target, speed, cut_short):
+        """One line per background prime, internal indices like the
+        pickcheck line it is compared with."""
+        try:
+            store = getattr(ace, '_bg_dock_coil', None)
+            if store is not None:
+                if dock is None or dock['n'] < 1:
+                    store.pop(head, None)
+                else:
+                    dip = dock['start'] - dock['min']
+                    store[head] = {
+                        'dip': dip, 'up': dock['max'] - dock['start'],
+                        'n': dock['n'], 'primed': primed, 'target': target,
+                        'speed': speed, 'ace': ace_idx, 'slot': slot,
+                        'verdict': ('FLOW' if dip >= self.DOCK_COIL_FLOW_DIP
+                                    else 'NO_FLOW')}
+        except Exception:
+            pass
+        if dock is None:
+            return
+        try:
+            line = ('dockcoil head=%d ace=%d slot=%d primed=%.0f/%.0f '
+                    'speed=%.1f n=%d coil_start=%.0f coil_min=%.0f '
+                    'coil_max=%.0f dip=%.0f up=%.0f cut=%d'
+                    % (head, ace_idx, slot, primed, target, speed,
+                       dock['n'], dock['start'], dock['min'], dock['max'],
+                       dock['start'] - dock['min'],
+                       dock['max'] - dock['start'], 1 if cut_short else 0))
+            logging.info('[multiACE] [bg-dock-coil] ' + line)
+            wl = getattr(ace, '_wiggle_log', None)
+            if wl is not None:
+                wl.info(line)
+        except Exception:
+            pass
+
     def _print_active(self):
         try:
             ps = self.printer.lookup_object('print_stats', None)
@@ -2128,10 +2685,16 @@ class AceBgSwap:
             ace._runout_suppress_heads.add(head)
 
             # 1. Stop FA on the bg ACE (it is NOT the printing head's ACE -
-            # guarded above), mirror the cache convention.
+            # guarded above), mirror the cache convention. A lane-concurrent
+            # unit (multi) may follow the printing head on another lane:
+            # there only the bg lane's own follow stops.
             self._set_state(head, 'FA_STOP')
             armed = ace._feed_assist_per_ace.get(ace_idx, -1)
-            if isinstance(armed, int) and 0 <= armed <= 3:
+            if self._cap(ace, ace_idx, 'lanes_concurrent'):
+                self._ace_send(ace, ace_idx, {
+                    'method': 'stop_feed_assist', 'params': {'index': slot}})
+                self._fa_cache_clear(ace, ace_idx, slot)
+            elif isinstance(armed, int) and 0 <= armed <= 3:
                 self._ace_send(ace, ace_idx, {
                     'method': 'stop_feed_assist', 'params': {'index': armed}})
                 ace._feed_assist_per_ace[ace_idx] = -1
@@ -2368,7 +2931,7 @@ class AceBgSwap:
                     if fwd_assist:
                         # _ace_unwind's pre-stop disarms it device-side;
                         # keep the host cache in sync (FA convention).
-                        ace._feed_assist_per_ace[ace_idx] = -1
+                        self._fa_cache_clear(ace, ace_idx, slot)
                         fwd_assist = False
                     _lead()
                     _ace_ready()
@@ -2412,7 +2975,7 @@ class AceBgSwap:
                             'method': 'start_feed_assist',
                             'params': {'index': slot}})
                         if not self._resp_rejected(resp):
-                            ace._feed_assist_per_ace[ace_idx] = slot
+                            self._fa_cache_mark(ace, ace_idx, slot)
                             fwd_assist = True
                     else:
                         _lead()
@@ -2428,7 +2991,7 @@ class AceBgSwap:
             if fwd_assist:
                 self._ace_send(ace, ace_idx, {
                     'method': 'stop_feed_assist', 'params': {'index': slot}})
-                ace._feed_assist_per_ace[ace_idx] = -1
+                self._fa_cache_clear(ace, ace_idx, slot)
             # The unwinds only move the tip back as far as the pull does in
             # net: the forward pushes (purge, pre-prime, table moves) took
             # back part of it, and an unwind beyond the net retract just
@@ -2499,15 +3062,26 @@ class AceBgSwap:
                              unwind_speed))
                 # -- short (decoder-gated) --
                 _sk = {'v': False}
-                def _do_short(_o=_sk):
+                _srep = {}
+                def _do_short(_o=_sk, _r=_srep):
                     _o['v'] = self._ace_unwind(ace, ace_idx, slot, short,
                                                unwind_speed, wait=True,
-                                               retries=4)
+                                               retries=4, report=_r)
                 _sps = ace._retract_with_decoder_span(ace_idx, slot, _do_short)
                 self._bg_dec_log(ace, head, slot, 'bg-short', short, _sps)
                 if not _sk['v']:
                     raise RuntimeError('bg short retract not confirmed by the '
                                        'device (slot %d)' % slot)
+                _held = self._retract_held(_srep.get('end'))
+                if _held:
+                    # The unit measured it (see BG_MOVE_END_GRACE): the
+                    # strand did not come back. The pin can already read
+                    # clear here (tip just above the sensor), so it cannot
+                    # be the verdict.
+                    raise RuntimeError(
+                        'bg short retract HELD on MMU %d slot %d (%s) - the '
+                        'strand did not come back, handing to inline'
+                        % (self._dh(ace_idx), self._dh(slot), _held))
                 _span = _sps[0]
                 if _span is not None and _span < short * BG_UNLOAD_STALL_FRAC:
                     # decoder: the ACE barely moved -> filament stuck. Do NOT
@@ -2529,16 +3103,31 @@ class AceBgSwap:
                 rest2 = rest - short
                 if rest2 > 0:
                     _rk = {'v': False}
-                    def _do_rest(_o=_rk):
-                        _o['v'] = self._ace_unwind(ace, ace_idx, slot, rest2,
-                                                   unwind_speed, wait=True,
-                                                   retries=4)
+                    _rrep = {}
+                    def _do_rest(_o=_rk, _r=_rrep):
+                        _mark = getattr(ace, '_retract_pending_mark', None)
+                        _nk = (_mark(ace_idx, slot, rest2, head)
+                               if _mark is not None else None)
+                        try:
+                            _o['v'] = self._ace_unwind(
+                                ace, ace_idx, slot, rest2, unwind_speed,
+                                wait=True, retries=4, report=_r)
+                        finally:
+                            if _nk:
+                                ace._retract_pending_clear(_nk)
                     _spr = ace._retract_with_decoder_span(ace_idx, slot,
                                                           _do_rest)
                     self._bg_dec_log(ace, head, slot, 'bg-rest', rest2, _spr)
                     if not _rk['v']:
                         raise RuntimeError('bg rest retract not confirmed by '
                                            'the device (slot %d)' % slot)
+                    _held = self._retract_held(_rrep.get('end'))
+                    if _held:
+                        raise RuntimeError(
+                            'bg rest retract HELD on MMU %d slot %d (%s) - '
+                            'the strand is still in the path, handing to '
+                            'inline' % (self._dh(ace_idx), self._dh(slot),
+                                        _held))
                 # PIN GATE (the bg twin of the inline pin-first unload
                 # verify, same [ace] unload_gpio knob): after the FULLY
                 # verified retract the toolhead presence pin must read
@@ -2783,6 +3372,11 @@ class AceBgSwap:
         different-slot load is refused); grip/prime aborts bookkeep the
         head as loaded and return normally. Only 'none' (nothing moved)
         hands over a genuinely empty head."""
+        # A reading left from an earlier load of this head is not this one's.
+        try:
+            getattr(ace, '_bg_dock_coil', {}).pop(head, None)
+        except Exception:
+            pass
         st = self._slot_status(ace, ace_idx, slot)
         try:
             if ace._is_empty_status(st):
@@ -2838,6 +3432,8 @@ class AceBgSwap:
             _retry_back = 50
         feed_res, _fsp = 'none', (None, 0, None, None)
         _ever_moved = False
+        _prev_end = None
+        _attempts = 0
         # STAGED from the first feed command on: a restart during the load
         # half must find the record (see _mark_staged). Cleared again when
         # nothing moved, or by _load_bookkeeping once the head is loaded.
@@ -2860,10 +3456,24 @@ class AceBgSwap:
             feed_res, _fsp = self._ace_feed_to_gears(
                 ace, ace_idx, slot, feed_len, feed_speed, head)
             self._bg_dec_log(ace, head, slot, 'bg-feed', feed_len, _fsp)
+            _attempts = _attempt + 1
             if feed_res in ('ok', 'stale'):
                 break
             if feed_res == 'partial':
                 _ever_moved = True
+            _end = (getattr(self, '_feed_unit_end', None) or {}).get(head)
+            if _attempt > 0 and self._blocked_same_place(
+                    _prev_end, _end, _retry_back):
+                # The unit stopped at the place the attempt before stopped
+                # at: a hard stop in the path (HW 2026-11-09: 18 of 19 such
+                # retries ended blocked after 51-52 mm again).
+                self._say('head %d: MMU %d slot %d blocked again after '
+                          '%.0f mm, the place the last attempt stopped at - '
+                          'no further retry'
+                          % (self._dh(head), self._dh(ace_idx),
+                             self._dh(slot), _end[1]))
+                break
+            _prev_end = _end
         self._dwell_fan(ace, head, False)
         if feed_res != 'ok' and not _ever_moved and feed_res != 'partial':
             # Nothing demonstrably moved: no filament in the path, no record.
@@ -2888,7 +3498,8 @@ class AceBgSwap:
                 self._say('head %d: feed never reached the sensor after %d '
                           'attempt(s) - filament stays in the path (STAGED, '
                           'mid-bowden); the arrival load continues it'
-                          % (self._dh(head), _retries + 1))
+                          % (self._dh(head), _attempts))
+                self._relax_buffer(ace, ace_idx, slot, head)
             raise RuntimeError('feed not confirmed by the device')
 
         if transport_only:
@@ -2899,6 +3510,7 @@ class AceBgSwap:
             # no head_source - the head is not loaded yet.
             self._mark_staged(ace, head, ace_idx, slot)
             self._gpio_diag(head, 'staged after transport (expected present)')
+            self._relax_buffer(ace, ace_idx, slot, head)
             return
 
         # FA ON from here: start the ACE forward-assist right after
@@ -2946,28 +3558,37 @@ class AceBgSwap:
             # arrival pick-check tops that up, see _bg_prime_deficit).
             # Per-pair PURGE= from the stamp wins (see cmd_ACE_BG_SWAP);
             # fallback = the global override/config knob, as before.
-            # prime_scale scales the dock prime before passing through
-            # apply_purge_policy, so swap_purge_floor and cap still have the
-            # last word.
+            # prime_scale scales the dock prime before the purge policy, so
+            # swap_purge_floor and swap_purge_cap keep the last word.
+            _stamp = purge
+            _scale = float(getattr(self, 'prime_scale', 1.0))
+            _policy = getattr(ace, 'apply_purge_policy', None)
             if purge is not None:
-                base_purge = float(purge) * self.prime_scale
-                _policy = getattr(ace, 'apply_purge_policy', None)
-                if _policy is not None:
-                    purge = _policy(base_purge)
-                else:
-                    purge = base_purge
-                prime_target = float(purge) + self.prime_extra
+                base_purge = float(purge) * _scale
             else:
-                base_len = ace.get_raw_purge_length() if hasattr(ace, 'get_raw_purge_length') \
-                    else (ace._purge_length_override if getattr(ace, '_purge_length_override', None) is not None
-                          else getattr(ace, 'swap_purge_length', 0) or 80.)
-                base_purge = float(base_len) * self.prime_scale
-                _policy = getattr(ace, 'apply_purge_policy', None)
-                if _policy is not None:
-                    purge = _policy(base_purge)
-                else:
-                    purge = base_purge
-                prime_target = float(purge) + self.prime_extra
+                # No stamp: override, else the config value; 0 on either
+                # means the stock 80 mm.
+                _ovr = getattr(ace, '_purge_length_override', None)
+                base_len = (_ovr if _ovr is not None
+                            else getattr(ace, 'swap_purge_length', 0))
+                base_purge = float(base_len or 80.) * _scale
+            purge = (_policy(base_purge) if _policy is not None
+                     else base_purge)
+            # A purge control below 100 % shrinks the extra with it.
+            _shrink = getattr(ace, 'purge_shrink', None)
+            _extra = self.prime_extra * (_shrink() if _shrink else 1.0)
+            prime_target = float(purge or 80.) + _extra
+            try:
+                _desc = getattr(ace, 'purge_desc', None)
+                _ptxt = (_desc(_stamp)[1] if _desc is not None
+                         else ('stamp %s' % _stamp if _stamp is not None
+                               else 'no stamp'))
+                self._say('head %d: prime target %g mm = purge %s x '
+                          'prime_scale %g + prime_extra %g'
+                          % (self._dh(head), prime_target, _ptxt,
+                             _scale, _extra))
+            except Exception:
+                logging.exception('[multiACE] [bg-unload] purge log failed')
             primed = 0.
             ooze_done = False
 
@@ -3077,14 +3698,14 @@ class AceBgSwap:
                               '(<=%d mm, moved %s%s)'
                               % (self._dh(head), int(press),
                                  ('%s mm' % _psp[0]) if _psp[0] is not None
-                                 else 'n/a (V1)',
+                                 else 'n/a (no decoder)',
                                  ', attempt %d' % (_pa + 1) if _pa else ''))
             self._fa_on(ace, ace_idx, slot)
             # Tip sits at the toolhead sensor (both hardwares) -> the grip
             # covers sensor->gears + seats the tip through them. NO edge
             # verify here: the pin is a presence gate, a perfect grip reads
             # the same 0 edges as a failed one (EDGE-VERIFY POST-MORTEM).
-            grip = BG_LOAD_GRIP_SEAT
+            grip = self.grip_length
             seg = grip / 4.
             _gend = None
             for _i in range(4):
@@ -3094,7 +3715,7 @@ class AceBgSwap:
                     self._wait_lead(toolhead, _gend)
                 self._check_docked(toolhead, ext, head)
                 _s, _gend, _en = self.queue_move(ext, seg,
-                                                 BG_LOAD_GRIP_SPEED,
+                                                 self.grip_speed,
                                                  CHOREO_ACCEL)
             self._wait_move(toolhead, _gend)
             gripped = True
@@ -3131,9 +3752,11 @@ class AceBgSwap:
                 except Exception:
                     pass
             _pend = None
+            _dock = self._dock_coil_start(ace, ext)
             while primed < prime_target - 1e-6:
                 if _pend is not None:
                     self._wait_lead(toolhead, _pend)
+                    self._dock_coil_sample(_dock, ext)
                 if head in self._pick_pending:
                     # Toolchange announced (request_pick_abort): the head
                     # is still docked, so finish cleanly - cushion now,
@@ -3187,6 +3810,8 @@ class AceBgSwap:
                 self._wait_move(toolhead, end)
             elif _pend is not None:
                 self._wait_move(toolhead, _pend)
+            self._dock_coil_report(ace, _dock, head, ace_idx, slot, primed,
+                                   prime_target, _prime_speed, cut_short)
             ooze_done = True
             if cut_short:
                 deficit = max(0., prime_target - primed)
@@ -3203,7 +3828,7 @@ class AceBgSwap:
         except Exception as e:
             self._ace_send(ace, ace_idx, {
                 'method': 'stop_feed_assist', 'params': {'index': slot}})
-            ace._feed_assist_per_ace[ace_idx] = -1
+            self._fa_cache_clear(ace, ace_idx, slot)
             if gripped:
                 # The gears hold the filament and the melt zone is (being)
                 # filled - the head IS loaded. Bookkeep and hand over: the
@@ -3263,7 +3888,7 @@ class AceBgSwap:
         # preheat for the arrival issued mid-load belongs to the print).
         self._ace_send(ace, ace_idx, {
             'method': 'stop_feed_assist', 'params': {'index': slot}})
-        ace._feed_assist_per_ace[ace_idx] = -1
+        self._fa_cache_clear(ace, ace_idx, slot)
         self._release_heat(ace, head, heater, pheaters, 'bg load done')
         self._load_bookkeeping(head, ace, ace_idx, slot)
 

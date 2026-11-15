@@ -12,7 +12,7 @@ GATE_AVAILABLE = 1
 # tests/units/contract.py carries a frozen copy and a test keeps them equal.
 TELEMETRY_METHODS = frozenset((
     'get_status', 'get_feed_info', 'get_filament_info',
-    'filament_identify', 'filament_recognition'))
+    'filament_identify', 'filament_recognition', 'set_lanes'))
 
 class AceProtocol(object):
     NAME = ''

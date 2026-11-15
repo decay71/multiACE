@@ -256,6 +256,7 @@
   "available": false,
   "busy": [],
   "enabled_heads": [],
+  "load_mode": null,
   "version": null
  },
  "calibration": {
@@ -366,6 +367,14 @@
    "tested": "ACE Pro, in the field since 0.9x"
   },
   {
+   "active": false,
+   "enabled": false,
+   "label": "CFW - Ace2k",
+   "name": "ace2k",
+   "places": [],
+   "tested": ""
+  },
+  {
    "active": true,
    "enabled": true,
    "label": "AceV2",
@@ -422,6 +431,7 @@
  "preflight_max_copies": 1,
  "printer_state": "idle",
  "purge_cap": 0,
+ "purge_custom": false,
  "purge_floor": 0,
  "purge_matrix": true,
  "purge_scale": 100,

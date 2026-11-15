@@ -121,18 +121,6 @@
  ],
  [
   "ace.py",
-  "MultiAce.cmd_ACE_FW_RELEASE",
-  "predicate_call",
-  "self._is_v1(idx)"
- ],
- [
-  "ace.py",
-  "MultiAce.cmd_ACE_FW_RELEASE",
-  "predicate_call",
-  "self._is_v2(idx)"
- ],
- [
-  "ace.py",
   "MultiAce.cmd_ACE_MULTI_SLOT_TEST",
   "name_compare",
   "getattr(proto, 'NAME', None) != 'v2'"
