@@ -334,6 +334,42 @@ class TestSwapCostParams:
             self.CFG + "[ace_bg_swap]\nheads: 3\nload_enabled: %s\n" % value)
         assert main._swap_cost_params()["main"]["bg_load"] == mode
 
+    def test_prime_extra_and_prime_scale_come_from_ace_bg_swap(
+            self, monkeypatch, tmp_path):
+        main = _load_main(
+            monkeypatch, tmp_path,
+            self.CFG + "[ace_bg_swap]\nprime_extra: 0\nprime_scale: 0.6\n")
+        p = main._swap_cost_params()["main"]
+        assert p["bg_prime_extra"] == 0
+        assert p["bg_prime_scale"] == 0.6
+
+    def test_prime_scale_is_absent_by_default(self, monkeypatch, tmp_path):
+        main = _load_main(monkeypatch, tmp_path, self.CFG)
+        assert "bg_prime_scale" not in main._swap_cost_params()["main"]
+
+    def test_a_custom_default_tipform_table_sets_the_pull_time(
+            self, monkeypatch, tmp_path):
+        # 60 mm at 600 mm/min = 6 s, 0.5 s pause, -60 mm at 1200 = 3 s
+        main = _load_main(
+            monkeypatch, tmp_path,
+            self.CFG + "[ace_tipform]\nmode: custom\n"
+            "default: 60@600, pause:500, -60@1200\n")
+        assert main._swap_cost_params()["main"]["tip_form_pull_s"] \
+            == pytest.approx(9.5)
+
+    @pytest.mark.parametrize("tipform", [
+        "",                                              # no section
+        "[ace_tipform]\nmode: stock\ndefault: 60@600, -60@1200\n",
+        "[ace_tipform]\nmode: custom\npla: 60@600, -60@1200\n",
+        "[ace_tipform]\nmode: custom\ndefault: unloadtemp:220\n",
+        "[ace_tipform]\nmode: custom\ndefault: 60@600\n",   # net push: refused
+        "[ace_tipform]\nmode: custom\ndefault: nonsense\n",
+    ])
+    def test_everything_else_keeps_the_stock_tip_form(
+            self, monkeypatch, tmp_path, tipform):
+        main = _load_main(monkeypatch, tmp_path, self.CFG + tipform)
+        assert "tip_form_pull_s" not in main._swap_cost_params()["main"]
+
     def test_a_missing_config_yields_empty_params(self, monkeypatch, tmp_path):
         main = _load_main(monkeypatch, tmp_path, "[ace]\n")
         monkeypatch.setattr(main, "MULTIACE_CFG_PATH",
