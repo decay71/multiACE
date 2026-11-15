@@ -662,6 +662,14 @@ class SwapCostModel(object):
                 + c["seat_press"]
                 + c["heat_settle"] + c["tool_pickup"] + c["sensor_wait"])
 
+    def is_calibrated(self, kind):
+        """True when `kind` has enough measured swaps for swap_seconds to
+        return a recorded median."""
+        v = self.calibration.get(kind)
+        return (isinstance(v, dict)
+                and int(v.get("n", 0) or 0) >= self.min_calibration_samples
+                and v.get("median_s") is not None)
+
     def calibrated_kinds(self):
         return sorted(
             k for k, v in self.calibration.items()
@@ -883,9 +891,17 @@ def build_estimate(model, header, timeline, *, materials=None,
             shrink = getattr(model, "purge_shrink", None)
             purge += (getattr(model, "bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM)
                       * (shrink() if shrink else 1.0))
+        # A recorded swap time is the whole ACE_SWAP_HEAD, and its load ends
+        # in the flush, so a measured median already holds the inline purge.
+        # A background swap's median is the arrival only: its inline purge
+        # (`purge_inline`) is not in it.
+        in_measured = (ev.get("seconds") is None
+                       and kind != "cross_ace_bg"
+                       and model.is_calibrated(
+                           kind if kind in SWAP_KINDS else "cross_ace_inline"))
         added_s += float(seconds or 0.0)
         purge_mm_total += purge
-        if not bg_parked:
+        if not bg_parked and not in_measured:
             added_purge_s += model.purge_seconds(purge)
         if purge > 0:
             purging_swaps += 1

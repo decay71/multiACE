@@ -234,6 +234,36 @@ class TestCalibration:
         assert cal.swap_seconds("cross_ace_bg") \
             == pytest.approx(model.swap_seconds("cross_ace_bg"))
 
+    def test_a_measured_swap_already_holds_its_purge(self, model):
+        """A recorded swap time is the whole ACE_SWAP_HEAD, which ends in the
+        flush. Billing the purge on top of a measured median counts it
+        twice. Job 000086: 38 same-ace, 8 inline and 28 background swaps,
+        recorded medians 138.7 / 50.7 / 7.3 s, about 6,000 s in all, where
+        the estimate said 10,189 s."""
+        cal = model.with_calibration({
+            "same_ace": {"median_s": 138.7, "n": 38},
+            "cross_ace_inline": {"median_s": 50.7, "n": 8},
+            "cross_ace_bg": {"median_s": 7.3, "n": 28}})
+        timeline = ([{"kind": "same_ace"}] * 38
+                    + [{"kind": "cross_ace_inline"}] * 8
+                    + [{"kind": "cross_ace_bg"}] * 28)
+        est = sc.build_estimate(cal, None, timeline)
+        recorded = 38 * 138.7 + 8 * 50.7 + 28 * 7.3
+        assert est["added_s"] == pytest.approx(recorded, abs=1)
+
+    def test_an_unmeasured_swap_still_pays_its_purge(self, model):
+        est = sc.build_estimate(model, None, [{"kind": "same_ace"}])
+        assert est["added_s"] == pytest.approx(
+            model.swap_seconds("same_ace")
+            + model.purge_seconds(model.resolve_swap_purge_mm()), abs=1)
+
+    def test_an_aborted_background_swap_pays_its_inline_purge(self, model):
+        cal = model.with_calibration(
+            {"cross_ace_bg": {"median_s": 7.3, "n": 28}})
+        est = sc.build_estimate(
+            cal, None, [{"kind": "cross_ace_bg", "purge_inline": True}])
+        assert est["added_s"] > 7.3 + 5
+
 
 class TestResolveSwapPurgeMm:
     """What a swap purges follows what the engine does today: the
