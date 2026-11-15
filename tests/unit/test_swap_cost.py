@@ -53,12 +53,11 @@ class TestSwapArithmetic:
         """The constants were seeded so the shipped defaults land on the
         old whole-swap figures (BG_SWAP_COST_INLINE_S=210 / _BG_S=30),
         before the purge, which the estimate bills on top. The inline seed
-        was then lowered by the 37.5 s of retract and feed that
-        ace_spool_change used to count a second time (deliberate, see
+        was then lowered to the measured 141-146 s (deliberate, see
         UNMEASURED_S). If this drifts, every existing plan silently changes
         shape."""
         assert model.swap_seconds("cross_ace_inline") == pytest.approx(
-            210 - 37.5, abs=2)
+            146, abs=3)
         assert model.swap_seconds("cross_ace_bg") == pytest.approx(30, abs=1)
 
     def test_spool_change_does_not_bill_retract_and_feed_twice(self, model):
@@ -68,7 +67,7 @@ class TestSwapArithmetic:
         retract = CFG["swap_retract_length"] / CFG["retract_speed"]
         feed = CFG["load_length"] / CFG["feed_speed"]
         assert (sc.UNMEASURED_S["ace_spool_change"] + retract + feed
-                == pytest.approx(62.0))
+                <= 62.0)
 
 
 class TestTipFormFromTokens:

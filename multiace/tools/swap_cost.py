@@ -39,7 +39,8 @@ import re
 # about 210 s and a background swap on 30 s - the old whole-swap figures
 # of post_process_virtual_toolheads (now 146 / 56 s, measured). Taking the
 # retract and feed out of ace_spool_change (they were billed twice) moved
-# the inline seed to about 172 s; the rest is still to be tuned. The purge
+# the inline seed to about 172 s, and measured swaps (141-146 s) took the
+# spool change itself to 0, so the inline seed is about 147 s now. The purge
 # is NOT in these seeds: build_estimate bills it on top, so an estimate with
 # the default 80 mm flush reads about 28 s above the old inline figure.
 # Every later change is a deliberate constant edit.
@@ -56,9 +57,10 @@ UNMEASURED_S = {
     # model already bills from the config (swap_retract_length /
     # retract_speed and load_length / feed_speed). It used to be 62 s and
     # counted those two moves a second time: 62 - (900/80 + 2100/80) = 24.5
-    # at the shipped defaults. Hub handling and slot change that is not a
-    # length/speed pair we control.
-    "ace_spool_change": 24.5,
+    # at the shipped defaults. Measured whole same-ace swaps (141 s and 146 s
+    # medians on two printers) leave nothing beyond the moves and the other
+    # constants, so it is 0 until a measurement says otherwise.
+    "ace_spool_change": 0.0,
     # Seat/press dwell after the overshoot move (the move itself is computed).
     "seat_press":       6.0,
     # Waiting for the nozzle to recover the setpoint after a cold-ish load.
