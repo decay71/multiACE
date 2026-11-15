@@ -37,7 +37,9 @@
 #                     UNLOAD-TEMP parameter - the whole unload (heat,
 #                     INNER TEMP= / custom-frame heat, probe pre-warm)
 #                     runs at this temp for the table's material/vendor.
-#                     Without it the unload runs at the load temp.
+#                     Without it the unload runs at the DB unload temp
+#                     when the DB gives one that differs from its load
+#                     temp (firmware 2.1+), else at the load temp.
 #                     Range 175-350 (pull moves need >
 #                     min_extrude_temp). A table may consist of ONLY
 #                     this token = stock pull choreography at a custom
@@ -474,7 +476,8 @@ class AceTipform:
 
     def unload_temp_for(self, material, vendor=None, soft=False,
                         device=None):
-        """The custom unload temp, or None = the unload runs at the load
+        """The custom unload temp, or None = the unload runs at the DB
+        unload temp (when it differs from the DB load temp) or the load
         temp. Same precedence and mode gate as table_for (the whole
         section is inert in mode: stock; a param-only table just means
         stock CHOREOGRAPHY at the custom temp)."""

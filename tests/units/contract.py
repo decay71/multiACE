@@ -77,11 +77,14 @@ OPTIONAL_METHODS = ('update_feeding_speed', 'drying', 'drying_stop',
                     'filament_recognition', 'discover_device', 'set_fan_speed',
                     'get_temp', 'set_rfid_enable', 'assign_device_id',
                     'iap_version', 'set_dry_temp', 'set_dry_power',
-                    'get_key_state', 'rfid_test', 'stop_unwind_filament')
+                    'get_key_state', 'rfid_test', 'stop_unwind_filament',
+                    'tag_read_motion', 'tag_read_load', 'relax_buffer',
+                    'set_lanes')
 KNOWN_METHODS = frozenset(REQUIRED_METHODS + OPTIONAL_METHODS)
 TELEMETRY_METHODS = frozenset(('get_status', 'get_feed_info',
                                'get_filament_info', 'filament_identify',
-                               'filament_recognition'))
+                               'filament_recognition',
+                               'set_lanes'))
 HOST_KEYS = frozenset(('subtype', 'uid', 'tag_format', 'tag', 'colors'))
 PRESENCE_WORDS = frozenset(('ready', 'unknown', 'identified', 'identifying',
                             'nosensor'))

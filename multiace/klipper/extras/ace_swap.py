@@ -28,6 +28,8 @@ PICK_CHECK_FLOW_PUSH = 10.
 #: Smallest flush the purge policy may produce (mm) while swap_purge_floor
 #: is 0; the post-processor's stamp minimum uses the same default.
 PURGE_HARD_MIN_MM = 40
+#: Default of [ace_bg_swap] prime_extra (mm); another value is a user setting.
+PURGE_DOCK_EXTRA_DEFAULT = 40.
 PICK_CHECK_PUSH_FEEDRATE = 400     # mm/min, = the phase3 extrude feedrate
 PICK_CHECK_COIL_SAMPLES = 5        # phase3 non-soft sampling: 5 x 0.5 s
 PICK_CHECK_COIL_INTERVAL = 0.5
@@ -123,11 +125,12 @@ class SwapMixin:
         """Scale, floor and cap a resolved flush length (mm). Unchanged
         while the policy sits at its defaults; a 0 (stock default) length
         then stays 0. FLOOR raises, CAP lowers (and wins over a higher
-        floor); the result never drops below PURGE_HARD_MIN_MM, or below a
-        lower swap_purge_floor the user set. The same floor sizes the
+        floor); the result never drops below PURGE_HARD_MIN_MM (scaled
+        down with a scale below 100 %), or below a lower swap_purge_floor
+        the user set. The same floor sizes the
         preflight's per-pair stamps, so one setting decides the smallest
         purge everywhere."""
-        scale = getattr(self, 'swap_purge_scale', 100)
+        scale = self.purge_scale_effective()
         floor = getattr(self, 'swap_purge_floor', 0)
         cap = getattr(self, 'swap_purge_cap', 0)
         if scale == 100 and not floor and not cap:
@@ -137,10 +140,72 @@ class SwapMixin:
             value = max(value, floor)
         if cap:
             value = min(value, cap)
-        # The hard minimum: 40 mm, or a lower floor the user chose.
-        value = max(value, min(floor, PURGE_HARD_MIN_MM) if floor
-                    else PURGE_HARD_MIN_MM)
-        return int(min(round(value), 200))
+        # The hard minimum: 40 mm, or a lower floor the user chose. Below
+        # 100 % the minimum shrinks with the scale, so the purge control
+        # reaches short purges on cheap colour pairs too.
+        hard = PURGE_HARD_MIN_MM * self.purge_shrink()
+        value = max(value, min(floor, hard) if floor else hard)
+        return int(min(max(round(value), 1), 200))
+
+    def purge_shrink(self):
+        """Factor (0.25-1.0) by which a purge control below 100 % also
+        shrinks the fixed parts of a purge: the hard minimum and the
+        dock prime's extra. 1.0 at 100 % and above."""
+        scale = self.purge_scale_effective()
+        return min(max(scale, 25), 100) / 100.0
+
+    def purge_custom(self):
+        """True when the user set one of the purge options the web no longer
+        shows (fixed length, floor, cap, dock scale or dock extra). Then
+        those decide alone and the purge control is off."""
+        try:
+            if (getattr(self, 'swap_purge_length', 0)
+                    or getattr(self, 'swap_purge_floor', 0)
+                    or getattr(self, 'swap_purge_cap', 0)):
+                return True
+            bg = self.printer.lookup_object('ace_bg_swap', None)
+            if bg is not None:
+                if abs(float(getattr(bg, 'prime_scale', 1.0)) - 1.0) > 1e-6:
+                    return True
+                if abs(float(getattr(bg, 'prime_extra',
+                                     PURGE_DOCK_EXTRA_DEFAULT))
+                       - PURGE_DOCK_EXTRA_DEFAULT) > 1e-6:
+                    return True
+        except Exception:
+            logging.exception('[multiACE] purge_custom check failed')
+        return False
+
+    def purge_scale_effective(self):
+        """The purge control's percent; 100 while own purge options are set."""
+        if self.purge_custom():
+            return 100
+        return getattr(self, 'swap_purge_scale', 100)
+
+    def purge_desc(self, stamp=None):
+        """(final_mm, text) for the purge a swap will use, for the log.
+        stamp = a per-pair value from the swap line (bg PURGE=); None =
+        the global override or the config value, as get_purge_length.
+        final 0 = the stock macro default (80 mm)."""
+        if stamp is not None:
+            raw, src = stamp, 'stamp'
+        elif self._purge_length_override is not None:
+            raw, src = self._purge_length_override, 'stamp'
+        else:
+            raw, src = self.swap_purge_length, 'config'
+        final = self.apply_purge_policy(raw)
+        parts = ['%s %s' % (src, ('%g mm' % raw) if raw else 'stock 80 mm')]
+        scale = self.purge_scale_effective()
+        floor = getattr(self, 'swap_purge_floor', 0)
+        cap = getattr(self, 'swap_purge_cap', 0)
+        if scale != 100:
+            parts.append('scale %d%%' % scale)
+        if floor:
+            parts.append('floor %d' % floor)
+        if cap:
+            parts.append('cap %d' % cap)
+        text = '%s (%s)' % (('%g mm' % final) if final else 'stock 80 mm',
+                            ', '.join(parts))
+        return final, text
 
     def _restore_pos_for_pause(self, saved_pos):
 
@@ -445,7 +510,8 @@ class SwapMixin:
         self.log_always('[multiACE] Pickup-Cleaning: nozzle wipe at the discard '
                         'position (head %s)'
                         % (self._disp(head) if head is not None else '?'))
-        self._discard_wipe(head, 'pickup-clean')
+        with self._object_exclusion_suspended('ACE_PICKUP_CLEAN'):
+            self._discard_wipe(head, 'pickup-clean')
 
     def _discard_wipe(self, head, tag):
         """Shared discard-wipe excursion: Z hop -> MOVE_TO_DISCARD -> stock
@@ -700,15 +766,75 @@ class SwapMixin:
         except Exception as e:
             logging.info('[multiACE] FA re-arm after bg wait failed: %s' % e)
 
+    def _arrival_check_skipped(self, head):
+        """True when the arrival flow check is not needed: the coil already
+        read flow during the background prime in the dock and that prime
+        ran to its full length. Then the head prints straight away (no
+        trip to the chute, no test push); with pickup cleaning on it still
+        gets its nozzle wipe. [ace_bg_swap] arrival_check: True keeps the
+        check on every arrival. Anything short of a clean dock result
+        (no reading, no flow, prime cut short) runs the check as before."""
+        try:
+            bg = self.printer.lookup_object('ace_bg_swap', None)
+            if bg is None or bool(getattr(bg, 'arrival_check', True)):
+                return False
+            dock = getattr(self, '_bg_dock_coil', {}).get(head)
+            if not dock or dock.get('verdict') != 'FLOW':
+                return False
+            if getattr(self, '_bg_prime_deficit', {}).get(head) is not None:
+                return False
+            if dock.get('primed', 0.) < dock.get('target', 0.) - 0.5:
+                return False
+            if self._dock_resistance(head, dock):
+                return False
+        except Exception:
+            logging.exception('[multiACE] [pick-check] skip decision failed')
+            return False
+        self._bg_dock_coil.pop(head, None)
+        self._bg_load_unverified.discard(head)
+        logging.info('[multiACE] [pick-check] pickcheck head=%d skipped: '
+                     'dock=FLOW dock_dip=%.0f dock_primed=%.0f/%.0f'
+                     % (head, dock.get('dip', 0.), dock.get('primed', 0.),
+                        dock.get('target', 0.)))
+        if getattr(self, '_pickup_cleaning', False):
+            self._discard_wipe(head, 'bg-arrival')
+        return True
+
+    def _dock_resistance(self, head, dock):
+        """Judge the dock reading against the head's own dock baseline.
+        A dip far above it is back-pressure, not good flow: the arrival
+        check then runs, and a second strike pauses there."""
+        if dock.get('ace') is None or dock.get('judged'):
+            return bool(dock.get('judged_suspect'))
+        dock['judged'] = True
+        verdict, base, ratio = self._resistance_note(
+            'dock', head, int(dock['ace']), int(dock.get('slot', 0)),
+            dock.get('dip', 0.), push=int(round(dock.get('target', 0.))))
+        if verdict == 'ok':
+            return False
+        dock['judged_suspect'] = True
+        if verdict == 'pause_due':
+            self._dock_resistance_pause.add(head)
+        logging.info('[multiACE] [pick-check] pickcheck head=%d not '
+                     'skipped: dock_dip=%.0f far above the dock baseline '
+                     '(%s, ratio %s)' % (head, dock.get('dip', 0.),
+                                         base, ratio))
+        return True
+
     def _bg_pick_flow_check(self, head, anti_ooze):
         # Thin wrapper: flag the check for the airlog chew detector - the
         # check's own coil pushes read as turbulence windows and must never
         # count toward a chew run. The check has its own verdict machinery.
         self._pickcheck_active = True
         try:
-            return self._bg_pick_flow_check_inner(head, anti_ooze)
+            res = self._bg_pick_flow_check_inner(head, anti_ooze)
         finally:
             self._pickcheck_active = False
+        if head in self._dock_resistance_pause:
+            self._dock_resistance_pause.discard(head)
+            if res not in ('no_flow', 'sensor_absent'):
+                return 'resistance'
+        return res
 
     def _bg_pick_flow_check_inner(self, head, anti_ooze):
         # Pick-time flow check for a bg-loaded head (see the PICK_CHECK_*
@@ -1001,11 +1127,15 @@ class SwapMixin:
                 # Nozzle wipe (BG_PICK_WIPE): the bg load could not wipe while
                 # docked, so scrape the strings off here - the head is at the
                 # discard position and hot, the stock clean does the wipe
-                # strokes. E moves in it are absorbed by the finally's e_diff
-                # bookkeeping. Fail-open: a wipe error never blocks the print.
+                # strokes (with lean_flush the brush pass of ACE_LEAN_WIPE
+                # runs first). E moves in it are absorbed by the finally's
+                # e_diff bookkeeping. Fail-open: a wipe error never blocks
+                # the print.
                 if BG_PICK_WIPE:
                     try:
                         self.gcode.run_script_from_command(
+                            'ACE_LEAN_WIPE'
+                            if getattr(self, 'lean_flush', False) else
                             'INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD ACTION=2')
                         self.toolhead.wait_moves()
                         logging.info('[multiACE] [pick-check] nozzle wipe '
@@ -1062,6 +1192,16 @@ class SwapMixin:
                 res_verdict, res_base, res_ratio = self._resistance_note(
                     'pickcheck', head, src.get('ace_index'),
                     src.get('slot'), coil_delta, push)
+            # The dock's own reading of this load, for comparison only.
+            _dk = getattr(self, '_bg_dock_coil', {}).pop(head, None)
+            if _dk is None:
+                _dock = 'dock=-'
+            else:
+                _dock = ('dock=%s dock_dip=%.0f dock_primed=%.0f/%.0f '
+                         'dock_speed=%.1f dock_agrees=%s'
+                         % (_dk['verdict'], _dk['dip'], _dk['primed'],
+                            _dk['target'], _dk['speed'],
+                            _dk['verdict'] == coil_verdict))
             _line = ('pickcheck head=%d ace=%s slot=%s anti_ooze=%.1f '
                      'push=%.1f prime_topup=%s regrip=%s ace_push=%s '
                      'coil_start=%s '
@@ -1069,7 +1209,8 @@ class SwapMixin:
                      'turbulent=%s thr=%d '
                      'coil_verdict=%s sensor_before=%s sensor_after=%s '
                      'sensor_verdict=%s gate=%s '
-                     'resistance=%s res_baseline=%s res_ratio=%s lowpass=%s'
+                     'resistance=%s res_baseline=%s res_ratio=%s lowpass=%s '
+                     '%s'
                      % (head, src.get('ace_index'), src.get('slot'),
                         float(anti_ooze), push,
                         ('%.0f' % float(_deficit)) if _deficit is not None
@@ -1082,7 +1223,7 @@ class SwapMixin:
                         ('%.0f' % res_base) if res_base else '-',
                         ('%.2f' % res_ratio) if res_ratio else '-',
                         ('%.2f' % _lp_ratio) if _lp_ratio is not None
-                        else '-'))
+                        else '-', _dock))
             # Wiggle log is debug-gated (_state_debug_enabled) - the baseline
             # data must survive either way, so mirror it to klippy.log.
             self._wiggle_log.info(_line)
@@ -1261,10 +1402,11 @@ class SwapMixin:
         # outlive the command - whatever exit the body takes, the head
         # returns to the print position unless a capture consumed it.
         self._bg_wait_parked = None
-        try:
-            result = self._cmd_ACE_SWAP_HEAD_body(gcmd)
-        finally:
-            self._bg_wait_unpark()
+        with self._object_exclusion_suspended('ACE_SWAP_HEAD'):
+            try:
+                result = self._cmd_ACE_SWAP_HEAD_body(gcmd)
+            finally:
+                self._bg_wait_unpark()
         # Auto-load block: a flow calibration deferred for this head (it was
         # empty when the start gcode asked) runs now that it is loaded.
         if gcmd.get_int('INITIAL', 0):
@@ -1394,6 +1536,8 @@ class SwapMixin:
                 # check restored pos/E, so RESUME continues cleanly.
                 # Gate off / no coil -> verdict None, log-only.
                 _had_pickcheck = head in getattr(self, '_bg_load_unverified', ())
+                if _had_pickcheck and self._arrival_check_skipped(head):
+                    _had_pickcheck = False
                 if _had_pickcheck:
                     _pick = self._bg_pick_flow_check(head, anti_ooze)
                     if _pick == 'no_flow':
@@ -1527,6 +1671,7 @@ class SwapMixin:
         prev_slot_src = prev_source['slot'] if prev_source else None
 
         self._swap_in_progress = True
+        self._lean_flush_ran = False
         self._swap_phase = 'unload'
         # A FULL swap flushes + wipes on its own - the post-(re)start no-op
         # wipe window is satisfied by it (RESUME_NOOP_WIPE_WINDOW const note).
@@ -1769,6 +1914,18 @@ class SwapMixin:
                             'Make sure MMU%d / Slot%d holds a spool' % (_lA, _lS),
                             'RESUME                            (continue the print)',
                         ]
+                    elif _ureason == 'head_remnant':
+                        # The strand is back in the MMU (measured), the head
+                        # sensor still reads filament: a piece that broke off
+                        # sits at the head inlet. The replayed swap sees an
+                        # empty head once it is out and only loads.
+                        _detail = self._t('msg.pause_swap_unload_remnant',
+                            head=self._disp(head), ua=_uA, us=_uS)
+                        _steps = [
+                            'Clear the inlet of head %d (push a piece of '
+                            'filament in and pull it out)' % self._disp(head),
+                            'RESUME                            (continue the print)',
+                        ]
                     elif _ureason == 'bowden_stall':
                         _detail = self._t('msg.pause_swap_unload_bowden',
                             head=self._disp(head), ua=_uA, us=_uS)
@@ -1847,6 +2004,13 @@ class SwapMixin:
 
             self._swap_phase = 'load'
             logging.info('[multiACE] Swap: delegating load to ACE_LOAD_HEAD (MMU %d / Slot %d)' % (ace_index, slot))
+            try:
+                _pmsg = '[multiACE] Swap head %d: purge %s' % (
+                    self._disp(head), self.purge_desc()[1])
+                logging.info(_pmsg)
+                self.log_always(_pmsg)
+            except Exception:
+                logging.exception('[multiACE] purge log failed')
             load_start_ts = time.monotonic()
             try:
                 self.gcode.run_script_from_command(
@@ -1912,8 +2076,14 @@ class SwapMixin:
                          if saved_heater_target >= SWAP_MIN_EXTRUDE_TEMP
                          else swap_temp)
             self.gcode.run_script_from_command('M109 S%d' % wipe_temp)
-            self.gcode.run_script_from_command('ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD')
-            self.toolhead.wait_moves()
+            # ACE_LEAN_FLUSH ends with its own brush pass and cut, the
+            # stock rough clean after it would only repeat that.
+            if getattr(self, '_lean_flush_ran', False):
+                logging.info('[multiACE] Swap: rough clean skipped '
+                             '(lean flush ran)')
+            else:
+                self.gcode.run_script_from_command('ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD')
+                self.toolhead.wait_moves()
 
             self._fa_log.info(
                 '[swap-trace] POST_LOAD last_pos=%.3f delta_from_entry=%+.3f'

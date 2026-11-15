@@ -57,9 +57,8 @@ createApp({
     // markup.
     const navItems = computed(() => {
       const items = [];
-      if (state.mode !== "normal") {
-        items.push({key: "dashboard", label: t("ui.tabs.dashboard")});
-      }
+      // In normal mode the dashboard shows a hint how to switch the mode.
+      items.push({key: "dashboard", label: t("ui.tabs.dashboard")});
       // Print Hub children, in their fixed order: Control, History, Queue,
       // Favorites. Each feature adds its own entry here.
       items.push({key: "control", group: "printhub", label: t("ui.tabs.control")});
@@ -279,6 +278,7 @@ createApp({
       purge_matrix: true,
       purge_scale: 100,
       purge_floor: 0,
+      purge_custom: false,
       purge_cap: 0,
       // Default TRUE, like the engine, for the pre-first-state instant.
       pa_sync: true,
@@ -405,8 +405,25 @@ createApp({
                          {body: n.msg, tag: "multiace-" + n.id});
       } catch (_) {}
     }
+    // on = the push block is shown; follows the saved URL, the checkbox
+    // switches push off (URL cleared, kept for switching back on).
     const notifyPush = reactive({url: "", level: "error", busy: false, msg: "",
-                                 ok: true});
+                                 ok: true, on: false, kept: ""});
+    async function setNotifyPushOn(on) {
+      notifyPush.on = !!on;
+      if (on) {
+        if (!notifyPush.url && notifyPush.kept) {
+          notifyPush.url = notifyPush.kept;
+          await saveNotifyPush();
+        }
+        return;
+      }
+      if (notifyPush.url) {
+        notifyPush.kept = notifyPush.url;
+        notifyPush.url = "";
+        await saveNotifyPush();
+      }
+    }
     async function loadNotifyPush() {
       try {
         const r = await fetch(`${API}/notify-settings`);
@@ -414,6 +431,7 @@ createApp({
         const j = await r.json();
         notifyPush.url = j.url || "";
         notifyPush.level = j.level === "warn" ? "warn" : "error";
+        notifyPush.on = !!notifyPush.url;
       } catch (_) {}
     }
     async function saveNotifyPush() {
@@ -577,6 +595,7 @@ createApp({
         ? true : !!s.purge_matrix;
       state.purge_scale = Number(s.purge_scale || 100);
       state.purge_floor = Number(s.purge_floor || 0);
+      state.purge_custom = !!s.purge_custom;
       state.purge_cap = Number(s.purge_cap || 0);
       state.pa_sync = (s.pa_sync === undefined) ? true : !!s.pa_sync;
       // RC522 tag read/write available - gates the picker's write button.
@@ -2573,6 +2592,14 @@ createApp({
       return ((state.bg_swap || {}).enabled_heads || [])
         .some(h => Number(h) === Number(idx));
     }
+    // multi mode: background swaps need two lane-concurrent MMUs (ace2k) -
+    // one unit feeds several heads, and only such a unit moves a parked
+    // head's lane while another lane feeds the printing head.
+    function multiBgPossible() {
+      if (!(state.bg_swap || {}).available) return false;
+      return (state.aces || []).filter(a => a && a.connected && a.caps
+        && a.caps.lanes_concurrent === true).length >= 2;
+    }
     async function setBgHead(idx, enable) {
       try {
         await fetch(`${API}/macro`, {
@@ -2583,6 +2610,21 @@ createApp({
         });
       } catch (_) {}
       reloadState();
+    }
+    // Background swap mode ([ace_bg_swap] load_enabled). The engine
+    // reports full | transport | none, the command takes full |
+    // transport | unload.
+    function bgMode() {
+      const m = (state.bg_swap || {}).load_mode;
+      return m === "none" ? "unload" : (m || "full");
+    }
+    async function setBgMode(ev) {
+      const mode = ev.target.value;
+      // Select bound with :value: a refused change would leave the picked
+      // option in the DOM, so show the engine's value until it reports back.
+      ev.target.value = bgMode();
+      await headSet("macro", {name: "ACE_BG_SET_MODE", args: {MODE: mode}},
+                    t("ui.config.bg_mode"));
     }
     // Spoolman. The URL is edited locally and applied with its own button -
     // typing into a field that fires a macro per keystroke would spam the
@@ -3081,7 +3123,8 @@ createApp({
                             fileName: "", fileSize: 0, fileMd5: "",
                             busy: false,
                             status: null, uiError: "", force: false,
-                            patchToOpen: false, patchTarget: ""});
+                            patchToOpen: false, patchTarget: "",
+                            ace2kImage: null});
     // The patch target the backend PRESELECTS, and the whole ladder it can
     // build. They are offered as a checkbox plus a picker on the matching
     // stock upload, instead of as direct dropdown targets: the base upload
@@ -3100,7 +3143,8 @@ createApp({
     // The checkbox is shown only when stock 1.1.31 is the selected target
     // and the backend has the patch. Its base version is fixed at 1.1.31.
     const acefwCanPatch = computed(() =>
-      !!acefwPatchTarget.value && acefw.version.trim() === "1.1.31");
+      !!acefwPatchTarget.value && acefw.version.trim() === "1.1.31"
+      && !acefwMode.value);
     // Tested-versions allowlist - the
     // version SELECT offers exactly these, the byte gate lives in the
     // backend. Loaded once at mount; empty list = flashing impossible,
@@ -3112,18 +3156,76 @@ createApp({
     // OpenCubic CFW both report 1.3.863). The entries are keyed by image
     // and the backend gates the upload byte-exactly on its md5.
     const acefwGen1Versions = ref([]);
+    // ace2k (tobecwb): released images and the shipped flasher. The image
+    // is picked by the uploaded file, which carries its version.
+    const acefwAce2k = ref({versions: [], flasher: null});
     async function acefwLoadVersions() {
       try {
         const r = await fetch(`${API}/acefw/versions`);
         const b = await r.json().catch(() => ({}));
         acefwVersions.value = b.versions || [];
         acefwGen1Versions.value = b.gen1_versions || [];
+        acefwAce2k.value = {versions: b.ace2k_versions || [],
+                            flasher: b.ace2k_flasher || null};
         acefwPatchTarget.value = b.patch_target || "";
         acefwPatchTargets.value = b.patch_targets || [];
         // Preselect the backend's default, but never overwrite a choice the
         // user already made in this session.
         if (!acefw.patchTarget) acefw.patchTarget = acefwPatchTarget.value;
+        if (!acefwDl.version && acefwDownloads.value.length)
+          acefwDl.version = acefwDownloads.value[0].version;
       } catch (e) { /* leave empty */ }
+      acefwLoadCalibs();
+    }
+    // ace2k images straight from tobecwb's GitHub releases: only the
+    // listed versions, the backend checks the release sha256.
+    const acefwDl = reactive({version: "", busy: false});
+    const acefwDownloads = computed(() =>
+      (acefwAce2k.value.versions || []).filter(v => v.download));
+    async function acefwDownload() {
+      if (!acefwDl.version || acefwDl.busy || acefw.busy) return;
+      acefwDl.busy = true;
+      acefw.uiError = "";
+      try {
+        const r = await fetch(`${API}/acefw/download_ace2k`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({version: acefwDl.version})});
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+        _acefwStaged(body);
+      } catch (e) {
+        acefw.uiError = `${t("ui.config.acefw_dl_failed")}: ${e.message || e}`;
+      } finally { acefwDl.busy = false; }
+    }
+    // Factory calibrations the ace2k flasher saved (one file per flash
+    // that started from the factory firmware), downloadable.
+    const acefwCalibs = ref([]);
+    async function acefwLoadCalibs() {
+      try {
+        const r = await fetch(`${API}/acefw/calibrations`);
+        const b = await r.json().catch(() => ({}));
+        acefwCalibs.value = b.files || [];
+      } catch (e) { /* leave as is */ }
+    }
+    function acefwCalibUrl(name) {
+      return `${API}/acefw/calibration/${encodeURIComponent(name)}`;
+    }
+    // The unit a calibration belongs to: its key is the same device id as
+    // three words ('uid:aaaaaaaa-bbbbbbbb-cccccccc').
+    function acefwCalibUnit(f) {
+      const dev = (state.devices || []).find(d =>
+        (d.key || "").startsWith("uid:")
+        && d.key.slice(4).split("-").join("").toUpperCase() === f.uid);
+      if (!dev) return f.uid;
+      const place = (dev.place !== null && dev.place !== undefined)
+        ? `MMU ${dispIdx(dev.place)}` : "-";
+      return dev.name ? `${place} · ${dev.name}` : place;
+    }
+    function acefwCalibStamp(f) {
+      const s = f.stamp || "";
+      return s.length === 15
+        ? `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)} `
+          + `${s.slice(9,11)}:${s.slice(11,13)}` : s;
     }
     const acefwInput = ref(null);
     // Both generations are flashable from this card: Gen 2 through the
@@ -3132,13 +3234,16 @@ createApp({
     // runs - never a user flag.
     const acefwCandidates = computed(() =>
       (state.aces || [])
-        .filter(a => ["iap_v1", "ota_v2"].includes(aceFlashEngine(a)))
+        .filter(a => ["iap_v1", "ota_v2", "ace2k"].includes(aceFlashEngine(a)))
         .map(a => {
-          const v1 = aceFlashEngine(a) === "iap_v1";
-          return {value: a.idx, v1: v1,
+          const eng = aceFlashEngine(a);
+          const v1 = eng === "iap_v1";
+          return {value: a.idx, v1: v1, ace2k: eng === "ace2k",
                   label: "MMU " + dispIdx(a.idx)
                          + " · " + t(v1 ? "ui.config.acefw_gen1"
-                                        : "ui.config.acefw_gen2")
+                                        : eng === "ace2k"
+                                          ? "ui.config.acefw_ace2k"
+                                          : "ui.config.acefw_gen2")
                          + (a.firmware && a.firmware !== "Unknown"
                             ? " · " + a.firmware : "")
                          + (a.connected ? "" : " " + t("ui.acefw.offline"))};
@@ -3147,11 +3252,32 @@ createApp({
       const c = acefwCandidates.value.find(o => o.value === acefw.ace);
       return !!(c && c.v1);
     });
+    const acefwIsAce2kUnit = computed(() => {
+      const c = acefwCandidates.value.find(o => o.value === acefw.ace);
+      return !!(c && c.ace2k);
+    });
+    // The ace2k flasher takes over: 'ace2k' = an ace2k image for an ACE 2
+    // (stock, ACE2-Open or ace2k), 'ace2k_back' = a unit running ace2k gets
+    // the factory firmware back (stock 1.1.31 only). '' = the ACE 1 / ACE 2
+    // engines.
+    const acefwMode = computed(() => {
+      if (acefw.ace === "" || acefwIsV1.value) return "";
+      if (acefw.ace2kImage) return "ace2k";
+      return acefwIsAce2kUnit.value ? "ace2k_back" : "";
+    });
+    const acefwAce2kTested = computed(() => {
+      const img = acefw.ace2kImage;
+      return !!(img && /^\d{4}-\d{2}-\d{2}/.test(img.tested || ""));
+    });
     // The version dropdown is an allowlist switchboard: Gen-2 entries are
     // version keys, Gen-1 entries are image ids (the same 1.3.863 can be
     // two different images). Options carry an `id` in both lists.
     const acefwVersionOptions = computed(() =>
-      acefwIsV1.value ? acefwGen1Versions.value : acefwVersions.value);
+      acefwIsV1.value ? acefwGen1Versions.value
+        : acefwMode.value === "ace2k_back"
+          ? acefwVersions.value.filter(v => v.version ===
+              ((acefwAce2k.value.flasher || {}).factory || "1.1.31"))
+          : acefwVersions.value);
     // Switching the selected ACE switches allowlists - drop a pick the new
     // list does not know (a Gen-2 version is not a Gen-1 image id).
     watch(() => acefw.ace, () => {
@@ -3170,13 +3296,18 @@ createApp({
         const r = await fetch(`${API}/acefw/upload`, {method: "POST", body: fd});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
-        acefw.fileName = body.name;
-        acefw.fileSize = body.size;
-        acefw.fileMd5 = body.md5 || "";
-        acefw.versionGuess = body.version_guess || "";
-        acefw.uiError = "";
-        acefwPreselect();
+        _acefwStaged(body);
       } catch (e) { acefw.uiError = `Upload: ${e.message || e}`; }
+    }
+    // A staged file (upload or download) as the card shows it.
+    function _acefwStaged(body) {
+      acefw.fileName = body.name;
+      acefw.fileSize = body.size;
+      acefw.fileMd5 = body.md5 || "";
+      acefw.versionGuess = body.version_guess || "";
+      acefw.ace2kImage = body.ace2k_image || null;
+      acefw.uiError = "";
+      acefwPreselect();
     }
     // Gen 1: the image is identified by its md5 (names lie - the tunnel
     // build is called ACE_V1.3.863_*), so an md5 match always sets the
@@ -3208,6 +3339,7 @@ createApp({
         if (_acefwTimer) { clearInterval(_acefwTimer); _acefwTimer = null; }
         acefw.busy = false;
         reloadState();
+        acefwLoadCalibs();
       }
     }
     async function _acefwStart(dry) {
@@ -3259,12 +3391,18 @@ createApp({
       return acefw.ace !== "" && !!acefw.fileName && !acefw.busy;
     }
     function acefwReady() {
+      if (acefwMode.value === "ace2k") {
+        const img = acefw.ace2kImage;
+        return acefwCanTest() && !!img && img.known && !img.error;
+      }
       return acefwCanTest() && !!acefw.version.trim();
     }
     function acefwTest() { _acefwStart(true); }
     // What the confirm dialog names: the entry's label, not the raw key
     // (a Gen-1 key is an image id like '1.3.871-tunnel').
     function acefwSelectedLabel() {
+      if (acefwMode.value === "ace2k")
+        return "ace2k " + ((acefw.ace2kImage || {}).version || "?");
       const v = acefwVersionOptions.value.find(
         o => (o.id || o.version) === acefw.version);
       return (v && (v.label || v.version)) || acefw.version.trim();
@@ -3276,9 +3414,11 @@ createApp({
         : acefwSelectedLabel();
       // Patching adds a SECOND warning: it flashes a community-modified,
       // NOT byte-tested image.
-      const extra = patching
+      const extra = (patching
         ? `<div class="acefw-danger">${tHtml("ui.config.acefw_patch_warn",
-            {target: tgt})}</div>` : "";
+            {target: tgt})}</div>` : "")
+        + (acefwMode.value
+          ? `<div>${tHtml("ui.config.acefw_ace2k_note")}</div>` : "");
       confirm({
         title: t("ui.config.acefw_confirm_title"),
         message: `<div class="acefw-danger">${tHtml("ui.config.acefw_confirm_msg",
@@ -3325,6 +3465,14 @@ createApp({
         if (res.app_alive === false)
           return t("ui.config.acefw_done_mute",
                    {v: res.new || res.target || "?"});
+        if (res.engine === "ace2k") {
+          const v = (res.target === "ace2k" ? "ace2k " : "") + (res.new || "?");
+          let txt = t("ui.config.acefw_done", {v});
+          if (res.verified === false && !res.proven)
+            txt += " " + t("ui.config.acefw_ace2k_unproven");
+          if (res.restart) txt += " " + t("ui.config.acefw_ace2k_restart");
+          return txt;
+        }
         return t("ui.config.acefw_done",
                  {v: res.new || res.target || "?"});
       }
@@ -4665,6 +4813,27 @@ createApp({
       } finally {
         delete purgePolicyEdit[arg];
       }
+    }
+    const purgeResetBusy = ref(false);
+    async function resetPurgeCustom() {
+      if (purgeResetBusy.value) return;
+      purgeResetBusy.value = true;
+      try {
+        const r = await fetch(`${API}/macro`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name: "ACE_SET_PURGE", args: {DEFAULTS: 1}}),
+        });
+        const j = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+        const res = String(j?.result || "");
+        if (/WARNING|failed/i.test(res)) setMacroLog(res);
+      } catch (e) {
+        setMacroLog(String(e?.message || e));
+      } finally {
+        purgeResetBusy.value = false;
+      }
+      await reloadState();
     }
     async function _sendPurgePolicy(arg, value) {
       const lim = {SCALE: [25, 200], FLOOR: [0, 200], CAP: [0, 200]}[arg];
@@ -6111,7 +6280,6 @@ createApp({
         retract_length:     numStr(configForm.retract_length),
         seat_overshoot_length: numStr(configForm.seat_overshoot_length),
         swap_retract_length: numStr(configForm.swap_retract_length),
-        swap_purge_length:   numStr(configForm.swap_purge_length),
         dryer_temp:         numStr(configForm.dryer_temp),
         dryer_duration:     numStr(configForm.dryer_duration),
         display_index_base: numStr(configForm.display_index_base),
@@ -6412,7 +6580,7 @@ createApp({
     // a plain LCS once the shared head and tail are cut off.
     const CFG_DIFF_CONTEXT = 3;
     const CFG_DIFF_MAX_CELLS = 4e6;
-    function diffLines(oldText, newText) {
+    function cfgDiffOps(oldText, newText) {
       const a = String(oldText).split("\n"), b = String(newText).split("\n");
       let head = 0;
       while (head < a.length && head < b.length && a[head] === b[head]) head++;
@@ -6445,6 +6613,41 @@ createApp({
         while (j < m) ops.push(["+", bm[j++]]);
       }
       for (let i = a.length - tail; i < a.length; i++) ops.push([" ", a[i]]);
+      return ops;
+    }
+    // The edits that turn `base` into `other`, as ranges of base lines:
+    // [{start, end, lines}] replaces base[start..end) with `lines`.
+    function cfgHunks(base, other) {
+      const hunks = [];
+      let pos = 0, cur = null;
+      for (const [t, text] of cfgDiffOps(base, other)) {
+        if (t === " ") { cur = null; pos++; continue; }
+        if (!cur) { cur = {start: pos, end: pos, lines: []}; hunks.push(cur); }
+        if (t === "-") { pos++; cur.end = pos; } else { cur.lines.push(text); }
+      }
+      return hunks;
+    }
+    // Three-way merge by lines: `mine` and `theirs` both started from `base`.
+    // Returns the text with both sets of edits, or null when they touch the
+    // same lines (identical edits on both sides count once).
+    function cfgMerge3(base, mine, theirs) {
+      const hm = cfgHunks(base, mine), ht = cfgHunks(base, theirs);
+      const same = (x, y) => x.start === y.start && x.end === y.end
+        && x.lines.length === y.lines.length
+        && x.lines.every((l, i) => l === y.lines[i]);
+      const all = ht.slice();
+      for (const m of hm) {
+        const hit = ht.find(o => m.start <= o.end && o.start <= m.end);
+        if (!hit) { all.push(m); continue; }
+        if (!same(m, hit)) return null;
+      }
+      const out = String(base).split("\n");
+      all.sort((x, y) => y.start - x.start);
+      for (const h of all) out.splice(h.start, h.end - h.start, ...h.lines);
+      return out.join("\n");
+    }
+    function diffLines(oldText, newText) {
+      const ops = cfgDiffOps(oldText, newText);
       // Keep the changes and CFG_DIFF_CONTEXT lines around them.
       const keep = new Array(ops.length).fill(false);
       let added = 0, removed = 0;
@@ -6542,9 +6745,20 @@ createApp({
             throw new Error(`HTTP 409 ${t("ui.log.config_conflict_failed")}`);
           }
           const next = {content: cur.content, sha1: cur.sha1 || ""};
+          // Text typed into the raw editor rides along: it is merged onto
+          // the current file before the form values are applied. Edits that
+          // touch the same lines as the change on the printer are not
+          // guessed at.
+          let onto = next.content;
+          if (config.content !== config.disk) {
+            onto = cfgMerge3(config.disk, config.content, next.content);
+            if (onto === null) {
+              throw new Error(t("ui.log.config_conflict_raw_overlap"));
+            }
+          }
           config.disk = next.content;
           configLog.value = t("ui.log.config_conflict_merged");
-          const merged = formToCfgContent(next.content);
+          const merged = formToCfgContent(onto);
           if (merged === next.content) {
             // Whoever changed the file already wrote these values.
             config.content = next.content;
@@ -6556,7 +6770,7 @@ createApp({
             configLog.value = t("ui.config.diff_cancelled");
             return;
           }
-          await _saveConfigForm(next);
+          await _saveConfigForm({content: onto, sha1: next.sha1});
           return;
         }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
@@ -6568,13 +6782,16 @@ createApp({
         configLog.value = `✓ ${j.path}\nBackup: ${j.backup}\n${t("ui.common.please_restart")}`;
       } catch (e) { configLog.value = `${t("ui.common.error")}: ${e}`; }
     }
-    async function _saveConfigRaw() {
+    // Writes the raw editor's text. When the file changed on the printer
+    // since the tab loaded it (an update, a setting saved elsewhere), the
+    // edit is merged onto the current file and the diff against THAT file is
+    // shown again, so what gets written is what was just reviewed. Edits
+    // that touch the same lines as the other change are not merged: the
+    // diff then shows everything the text would replace.
+    async function _saveConfigRaw(fresh = null) {
       configLog.value = t("ui.log.saving_raw");
       try {
-        // Same guard as the form save, but NO auto-retry: the raw editor's
-        // content IS the user's text - silently rebasing it would discard
-        // either their edit or the on-disk change. Report the conflict and
-        // let them reload.
+        const content = fresh ? fresh.content : config.content;
         const r = await fetch(`${API}/config`, {
           method: "PUT",
           headers: {"Content-Type": "application/json"},
@@ -6582,17 +6799,39 @@ createApp({
           // A bare Klipper restart applies most [ace] scalars but misses
           // USB/serial re-enumeration and PAXX boot scripts, so it produces
           // a half-applied config.
-          body: JSON.stringify({content: config.content,
+          body: JSON.stringify({content: content,
                                 restart_klipper: false,
-                                base_sha1: config.sha1}),
+                                base_sha1: fresh ? fresh.sha1 : config.sha1}),
         });
         if (r.status === 409) {
-          configLog.value = t("ui.log.config_conflict_raw");
+          let cur = null;
+          try { cur = JSON.parse((await r.json()).detail); } catch (e) { cur = null; }
+          if (fresh || !cur || typeof cur.content !== "string") {
+            throw new Error(`HTTP 409 ${t("ui.log.config_conflict_failed")}`);
+          }
+          const merged = cfgMerge3(config.disk, config.content, cur.content);
+          const next = merged === null ? config.content : merged;
+          const note = t(merged === null ? "ui.log.config_conflict_raw_overlap"
+                                         : "ui.log.config_conflict_raw_merged");
+          config.disk = cur.content;
+          config.sha1 = cur.sha1 || "";
+          if (next === cur.content) {
+            config.content = next;
+            configLog.value = `✓ ${config.path}\n${t("ui.config.diff_none")}`;
+            return;
+          }
+          configLog.value = note;
+          if (!await reviewConfigChange(cur.content, next)) {
+            configLog.value = `${note}\n${t("ui.config.diff_cancelled")}`;
+            return;
+          }
+          await _saveConfigRaw({content: next, sha1: config.sha1});
           return;
         }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
         const j = await r.json();
-        config.disk = config.content;
+        config.content = content;
+        config.disk = content;
         config.sha1 = j.sha1 || "";
         rebootNeeded.value = true;
         configLog.value = `✓ ${j.path}\nBackup: ${j.backup}\n${t("ui.common.please_restart")}`;
@@ -7222,16 +7461,19 @@ createApp({
     }
     function realSwapCount(events, mapping) {
       // Port of backend _real_swap_count: replay the toolchange T-sequence,
-      // initial loadout = slot==head per head, count head re-(ace,slot) changes.
+      // a head's first slot is free (auto-load block), count head
+      // re-(ace,slot) changes after that.
       const byT = {};
       for (const m of mapping) if (m.slot) byT[m.t] = m.slot;
-      const head = {0: [0, 0], 1: [0, 1], 2: [0, 2], 3: [0, 3]};
+      const head = {};
       let swaps = 0;
       for (const tt of (events || [])) {
         const slot = byT[tt];
         if (!slot) continue;
         const cur = head[slot.slot];
-        if (!cur || cur[0] !== slot.ace || cur[1] !== slot.slot) {
+        if (!cur) {
+          head[slot.slot] = [slot.ace, slot.slot];
+        } else if (cur[0] !== slot.ace || cur[1] !== slot.slot) {
           swaps++;
           head[slot.slot] = [slot.ace, slot.slot];
         }
@@ -7768,6 +8010,8 @@ createApp({
       const minW = Number((bgs && bgs.min_window_min) || 3);
       const saving = Number((bgs && bgs.inline_saving_s) || 90);
       const bgSet = new Set(headBgHeads().map(Number));
+      // multi: only lane-concurrent MMUs carry a bg swap (null = all)
+      const units = (bgs && Array.isArray(bgs.units)) ? new Set(bgs.units.map(Number)) : null;
       const plan = simulateDynamicSwaps(events, targets, headBgHeads()).plan;
       const st = {unloads: 0, bg_ok: 0, bg_small: 0, bg_unknown: 0, bg_disabled: 0, saved_s: 0};
       const same = (a, b) => a.kind === b.kind && a.head === b.head && a.ace === b.ace && a.slot === b.slot;
@@ -7788,6 +8032,7 @@ createApp({
         const window = (rNow !== null && rNow !== undefined && rNxt !== null && rNxt !== undefined)
                      ? (rNow - rNxt) : null;
         if (!bgSet.has(Number(rel.head))) st.bg_disabled++;
+        else if (units && !(units.has(Number(rel.ace)) && units.has(Number(nxt.ace)))) st.bg_disabled++;
         else if (window === null) st.bg_unknown++;
         else if (window < minW) st.bg_small++;
         else st.bg_ok++;
@@ -7798,7 +8043,9 @@ createApp({
     // Background-unload balance of a head-mode plan: live from the plan the
     // table shows once a recalc ran (copies, edits), else the server's.
     function headPlanBg(hp) {
-      if (multiTopology()) return null;          // no background swaps in multi
+      // multi: background swaps only on lane-concurrent MMUs (the server
+      // leaves enabled_heads empty when none are possible)
+      if (multiTopology() && !headBgHeads().length) return null;
       const live = (hp === "loadout") ? preflight.copyPlan : proposalCopyPlan(hp);
       if (live && live.targets) {
         const st = _bgStatsFor(live.targets);
@@ -9446,7 +9693,7 @@ createApp({
       await refreshDebugState();
       await refreshUpdateStatus();
       await refreshPlugins();
-      if (state.mode === "normal" && ["dashboard", "calibration"].includes(tab.value)) {
+      if (state.mode === "normal" && tab.value === "calibration") {
         tab.value = "config";
       }
       wsConnect();
@@ -9939,10 +10186,10 @@ createApp({
       panelMode, panelAce, panelAceIdx, panelSlotHead, panelPages, panelPage, panelPageId, panelFeederHeads, setPanelPage,
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
       panelMini, fullUiHref, uiTheme, uiThemeChoice, uiLight, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,
-      slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, setBgHead, setPickupCleaning, setConfirmCommands, setRememberFilament, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
+      slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, multiBgPossible, setBgHead, bgMode, setBgMode, setPickupCleaning, setConfirmCommands, setRememberFilament, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
-      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
+      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, resetPurgeCustom, purgeResetBusy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,
@@ -9959,11 +10206,14 @@ createApp({
       paSave, paDirty, paKeyValid, paValueValid, paKeyOptions, pickerPaDialog,
       spoolCreating, spoolNewForm,
       acefw, acefwInput, acefwCandidates, acefwPickFile, acefwUpload,
+      acefwDl, acefwDownloads, acefwDownload, acefwCalibs, acefwCalibUrl,
+      acefwCalibUnit, acefwCalibStamp,
       acefwCanTest, acefwReady, acefwTest, acefwFlash, acefwStatusText,
       acefwStatusBad,
       acefwPatchTarget, acefwPatchTargets, acefwTargetLabel, acefwCanPatch,
       acefwVersions, acefwGen1Versions, acefwIsV1, acefwVersionOptions,
-      acefwGen1Unknown,
+      acefwGen1Unknown, acefwMode, acefwIsAce2kUnit, acefwAce2k,
+      acefwAce2kTested,
       spoolCreateFromPicker,
       spoolExport, spoolImport, triggerSpoolImport,
       isPrinting,
@@ -10006,7 +10256,7 @@ createApp({
       sendPrintControl,
       consoleLines, consoleFollow, consoleEl, loadConsole, consoleTime,
       plugins, refreshPlugins, pluginIframeSrc,
-      notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications, browserNotify, browserNotifyMsg, browserNotifySupported, setBrowserNotify, notifyPush, saveNotifyPush, testNotifyPush,
+      notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications, browserNotify, browserNotifyMsg, browserNotifySupported, setBrowserNotify, notifyPush, saveNotifyPush, setNotifyPushOn, testNotifyPush,
       confirmDialog, okConfirm, altConfirm, cancelConfirm, confirmInputError,
       screenCanvas, floatScreenCanvas, screenPopout, toggleScreenPopout,
       popoutStyle, popoutDragStart, popoutDragMove, popoutDragEnd,

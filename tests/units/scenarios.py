@@ -12,6 +12,7 @@ from . import harness as H
 from .fake_v1 import FakeV1
 from .fake_v2 import FakeV2
 from .fake_cfs import FakeCFS
+from .fake_ace2k import FakeAce2k
 
 V1_IDS = ('28e9', '018a')
 V2_IDS = ('1a86', '55d3')
@@ -21,6 +22,7 @@ PATH_V2_A = '/dev/serial/by-path/platform-xhci-hcd.0.auto-usb-0:1.3:1.0'
 PATH_V2_B = '/dev/serial/by-path/platform-xhci-hcd.0.auto-usb-0:1.4:1.0'
 CFS_IDS = ('1a86', '7523')
 PATH_CFS = '/dev/serial/by-path/platform-xhci-hcd.0.auto-usb-0:1.5:1.0-port0'
+PATH_ACE2K = '/dev/serial/by-path/platform-xhci-hcd.0.auto-usb-0:1.6:1.0'
 
 
 def unit_v1(clock, label, path, **kw):
@@ -33,6 +35,12 @@ def unit_v2(clock, label, path, **kw):
 
 def unit_cfs(clock, label, path=PATH_CFS, **kw):
     return H.Unit(label, 'cfs', path, FakeCFS(clock, label, **kw), CFS_IDS)
+
+
+def unit_ace2k(clock, label, path=PATH_ACE2K, **kw):
+    # Same USB id as a stock ACE 2: only [ace] ace2k_ports tells them apart.
+    return H.Unit(label, 'ace2k', path, FakeAce2k(clock, label, **kw),
+                  V2_IDS)
 
 
 def _harness(make_units, count, overrides=None, save_vars=None,
@@ -1224,7 +1232,502 @@ def cfs_unload_freewheel(**kw):
     return h.finish()
 
 
+def _v2_and_ace2k(clock, **kw):
+    k = {'slots': (0, 1, 2)}
+    k.update(kw)
+    return [unit_v2(clock, 'v2a', PATH_V2_A,
+                    slots={1: {'sku': 'AHPLBK-101', 'type': 'PLA',
+                               'color': (200, 30, 30)}}),
+            unit_ace2k(clock, 'ace2k', **k)]
+
+
+ACE2K_ON = {'enable_ace2k': 'true', 'ace2k_ports': PATH_ACE2K}
+
+
+def connect_ace2k(**kw):
+    """enable_ace2k on, the ace2k port named: the link reads the data
+    dictionary, sends the link proof, turns auto_load off and asks for the
+    reports; the status carries presence per lane (0-2), chamber temp and
+    humidity. The V2 discovery lists the same port and leaves it alone."""
+    h = _harness(_v2_and_ace2k, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.run(5.0)
+    h.trace('ace2k', 'auto_load', h._unit('ace2k').device.auto_load)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_port_reserved(**kw):
+    """ace2k_ports named but the driver off: the port is skipped by every
+    driver (no V2 open on a Klipper MCU), only the ACE 2 connects."""
+    ov = {'ace2k_ports': PATH_ACE2K}
+    h = _harness(_v2_and_ace2k, 1, overrides=ov, **kw)
+    h.build()
+    h.ready()
+    h.run(5.0)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_insert_remove(**kw):
+    """An insert on lane 3 and a removal on lane 0 while idle: the
+    sensors event and the next report move the gates."""
+    h = _harness(_v2_and_ace2k, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h._unit('ace2k').device.insert, 3)
+    h.at(6.0, h._unit('ace2k').device.remove, 0)
+    h.run(10.0)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_shutdown_reset(**kw):
+    """The unit sits in a Klipper shutdown from an earlier session: the
+    link sends reset and gives the connection up; the reconnect opens a
+    fresh one on the restarted unit."""
+    h = _harness(lambda c: _v2_and_ace2k(c, shutdown=True), 2,
+                 overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.run(15.0)
+    h.trace('ace2k', 'resets', h._unit('ace2k').device.resets)
+    h.snapshot()
+    return h.finish()
+
+
+def _ace2k_lanes(h):
+    d = h._unit('ace2k').device
+    h.trace('ace2k', 'lanes', list(d.lane_mode),
+            sorted((ln, mv['mode'], mv['seq']) for ln, mv in d.moves.items()))
+
+
+def _ace2k_motion(h, idx=1):
+    h.trace('ace2k', 'motion', (h.inst._info_per_ace.get(idx) or {}).get('motion'))
+
+
+def ace2k_feed_retract(**kw):
+    """ACE_FEED 2500 mm on the ace2k unit: the link starts it as two
+    pieces (the unit's 2000 mm move limit, speed clamped to 70 mm/s), the
+    status reports busy and the motion distance; ACE_RETRACT 600 mm waits
+    for the feed and runs as one rollback."""
+    h = _harness(_v2_and_ace2k, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h.gcode_line, 'ACE_FEED INDEX=0 LENGTH=2500 SPEED=80 ACE=1')
+    h.at(6.0, h.gcode_line, 'ACE_RETRACT INDEX=0 LENGTH=600 SPEED=80 ACE=1')
+    h.run(70.0)
+    h.trace('ace2k', 'starts', [st[1:] for st in h._unit('ace2k').device.starts])
+    _ace2k_motion(h)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_stop_follow_retract(**kw):
+    """A long feed stopped by the host (the load's sensor stop) ends
+    'stopped'; the feed-assist arm starts the follow (mode 6); a retract
+    on that lane makes ace.py stop the assist first (pre-stop), then the
+    rollback runs."""
+    h = _harness(_v2_and_ace2k, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h.gcode_line, 'ACE_FEED INDEX=0 LENGTH=2000 SPEED=60 ACE=1')
+    h.at(8.0, h.inst._stop_feeding, 0, 1)
+    h.at(15.0, setattr, h.inst, '_auto_feed_enabled', True)
+    h.at(15.0, h.inst._arm_fa_for, 1, 0)
+    h.at(12.0, _ace2k_motion, h)
+    h.at(18.0, _ace2k_lanes, h)
+    h.at(20.0, h.gcode_line, 'ACE_RETRACT INDEX=0 LENGTH=300 SPEED=50 ACE=1')
+    h.run(40.0)
+    h.trace('ace2k', 'starts', [st[1:] for st in h._unit('ace2k').device.starts])
+    _ace2k_motion(h)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_faults(**kw):
+    """A feed the unit ends 'blocked' after 10 mm (the filament did not
+    come out: motion stop 'slip'), a rollback it ends 'stuck' after 20 mm
+    (the lane latches an error: the link clears it, the retract reports
+    short), and a second feed on the same lane that the cleared lane
+    accepts."""
+    h = _harness(lambda c: _v2_and_ace2k(c, block_feed_after=10.0,
+                                         stuck_rollback_after=20.0),
+                 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h.gcode_line, 'ACE_FEED INDEX=1 LENGTH=500 SPEED=50 ACE=1')
+    h.at(10.0, h.gcode_line, 'ACE_RETRACT INDEX=1 LENGTH=300 SPEED=50 ACE=1')
+    h.at(8.0, _ace2k_motion, h)
+    h.at(18.0, _ace2k_motion, h)
+    h.at(20.0, h.gcode_line, 'ACE_FEED INDEX=1 LENGTH=80 SPEED=50 ACE=1')
+    h.run(30.0)
+    h.trace('ace2k', 'starts', [st[1:] for st in h._unit('ace2k').device.starts])
+    _ace2k_motion(h)
+    h.snapshot()
+    return h.finish()
+
+
+def _ace2k_relax_ask(h, tag, slot=2):
+    def _cb(self, response):
+        h.trace('ace2k', tag, response.get('code'), response.get('msg'),
+                response.get('result'))
+    h.inst.send_request_to(1, {'method': 'relax_buffer',
+                               'params': {'index': slot, 'length': 40,
+                                          'speed': 15}}, _cb)
+
+
+def _ace2k_slot_motion(h, slot, idx=1):
+    slots = (h.inst._info_per_ace.get(idx) or {}).get('slots') or []
+    h.trace('ace2k', 'slot_motion', slot,
+            slots[slot].get('motion') if slot < len(slots) else None)
+
+
+def ace2k_buffer_relax(**kw):
+    """A staged lane left with its buffer full (plunger off rest, the
+    shared pulled input set, so the unit pauses every lane's assist):
+    relax_buffer arms the at-rest stop and rolls the lane back; the unit
+    ends the move at_rest after 12 mm and the pulled input clears. A
+    second request on the relaxed lane starts nothing."""
+    h = _harness(lambda c: _v2_and_ace2k(c, stop_when=True,
+                                         relax_at_mm=12.0),
+                 2, overrides=dict(ACE2K_ON), **kw)
+    d = h._unit('ace2k').device
+    h.build()
+    h.ready()
+    h.at(3.0, d.plunger, 2, 'rest', 0)
+    h.at(3.0, d.plunger, None, 'full', 1)
+    h.at(5.0, _ace2k_relax_ask, h, 'relax')
+    h.at(10.0, _ace2k_slot_motion, h, 2)
+    h.at(10.0, lambda: h.trace('ace2k', 'switches', d.switches,
+                               d.stop_whens))
+    h.at(12.0, _ace2k_relax_ask, h, 'relax_again')
+    h.run(16.0)
+    h.trace('ace2k', 'starts', [st[1:] for st in d.starts])
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_buffer_relax_unsupported(**kw):
+    """An ace2k image without the armed stop (before v0.13.0): relax_buffer
+    is refused and nothing moves."""
+    h = _harness(_v2_and_ace2k, 2, overrides=dict(ACE2K_ON), **kw)
+    d = h._unit('ace2k').device
+    h.build()
+    h.ready()
+    h.at(3.0, d.plunger, 2, 'rest', 0)
+    h.at(3.0, d.plunger, None, 'full', 1)
+    h.at(5.0, _ace2k_relax_ask, h, 'relax')
+    h.run(8.0)
+    h.trace('ace2k', 'starts', [st[1:] for st in d.starts])
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_full_watch(**kw):
+    """The full-buffer watch: resting lane 2 holds the shared pulled
+    reading. Nothing moves while no lane follows; once lane 0 follows, the
+    link rolls lane 2 back by itself after the watch time, the unit ends
+    the move at_rest, and the status never reads busy for it. A second
+    full episode gets its own rollback."""
+    h = _harness(lambda c: _v2_and_ace2k(c, stop_when=True,
+                                         relax_at_mm=12.0),
+                 2, overrides=dict(ACE2K_ON), **kw)
+    d = h._unit('ace2k').device
+    h.build()
+    h.ready()
+    h.at(3.0, d.plunger, 2, 'rest', 0)
+    h.at(3.0, d.plunger, None, 'full', 1)
+    h.at(9.0, lambda: h.trace('ace2k', 'starts_before_follow',
+                              [st[1:] for st in d.starts]))
+    h.at(10.0, setattr, h.inst, '_auto_feed_enabled', True)
+    h.at(10.0, h.inst._arm_fa_for, 1, 0)
+    h.at(13.5, lambda: h.trace(
+        'ace2k', 'status_during',
+        h.inst._info_per_ace[1].get('status')))
+    h.at(20.0, lambda: h.trace('ace2k', 'switches', d.switches))
+    h.at(22.0, d.plunger, 2, 'rest', 0)
+    h.at(22.0, d.plunger, None, 'full', 1)
+    h.run(32.0)
+    h.trace('ace2k', 'starts', [st[1:] for st in d.starts])
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_follow_log(**kw):
+    """The follow instrument: the follow armed on lane 0, then plunger
+    edges and burst counts from the unit while a feed runs on lane 1. The
+    shared full (lane 1 off rest) with lane 0 taut counts as starved time;
+    one klippy.log line per 10 s window, and a last short window when the
+    assist stops."""
+    h = _harness(_v2_and_ace2k, 2, overrides=dict(ACE2K_ON), **kw)
+    d = h._unit('ace2k').device
+    h.build()
+    h.ready()
+    h.at(2.0, setattr, h.inst, '_auto_feed_enabled', True)
+    h.at(2.0, h.inst._arm_fa_for, 1, 0)
+    h.at(5.0, d.plunger, 0, 'rest', False)
+    h.at(5.0, d.plunger, 0, 'taut', True)
+    h.at(6.0, d.burst, 0, 3)
+    h.at(6.0, d.plunger, 0, 'taut', False)
+    h.at(6.0, d.plunger, 0, 'rest', True)
+    h.at(7.0, h.gcode_line, 'ACE_FEED INDEX=1 LENGTH=300 SPEED=60 ACE=1')
+    h.at(9.0, d.plunger, 1, 'rest', False)
+    h.at(9.0, d.plunger, None, 'full', True)
+    h.at(10.0, d.plunger, 0, 'rest', False)
+    h.at(10.0, d.plunger, 0, 'taut', True)
+    h.at(13.0, d.plunger, None, 'full', False)
+    h.at(13.0, d.plunger, 1, 'rest', True)
+    h.at(14.0, d.burst, 0, 2)
+    h.at(14.0, d.plunger, 0, 'taut', False)
+    h.at(14.0, d.plunger, 0, 'rest', True)
+    h.at(27.0, h.inst._disarm_fa_for, 1)
+    h.run(32.0)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_keeps_stock_place(**kw):
+    """The same ACE 2 Pro first on the stock firmware (named on place 0),
+    then reflashed to ace2k on the same port: the key probe reads the
+    device id, which is the stock key, so the unit keeps place 0 and its
+    name instead of becoming a new 'port:' device."""
+    from .fake_ace2k import UID_WORDS
+
+    def stock(c):
+        return [unit_v2(c, 'v2a', PATH_ACE2K, uid=UID_WORDS)]
+
+    def flashed(c):
+        return [unit_ace2k(c, 'ace2k', slots=(0,))]
+
+    h = _harness(stock, 1, **kw)
+    h.build()
+    h.ready()
+    h.run(3.0)
+    h.gcode_line('ACE_UNIT_NAME ACE=0 NAME=Links')
+    h.run(0.5)
+    h.snapshot()
+    sv = dict(h.save_variables.allVariables)
+    e1 = h.finish()
+    e2, _ = _boot(flashed, 1,
+                  save_vars={'ace__unit_places': sv['ace__unit_places']},
+                  overrides=dict(ACE2K_ON), **kw)
+    return e1 + e2
+
+
+def ace2k_unpowered_waits(**kw):
+    """The ace2k port is named but the unit stays silent at startup: the
+    probe gets no key, the port is not claimed (no 'port:' place), and the
+    unit connects under its device id once it answers."""
+    h = _harness(_v2_and_ace2k, 2, overrides=dict(ACE2K_ON), **kw)
+    h.power('ace2k', False)
+    h.build()
+    h.ready()
+    h.at(30.0, h.power, 'ace2k', True)
+    h.run(60.0)
+    h.snapshot()
+    return h.finish()
+
+
+def _ace2k_tags(h, idx=1):
+    """The host's view after a tag read: the cached host read per slot and
+    the surfaced identity of the status slots."""
+    cache = h.inst._v2_filament_info_per_ace.get(idx) or {}
+    h.trace('ace2k', 'host_reads', dict(
+        (str(k), dict((f, v[f]) for f in ('type', 'color', 'brand', 'sku',
+                                         'uid', 'fmt') if f in v))
+        for k, v in sorted(cache.items())))
+    slots = (h.inst._info_per_ace.get(idx) or {}).get('slots') or []
+    h.trace('ace2k', 'slots', [
+        dict((f, s.get(f)) for f in ('rfid', 'type', 'subtype', 'brand',
+                                     'color', 'uid', 'tag_format')
+             if f in s) for s in slots])
+
+
+def _ace2k_tag_device(h):
+    d = h._unit('ace2k').device
+    h.trace('ace2k', 'tag_device', list(d.tag_state),
+            [st[1:] for st in d.steps], [dn[1:] for dn in d.dones])
+
+
+def _ace2k_loads(h):
+    """The unit loads an insert started: (lane, park_um, speed, seq)."""
+    d = h._unit('ace2k').device
+    h.trace('ace2k', 'loads', [ld[1:] for ld in d.loads])
+
+
+def ace2k_tag_insert_read(**kw):
+    """A spool with an Anycubic tag is inserted on lane 3 of the ace2k unit
+    (idle, not the active unit): the insert starts the unit's own load
+    (ace2k_feed_start mode 5, park 300 mm at 60 mm/s, so its return ends at
+    the parking distance and not at the insert sensor), the unit opens a
+    session, the link reads pages 0-11 then the record and ends it 'read';
+    ace.py takes the read through the host-read ingest (identity on the
+    slot, rfid 2, the tag's own sku)."""
+    from .fake_ace2k import ntag_anycubic
+
+    def units(c):
+        u = _v2_and_ace2k(c)
+        u[1].device.put_tag(3, ntag_anycubic('AHPLWH-101', 'PLA Matte',
+                                             '#F0F0F0'))
+        return u
+    h = _harness(units, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h._unit('ace2k').device.insert, 3)
+    h.run(15.0)
+    _ace2k_tag_device(h)
+    _ace2k_loads(h)
+    _ace2k_tags(h)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_tag_pair_neighbour(**kw):
+    """Field case 2026-11-09 06:37: lane 3 reads its tag while the spool of
+    lane 2 (same antenna) is being hung up; lane 2's gate flips a moment
+    after the read. The read waits HOST_TAG_PAIR_SETTLE_S, sees the
+    neighbour change and is not used (no identity, no binding, an amber
+    console line); lane 2's own insert read follows."""
+    from .fake_ace2k import ntag_anycubic
+
+    def units(c):
+        u = _v2_and_ace2k(c)
+        u[1].device.put_tag(3, ntag_anycubic('AHPLWH-101', 'PLA Matte',
+                                             '#F0F0F0'))
+        return u
+    h = _harness(units, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(1.0, h._unit('ace2k').device.remove, 2)
+    h.at(3.0, h._unit('ace2k').device.insert, 3)
+    h.at(4.5, h._unit('ace2k').device.insert, 2)
+    h.run(30.0)
+    _ace2k_loads(h)
+    _ace2k_tags(h)
+    h.trace('ace2k', 'contested', sorted(
+        list(k) for k in h.inst._host_tag_contested))
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_tag_load_mifare(**kw):
+    """Tags read on the fly by a move: a Bambu Lab tag on lane 0 (keys from
+    the card UID) and a Snapmaker tag on lane 1 (the Bambu keys are refused,
+    the session moves on to the Snapmaker keys). Each ACE_FEED opens the
+    lane's session; the decoded material, colour and brand land on the
+    slot."""
+    from .fake_ace2k import mifare_bambu, mifare_snapmaker, MIFARE_UID
+
+    def units(c):
+        u = _v2_and_ace2k(c)
+        u[1].device.put_tag(0, mifare_bambu('PLA', 'PLA Basic',
+                                            (0x10, 0x20, 0xC0, 0xFF)))
+        u[1].device.put_tag(1, mifare_snapmaker(
+            2, 2, (0x30, 0xA0, 0x40),
+            uid=bytes(bytearray([0x55, 0x66, 0x77, 0x88]))))
+        return u
+    h = _harness(units, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h.gcode_line, 'ACE_FEED INDEX=0 LENGTH=60 SPEED=50 ACE=1')
+    h.at(8.0, h.gcode_line, 'ACE_FEED INDEX=1 LENGTH=60 SPEED=50 ACE=1')
+    h.run(15.0)
+    _ace2k_tag_device(h)
+    _ace2k_tags(h)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_tag_read_button(**kw):
+    """ACE_TAG_READ on the ace2k unit (the web's Read button): an OpenSpool
+    tag on lane 2, an NTAG215 whose NDEF message reaches past page 11; the
+    read with motion reads it, the status says it, the tag-op bar gets the
+    result."""
+    from .fake_ace2k import ntag_openspool
+
+    def units(c):
+        u = _v2_and_ace2k(c)
+        u[1].device.put_tag(2, ntag_openspool('PETG', '#1188FF', 'Sunlu'))
+        return u
+    h = _harness(units, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h.gcode_line, 'ACE_TAG_READ ACE=1 SLOT=2')
+    h.run(15.0)
+    _ace2k_tag_device(h)
+    _ace2k_tags(h)
+    h.trace('ace2k', 'tag_op', getattr(h.inst, '_tag_op_result', None))
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_tag_queued_moved(**kw):
+    """A spool is inserted on lane 3 of the ace2k unit during a print: its
+    read waits for the end of the print. ACE_FEED then moves that lane
+    400 mm forward. At the end of the print the queued read runs as the
+    read with motion (ace2k_rfid_read), not as the unit's load (no mode 5
+    start): the tip sits 400 mm past the insert sensor, so the read may
+    return to it, and the load would push it a park length deeper."""
+    from .fake_ace2k import ntag_anycubic
+
+    def units(c):
+        u = _v2_and_ace2k(c)
+        u[1].device.put_tag(3, ntag_anycubic('AHPLWH-101', 'PLA Matte',
+                                             '#F0F0F0'))
+        return u
+    h = _harness(units, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(2.0, h.print_start)
+    h.at(3.0, h._unit('ace2k').device.insert, 3)
+    h.at(5.0, h.gcode_line, 'ACE_FEED INDEX=3 LENGTH=400 ACE=1 WAIT=0')
+    h.at(20.0, h.print_end)
+    h.run(40.0)
+    _ace2k_tag_device(h)
+    _ace2k_loads(h)
+    _ace2k_tags(h)
+    h.snapshot()
+    return h.finish()
+
+
+def ace2k_tag_none(**kw):
+    """An insert on a lane without a tag: the unit's load runs its whole
+    search reach and back to the parking distance, the lane ends 'no_tag'
+    and the console says so; the slot keeps no identity."""
+    h = _harness(_v2_and_ace2k, 2, overrides=dict(ACE2K_ON), **kw)
+    h.build()
+    h.ready()
+    h.at(3.0, h._unit('ace2k').device.insert, 3)
+    h.run(40.0)
+    _ace2k_tag_device(h)
+    _ace2k_loads(h)
+    _ace2k_tags(h)
+    h.snapshot()
+    return h.finish()
+
+
 SCENARIOS = {
+    'connect_ace2k': connect_ace2k,
+    'ace2k_keeps_stock_place': ace2k_keeps_stock_place,
+    'ace2k_unpowered_waits': ace2k_unpowered_waits,
+    'ace2k_port_reserved': ace2k_port_reserved,
+    'ace2k_insert_remove': ace2k_insert_remove,
+    'ace2k_shutdown_reset': ace2k_shutdown_reset,
+    'ace2k_feed_retract': ace2k_feed_retract,
+    'ace2k_stop_follow_retract': ace2k_stop_follow_retract,
+    'ace2k_faults': ace2k_faults,
+    'ace2k_follow_log': ace2k_follow_log,
+    'ace2k_buffer_relax': ace2k_buffer_relax,
+    'ace2k_full_watch': ace2k_full_watch,
+    'ace2k_buffer_relax_unsupported': ace2k_buffer_relax_unsupported,
+    'ace2k_tag_insert_read': ace2k_tag_insert_read,
+    'ace2k_tag_pair_neighbour': ace2k_tag_pair_neighbour,
+    'ace2k_tag_load_mifare': ace2k_tag_load_mifare,
+    'ace2k_tag_read_button': ace2k_tag_read_button,
+    'ace2k_tag_none': ace2k_tag_none,
+    'ace2k_tag_queued_moved': ace2k_tag_queued_moved,
     'cfs_unload_freewheel': cfs_unload_freewheel,
     'connect_cfs': connect_cfs,
     'cfs_disabled': cfs_disabled,

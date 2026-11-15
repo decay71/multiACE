@@ -481,6 +481,11 @@ html[data-theme="new"] .toolhead-card .th-ace-row {
   margin: 0; padding: 8px 14px; border-top: 1px solid var(--border); font-size: 12px;
 }
 html[data-theme="new"] .toolhead-card .th-ace-row .th-manual { border: 0; height: auto; }
+/* multi mode: Manual and BG share the switch row, one half each */
+html[data-theme="new"] .toolhead-card:not(.nt-head):has(> .th-bg) {
+  grid-template-areas: "num mat mat gauge" "num meta meta gauge" "num chan chan gauge" "act act act act" "opt opt bg bg";
+}
+html[data-theme="new"] .toolhead-card:not(.nt-head) > .th-bg { grid-area: bg; border-left: 1px solid var(--border); }
 
 /* ---- Snapshot row --------------------------------------------------- */
 html[data-theme="new"] main section > h3 {

@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import logging.handlers
 import json
@@ -16,12 +17,13 @@ from .ace_protocol_v1 import AceProtocolV1
 from .ace_protocol_v2 import AceProtocolV2
 from .ace_protocol_cfs import AceProtocolCfs
 from .ace_drivers import (DRIVERS, KNOWN_PROTOCOLS, read_enabled_drivers,
-                          enabled_codecs, driver_named,
+                          enabled_codecs, driver_named, AceProtocolAce2k,
                           describe as describe_drivers)
 from .ace_protocol import (GATE_UNKNOWN, GATE_EMPTY, GATE_AVAILABLE,
                            TELEMETRY_METHODS)
 from .ace_unit import caps_for, INSERT_MIDPRINT_MIN_FW
-from .ace_swap import SwapMixin, RESUME_NOOP_WIPE_WINDOW
+from .ace_swap import (SwapMixin, RESUME_NOOP_WIPE_WINDOW,
+                       PURGE_DOCK_EXTRA_DEFAULT)
 from .ace_settings import SettingsMixin, _load_i18n_catalog
 from .ace_display import DisplayMixin
 from .ace_spool import (SpoolMixin, SPOOLLINK_RESOLVE_METHOD,
@@ -42,6 +44,12 @@ VIRTUAL_TOOL_RE = re.compile(r'(?m)^T([4-9]|[12][0-9]|3[01])\s*$')
 # How far into an Orca virtual-tool file the start-preload plan looks for
 # each head's first tool (pins cover heads used only later).
 VIRTUAL_PRELOAD_SCAN_MAX = 16 * 1024 * 1024
+# A head picked in a print whose filament is only staged at the toolhead
+# (bg transport, not loaded): the arrival swap line normally loads it at
+# once. Without one the head is paused once it extrudes; watched this long.
+STAGED_PRINT_GRACE_S = 4.0
+STAGED_PRINT_WATCH_S = 120.0
+STAGED_PRINT_MIN_VEL = 0.3
 # Toolchange notice to the bg engine (T0-T3 wrapper, _notify_bg_pick):
 # how long the T waits for the engine to hand the head over after the
 # announcement. The engine stops at its next move boundary - a prime
@@ -63,8 +71,8 @@ BG_STAGED_STOP_WINDOW = 180.0
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "1ddd1980"
-MULTIACE_BUNDLE_SHA1 = "e3d150b"
+MULTIACE_BUILD_TAG = "48b47e39"
+MULTIACE_BUNDLE_SHA1 = "8816725"
 # The klipper modules OUTSIDE the bundle sha (ace.py and its helpers), the
 # fixed order the banner's core= value hashes them in. Computed on disk at
 # startup, never stamped: `core=` is the deploy proof the bundle sha does
@@ -73,12 +81,20 @@ MULTIACE_BUNDLE_SHA1 = "e3d150b"
 CORE_FILES = (
     'ace.py', 'ace_bg_swap.py', 'ace_display.py', 'ace_drivers.py',
     'ace_gen1_tunnel.py', 'ace_macro_layout.py',
-    'ace_protocol.py', 'ace_protocol_cfs.py', 'ace_protocol_v1.py',
+    'ace_protocol.py', 'ace_protocol_ace2k.py', 'ace_protocol_cfs.py',
+    'ace_protocol_v1.py',
     'ace_protocol_v2.py',
     'ace_rc522.py', 'ace_resistance.py', 'ace_settings.py', 'ace_spool.py',
     'ace_swap.py',
     'ace_tipform.py', 'ace_unit.py',
 )
+# Reason the port protection files an [ace] ace2k_ports entry under: such
+# a port is skipped by every driver except ace2k.
+ACE2K_PORTS_REASON = '[ace] ace2k_ports'
+# Flash engines ACE_FW_RELEASE hands a port to (the cap flash_engine): the
+# web runs ace1_flash (iap_v1), ace2_ota (ota_v2) or tobecwb's ace2k
+# flasher (ace2k).
+FW_FLASH_ENGINES = ('iap_v1', 'ota_v2', 'ace2k')
 # The former shipped value of [ace] update_url_base (static mirror);
 # read as unset so updates come from GitHub.
 LEGACY_UPDATE_URL_BASE = 'https://postapocalyptic-diy.com/software/updates'
@@ -227,6 +243,19 @@ STALL_SRC_THRESHOLD = 0.020
 # the cache says "armed" but the device status is none of these, the cache is
 # stale and FA must be re-sent (the host cache and the device drift apart after
 # swaps/reconnects/spontaneous disarms -> "already running" skip but no feed).
+# A refused unwind (slot still winding down) is sent again this many
+# times, RETRACT_RETRY_PAUSE apart; the reply is awaited this long.
+RETRACT_SEND_RETRIES = 3
+# A bulk retract of this length or more is noted while it runs on a unit
+# whose motion ends with the host (ace2k, CFS Nano): a restart in the
+# middle leaves the strand in the path. RETRACT_PENDING_PRE_MM is the short
+# probe retract that came before the bulk piece.
+RETRACT_PENDING_MIN_MM = 200
+RETRACT_PENDING_PRE_MM = 150
+RETRACT_PENDING_MIN_REDO_MM = 50
+RETRACT_RETRY_PAUSE = 1.0
+RETRACT_REPLY_TIMEOUT = 1.5
+
 V2_FA_RUNNING_STATES = (
     'assisting', 'rollback_assisting', 'feeding', 'rollback', 'preloading')
 
@@ -652,6 +681,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     VARS_ACE_ACTIVE_DEVICE = 'ace__active_device'
     VARS_ACE_HEAD_SOURCE = 'ace__head_source'
     VARS_ACE_BG_STAGED = 'ace__bg_staged'
+    VARS_ACE_RETRACT_PENDING = 'ace__retract_pending'
     VARS_ACE_HEAD_MANUAL = 'ace__head_manual'
     VARS_ACE_HEAD = 'ace__ace_head'
     VARS_ACE_HEAD_FEEDER = 'ace__head_feeder'
@@ -798,6 +828,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.load_feed_temp_drop = config.getint(
             'load_feed_temp_drop', 50, minval=0, maxval=100)
         self.swap_purge_cap = config.getint('swap_purge_cap', 0, minval=0, maxval=200)
+        # Lean flush: the load flush of a swap runs ACE_LEAN_FLUSH instead
+        # of the stock INNER_FLUSH_FILAMENT (no cooldown to 0, one brush
+        # pass, no second rough clean). Off by default.
+        self.lean_flush = config.getboolean('lean_flush', False)
+        self._lean_flush_ran = False
 
         self.seat_overshoot_length = config.getint('seat_overshoot_length', 0, minval=0, maxval=100)
         # Name of a gcode macro that cuts the filament at the toolhead (a
@@ -1360,6 +1395,13 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             config.get('cfs_usb_ids', '1a86:7523'))
         AceProtocolCfs.USB_IDS = cfs_ids or AceProtocolCfs.DEFAULT_USB_IDS
         self._cfs_probe_cache = {}
+        # Ports of ACE 2 units running ace2k (driver 'ace2k'): named, never
+        # guessed (same USB id as a stock ACE 2). The other drivers never
+        # open them, with the ace2k driver on or off. Read unconditionally.
+        self._ace2k_ports_cfg = [
+            x for x in re.split(r'[,\s]+', config.get('ace2k_ports', '') or '')
+            if x]
+        AceProtocolAce2k.PORTS = tuple(self._ace2k_ports_cfg)
         self._v2_probe_generic_usb = config.getboolean(
             'v2_probe_generic_usb', False)
         self._v2_generic_probe_cursor = None
@@ -1492,6 +1534,28 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._last_rx_ts = {}
         # _last_rx_ts value stamped at open: a later value is a real frame.
         self._open_rx_mark = {}
+        # Last ended motion (unit 'motion' report seq) shown on the console,
+        # per unit index; cleared at every (re)connect (the link restarts
+        # its numbering).
+        self._motion_end_seen = {}
+        self._follow_lost_seen = {}
+        # Last ingested tag read counter per unit/slot of a unit whose
+        # reader the host drives (ace2k, host_tag_session); cleared at
+        # every (re)connect like the motion counter.
+        self._host_tag_seen = {}
+        # Antenna pair guard (host_tag_session): a read waits
+        # HOST_TAG_PAIR_SETTLE_S before it counts. _host_tag_search: search
+        # start per (unit, slot) and whether the Read button started it;
+        # _host_tag_pending: reads still waiting; _host_tag_contested:
+        # slots whose last read was not used; _host_tag_verdict: outcome
+        # per slot for the tag-op bar; _gate_flip_ts: time of the last
+        # gate change per (unit, slot).
+        self._host_tag_search = {}
+        self._host_tag_pending = {}
+        self._host_tag_contested = set()
+        self._host_tag_verdict = {}
+        self._host_tag_seq = 0
+        self._gate_flip_ts = {}
         self._mute_open_logged = set()
         self._gate_status_per_ace = {}
 
@@ -1753,6 +1817,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._tool_primed_heads = set()
         self._orig_preextrude = None
         self._orig_ext_switch = None
+        self._orig_pause = None
         # Orca virtual-tool prints: filaments 1-4 pinned to the ACE slot
         # that matches the slicer's colour/material ({tool: (head, ace,
         # slot)}, head from the slicer's extruder map,
@@ -1809,6 +1874,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # pushes the remainder at the discard position), cleared on a
         # verified unload.
         self._bg_prime_deficit = {}
+        # head -> coil reading of its last background prime in the dock
+        # (ace_bg_swap), logged by the arrival check next to its verdict.
+        self._bg_dock_coil = {}
+        self._dock_resistance_pause = set()
 
         self._serial_failed = False
         self._serial_failed_at = 0.0
@@ -1817,6 +1886,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # _serial_failed_pause_sent; reset in _on_print_start, so RESUME
         # re-arms the latch for a later exhaustion in the same job).
         self._fa_failed_pause_sent = False
+        self._follow_pause_sent = set()
+        self._staged_pause_sent = set()
         # fa_failed_final notification dedupe: {(idx, slot): (code, msg)} of
         # the terminal arm failure already alerted red. While the SAME
         # failure repeats on the lane (an emptied gate with the tail strand
@@ -2005,8 +2076,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._resistance_paused_heads = set()  # once-per-head-per-print latch
         self._resistance_pause_pending = None  # (head,ace,slot) set by phase3
         # Airlog chew detector (AIRLOG_CHEW_* const note)
+        self._retract_pending = {}      # 'ace_slot' -> interrupted bulk retract
         self._airlog_chew_run = {}      # head -> consecutive chew windows
         self._airlog_chew_latched = set()  # heads warned/paused this print
+        self._airlog_air_run = {}       # head -> air windows in a row
+        self._airlog_air_seen = {}      # head -> time of its last window
+        self._airlog_air_latched = set()
         self._pickcheck_active = False  # suppress airlog eval during checks
 
         self._apply_log_levels()
@@ -2359,11 +2434,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.gcode.register_command(
             'ACE_FW_RELEASE',
             self.cmd_ACE_FW_RELEASE,
-            desc='[multiACE] Release one ACE 2 serial port for a firmware flash (ACE=n)')
+            desc='[multiACE] Release one MMU serial port for a firmware flash (ACE=n)')
         self.gcode.register_command(
             'ACE_FW_RESUME',
             self.cmd_ACE_FW_RESUME,
             desc='[multiACE] Reconnect an MMU released with ACE_FW_RELEASE (ACE=n)')
+        self.gcode.register_command(
+            'ACE_FW_SET_DRIVER',
+            self.cmd_ACE_FW_SET_DRIVER,
+            desc=self.cmd_ACE_FW_SET_DRIVER_help)
         self.gcode.register_command(
             'ACE_PICKUP_CLEAN',
             self.cmd_ACE_PICKUP_CLEAN,
@@ -3971,6 +4050,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         out = {}
         for path in self._mcu_serial_ports:
             out[os.path.realpath(path)] = '[mcu] serial'
+        for path in getattr(self, '_ace2k_ports_cfg', ()):
+            out[os.path.realpath(path)] = ACE2K_PORTS_REASON
         for path in self._exclude_ports_cfg:
             out[os.path.realpath(path)] = '[ace] exclude_ports'
         return out
@@ -4119,10 +4200,20 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         dongle) claims a discovered path only after its probe_device
         verified the unit. Idle only, one probe per scan (shared with the
         generic V2 probe), result cached per path; the probe runs off the
-        reactor thread with the reactor paused in 25 ms steps."""
+        reactor thread with the reactor paused in 25 ms steps.
+        ace2k (PROBE_ONCE_PER_PATH): the port is declared in [ace]
+        ace2k_ports, the probe only reads the unit key; a port whose key
+        is known is claimed without asking again."""
         real_path = os.path.realpath(path)
         if real_path in self._configured_serial_path_set():
-            return False
+            declared = (protocol_cls is AceProtocolAce2k
+                        and self._excluded_ports().get(real_path)
+                        == ACE2K_PORTS_REASON)
+            if not declared:
+                return False
+        if (getattr(protocol_cls, 'PROBE_ONCE_PER_PATH', False)
+                and self._unit_uid_by_path.get(path)):
+            return True
         now = time.monotonic()
         cached = self._cfs_probe_cache.get(real_path)
         if cached is not None:
@@ -4154,14 +4245,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
         threading.Thread(target=_worker, daemon=True,
                          name='multiace-%s-probe' % protocol_cls.NAME).start()
-        deadline = self.reactor.monotonic() + 1.5
+        wait_s = float(getattr(protocol_cls, 'PROBE_DEADLINE_S', 1.5))
+        deadline = self.reactor.monotonic() + wait_s
         while not done.is_set():
             t = self.reactor.monotonic()
             if t >= deadline:
                 break
             self.reactor.pause(min(deadline, t + 0.025))
         result = box['result'] or {'ok': False, 'category': 'probe_timeout',
-                                   'error': 'probe exceeded 1.5s'}
+                                   'error': 'probe exceeded %.1fs' % wait_s}
         verified = bool(result.get('ok'))
         category = result.get('category', '?')
         prev = self._cfs_probe_cache.get(real_path)
@@ -4213,12 +4305,20 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
         excluded = self._excluded_ports()
         excluded_ace = set()
+        claimed_real = set()
         for protocol_cls in active_protocols:
             for path in discovered_by_protocol[protocol_cls]:
                 if path in ace_devices:
                     continue
                 real_path = os.path.realpath(path)
-                if real_path in excluded:
+                if real_path in claimed_real:
+                    # Claimed by an earlier codec under another name
+                    # (by-id vs by-path).
+                    continue
+                if (real_path in excluded
+                        and not (protocol_cls is AceProtocolAce2k
+                                 and excluded[real_path]
+                                 == ACE2K_PORTS_REASON)):
                     excluded_ace.add(real_path)
                     if real_path not in self._excluded_logged:
                         self._excluded_logged.add(real_path)
@@ -4244,6 +4344,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                         continue
                 self._ace_path_protocol[path] = protocol_cls
                 ace_devices.append(path)
+                claimed_real.add(real_path)
                 real_dev = os.path.basename(os.path.realpath(path))
                 # The idle rescan runs every few seconds: a unit the
                 # canonical list already holds is not news.
@@ -4894,6 +4995,21 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 '[multiACE] failed to wrap SWITCH_OF_EXTENDED_EXTRUDER: %s'
                 % e)
 
+        # Stock PAUSE refuses a pause from the print file while the
+        # exclude_object flag 'in excluded region' is set. The flag stays set
+        # after an excluded object ended until the next file move, so an
+        # error pause right after it was dropped and the print ended.
+        try:
+            self._orig_pause = self.gcode.register_command('PAUSE', None)
+            if self._orig_pause is not None:
+                self.gcode.register_command(
+                    'PAUSE', self._wrap_pause,
+                    desc='[multiACE] wrap PAUSE: an error pause is not '
+                         'dropped after an excluded object')
+        except Exception as e:
+            self._orig_pause = None
+            logging.info('[multiACE] failed to wrap PAUSE: %s' % e)
+
         # Stock SM_PRINT_FLOW_CALIBRATE picks the head and extrudes without
         # checking for filament. In the start gcode it runs BEFORE our
         # auto-load block, so an ACE head the block loads later would be
@@ -4996,12 +5112,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 except Exception:
                     pass
         if self._ace_mode == 'normal':
-            logging.info('[multiACE] Normal mode - skipping MMU detection')
+            _nm = self._t('msg.normal_mode_skip')
+            logging.info(_nm)
+            self.log_always(_nm)
             return
 
         if self._ace_mode in ('multi', 'head'):
             self._restore_head_source()
             self._restore_bg_staged()
+            self._restore_retract_pending()
             self._ensure_extruder_change_handler()
         else:
             logging.info('[multiACE] %s mode - no head_source tracking'
@@ -5472,7 +5591,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         abort itself is the same verified one the idle path uses.
 
         Only reached on ACE2-Open units (>= INSERT_MIDPRINT_MIN_FW), which
-        all carry the RC522 tunnel, so the read is always queued."""
+        all carry the RC522 tunnel, so the read is always queued. A unit
+        whose reader the host drives (ace2k) pulls nothing in on an insert:
+        its read is just queued."""
+        if self._cap(idx, 'host_tag_session'):
+            if not hasattr(self, '_insert_read_queue'):
+                self._insert_read_queue = []
+            if not any(q[0] == idx and q[1] == slot
+                       for q in self._insert_read_queue):
+                self._insert_read_queue.append((idx, slot, None))
+                logging.info('[multiACE] [insert-read] QUEUED MMU %d slot %d '
+                             'for the end of the print' % (idx, slot))
+            return
         if not self._cap(idx, 'insert_bites_while_busy'):
             return
         if not hasattr(self, '_insert_abort_running'):
@@ -5577,7 +5707,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             # antenna mid-read, so the running read keeps hitting the
             # "neighbour". The abort is motor-stop + telemetry only, no
             # antenna ops, so it cannot disturb the running read.
-            if depth == 'auto':
+            if depth == 'auto' and not self._cap(idx, 'host_tag_session'):
                 depth = self._insert_verified_abort(idx, slot)
             if not hasattr(self, '_insert_read_queue'):
                 self._insert_read_queue = []
@@ -5588,6 +5718,28 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                              'running - aborted the pull-in and QUEUED '
                              'MMU %d slot %d (depth=%s)'
                              % (idx, slot, depth))
+            return
+        if self._cap(idx, 'host_tag_session'):
+            # The unit's own load pulls the filament to its parking
+            # distance and reads the tag on the way; no firmware procedure
+            # to abort, the load ends at the parking distance itself.
+            setattr(self, '_tag_read_busy', True)
+            self._tag_op_kind = 'insert'
+            try:
+                self._v2_filament_info_per_ace.get(idx, {}).pop(slot, None)
+                moved = self._host_lane_moved_mm(idx, slot)
+                load = moved < self.HOST_TAG_MOVED_MM
+                if not load:
+                    logging.info('[multiACE] [insert-read] MMU %d slot %d '
+                                 'moved %.0f mm since the insert - read with '
+                                 'motion instead of the load'
+                                 % (idx, slot, moved))
+                self._host_tag_read(idx, slot, load=load)
+            except Exception:
+                logging.exception('[multiACE] [insert-read] host tag read')
+            finally:
+                setattr(self, '_tag_read_busy', False)
+                self._insert_drain_queue()
             return
         try:
             from .ace_rc522 import AceTagReader
@@ -5906,6 +6058,188 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         the ACE motor is not needed for the live print)."""
         ps = self.printer.lookup_object('print_stats', None)
         return ps is not None and getattr(ps, 'state', '') == 'printing'
+
+    def _note_motion_end(self, idx, info):
+        """Console line when a unit's own motion report (CFS Nano, ace2k)
+        shows a move that just ended: kind, slot, why and distance. Shown
+        outside a running print only; in a print the swap's burst must stay
+        off the response pipe, and klippy.log carries the link's own line."""
+        m = info.get('motion') if isinstance(info, dict) else None
+        if not isinstance(m, dict) or m.get('running') or not m.get('why'):
+            return
+        try:
+            seq = int(m.get('seq'))
+        except (TypeError, ValueError):
+            return
+        if self._motion_end_seen.get(idx) == seq:
+            return
+        self._motion_end_seen[idx] = seq
+        if self._is_actively_printing():
+            return
+        try:
+            self.log_always(self._t(
+                'msg.unit_motion_ended', ace=self._disp(idx),
+                kind=m.get('kind'), slot=self._disp(int(m.get('slot', 0))),
+                why=m.get('why'), mm='%.0f' % float(m.get('mm') or 0.0)))
+        except Exception:
+            logging.exception('[multiACE] motion end line failed')
+
+    LANE_REPORT_RESEND_S = 5.0
+
+    def _lane_masks(self, idx):
+        """(in_use, by_hand) for one unit, one bit per slot. In use: a
+        slot whose strand sits in or at a head (head_source, or staged at
+        the sensor by a background transport). By hand: a slot the user
+        gave an identity, or whose tag read the host holds."""
+        in_use = by_hand = 0
+        for src in (getattr(self, '_head_source', None) or {}).values():
+            if (isinstance(src, dict) and src.get('ace_index') == idx
+                    and src.get('slot') is not None):
+                in_use |= 1 << int(src['slot'])
+        for st in (getattr(self, '_bg_staged', None) or {}).values():
+            try:
+                if int(st[0]) == idx:
+                    in_use |= 1 << int(st[1])
+            except (TypeError, ValueError, IndexError):
+                pass
+        reads = (getattr(self, '_v2_filament_info_per_ace', None)
+                 or {}).get(idx) or {}
+        for slot in range(4):
+            if self._override_for(idx, slot) is not None:
+                by_hand |= 1 << slot
+            elif (reads.get(slot) or {}).get('type'):
+                by_hand |= 1 << slot
+        return in_use & 0x0F, by_hand & 0x0F
+
+    def _lane_report_tick(self, idx, info):
+        """A unit that sorts out unknown tags by moving a lane on its own
+        (ace2k v0.15.0, status 'lane_report') must know which lanes are in
+        use and which are set by hand. Sent on every change and again
+        every few seconds (a reconnected unit starts without a list)."""
+        if not (isinstance(info, dict) and info.get('lane_report')):
+            return
+        try:
+            masks = self._lane_masks(idx)
+            sent = getattr(self, '_lane_report_sent', None)
+            if sent is None:
+                sent = self._lane_report_sent = {}
+            now = self.reactor.monotonic()
+            last = sent.get(idx)
+            if (last is not None and last[0] == masks
+                    and now - last[1] < self.LANE_REPORT_RESEND_S):
+                return
+            sent[idx] = (masks, now)
+            if last is None or last[0] != masks:
+                logging.info('[multiACE] MMU %d lanes: in use %s, set by '
+                             'hand %s' % (idx, format(masks[0], '04b'),
+                                          format(masks[1], '04b')))
+
+            def _cb(self, response):
+                return
+            self.send_request_to(idx, {
+                'method': 'set_lanes',
+                'params': {'in_use': masks[0], 'by_hand': masks[1]}}, _cb)
+        except Exception:
+            logging.exception('[multiACE] lane report failed')
+
+    def _note_follow_lost(self, idx, info):
+        """A unit whose assist is a follow it can end by itself (ace2k)
+        reports a lane whose follow is gone although the host wants it
+        (slot 'follow_lost': stuck, tangled, ...). The unit does not
+        freewheel, so the head on that lane gets no filament. Once per
+        loss: amber console line, and the FA cache forgets the slot so the
+        next arm is sent instead of skipped as already running."""
+        slots = info.get('slots') if isinstance(info, dict) else None
+        for s, slot in enumerate(slots or []):
+            lost = slot.get('follow_lost') if isinstance(slot, dict) else None
+            key = (idx, s)
+            if not isinstance(lost, dict):
+                self._follow_lost_seen.pop(key, None)
+                continue
+            n = lost.get('n')
+            if self._follow_lost_seen.get(key) == n:
+                continue
+            self._follow_lost_seen[key] = n
+            try:
+                if self._feed_assist_per_ace.get(idx, -1) == s:
+                    self._feed_assist_per_ace[idx] = -1
+                    if idx == self._active_device_index:
+                        self._feed_assist_index = -1
+                tail = (lost.get('why') == 'tail_out')
+                full = (lost.get('why') == 'buffer_full')
+                self.log_warn(self._t(
+                    'msg.fa_lost_tail_out' if tail
+                    else 'msg.fa_lost_buffer_full' if full
+                    else 'msg.fa_lost_unit',
+                    ace=self._disp(idx),
+                    slot=self._disp(s), why=lost.get('why') or '?'))
+            except Exception:
+                logging.exception('[multiACE] follow lost line failed')
+                tail = False
+            # The filament end left the drive: the unit no longer holds
+            # the strand, the extruder pulls the rest of the tube freely.
+            # Not a failure - the toolhead runout handles the end.
+            if not tail:
+                self._maybe_pause_follow_lost(idx, s, lost.get('why') or '?')
+
+    def _maybe_pause_follow_lost(self, idx, slot, why):
+        """Resumable pause when the follow of the lane feeding the active
+        printing head is gone: the unit does not freewheel, the head would
+        print air. Not during a swap (the load arms the assist anew) and
+        once per lane and print; RESUME re-arms the lane."""
+        if not self._cap(idx, 'no_freewheel'):
+            return
+        if self._fa_context != 'print' or self._swap_in_progress:
+            return
+        if not self._is_actively_printing():
+            return
+        if (idx, slot) in self._follow_pause_sent:
+            return
+        try:
+            extruder = self.toolhead.get_extruder()
+            head = getattr(extruder, 'extruder_index',
+                           getattr(extruder, 'extruder_num', None))
+        except Exception:
+            head = None
+        if head is None or head in getattr(self, '_loading_heads', ()):
+            return
+        source = self._head_source.get(head)
+        if not source:
+            return
+        if (int(source.get('ace_index', -1)) != idx
+                or int(source.get('slot', -1)) != slot):
+            return
+        self._follow_pause_sent.add((idx, slot))
+        detail = self._t('msg.fa_lost_pause', ace=self._disp(idx),
+                         slot=self._disp(slot), head=self._disp(head),
+                         why=why)
+        logging.warning('[multiACE] follow lost on the printing lane MMU %d '
+                        'slot %d (%s) - pausing' % (idx, slot, why))
+
+        def _do_pause(eventtime):
+            try:
+                self.gcode.run_script(
+                    'RESPOND TYPE=error MSG="%s"' % detail.replace('"', "'"))
+            except Exception:
+                pass
+            try:
+                em = self.printer.lookup_object('exception_manager', None)
+                if em is not None:
+                    em.raise_exception_async(
+                        id=em.list.MODULE_ID_FEEDING, index=head, code=210,
+                        message=detail, oneshot=1, level=2)
+            except Exception:
+                pass
+            try:
+                self.gcode.run_script('PAUSE')
+            except Exception as pe:
+                logging.info('[multiACE] follow-lost PAUSE failed: %s'
+                             % str(pe))
+            return self.reactor.NEVER
+        try:
+            self.reactor.register_timer(_do_pause, self.reactor.NOW)
+        except Exception:
+            pass
 
     def _is_print_active_or_paused(self):
         """True while a print is running OR paused: the window in which a
@@ -6650,6 +6984,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # Same re-arm for the FA-exhaustion PAUSE: print start AND resume both
         # land here, and the resume's _arm_fa_for IS the retry after that pause.
         self._fa_failed_pause_sent = False
+        self._follow_pause_sent = set()
+        self._staged_pause_sent = set()
         # A new print (or resume) may alert each lane's terminal FA failure
         # red once again - the user acted in between.
         self._fa_failed_notified.clear()
@@ -6687,6 +7023,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self._resistance_paused_heads.clear()
             self._airlog_chew_run.clear()
             self._airlog_chew_latched.clear()
+            self._airlog_air_run.clear()
+            self._airlog_air_seen.clear()
+            self._airlog_air_latched.clear()
         elif _src_head is not None:
             _src_lanes = [l for l, h in getattr(
                 self, '_resistance_lane_head', {}).items() if h == _src_head]
@@ -6699,6 +7038,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self._resistance_paused_heads.discard(_src_head)
             self._airlog_chew_run.pop(_src_head, None)
             self._airlog_chew_latched.discard(_src_head)
+            self._airlog_air_run.pop(_src_head, None)
+            self._airlog_air_latched.discard(_src_head)
             logging.info('[multiACE] [resistance] resume: cleared strikes/'
                          'latches of head %d only (its pause), other heads '
                          'keep theirs' % self._raw(_src_head))
@@ -7570,6 +7911,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self._callback_maps[idx] = {}
             self._read_buffers[idx] = bytearray()
             self._info_per_ace[idx] = protocol.make_default_info()
+            self._motion_end_seen.pop(idx, None)
+            for _k in [k for k in self._follow_lost_seen if k[0] == idx]:
+                self._follow_lost_seen.pop(_k, None)
+            self._host_tag_seen.pop(idx, None)
             # Arm the once-per-connection tag rescan (V2): a spool swapped
             # while multiACE/the ACE was off produced no insert event, so
             # the device holds no read for it and the persisted spool
@@ -8179,6 +8524,34 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             raise Exception(
                 '[multiACE] serial[%d] write failed (reconnect+retry both failed)'
                 % idx)
+
+    def _fa_arm_spool_ended(self, idx, slot, code, msg):
+        """The unit refused the feed-assist start with no_filament and its
+        inlet reads empty: the spool ran out, the strand still in the tube
+        is printable. One amber note per lane, no pause; the toolhead
+        runout ends the lane. Returns True when it handled the refusal."""
+        if msg != 'no_filament':
+            return False
+        try:
+            gate = self._gate_status_per_ace.get(idx, [])[slot]
+        except Exception:
+            return False
+        if gate != GATE_EMPTY:
+            return False
+        text = self._t('msg.fa_lost_tail_out',
+                       ace=self._disp(idx), slot=self._disp(slot))
+        key = (idx, slot)
+        val = (code, 'spool_ended')
+        if self._fa_failed_notified.get(key) == val:
+            logging.info('[multiACE] %s (repeat)' % text)
+        else:
+            self._fa_failed_notified[key] = val
+            self.log_warn(text)
+            logging.warning('[multiACE] %s' % text)
+        self._fa_log.warning(
+            'start_feed_assist refused (no_filament, inlet empty): '
+            'MMU %d slot %d - spool ended, no pause' % (idx, slot))
+        return True
 
     def _maybe_pause_fa_exhausted(self, idx, slot, attempts):
         """Last-resort resumable PAUSE when the FA arm retry budget is
@@ -8921,6 +9294,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 if (idx == self._active_device_index
                         and self._feed_assist_index == slot):
                     self._feed_assist_index = -1
+                if self._fa_arm_spool_ended(idx, slot, code, msg):
+                    return
                 final_msg = self._t('msg.fa_failed_final',
                     attempts=attempt + 1, ace=self._disp(idx),
                     slot=self._disp(slot), code=code,
@@ -9050,6 +9425,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             if self._cap(idx, 'has_rollback_assist'):
                 logging.info(
                     '[multiACE] _disable_feed_assist_all: keep MMU %d armed (V2 - velocity tracker handles mode switch)' % idx)
+                continue
+            if not self._cap(idx, 'fa_stop_rollback'):
+                # The unit ends its assist on stop_feed_assist alone (ace2k):
+                # no 5 mm rollback, which would move the strand.
+                try:
+                    self.wait_ace_ready_on(idx)
+                    self._disarm_fa_for(idx)
+                    self.wait_ace_ready_on(idx)
+                except Exception as e:
+                    logging.info(
+                        '[multiACE] _disable_feed_assist_all: error on idx %d: %s' % (idx, e))
                 continue
             any_running = True
             try:
@@ -9219,8 +9605,13 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     def _merge_v2_filament_info(self, idx, result):
 
         # No codec = nothing to merge (NO_CAPS would read as "queries").
-        if (self._protocols.get(idx) is None
-                or self._cap(idx, 'tag_identity_in_status')):
+        # A unit whose status carries the identity has nothing to merge,
+        # unless the host reads its tags (host_tag_session): its host reads
+        # are surfaced here like an ACE2-Open read, but never queried.
+        if self._protocols.get(idx) is None:
+            return
+        status_ids = self._cap(idx, 'tag_identity_in_status')
+        if status_ids and not self._cap(idx, 'host_tag_session'):
             return
         cache = self._v2_filament_info_per_ace.setdefault(idx, {})
         pending = self._v2_filament_info_pending.setdefault(idx, {})
@@ -9290,6 +9681,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     # webhooks encoder answers with a shutdown).
                     if cached.get('tag'):
                         slot['tag'] = cached['tag']
+                elif status_ids:
+                    # Nothing to query on this unit: the status' own word.
+                    continue
                 else:
                     slot['rfid'] = 1
                     # Negative cache: get_filament_info already returned
@@ -10663,6 +11057,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 self._refresh_slot_overrides_if_changed()
                 prev_info = self._info_per_ace.get(idx, self._make_default_info(idx))
                 prev_slots = prev_info.get('slots', [])
+                self._host_tag_ingest(idx, result)
                 self._merge_v2_filament_info(idx, result)
                 self._strip_native_tag_names(idx, result)
                 self._gen1_vet_firmware_ids(idx, result)
@@ -10722,7 +11117,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                             and not self._swap_in_progress
                             and not self._is_actively_printing()):
                         self.log_always(self._t('msg.auto_feed'))
-                        if self._cap(idx, 'rc522_tunnel'):
+                        if (self._cap(idx, 'rc522_tunnel')
+                                or self._cap(idx, 'host_tag_session')):
                             # C flow (O-firmware only): abort the firmware
                             # procedure, UID-first park read, stock net
                             # depth, then _pre_load. Stock-firmware units
@@ -10750,7 +11146,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                         self.reactor.register_async_callback(
                             (lambda et, a=idx, g=i:
                              self._insert_abort_and_queue(a, g)))
-                    elif (self._cap(idx, 'rc522_tunnel')
+                    elif ((self._cap(idx, 'rc522_tunnel')
+                           or self._cap(idx, 'host_tag_session'))
                             and not is_active
                             and self._gate_status_per_ace.get(idx, [GATE_UNKNOWN] * 4)[i] == GATE_EMPTY
                             and not self._is_empty_status(new_slot.get('status'))
@@ -10876,6 +11273,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                         self._gen1_gate_gen[_gk] = \
                             self._gen1_gate_gen.get(_gk, 0) + 1
                     if _gate_prev != gate_list[i] and _gate_prev != GATE_UNKNOWN:
+                        self._gate_flip_ts[(idx, i)] = \
+                            self.reactor.monotonic()
+                        # A new or removed spool: an earlier unused read of
+                        # this slot says nothing about the next one.
+                        self._host_tag_contested.discard((idx, i))
                         logging.info('[multiACE] [gate] MMU %d slot %d: %s -> '
                                      '%s (active=%s status=%r rfid=%s)'
                                      % (idx, i, _gate_prev, gate_list[i],
@@ -10909,6 +11311,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     # unsynced debt until the next successful push.
                     if gate_list[i] == GATE_EMPTY:
                         self._spool_miss_forget(idx, i)
+                    if (_gate_prev == GATE_AVAILABLE
+                            and gate_list[i] == GATE_EMPTY):
+                        self._clear_sources_on_slot_empty(idx, i)
                     if (gate_list[i] == GATE_EMPTY
                             and self._empty_slot_releases_spool(idx, i)):
                         self._spool_release_slot(
@@ -10916,6 +11321,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                             'slot went empty' if _gate_prev == GATE_AVAILABLE
                             else 'slot is empty')
                 self._info_per_ace[idx] = result
+                self._note_motion_end(idx, result)
+                self._note_follow_lost(idx, result)
+                self._lane_report_tick(idx, result)
 
                 # V1 FA-health monitor (parity with the V2 disarm/dropped-arm
                 # recovery, which lived in the V2-only velocity tick). Status was
@@ -11260,6 +11668,34 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 id=525, index=0, code=210, oneshot=1, level=2)
         raise self.printer.command_error(text)
 
+    def _bg_lanes_on(self, idx):
+        """Slots of unit idx a running bg op moves (empty without the
+        engine or an older one)."""
+        bg = self.printer.lookup_object('ace_bg_swap', None)
+        fn = getattr(bg, 'lanes_in_use', None)
+        if fn is None:
+            return set()
+        try:
+            return set(s for (a, s) in fn() if a == idx)
+        except Exception:
+            return set()
+
+    def _host_unit_ready(self, idx, info):
+        """The unit takes a host command. A lane-concurrent unit (ace2k)
+        reports busy while ANY lane moves; lanes a bg op drives do not hold
+        up the host there (multi mode: the engine moves a parked head's
+        lane next to the printing one). Every other unit: status ready."""
+        if info.get('status') == 'ready':
+            return True
+        lanes = info.get('busy_lanes')
+        if not lanes or not self._cap(idx, 'lanes_concurrent'):
+            return False
+        owned = self._bg_lanes_on(idx)
+        try:
+            return bool(owned) and all(int(l) in owned for l in lanes)
+        except (TypeError, ValueError):
+            return False
+
     def wait_ace_ready_on(self, idx, timeout=30.0, max_reconnects=2):
         info = self._info_per_ace.get(idx)
         if info is None:
@@ -11270,7 +11706,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         deadline = time.monotonic() + timeout
         reconnect_count = 0
         feeding_waits = 0
-        while info.get('status') != 'ready':
+        while not self._host_unit_ready(idx, info):
             if time.monotonic() > deadline:
 
                 # A V2 that reports 'busy' because a slot is genuinely feeding/
@@ -11352,7 +11788,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         info = self._info_per_ace.get(idx)
         if info is None:
             return False
-        return info.get('status') == 'ready'
+        return self._host_unit_ready(idx, info)
 
     def dwell(self, delay=1.0):
         curr_ts = self.reactor.monotonic()
@@ -11427,7 +11863,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
     def _enable_feed_assist(self, index):
 
-        if self._feed_assist_index != -1 and self._feed_assist_index != index:
+        if (self._feed_assist_index != -1 and self._feed_assist_index != index
+                and self._cap(self._active_device_index, 'fa_stop_rollback')):
             self.wait_ace_ready()
             self._retract(self._feed_assist_index, 5, 80)
         self.wait_ace_ready()
@@ -11452,7 +11889,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.wait_ace_ready()
         self._disarm_fa_for(self._active_device_index)
         self.wait_ace_ready()
-        self._retract(rt_index, 5, 80)
+        if self._cap(self._active_device_index, 'fa_stop_rollback'):
+            self._retract(rt_index, 5, 80)
         self.dwell(0.3)
 
     cmd_ACE_DISABLE_FEED_ASSIST_help = 'Disables MMU feed assist'
@@ -11465,7 +11903,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
         self._disable_feed_assist(index)
 
-    def _feed(self, index, length, speed, how_wait=None, ace=None):
+    def _feed(self, index, length, speed, how_wait=None, ace=None,
+              wait=True):
         def callback(self, response):
             if response.get('code', 0) != 0:
                 self.log_error(self._t('msg.ace_error_generic', error=response.get('msg')))
@@ -11476,6 +11915,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # unchanged. Only the manual ACE_FEED/ACE_RETRACT commands pass it,
         # so feeding on a non-active ACE needs no ACE_SWITCH first.
         idx = self._active_device_index if ace is None else int(ace)
+        # wait=False (ACE_FEED WAIT=0): send and return - no wait for the
+        # unit's ready, no dwell for the move. The dwell holds the gcode
+        # queue, so a print stops while the command waits; WAIT=0 lets a
+        # transport on another lane run while the print goes on. A busy
+        # unit refuses the request, and the callback reports that.
+        if not wait:
+            self.send_request_to(
+                idx,
+                request={"method": "feed_filament", "params": {"index": index, "length": length, "speed": speed}},
+                callback=callback)
+            return
         self.wait_ace_ready_on(idx)
         self.send_request_to(
             idx,
@@ -11485,6 +11935,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self.dwell(delay=(how_wait / speed) + 0.1)
         else:
             self.dwell(delay=(length / speed) + 0.1)
+
+    def _manual_move_wait(self, gcmd):
+        """WAIT= of the raw feed/retract commands: 1 (default) waits for
+        the unit and the move's length, 0 sends and returns."""
+        wait = gcmd.get_int('WAIT', 1)
+        if wait not in (0, 1):
+            raise self._ace_error(gcmd, 'Wrong WAIT (0 or 1)', code=200)
+        return bool(wait)
 
     def _manual_move_ace(self, gcmd):
         """Resolve the optional ACE= of the raw feed/retract commands.
@@ -11503,8 +11961,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         return ace
 
     cmd_ACE_FEED_help = ('Feeds filament from MMU: ACE_FEED INDEX=<slot> '
-                         'LENGTH=<mm> [SPEED=<mm/s>] [ACE=<n>]. Without ACE= '
-                         'the active unit.')
+                         'LENGTH=<mm> [SPEED=<mm/s>] [ACE=<n>] [WAIT=0|1]. '
+                         'Without ACE= the active unit. WAIT=0 sends the '
+                         'move and returns at once (a print goes on).')
 
     def cmd_ACE_FEED(self, gcmd):
         ace = self._manual_move_ace(gcmd)
@@ -11520,10 +11979,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             raise self._ace_error(gcmd, 'Wrong length', code=200)
         if speed <= 0:
             raise self._ace_error(gcmd, 'Wrong speed', code=200)
+        wait = self._manual_move_wait(gcmd)
 
-        self._feed(index, length, speed, ace=ace)
+        self._feed(index, length, speed, ace=ace, wait=wait)
+        if not wait:
+            gcmd.respond_info(
+                '[multiACE] MMU %d slot %d: feed %d mm sent (WAIT=0, not '
+                'waiting)' % (self._disp(self._active_device_index
+                                         if ace is None else ace),
+                              self._disp(index), length))
 
-    def _retract(self, index, length, speed, head=None, ace=None):
+    def _retract(self, index, length, speed, head=None, ace=None,
+                 wait=True):
         def callback(self, response):
             if response.get('code', 0) != 0:
                 self.log_error(self._t('msg.ace_error_generic', error=response.get('msg')))
@@ -11537,15 +12004,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if self.head_is_manual(manual_check):
             self._fa_trace(
                 'retract skipped: head %d is manual (TPU bypass)' % manual_check)
-            return
+            return False
 
         # Same rule as _feed: None = the active unit (every internal
         # caller), an explicit index addresses that unit - including its
         # V2 pre-stop and its FA cache below.
         idx = self._active_device_index if ace is None else int(ace)
+        def _stop_cb(self, response):
+            pass
         if self._cap(idx, 'needs_fa_prestop'):
-            def _stop_cb(self, response):
-                pass
             try:
                 self.send_request_to(idx, {
                     'method': 'stop_feed_assist',
@@ -11563,12 +12030,52 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 if idx == self._active_device_index:
                     self._feed_assist_index = -1
 
+        request = {"method": "unwind_filament",
+                   "params": {"index": index, "length": length,
+                              "speed": speed}}
+        if not wait:
+            self.send_request_to(idx, request=request, callback=callback)
+            return True
         self.wait_ace_ready_on(idx)
-        self.send_request_to(
-            idx,
-            request={"method": "unwind_filament", "params": {"index": index, "length": length, "speed": speed}},
-            callback=callback)
+        _note = self._retract_pending_mark(idx, index, length, head)
+        try:
+            return self._retract_send_wait(idx, index, length, speed,
+                                           request, _stop_cb)
+        finally:
+            self._retract_pending_clear(_note)
+
+    def _retract_send_wait(self, idx, index, length, speed, request,
+                           _stop_cb):
+        # A unit can refuse the unwind while the slot still winds down a
+        # previous motion (ACE 2: error_2 right after a rollback assist,
+        # ACE Pro: FORBIDDEN). A refused unwind pulls nothing, so it is
+        # sent again instead of waiting out a retract that never ran. No
+        # reply at all is taken as accepted, as before.
+        resp = None
+        for attempt in range(RETRACT_SEND_RETRIES + 1):
+            resp = self._tipform_send(idx, request, RETRACT_REPLY_TIMEOUT)
+            if resp is None or not self._tipform_rejected(resp):
+                break
+            logging.info(
+                '[multiACE] retract MMU %d slot %d %dmm refused (%s), '
+                'attempt %d/%d'
+                % (idx, index, length, resp.get('msg'), attempt + 1,
+                   RETRACT_SEND_RETRIES + 1))
+            if attempt >= RETRACT_SEND_RETRIES:
+                self.log_error(self._t('msg.ace_error_generic',
+                                       error=resp.get('msg')))
+                return True
+            if self._cap(idx, 'needs_fa_prestop'):
+                try:
+                    self.send_request_to(idx, {
+                        'method': 'stop_feed_assist',
+                        'params': {'index': index}}, _stop_cb)
+                except Exception:
+                    pass
+            self.reactor.pause(self.reactor.monotonic()
+                               + RETRACT_RETRY_PAUSE)
         self.dwell(delay=(length / speed) + 0.1)
+        return True
 
     def _first_loaded_slot_for_ace(self, ace_idx):
         # Lowest slot index of `ace_idx` that currently holds a spool (gate
@@ -11672,7 +12179,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
     cmd_ACE_RETRACT_help = ('Retracts filament back to MMU: ACE_RETRACT '
                             'INDEX=<slot> LENGTH=<mm> [SPEED=<mm/s>] '
-                            '[ACE=<n>]. Without ACE= the active unit.')
+                            '[ACE=<n>] [WAIT=0|1]. Without ACE= the active '
+                            'unit. WAIT=0 sends the move and returns at once '
+                            '(a print goes on).')
 
     def cmd_ACE_RETRACT(self, gcmd):
         ace = self._manual_move_ace(gcmd)
@@ -11688,8 +12197,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             raise self._ace_error(gcmd, 'Wrong length', code=200)
         if speed <= 0:
             raise self._ace_error(gcmd, 'Wrong speed', code=200)
+        wait = self._manual_move_wait(gcmd)
 
-        self._retract(index, length, speed, ace=ace)
+        sent = self._retract(index, length, speed, ace=ace, wait=wait)
+        if sent and not wait:
+            gcmd.respond_info(
+                '[multiACE] MMU %d slot %d: retract %d mm sent (WAIT=0, not '
+                'waiting)' % (self._disp(self._active_device_index
+                                         if ace is None else ace),
+                              self._disp(index), length))
 
     def _set_feeding_speed(self, index, speed):
         def callback(self, response):
@@ -14326,11 +14842,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if idx >= len(self._ace_devices):
             raise self._ace_error(gcmd, 'No MMU %d' % self._disp(idx),
                                   code=208)
-        if not (self._is_v2(idx) or self._is_v1(idx)):
+        if self._cap(idx, 'flash_engine') not in FW_FLASH_ENGINES:
             raise self._ace_error(
-                gcmd, 'MMU %d has no detected protocol yet - connect it '
-                      'once so the flasher is known before releasing the '
-                      'port' % self._disp(idx), code=200)
+                gcmd, 'MMU %d has no flash engine (no detected protocol, or '
+                      'a driver without one) - connect it once so the '
+                      'flasher is known before releasing the port'
+                      % self._disp(idx), code=200)
         if self._is_actively_printing():
             raise self._ace_error(
                 gcmd, 'Refusing to release MMU %d while a print is running'
@@ -14372,6 +14889,59 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                       'again' % (self._disp(idx), idx), code=208)
         self.log_always('[multiACE] MMU %d reconnected after firmware update'
                         % self._disp(idx))
+
+    cmd_ACE_FW_SET_DRIVER_help = (
+        '[multiACE] After a firmware flash, name the port for the driver '
+        'the new firmware needs: ACE_FW_SET_DRIVER ACE=n DRIVER=ace2k|stock. '
+        'ace2k adds the port to [ace] ace2k_ports and turns enable_ace2k on, '
+        'stock removes it. Takes effect with the next FIRMWARE_RESTART.')
+
+    def cmd_ACE_FW_SET_DRIVER(self, gcmd):
+        """The config half of a flash that changes the unit's driver (the
+        web runs it after the ace2k flasher): an ace2k unit has the USB id
+        of a stock ACE 2, so its port is named in ace2k_ports, never
+        guessed. Written to the ace.cfg line; the running instance keeps
+        its drivers until the restart that follows."""
+        idx = gcmd.get_int('ACE', minval=0, maxval=3)
+        driver = gcmd.get('DRIVER', '').strip().lower()
+        if driver not in ('ace2k', 'stock'):
+            raise self._ace_error(gcmd, 'DRIVER must be ace2k or stock',
+                                  code=200)
+        if idx >= len(self._ace_devices):
+            raise self._ace_error(gcmd, 'No MMU %d' % self._disp(idx),
+                                  code=208)
+        port = self._ace_devices[idx]
+        if not port or self._is_unit_sentinel(port):
+            raise self._ace_error(
+                gcmd, 'MMU %d has no port' % self._disp(idx), code=208)
+        if self._is_actively_printing():
+            raise self._ace_error(
+                gcmd, 'Refusing to change the driver of MMU %d while a print '
+                      'is running' % self._disp(idx), code=205)
+        real = os.path.realpath(port)
+        ports = [x for x in getattr(self, '_ace2k_ports_cfg', ())
+                 if os.path.realpath(x) != real]
+        if driver == 'ace2k':
+            ports.append(port)
+        errs = []
+        err = self._cfg_write_ace_option('ace2k_ports', ', '.join(ports))
+        if err is not None:
+            errs.append('ace2k_ports: %s' % err)
+        if driver == 'ace2k' and err is None:
+            err2 = self._cfg_write_ace_option('enable_ace2k', 'True')
+            if err2 is not None:
+                errs.append('enable_ace2k: %s' % err2)
+        if errs:
+            raise self._ace_error(
+                gcmd, 'MMU %d: config write failed (%s)'
+                      % (self._disp(idx), '; '.join(errs)), code=200)
+        self._ace2k_ports_cfg = ports
+        msg = ('[multiACE] MMU %d: port %s set to the %s driver - takes '
+               'effect after FIRMWARE_RESTART'
+               % (self._disp(idx), port,
+                  'ace2k' if driver == 'ace2k' else 'stock ACE 2'))
+        logging.info(msg)
+        self.log_always(msg)
 
     cmd_ACE_SET_TAG_TUNNEL_help = (
         '[multiACE] Obsolete: the Gen-1 (ACE Pro) tag tunnel is always on '
@@ -14498,6 +15068,80 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                         and gates[int(slot)] == GATE_AVAILABLE)
         except Exception:
             return False
+
+    # Feed channel states of a load or unload that is still running: the
+    # operation owns head_source until it ends.
+    _FEED_OP_STATES = frozenset((
+        'load_prepare', 'load_homing', 'load_picking', 'load_heating',
+        'load_feeding', 'load_extruding', 'load_flushing',
+        'unload_prepare', 'unload_homing', 'unload_picking',
+        'unload_heating', 'unload_heat_finish', 'unload_doing'))
+
+    def _feed_op_running(self, head):
+        """True when the feed channel of `head` is inside a load or unload."""
+        try:
+            module, channel = self.EXTRUDER_MAP[int(head)]
+            ff = self.printer.lookup_object('filament_feed %s' % module, None)
+            states = getattr(ff, 'channel_state', None)
+            if states is None or not (0 <= channel < len(states)):
+                return False
+            return str(states[channel]) in self._FEED_OP_STATES
+        except Exception:
+            return False
+
+    def _clear_sources_on_slot_empty(self, idx, slot):
+        """A slot's input gate went from filament to empty. A head whose
+        head_source points at that slot and whose toolhead sensor reads clear
+        holds nothing of it any more: the strand left the MMU, so a retract
+        on that slot can only pull a newly inserted spool back out. Clear the
+        mapping. A genuine spool runout keeps it: the gate empties while the
+        rest of the strand is still in the bowden and the head still reads
+        filament. A running load, unload, swap or background op owns the
+        mapping and decides itself."""
+        if (self._swap_in_progress
+                or not self._connected_per_ace.get(idx, False)
+                or self._reconnecting_per_ace.get(idx, False)):
+            return
+        bg = self.printer.lookup_object('ace_bg_swap', None)
+        cleared = []
+        for head in range(4):
+            src = self._head_source.get(head)
+            if not src or not self.head_uses_ace(head):
+                continue
+            if (src.get('ace_index') != idx
+                    or int(src.get('slot', -1)) != int(slot)):
+                continue
+            if (head in getattr(self, '_loading_heads', ())
+                    or self._feed_op_running(head)):
+                continue
+            try:
+                if bg is not None and bg.is_busy(head):
+                    continue
+            except Exception:
+                pass
+            sensor = self.printer.lookup_object(
+                'filament_motion_sensor e%d_filament' % head, None)
+            if sensor is None:
+                continue
+            try:
+                if self._head_filament_present(sensor, head):
+                    continue
+            except Exception:
+                continue
+            self._head_source[head] = None
+            cleared.append(head)
+        if not cleared:
+            return
+        try:
+            self._save_head_source()
+        except Exception:
+            pass
+        for head in cleared:
+            msg = self._t('msg.head_source_cleared_slot_empty',
+                          head=self._disp(head), ace=self._disp(idx),
+                          slot=self._disp(slot))
+            self.log_always(msg)
+            logging.info(msg)
 
     def _empty_slot_releases_spool(self, idx, slot):
         """True when a slot that reads EMPTY drops its spool binding: the
@@ -16198,6 +16842,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         ace_idx = gcmd.get_int('ACE', self._active_device_index,
                                minval=0, maxval=3)
         slot = gcmd.get_int('SLOT', minval=0, maxval=3)
+        if self._cap(ace_idx, 'host_tag_session'):
+            self._cmd_ace_tag_read_host(gcmd, ace_idx, slot)
+            return
         if not self._cap(ace_idx, 'v2_command_set'):
             # Gen-1 (ACE Pro): the community firmware's RC522 tunnel is the
             # only reader route (docs/GEN1_TAG_TUNNEL.md). Read-only, no
@@ -16291,6 +16938,308 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 self._tag_op_result = {
                     'ok': bool(_out['ok']), 'kind': 'read', 'seq': _seq,
                     'msg': (_out['msg'] or 'no tag read')[:200]}
+
+        self.reactor.register_async_callback(_run)
+        gcmd.respond_info('[multiACE] tag read started (MMU %d slot %d)'
+                          % (self._disp(ace_idx), self._disp(slot)))
+
+    # Tag reading on a unit whose reader the host drives (ace2k,
+    # host_tag_session). An insert runs the unit's own load: pull to the
+    # parking distance (300 mm, the link's LOAD_PARK_UM), search past it up
+    # to the reach, back to the parking distance. The Read button runs the
+    # read with motion: forward up to the reach and back to where the
+    # filament sat. A refusal for another busy lane is retried, the result
+    # arrives in the status.
+    HOST_TAG_SEARCH_MM = 700
+    HOST_TAG_PARK_MM = 300
+    # A queued insert read whose lane has since moved this far forward
+    # (net, the unit's count since the insert) runs as the read with
+    # motion: the tip no longer sits at the insert sensor, so the read can
+    # return to it, and the load would push it a park length deeper.
+    HOST_TAG_MOVED_MM = 20.0
+    HOST_TAG_READ_TRIES = 10
+    HOST_TAG_READ_RETRY_S = 3.0
+    HOST_TAG_READ_WAIT_S = 120.0
+    # Two lanes share one antenna (pairs 0-1, 2-3), and the firmware gives
+    # a tag to the lane that moves. A neighbour spool hung up during the
+    # read can thus be read as this lane's. A read waits this long before
+    # it counts; a gate change on the neighbour from the search start up to
+    # then drops it.
+    HOST_TAG_PAIR_SETTLE_S = 5.0
+    # Look-back for a read whose search start the host did not see (a
+    # session the unit opened on its own during a move).
+    HOST_TAG_PAIR_PRE_S = 15.0
+
+    def _host_tag_ingest(self, idx, result):
+        """A fresh slot 'tag_read' of a host_tag_session unit (its counter
+        moved) goes through the host-read ingest, like an ACE2-Open read:
+        identity, display, spool binding (card UID first), persistence.
+        A read without spool data binds by the card UID alone."""
+        if not self._cap(idx, 'host_tag_session'):
+            return
+        seen = self._host_tag_seen.setdefault(idx, {})
+        for i, slot in enumerate(result.get('slots') or []):
+            rec = slot.get('tag_read') if isinstance(slot, dict) else None
+            if not isinstance(rec, dict):
+                continue
+            n = rec.get('n')
+            if seen.get(i) == n:
+                continue
+            seen[i] = n
+            if self._is_empty_status(slot.get('status', '')):
+                continue
+            try:
+                self._host_tag_hold(idx, i, rec)
+            except Exception:
+                logging.exception('[multiACE] [tag] ingest MMU %d slot %d'
+                                  % (idx, i))
+
+    def _host_tag_hold(self, idx, slot, rec):
+        """Park a fresh read for HOST_TAG_PAIR_SETTLE_S, then judge it
+        against the slot sharing the antenna (_host_tag_settle)."""
+        now = self.reactor.monotonic()
+        key = (idx, slot)
+        start, manual = self._host_tag_search.pop(key, (None, False))
+        if start is None or start > now \
+                or now - start > self.HOST_TAG_READ_WAIT_S:
+            start, manual = now - self.HOST_TAG_PAIR_PRE_S, False
+        self._host_tag_seq += 1
+        seq = self._host_tag_seq
+        self._host_tag_pending[key] = {'rec': rec, 'start': start,
+                                       'manual': manual, 'seq': seq}
+
+        def _settle(eventtime, key=key, seq=seq):
+            try:
+                self._host_tag_settle(key, seq)
+            except Exception:
+                logging.exception('[multiACE] [tag] settle MMU %d slot %d'
+                                  % key)
+        self.reactor.register_callback(_settle,
+                                       now + self.HOST_TAG_PAIR_SETTLE_S)
+
+    def _host_tag_pair_doubt(self, idx, slot, ent):
+        """Why a parked read may be the partner slot's tag: (i18n key,
+        partner) or None. The partner's gate changed during the read; the
+        UID is the one the partner already holds; or (automatic reads only)
+        the partner's own last read was not used either."""
+        p = slot ^ 1
+        flip = self._gate_flip_ts.get((idx, p))
+        if flip is not None and flip >= ent['start']:
+            return 'msg.host_tag_pair_changed', p
+        uid = str(ent['rec'].get('uid') or '').strip().upper()
+        if uid and uid == (getattr(self, '_rc_last_uid', None)
+                           or {}).get((idx, p)):
+            return 'msg.host_tag_pair_same_uid', p
+        if not ent['manual'] and (idx, p) in self._host_tag_contested \
+                and self._gate_status_per_ace.get(
+                    idx, [GATE_UNKNOWN] * 4)[p] == GATE_AVAILABLE:
+            return 'msg.host_tag_pair_open', p
+        return None
+
+    def _host_tag_settle(self, key, seq):
+        ent = self._host_tag_pending.get(key)
+        if not ent or ent['seq'] != seq:
+            return
+        del self._host_tag_pending[key]
+        idx, slot = key
+        if self._gate_status_per_ace.get(
+                idx, [GATE_UNKNOWN] * 4)[slot] == GATE_EMPTY:
+            self._host_tag_verdict[key] = (seq, False, '')
+            return
+        doubt = self._host_tag_pair_doubt(idx, slot, ent)
+        if doubt is None:
+            self._host_tag_contested.discard(key)
+            self._host_tag_take(idx, slot, ent['rec'])
+            self._host_tag_verdict[key] = (seq, True, '')
+            return
+        why, p = doubt
+        self._host_tag_contested.add(key)
+        uid = str(ent['rec'].get('uid') or '').strip().upper()
+        msg = self._t(why, ace=self._disp(idx), slot=self._disp(slot),
+                      other=self._disp(p), uid=uid or '?')
+        logging.info('[multiACE] [tag] %s (read %s %s, UID %s)'
+                     % (msg, ent['rec'].get('fmt') or '?',
+                        ent['rec'].get('type') or '-', uid or '?'))
+        if not self._is_actively_printing():
+            self.log_warn(msg)
+        self._host_tag_verdict[key] = (seq, False, msg)
+
+    def _host_tag_take(self, idx, slot, rec):
+        uid = str(rec.get('uid') or '').strip().upper()
+        fmt = str(rec.get('fmt') or '')
+        key = (idx, slot)
+        reg = getattr(self, '_rc_last_uid', None)
+        if reg is None:
+            reg = self._rc_last_uid = {}
+        regf = getattr(self, '_rc_last_fmt', None)
+        if regf is None:
+            regf = self._rc_last_fmt = {}
+        if uid:
+            reg[key] = uid
+            regf[key] = fmt
+        if rec.get('type'):
+            color = list(rec.get('color') or [0, 0, 0])
+            res = {'type': rec['type'], 'color': color,
+                   'brand': rec.get('brand', '') or '',
+                   # An Anycubic tag carries its own code; every other
+                   # format binds by the card UID (as the ACE2-Open read).
+                   'sku': (rec.get('sku') or '') if fmt == 'anycubic'
+                   else uid}
+            self._v2_store_filament_read(idx, slot, res, host=True, uid=uid,
+                                         fmt=fmt)
+            msg = self._t('msg.host_tag_read', ace=self._disp(idx),
+                          slot=self._disp(slot), fmt=fmt or '?',
+                          material=rec['type'],
+                          color='%02X%02X%02X' % tuple(
+                              (list(color) + [0, 0, 0])[:3]),
+                          brand=res['brand'] or '-', uid=uid or '?')
+        else:
+            self._v2_filament_info_per_ace.get(idx, {}).pop(slot, None)
+            if uid:
+                self._spool_bind_by_tag(idx, slot, uid)
+            self._persist_tag_reads()
+            msg = self._t('msg.host_tag_uid_only', ace=self._disp(idx),
+                          slot=self._disp(slot), fmt=fmt or '?',
+                          uid=uid or '?')
+        logging.info('[multiACE] [tag] %s' % msg)
+        if not self._is_actively_printing():
+            self.log_always(msg)
+
+    def _host_lane_moved_mm(self, idx, slot):
+        """Net filament the lane moved since its insert, as the unit's
+        link counts it (0 when the link does not report it)."""
+        try:
+            s = ((self._info_per_ace.get(idx) or {}).get('slots')
+                 or [])[slot] or {}
+            return float(s.get('moved_mm', 0.0) or 0.0)
+        except (IndexError, TypeError, ValueError):
+            return 0.0
+
+    def _host_tag_read(self, idx, slot, load=False, manual=False):
+        """Read the tag of (idx, slot) and wait for the end (greenlet:
+        pauses the reactor). load=True (an insert): the unit's own load -
+        pull to the parking distance, search past it, back to the parking
+        distance. load=False (the Read button, the filament already in):
+        the read with motion, back to where the filament sits. Returns
+        (ok, message) for the tag-op bar."""
+        def _say(key, **kw):
+            msg = self._t(key, ace=self._disp(idx), slot=self._disp(slot),
+                          **kw)
+            self.log_always(msg)
+            logging.info('[multiACE] [tag] %s' % msg)
+            return msg
+
+        def _slot():
+            try:
+                return (((self._info_per_ace.get(idx) or {}).get('slots')
+                         or [])[slot]) or {}
+            except (IndexError, TypeError):
+                return {}
+
+        n0 = int(_slot().get('tag_search_n', 0) or 0)
+        key = (idx, slot)
+        v0 = (self._host_tag_verdict.get(key) or (0,))[0]
+        self._host_tag_search[key] = (self.reactor.monotonic(),
+                                      bool(manual))
+        if load:
+            _say('msg.host_tag_load_start', park=self.HOST_TAG_PARK_MM,
+                 mm=self.HOST_TAG_SEARCH_MM)
+        else:
+            _say('msg.host_tag_search_start', mm=self.HOST_TAG_SEARCH_MM)
+        method = 'tag_read_load' if load else 'tag_read_motion'
+        for attempt in range(self.HOST_TAG_READ_TRIES):
+            resp = self._tipform_send(
+                idx, {'method': method,
+                      'params': {'index': slot}}, timeout=5.0)
+            code = (resp or {}).get('code')
+            if code == 0:
+                break
+            if code == 1 and attempt + 1 < self.HOST_TAG_READ_TRIES:
+                # Another lane of the unit moves: try again shortly.
+                self.reactor.pause(self.reactor.monotonic()
+                                   + self.HOST_TAG_READ_RETRY_S)
+                continue
+            why = ('MMU busy' if code == 1
+                   else (resp or {}).get('msg') or 'no answer')
+            return False, _say('msg.host_tag_search_refused', why=why)
+        deadline = self.reactor.monotonic() + self.HOST_TAG_READ_WAIT_S
+        while self.reactor.monotonic() < deadline:
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+            s = _slot()
+            if int(s.get('tag_search_n', 0) or 0) <= n0:
+                continue
+            end = s.get('tag_search_end')
+            if end in ('read', 'uid'):
+                ok_text = 'tag read' if end == 'read' else 'tag UID read'
+                if not manual:
+                    # An insert read: nobody waits for a bar, the next
+                    # queued read may start.
+                    return True, ok_text
+                return self._host_tag_await_verdict(key, v0, ok_text)
+            self._host_tag_search.pop(key, None)
+            if end == 'no_tag':
+                return False, _say('msg.host_tag_search_none')
+            return False, _say('msg.host_tag_search_unread', why=end)
+        self._host_tag_search.pop(key, None)
+        return False, _say('msg.host_tag_search_unread', why='timeout')
+
+    def _host_tag_await_verdict(self, key, v0, ok_text):
+        """After the unit reported the read: wait for the antenna pair
+        check, so the tag-op bar shows what the slot shows."""
+        deadline = (self.reactor.monotonic()
+                    + self.HOST_TAG_PAIR_SETTLE_S + 5.0)
+        while self.reactor.monotonic() < deadline:
+            v = self._host_tag_verdict.get(key)
+            if v and v[0] > v0:
+                return (True, ok_text) if v[1] else \
+                    (False, v[2] or 'tag read not used')
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+        return True, ok_text
+
+    def _cmd_ace_tag_read_host(self, gcmd, ace_idx, slot):
+        """ACE_TAG_READ on a unit whose reader the host drives: the read
+        with motion, idle only (the lane moves)."""
+        ps = self.printer.lookup_object('print_stats', None)
+        if ps is not None and (getattr(ps, 'state', '') or '').lower() \
+                in ('printing', 'paused'):
+            raise self._ace_error(gcmd, 'Tag reading requires an idle '
+                                        'printer', code=200)
+        if not self._connected_per_ace.get(ace_idx):
+            raise self._ace_error(gcmd, 'MMU %d is not connected'
+                                  % self._disp(ace_idx), code=208)
+        if self._gate_status_per_ace.get(
+                ace_idx, [GATE_UNKNOWN] * 4)[slot] == GATE_EMPTY:
+            raise self._ace_error(gcmd, 'MMU %d slot %d is empty - nothing '
+                                  'to read' % (self._disp(ace_idx),
+                                               self._disp(slot)), code=200)
+        if self._get_heads_for_ace_slot(ace_idx, slot):
+            raise self._ace_error(gcmd, 'MMU %d slot %d feeds a head - '
+                                  'unload it first (the read moves the '
+                                  'lane)' % (self._disp(ace_idx),
+                                             self._disp(slot)), code=200)
+        if getattr(self, '_tag_read_busy', False):
+            self.log_warn(self._t('msg.tag_read_busy'))
+            return
+        setattr(self, '_tag_read_busy', True)
+        self._tag_op_kind = 'read'
+        self._tag_op_seq = int(getattr(self, '_tag_op_seq', 0)) + 1
+        self._tag_op_result = None
+        _seq = self._tag_op_seq
+
+        def _run(eventtime):
+            ok, msg = False, ''
+            try:
+                self._v2_filament_info_per_ace.get(ace_idx, {}).pop(slot,
+                                                                     None)
+                ok, msg = self._host_tag_read(ace_idx, slot, manual=True)
+            except Exception as e:
+                msg = 'read failed: %s' % e
+                logging.exception('[multiACE] [tag] host tag read')
+            finally:
+                setattr(self, '_tag_read_busy', False)
+                self._tag_op_result = {
+                    'ok': bool(ok), 'kind': 'read', 'seq': _seq,
+                    'msg': (msg or 'no tag read')[:200]}
 
         self.reactor.register_async_callback(_run)
         gcmd.respond_info('[multiACE] tag read started (MMU %d slot %d)'
@@ -16857,7 +17806,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._refresh_ace_devices('switch')
 
         if not self._ace_devices:
-            self.log_always(self._t('msg.no_ace_devices_detected'))
+            self.log_always(self._no_mmu_line())
             return
 
         if not self._is_ace_present(target):
@@ -17195,6 +18144,113 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # entry. The round-trip also normalises tuples to lists.
         save_data = json.loads(json.dumps(save_data))
         self.save_variable(self.VARS_ACE_HEAD_SOURCE, save_data, write=True)
+
+    # --- Interrupted bulk retract ------------------------------------
+    def _retract_stops_with_host(self, idx):
+        try:
+            return bool(getattr(self._protocols.get(idx),
+                                'MOTION_STOPS_WITH_HOST', False))
+        except Exception:
+            return False
+
+    def _retract_pending_mark(self, idx, slot, length, head=None):
+        """Note a bulk retract before it starts. Returns the key to clear
+        it with, None when nothing was noted."""
+        try:
+            if (length < RETRACT_PENDING_MIN_MM
+                    or not self._retract_stops_with_host(idx)):
+                return None
+            if head is None:
+                head = (self._head_for_ace(idx)
+                        if getattr(self, '_ace_mode', '') == 'head'
+                        else int(slot))
+            key = '%d_%d' % (int(idx), int(slot))
+            self._retract_pending[key] = {
+                'ace': int(idx), 'slot': int(slot), 'len': int(length),
+                'head': None if head is None else int(head)}
+            self._save_retract_pending()
+            return key
+        except Exception as e:
+            logging.info('[multiACE] retract note failed: %s' % e)
+            return None
+
+    def _retract_pending_clear(self, key):
+        if key and self._retract_pending.pop(key, None) is not None:
+            self._save_retract_pending()
+
+    def _save_retract_pending(self):
+        try:
+            self.save_variable(self.VARS_ACE_RETRACT_PENDING,
+                               json.loads(json.dumps(self._retract_pending)),
+                               write=True)
+        except Exception as e:
+            logging.info('[multiACE] retract note save failed: %s' % e)
+
+    def _restore_retract_pending(self):
+        try:
+            saved = self.save_variables.allVariables.get(
+                self.VARS_ACE_RETRACT_PENDING, None)
+        except Exception:
+            saved = None
+        if not isinstance(saved, dict):
+            return
+        for key, e in saved.items():
+            try:
+                self._retract_pending[str(key)] = {
+                    'ace': int(e['ace']), 'slot': int(e['slot']),
+                    'len': int(e['len']),
+                    'head': None if e.get('head') is None else int(e['head'])}
+            except Exception:
+                continue
+            logging.info('[multiACE] retract of MMU %d / Slot %d (%d mm) was '
+                         'cut off by a restart - finished before head %s '
+                         'loads' % (e['ace'], e['slot'], e['len'],
+                                    e.get('head')))
+
+    def _finish_interrupted_retract(self, gcmd, head):
+        """Before a head loads: pull back the rest of a strand whose bulk
+        retract a restart cut off, so the new strand does not run into it.
+        The redo is capped so that even a retract that had almost finished
+        stays within the slot's full unload length."""
+        pend = getattr(self, '_retract_pending', None)
+        if not pend:
+            return
+        try:
+            t_ace = gcmd.get_int('ACE', None)
+            t_slot = gcmd.get_int('SLOT', None)
+        except Exception:
+            t_ace = t_slot = None
+        for key, e in list(pend.items()):
+            if e.get('head') != head:
+                continue
+            idx, slot, length = e['ace'], e['slot'], e['len']
+            if t_ace == idx and t_slot == slot:
+                # The same strand is loaded again: it only moves forward.
+                self._retract_pending_clear(key)
+                continue
+            if self._head_sensor_present(head) is True:
+                continue        # still in the head: the unload owns it
+            if not self._connected_per_ace.get(idx):
+                self.log_warn(self._t(
+                    'msg.retract_interrupted_manual', ace=self._disp(idx),
+                    slot=self._disp(slot), head=self._disp(head)))
+                continue
+            redo = min(length, self.get_retract_length(idx, slot)
+                       - length - RETRACT_PENDING_PRE_MM)
+            self._retract_pending_clear(key)
+            if redo < RETRACT_PENDING_MIN_REDO_MM:
+                self.log_warn(self._t(
+                    'msg.retract_interrupted_manual', ace=self._disp(idx),
+                    slot=self._disp(slot), head=self._disp(head)))
+                continue
+            self.log_warn(self._t(
+                'msg.retract_interrupted_finish', ace=self._disp(idx),
+                slot=self._disp(slot), head=self._disp(head), mm=int(redo)))
+            logging.info('[multiACE] finishing the interrupted retract: MMU '
+                         '%d slot %d %d mm (noted %d mm)'
+                         % (idx, slot, redo, length))
+            self._retract(slot, int(redo), self.get_retract_speed(idx),
+                          head=head, ace=idx)
 
     def _save_bg_staged(self):
         """Persist the filament STAGED at a toolhead sensor (background
@@ -17691,7 +18747,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         'SCALE=<25-200> (percent), FLOOR=<mm> and CAP=<mm> (0 = off) '
         'rescale and bound every resolved flush length; they write the '
         'swap_purge_scale / swap_purge_floor / swap_purge_cap config '
-        'lines (write-through). '
+        'lines (write-through). DEFAULTS=1 puts the fixed length, floor, '
+        'cap and the dock options prime_scale / prime_extra back to '
+        'their defaults and the scale to 100. '
         'MATRIX=0|1 ignores/honors the per-pair LENGTH stamps the '
         'preflight writes from the slicer flush matrix - MATRIX=0 = '
         'fixed swap_purge_length for every flush. Writes the purge_matrix '
@@ -17729,7 +18787,43 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                             'swap_purge_cap %d - the cap wins'
                             % (floor, cap))
 
+    def _purge_defaults(self):
+        """ACE_SET_PURGE DEFAULTS=1: put the purge options the web no longer
+        shows back to their defaults (live and in the config), so the purge
+        control decides again. The control itself goes to 100 %."""
+        todo = []
+        for attr in ('swap_purge_length', 'swap_purge_floor',
+                     'swap_purge_cap'):
+            if getattr(self, attr, 0):
+                todo.append((self, attr, 0, 'ace', '0'))
+        if getattr(self, 'swap_purge_scale', 100) != 100:
+            todo.append((self, 'swap_purge_scale', 100, 'ace', '100'))
+        bg = self.printer.lookup_object('ace_bg_swap', None)
+        if bg is not None:
+            if abs(float(getattr(bg, 'prime_scale', 1.0)) - 1.0) > 1e-6:
+                todo.append((bg, 'prime_scale', 1.0, 'ace_bg_swap', '1.0'))
+            _extra = PURGE_DOCK_EXTRA_DEFAULT
+            if abs(float(getattr(bg, 'prime_extra', _extra)) - _extra) > 1e-6:
+                todo.append((bg, 'prime_extra', _extra, 'ace_bg_swap',
+                             '%g' % _extra))
+        failed = []
+        for obj, attr, val, section, text in todo:
+            setattr(obj, attr, val)
+            err = self._cfg_write_ace_option(attr, text, section=section)
+            if err is not None:
+                failed.append('%s (%s)' % (attr, err))
+        msg = ('[multiACE] purge options back to default: %s'
+               % (', '.join(t[1] for t in todo) or 'nothing was changed'))
+        if failed:
+            msg += (' - WARNING: config write failed for %s, applied for '
+                    'this session only' % ', '.join(failed))
+        self.log_always(msg)
+        logging.info(msg)
+
     def cmd_ACE_SET_PURGE(self, gcmd):
+        if gcmd.get_int('DEFAULTS', 0):
+            self._purge_defaults()
+            return
         policy = [a for a in ('SCALE', 'FLOOR', 'CAP')
                   if gcmd.get(a, None) is not None]
         if policy:
@@ -17956,8 +19050,104 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'head': head_index, 'target_ace': target_ace})
         return True
 
+    def _staged_head_watch(self):
+        """A head whose filament is only STAGED at the toolhead sensor (a bg
+        transport: fed to the sensor, not gripped, no head_source) must not
+        print: the sensor reads filament, so no runout ever fires and the
+        head prints air. The arrival swap line normally follows the pick at
+        once and loads it. When none follows (a manual ACE_BG_SWAP on a head
+        the file treats as loaded), pause once the head really extrudes."""
+        try:
+            if not self._is_actively_printing():
+                return
+            extruder = self.toolhead.get_extruder()
+            head = getattr(extruder, 'extruder_index',
+                           getattr(extruder, 'extruder_num', None))
+            if head is None or head not in self._bg_staged \
+                    or self._head_source.get(head) \
+                    or head in self._staged_pause_sent:
+                return
+        except Exception:
+            return
+        t0 = self.reactor.monotonic()
+
+        def _check(eventtime):
+            try:
+                staged = self._bg_staged.get(head)
+                ext = self.toolhead.get_extruder()
+                active = getattr(ext, 'extruder_index',
+                                 getattr(ext, 'extruder_num', None))
+                if (staged is None or self._head_source.get(head)
+                        or active != head
+                        or not self._is_actively_printing()
+                        or head in self._staged_pause_sent
+                        or eventtime - t0 > STAGED_PRINT_WATCH_S):
+                    return self.reactor.NEVER
+                bg = self.printer.lookup_object('ace_bg_swap', None)
+                busy = False
+                try:
+                    busy = bool(bg is not None and bg.is_busy(head))
+                except Exception:
+                    busy = False
+                if (self._swap_in_progress or busy
+                        or head in self._loading_heads
+                        or eventtime - t0 < STAGED_PRINT_GRACE_S):
+                    return eventtime + 1.0
+                vel = 0.0
+                mr = self.printer.lookup_object('motion_report', None)
+                if mr is not None:
+                    vel = float(mr.get_status(eventtime).get(
+                        'live_extruder_velocity', 0.0) or 0.0)
+                if vel < STAGED_PRINT_MIN_VEL:
+                    return eventtime + 1.0
+                self._staged_pause_sent.add(head)
+                self._staged_head_pause(head, staged)
+            except Exception:
+                logging.exception('[multiACE] staged head watch failed')
+            return self.reactor.NEVER
+        try:
+            self.reactor.register_timer(_check, t0 + 1.0)
+        except Exception:
+            pass
+
+    def _staged_head_pause(self, head, staged):
+        """Resumable pause for a head that prints on staged filament."""
+        detail = self._t('msg.staged_head_print_pause',
+                         head=self._disp(head), ace=self._disp(staged[0]),
+                         slot=self._disp(staged[1]))
+        logging.warning('[multiACE] head %d prints on filament that is only '
+                        'staged (MMU %d slot %d, not loaded) - pausing'
+                        % (head, staged[0], staged[1]))
+
+        def _do_pause(eventtime):
+            try:
+                self.gcode.run_script(
+                    'RESPOND TYPE=error MSG="%s"' % detail.replace('"', "'"))
+            except Exception:
+                pass
+            try:
+                em = self.printer.lookup_object('exception_manager', None)
+                if em is not None:
+                    em.raise_exception_async(
+                        id=em.list.MODULE_ID_FEEDING, index=head, code=210,
+                        message=detail, oneshot=1, level=2)
+            except Exception:
+                pass
+            try:
+                self.gcode.run_script('PAUSE')
+            except Exception as pe:
+                logging.info('[multiACE] staged-head PAUSE failed: %s'
+                             % str(pe))
+            return self.reactor.NEVER
+        try:
+            self.reactor.register_timer(_do_pause, self.reactor.NOW)
+        except Exception as re:
+            logging.info('[multiACE] staged-head PAUSE schedule failed: %s'
+                         % str(re))
+
     def _on_extruder_change(self):
         self._job_note_active()
+        self._staged_head_watch()
         self._fa_trace('_on_extruder_change fired; gate=%s context=%s active_ace=%d'
                        % (self._auto_feed_enabled, self._fa_context, self._active_device_index))
         if not any(self._head_source[h] for h in range(4)):
@@ -18353,6 +19543,38 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self.reactor.pause(self.reactor.monotonic() + 1.0)
         return False
 
+    def _tipform_builtin_table(self, head, soft):
+        """The stock pull as a move table, for a unit that cannot
+        freewheel and has no rollback assist of its own: the stock macro
+        would pull against a standing MMU. Run as a table, every pull gets
+        its MMU take-up (the background engine's sequence). None for every
+        other unit and for a head without a known slot."""
+        try:
+            src = self._head_source.get(head) or {}
+            idx = src.get('ace_index')
+            slot = src.get('slot')
+            if not isinstance(idx, int) or not isinstance(slot, int):
+                return None
+            if (getattr(self, '_unload_no_mapping', None) or {}).get(head):
+                return None
+            if not self.head_uses_ace(head):
+                return None
+            if (not self._cap(idx, 'no_freewheel')
+                    or self._cap(idx, 'has_rollback_assist')):
+                return None
+            from . import ace_bg_swap as _bg
+            seq = [('move', float(d), float(f)) for d, f in
+                   (_bg.COLD_PULL_SOFT if soft else _bg.COLD_PULL_NORMAL)]
+            bg = self.printer.lookup_object('ace_bg_swap', None)
+            seq = _bg.push_shortened(seq, getattr(bg, 'pull_push', 0.))
+        except Exception:
+            logging.exception('[multiACE] built-in tip-form table failed')
+            return None
+        logging.info('[multiACE] head %d: stock pull as a table with MMU '
+                     'take-up (MMU %d has no rollback assist)'
+                     % (self._raw(head), idx))
+        return seq
+
     def _tipform_pre_prime(self, head, prime, temp, soft):
         # Hot pre-purge before the tip forms (inline path): heat to
         # primetemp, push prime mm into the discard, then cool to the
@@ -18488,6 +19710,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         device = self._tipform_device_for(head)
         table = self.tipform_table_for(material, vendor=vendor,
                                        soft=bool(soft), device=device)
+        if table is None:
+            table = self._tipform_builtin_table(head, soft)
         if table is None:
             # The stock fallback must never be SILENT in custom mode, or a
             # failed material lookup passes a stock pull off as a custom one.
@@ -18709,6 +19933,27 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 gcmd, self._t('msg.manual_load_running', head=self._disp(head)),
                 code=211)
 
+    def _manual_op_in_running_print(self, gcmd, head):
+        """True when a load/unload typed in by hand (web, console, display
+        macro) would run inside a print that is not paused. Such a command
+        moves the toolhead and nobody restores the print position after it;
+        the print then continues from the load position. Lines of the print
+        file itself and everything a swap runs are not manual. Says why on
+        the console; the caller returns without doing anything."""
+        try:
+            if not self._is_actively_printing() or self._swap_in_progress:
+                return False
+            sd = self.printer.lookup_object('virtual_sdcard', None)
+            if sd is not None and sd.is_cmd_from_sd():
+                return False
+        except Exception:
+            return False
+        msg = self._t('msg.manual_op_print_running', head=self._disp(head))
+        logging.info('[multiACE] %s ignored: print is running, not paused'
+                     % gcmd.get_command())
+        self.log_warn(msg)
+        return True
+
     def cmd_ACE_LOAD_HEAD(self, gcmd):
         # Wrapper: mark the head as loading for the whole command, so the
         # print-start cleanup (fired by a RESUME mid-load) leaves it alone.
@@ -18716,13 +19961,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             head = int(gcmd.get('HEAD', '-1'))
         except (TypeError, ValueError):
             head = -1
+        if self._manual_op_in_running_print(gcmd, head):
+            return
+        self._finish_interrupted_retract(gcmd, head)
         self._loading_heads.add(head)
         # A load gives the head a mapping; an unload verdict held for it
         # (no slot to retract) is obsolete from here on.
         if hasattr(self, '_unload_no_mapping'):
             self._unload_no_mapping.pop(head, None)
         try:
-            return self._cmd_ACE_LOAD_HEAD_body(gcmd)
+            with self._object_exclusion_suspended('ACE_LOAD_HEAD'):
+                return self._cmd_ACE_LOAD_HEAD_body(gcmd)
         finally:
             self._loading_heads.discard(head)
 
@@ -19117,8 +20366,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         'Usage: ACE_UNLOAD_HEAD HEAD=0 [RETRACT_LENGTH=<mm>] '
         '[KEEP_HEAT=<temp>] [CALIBRATION_PREPARE=1 ACE=0 SLOT=0]')
     def cmd_ACE_UNLOAD_HEAD(self, gcmd):
+        with self._object_exclusion_suspended('ACE_UNLOAD_HEAD'):
+            return self._cmd_ACE_UNLOAD_HEAD_body(gcmd)
+
+    def _cmd_ACE_UNLOAD_HEAD_body(self, gcmd):
 
         head = gcmd.get_int('HEAD')
+        if self._manual_op_in_running_print(gcmd, head):
+            return
 
         retract_override = gcmd.get_int('RETRACT_LENGTH', 0)
         keep_heat = gcmd.get_int('KEEP_HEAT', 0)
@@ -19941,6 +21196,78 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return self._orig_ext_switch(gcmd)
         self._run_virtual_tool(gcmd, index)
 
+    @contextlib.contextmanager
+    def _object_exclusion_suspended(self, what=''):
+        """While one of our operations runs inside the block of an excluded
+        object, stock exclude_object drops every gcode move, ours included
+        (tip form, load extrusion, wipe, park). The object counts as ended
+        for the duration and as running again afterwards, the same thing a
+        slicer writes around a toolchange between two objects."""
+        exo = None
+        held = None
+        try:
+            exo = self.printer.lookup_object('exclude_object', None)
+            cur = getattr(exo, 'current_object', None)
+            if cur is not None and cur in (
+                    getattr(exo, 'excluded_objects', None) or []):
+                held = cur
+                exo.current_object = None
+                logging.info('[multiACE] excluded object %s suspended for %s'
+                             % (cur, what or 'a multiACE operation'))
+        except Exception:
+            logging.exception('[multiACE] exclude_object suspend failed')
+            held = None
+        try:
+            yield
+        finally:
+            if held is not None and getattr(exo, 'current_object',
+                                            None) is None:
+                exo.current_object = held
+
+    def _pause_guard_lift(self, gcmd):
+        """True when stock PAUSE would refuse this pause for the exclude_object
+        flag and the pause must go through anyway: the flag is a leftover of
+        an excluded object that already ended, or the pause is an error or
+        runout pause (dropping it ends the print)."""
+        if getattr(self, '_ace_mode', 'normal') not in ('multi', 'head'):
+            return False
+        vsd = self.printer.lookup_object('virtual_sdcard', None)
+        exo = self.printer.lookup_object('exclude_object', None)
+        if vsd is None or exo is None:
+            return False
+        if not getattr(vsd, 'cmd_from_sd', False):
+            return False
+        if not getattr(exo, 'in_excluded_region', False):
+            return False
+        inside = getattr(exo, 'current_object', None) in (
+            getattr(exo, 'excluded_objects', None) or [])
+        if not inside:
+            return True
+        return (gcmd.get_int('ON_ERROR', 0) == 1
+                or gcmd.get_int('IS_RUNOUT', 0) == 1)
+
+    def _wrap_pause(self, gcmd):
+        if self._orig_pause is None:
+            raise gcmd.error('PAUSE unavailable')
+        lift = False
+        try:
+            lift = self._pause_guard_lift(gcmd)
+        except Exception:
+            logging.exception('[multiACE] PAUSE guard check failed')
+        if getattr(self, '_ace_mode', 'normal') not in ('multi', 'head'):
+            return self._orig_pause(gcmd)
+        with self._object_exclusion_suspended('PAUSE'):
+            if not lift:
+                return self._orig_pause(gcmd)
+            vsd = self.printer.lookup_object('virtual_sdcard')
+            logging.info('[multiACE] PAUSE after an excluded object: stock '
+                         'would drop it, passing it through')
+            vsd.cmd_from_sd = False
+            try:
+                return self._orig_pause(gcmd)
+            finally:
+                vsd.cmd_from_sd = True
+
     def _flow_calibrate_head(self, gcmd):
         """The physical head stock's SM_PRINT_FLOW_CALIBRATE would pick
         (EXTRUDER=, INDEX= via extruder_map_table, else the active one;
@@ -20102,11 +21429,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             except Exception:
                 state = ''
             pinned = state == 'printing'
-        if not pinned:
-            if orig is None:
-                raise gcmd.error('T%d unavailable' % tool)
-            return orig(gcmd)
-        self._run_virtual_tool(gcmd, tool)
+        with self._object_exclusion_suspended('T%d' % tool):
+            if not pinned:
+                if orig is None:
+                    raise gcmd.error('T%d unavailable' % tool)
+                return orig(gcmd)
+            self._run_virtual_tool(gcmd, tool)
 
     def _notify_bg_pick(self, head):
         # The stock T macro parks the old head, lifts this one out of the
@@ -20485,7 +21813,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
         device_count = len(self._ace_devices)
         if device_count == 0:
-            self.log_always(self._t('msg.no_ace_devices_detected'))
+            self.log_always(self._no_mmu_line())
             return
         self.log_always(self._t('msg.active_ace_of',
             active=self._disp(self._active_device_index), count=device_count))
@@ -21366,6 +22694,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 self._convert_feeder_to_manual()
             self._restore_head_source()
             self._restore_bg_staged()
+            self._restore_retract_pending()
             try:
                 self._reconcile_unit_state('mode switch')
             except Exception as e:
@@ -21480,11 +22809,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             sub.append('--force')
         self._run_update_script(gcmd, sub, timeout=600)
 
+    def _no_mmu_line(self):
+        """The reply when no MMU is connected. In normal mode detection is
+        off on purpose, so say that and how to switch, not just 'none'."""
+        if getattr(self, '_ace_mode', None) == 'normal':
+            return self._t('msg.normal_mode_skip')
+        return self._t('msg.no_ace_devices_detected')
+
     cmd_ACE_LIST_help = 'List all detected MMU devices (up to 4)'
 
     def cmd_ACE_LIST(self, gcmd):
         if not self._ace_devices:
-            self.log_always(self._t('msg.no_ace_devices_detected'))
+            self.log_always(self._no_mmu_line())
             return
 
         self.log_always(self._t('msg.found_n_aces', count=len(self._ace_devices)))
@@ -22248,6 +23584,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'purge_scale': int(getattr(self, 'swap_purge_scale', 100)),
             'purge_floor': int(getattr(self, 'swap_purge_floor', 0)),
             'purge_cap': int(getattr(self, 'swap_purge_cap', 0)),
+            'purge_custom': bool(self.purge_custom()),
             'pa_sync': bool(getattr(self, 'pa_sync', True)),
             'remember_filament': bool(getattr(self, '_remember_filament',
                                               False)),

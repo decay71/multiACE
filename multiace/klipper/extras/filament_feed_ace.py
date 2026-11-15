@@ -89,6 +89,13 @@ FEED_PORT_ADC_VAL_THRESHOLD                         = 0.18
 FEED_PORT_ADC_VAL_MODULE_EXIST                      = 0.9
 FEED_PORT_ADC_DEBOUNCE_COUNT                        = 2
 
+# Start state of an ACE head's channel: its MMU connects after the init
+# timer, and the gate reads GATE_UNKNOWN until the first status arrives.
+# Wait for it (retry every FEED_INIT_GATE_RETRY s) up to FEED_INIT_GATE_WAIT
+# s, then decide from whatever the gate reads.
+FEED_INIT_GATE_WAIT                                 = 30.0
+FEED_INIT_GATE_RETRY                                = 1.0
+
 FEED_MOTOR_DIR_IDLE                                 = 0
 FEED_MOTOR_DIR_A                                    = 1
 FEED_MOTOR_DIR_B                                    = 2
@@ -155,6 +162,10 @@ FEED_UNLOAD_TRIGGER_SETTLE                          = 0.5
 # retract) and hardware-agnostic (V1+V2 - the verify is the toolhead motion
 # sensor, no ACE device sensor needed).
 FEED_UNLOAD_PROBE_RETRACT                           = 150
+# A head whose sensor still reads filament after the MMU measured this
+# much of the strand coming back holds a remnant that is no longer attached
+# (two full probe retracts). Only units that measure the move reach it.
+UNLOAD_REMNANT_MIN_MM = 250.0
 # Ready-exit guard of the load poll loop (see the feed call in _do_feed):
 # the 'busy' send-stamp can be overwritten by an in-flight status report
 # before the device shows the motion, so is_ace_ready() may not end the
@@ -298,74 +309,94 @@ class FeedPort:
 
     def get_filament_detected(self):
         if self.ace is not None:
-            # A head-mode feeder head is NOT ACE-driven: its presence is the
-            # physical side-feeder port (ADC), not the ACE slot gate. Without
-            # this the display's empty/ready follows the ACE slot occupancy
-            # (empty slot -> "?" even when the feeder is physically empty)
-            # instead of the feeder itself (empty -> "/", loaded -> "?").
-            # head_uses_ace is True for every ACE-driven head, so those keep
-            # the gate (byte-identical). A feeder head (head mode) AND a
-            # manual head (multi) read the port: neither is fed by an ACE,
-            # and a manual head reading the ACE gate came up as empty after
-            # every restart whenever its slot index held no spool.
-            # self.index is the head index (filament_ch[ch]).
-            try:
-                if not self.ace.head_uses_ace(self.index):
-                    return self._filament_detected
-            except Exception:
-                pass
-            # ACE-driven head: presence is the gate of the slot that ACTUALLY
-            # feeds this head. With a 4->1 combiner the feeding slot != the head
-            # index (head_source), so resolve it via _ace_slot_for_head - never
-            # index gate_status by the head index. Fallback =
-            # head index, so slot==head (multi/normal) stays byte-identical; only
-            # a combiner head (head_source.slot != head) is corrected. Without
-            # this, a partially-loaded ACE in head mode reads the wrong slot's
-            # gate (head 3 <- slot 0, but it checked gate_status[3]) -> a load is
-            # wrongly rejected as no_filament.
-            slot = self.ace._ace_slot_for_head(self.index)
-            # gate_status is a "currently-selected ACE" context (ace.py:2565),
-            # NOT ACE-aware: it reflects whichever unit is active (the printing/
-            # ran-out head's ACE, set by _on_extruder_change). A head on a
-            # DIFFERENT ACE (head mode always; multi when heads span ACEs) then
-            # reads the WRONG unit's gate - the stock auto-replenish candidate
-            # scan reads every head at once, so a same-colour twin on another
-            # ACE sees the ran-out ACE's emptied slot and is wrongly rejected
-            # ('cannot auto replenish'). Read the
-            # head's OWN ACE (head_source ace_index) per-ace gate list. Fall back
-            # to the flat gate_status for an unloaded head (no head_source) or
-            # missing per-ace data - byte-identical when the head IS on the
-            # active ACE (the common multi case).
-            src = self.ace._head_source.get(self.index)
-            ace_idx = None
-            if src is not None and isinstance(src.get('ace_index'), int):
-                ace_idx = src['ace_index']
-            else:
-                # UNLOADED head (no head_source): the per-ACE read above
-                # covers only loaded heads, so this case would fall through
-                # to the flat
-                # gate_status below = the ACTIVE unit's context. In head
-                # mode the unloaded head's wired ACE is almost never the
-                # active one, and every OTHER unit's same-numbered slot is
-                # typically LOADED (not AVAILABLE) -> presence read False
-                # -> display "/" + display load refused although the spool
-                # sits at the wired ACE's gate. Resolve the wired ACE
-                # instead - head_ace_for as an unloaded-display fallback
-                # inside a head-mode gate.
-                # Multi/normal fall through flat = byte-identical.
-                try:
-                    if (getattr(self.ace, '_ace_mode', 'multi') == 'head'
-                            and self.ace.head_uses_ace(self.index)):
-                        ace_idx = self.ace.head_ace_for(self.index)
-                except Exception:
-                    ace_idx = None
-            if ace_idx is not None:
-                gates = self.ace._gate_status_per_ace.get(ace_idx)
-                if gates is not None and slot < len(gates):
-                    return gates[slot] == 1
-            return self.ace.gate_status[slot] == 1
+            gate = self._ace_gate_value()
+            if gate is None:
+                return self._filament_detected
+            return gate == 1
         else:
             return self._filament_detected
+
+    def gate_known(self):
+        """False while the gate this ACE head reads still holds GATE_UNKNOWN
+        (-1): its MMU has not reported a status since Klipper started. True
+        for a known gate and for every head that reads its own port."""
+        if self.ace is None:
+            return True
+        try:
+            gate = self._ace_gate_value()
+        except Exception:
+            return True
+        return gate is None or gate != -1
+
+    def _ace_gate_value(self):
+        """Raw gate value (-1/0/1) of the slot that feeds this ACE head, or
+        None when the head reads its own feed port (feeder/manual)."""
+        # A head-mode feeder head is NOT ACE-driven: its presence is the
+        # physical side-feeder port (ADC), not the ACE slot gate. Without
+        # this the display's empty/ready follows the ACE slot occupancy
+        # (empty slot -> "?" even when the feeder is physically empty)
+        # instead of the feeder itself (empty -> "/", loaded -> "?").
+        # head_uses_ace is True for every ACE-driven head, so those keep
+        # the gate (byte-identical). A feeder head (head mode) AND a
+        # manual head (multi) read the port: neither is fed by an ACE,
+        # and a manual head reading the ACE gate came up as empty after
+        # every restart whenever its slot index held no spool.
+        # self.index is the head index (filament_ch[ch]).
+        try:
+            if not self.ace.head_uses_ace(self.index):
+                return None
+        except Exception:
+            pass
+        # ACE-driven head: presence is the gate of the slot that ACTUALLY
+        # feeds this head. With a 4->1 combiner the feeding slot != the head
+        # index (head_source), so resolve it via _ace_slot_for_head - never
+        # index gate_status by the head index. Fallback =
+        # head index, so slot==head (multi/normal) stays byte-identical; only
+        # a combiner head (head_source.slot != head) is corrected. Without
+        # this, a partially-loaded ACE in head mode reads the wrong slot's
+        # gate (head 3 <- slot 0, but it checked gate_status[3]) -> a load is
+        # wrongly rejected as no_filament.
+        slot = self.ace._ace_slot_for_head(self.index)
+        # gate_status is a "currently-selected ACE" context (ace.py:2565),
+        # NOT ACE-aware: it reflects whichever unit is active (the printing/
+        # ran-out head's ACE, set by _on_extruder_change). A head on a
+        # DIFFERENT ACE (head mode always; multi when heads span ACEs) then
+        # reads the WRONG unit's gate - the stock auto-replenish candidate
+        # scan reads every head at once, so a same-colour twin on another
+        # ACE sees the ran-out ACE's emptied slot and is wrongly rejected
+        # ('cannot auto replenish'). Read the
+        # head's OWN ACE (head_source ace_index) per-ace gate list. Fall back
+        # to the flat gate_status for an unloaded head (no head_source) or
+        # missing per-ace data - byte-identical when the head IS on the
+        # active ACE (the common multi case).
+        src = self.ace._head_source.get(self.index)
+        ace_idx = None
+        if src is not None and isinstance(src.get('ace_index'), int):
+            ace_idx = src['ace_index']
+        else:
+            # UNLOADED head (no head_source): the per-ACE read above
+            # covers only loaded heads, so this case would fall through
+            # to the flat
+            # gate_status below = the ACTIVE unit's context. In head
+            # mode the unloaded head's wired ACE is almost never the
+            # active one, and every OTHER unit's same-numbered slot is
+            # typically LOADED (not AVAILABLE) -> presence read False
+            # -> display "/" + display load refused although the spool
+            # sits at the wired ACE's gate. Resolve the wired ACE
+            # instead - head_ace_for as an unloaded-display fallback
+            # inside a head-mode gate.
+            # Multi/normal fall through flat = byte-identical.
+            try:
+                if (getattr(self.ace, '_ace_mode', 'multi') == 'head'
+                        and self.ace.head_uses_ace(self.index)):
+                    ace_idx = self.ace.head_ace_for(self.index)
+            except Exception:
+                ace_idx = None
+        if ace_idx is not None:
+            gates = self.ace._gate_status_per_ace.get(ace_idx)
+            if gates is not None and slot < len(gates):
+                return gates[slot]
+        return self.ace.gate_status[slot]
 
     def get_filament_detected_local(self):
         return self._filament_detected
@@ -676,6 +707,9 @@ class FilamentFeed:
         self._last_print_time = 0
         for ch in range(FEED_CHANNEL_NUMS):
             self.channel_state[ch] = FEED_STA_INITED
+        self._init_state_deadline = None
+        self._init_state_done = [False] * FEED_CHANNEL_NUMS
+        self._init_state_waited = [False] * FEED_CHANNEL_NUMS
 
     def _ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
@@ -707,16 +741,57 @@ class FilamentFeed:
                     (lambda et, c=self._do_feed, ch=ch, action=FEED_ACT_FILAMENT_RUNOUT: c(ch, action)))
                 break
 
-    def _check_init_state_timer_handler(self, eventtime):
-        self.reactor.unregister_timer(self._check_init_state_timer)
+    def _ace_head_holds_filament(self, head):
+        """True when multiACE has a source for this ACE head and the head's
+        presence pin (motion helper as fallback) reports filament."""
+        try:
+            src = self.ace._head_source.get(head)
+            if not src or src.get('load_failed') or src.get('gate_empty'):
+                return False
+            sensor = self.printer.lookup_object(
+                'filament_motion_sensor e%d_filament' % head, None)
+            if sensor is None:
+                return False
+            return bool(self.ace._head_filament_present(sensor, head))
+        except Exception:
+            return False
 
+    def _check_init_state_timer_handler(self, eventtime):
+        # The start state of an ACE head comes from its MMU gate, and the
+        # MMU usually connects after this timer: deciding on GATE_UNKNOWN
+        # put a loaded head on wait_insert, and nothing re-checked it (HW
+        # 2026-11-08: the start gcode's load of the loaded head then hit
+        # the raw-print refusal). Such channels wait for a known gate.
+        if self._init_state_deadline is None:
+            self._init_state_deadline = eventtime + FEED_INIT_GATE_WAIT
+        pending = False
         for ch in range(FEED_CHANNEL_NUMS):
+            if self._init_state_done[ch]:
+                continue
+            if self.channel_state[ch] != FEED_STA_INITED:
+                # an operation took the channel over while it waited
+                self._init_state_done[ch] = True
+                continue
             if self._port[ch].get_adc_value() < FEED_PORT_ADC_VAL_MODULE_EXIST or self.ace is not None:
                 self.module_exist[ch] = True
             else:
                 self.module_exist[ch] = False
 
             if self.config['auto_mode'][ch] == True and self.module_exist[ch] == True:
+                if not self._port[ch].gate_known():
+                    if eventtime < self._init_state_deadline:
+                        if not self._init_state_waited[ch]:
+                            self._init_state_waited[ch] = True
+                            logging.info("[feed] channel[%d] (head %d): MMU "
+                                         "gate not known yet - waiting before "
+                                         "setting the start state", ch,
+                                         self.filament_ch[ch])
+                        pending = True
+                        continue
+                    logging.info("[feed] channel[%d] (head %d): MMU gate "
+                                 "still unknown after %.0f s - start state "
+                                 "from the current reading", ch,
+                                 self.filament_ch[ch], FEED_INIT_GATE_WAIT)
                 if self.filament_detect.is_startup_stay() == False:
                     self.printer.send_event("filament_feed:port", self.filament_ch[ch],
                                             self._port[ch].get_filament_detected())
@@ -727,7 +802,11 @@ class FilamentFeed:
                         self._set_channel_state(ch, FEED_STA_LOAD_FINISH)
                     else:
                         self._set_channel_state(ch, FEED_STA_PRELOAD_FINISH)
+            self._init_state_done[ch] = True
 
+        if pending:
+            return eventtime + FEED_INIT_GATE_RETRY
+        self.reactor.unregister_timer(self._check_init_state_timer)
         return self.reactor.NEVER
 
     def _set_channel_state(self, channel, state, save=False):
@@ -906,17 +985,16 @@ class FilamentFeed:
                 return max(int(_ov), 175)
         return self._get_filament_temp_db(channel)
     def _get_filament_unload_temp(self, channel):
-        # Unload/tip-form temp: the [ace_tipform] 'unloadtemp:' PARAMETER
-        # (per material/vendor via the table keys, ace.cfg merge-safe) or
-        # plainly the load temp. The stock
-        # DB's per-material 'unload_temp' field (+ get_unload_temp
-        # accessor, present since 1.4.1, zero callers firmware-wide, every
-        # row == load temp) is deliberately NOT read:
-        # a dormant stock field could be repurposed by any future
-        # Snapmaker update and would then steer our unloads uninvited -
-        # re-add only when Snapmaker actually wires it themselves.
-        # Floor 175 = MIN_MOVE_TEMP class (the pull's extruder moves need
-        # > min_extrude_temp 170).
+        # Unload/tip-form temp. Chain: the [ace_tipform] 'unloadtemp:'
+        # parameter -> the filament DB's own unload_temp WHEN it differs
+        # from the DB load temp -> the effective load temp (tipform
+        # 'loadtemp:' or DB). Stock 2.1 unloads with the DB unload_temp
+        # (DB 1.0.4: PA types 280 on standard nozzles, most materials
+        # lower on high-flow); before 2.1 every row had unload == load,
+        # so this is byte-identical on older firmware. An equal DB pair
+        # says nothing about the unload, so the effective load temp keeps
+        # the tipform 'loadtemp:' in force there. Floor 175 = MIN_MOVE_TEMP
+        # class (the pull's extruder moves need > min_extrude_temp 170).
         if self.ace is not None:
             try:
                 _ov_fn = getattr(self.ace, 'tipform_unload_temp_for', None)
@@ -927,7 +1005,32 @@ class FilamentFeed:
                 _ov = None
             if _ov:
                 return max(int(_ov), 175)
+        db_unload = self._get_filament_unload_temp_db(channel)
+        if db_unload is not None:
+            return max(int(db_unload), 175)
         return self._get_filament_temp(channel)
+
+    def _get_filament_unload_temp_db(self, channel):
+        # The DB unload_temp when it differs from the DB load temp, else
+        # None. Fail-open to None (the caller falls back to the load temp).
+        try:
+            print_task_config = self.printer.lookup_object(
+                'print_task_config', None)
+            fp = self.printer.lookup_object('filament_parameters', None)
+            fn = getattr(fp, 'get_unload_temp', None)
+            if print_task_config is None or fn is None:
+                return None
+            status = print_task_config.get_status()
+            h = self.filament_ch[channel]
+            args = (status['filament_vendor'][h], status['filament_type'][h],
+                    status['filament_sub_type'][h])
+            unload = fn(*(args + tuple(self._db_nozzle_args(channel))))
+            load = self._get_filament_temp_db(channel)
+            if unload and load and int(unload) != int(load):
+                return int(unload)
+        except Exception as e:
+            logging.info("[feed] DB unload temp unavailable: %s" % e)
+        return None
 
     def _get_filament_soft(self, channel):
         print_task_config = self.printer.lookup_object('print_task_config', None)
@@ -1026,6 +1129,14 @@ class FilamentFeed:
                          extruder_index, cur_temp, temps)
         except Exception as e:
             logging.error("[feed] snapshot INNER_RESUME failed: %s", str(e))
+
+    def _lean_flush_swap(self):
+        """True while [ace] lean_flush is on and a swap runs this load.
+        A load from the display or the web keeps the stock routine."""
+        ace = self.ace
+        return bool(ace is not None
+                    and getattr(ace, 'lean_flush', False)
+                    and getattr(ace, '_swap_in_progress', False))
 
     def _load_feed_temp_drop(self):
         """[ace] load_feed_temp_drop: how far below load temp the nozzle
@@ -1426,16 +1537,21 @@ class FilamentFeed:
 
                     if self.runout_sensor[ch].get_status(0)['filament_detected'] == False:
 
-                        try:
+                        # Lean flush inside a swap: the head stays at the
+                        # chute, no trip to the load position and back.
+                        if self._lean_flush_swap():
                             self.toolhead.wait_moves()
-                            self.gcode.run_script_from_command( \
-                                f"G90\nG0 Y{self._feed_load_position_y} F18000\r\n")
-                            self.gcode.run_script_from_command( \
-                                f"G90\nG0 X{self._feed_load_position_x} F18000\r\n")
-                            self.toolhead.wait_moves()
-                        except:
-                            self.channel_error[ch] = FEED_ERR_MOVE
-                            raise
+                        else:
+                            try:
+                                self.toolhead.wait_moves()
+                                self.gcode.run_script_from_command( \
+                                    f"G90\nG0 Y{self._feed_load_position_y} F18000\r\n")
+                                self.gcode.run_script_from_command( \
+                                    f"G90\nG0 X{self._feed_load_position_x} F18000\r\n")
+                                self.toolhead.wait_moves()
+                            except:
+                                self.channel_error[ch] = FEED_ERR_MOVE
+                                raise
 
                         self.reactor.pause(self.reactor.monotonic() + 0.105)
                         wheel_cnt_a_0 = self.wheel[ch].get_counts()
@@ -1556,6 +1672,7 @@ class FilamentFeed:
                                 # OFF before the heat/seat/phase3 sequence,
                                 # backstopped in cmd_ACE_SWAP_HEAD's finally.
                                 self.ace._dwell_fan(True)
+                                _prev_end = None
                                 for load_attempt in range(load_retries + 1):
                                     if load_attempt > 0:
                                         logging.info("[feed_loading] retry %d/%d: retracting %dmm",
@@ -1693,9 +1810,20 @@ class FilamentFeed:
                                         break
 
                                     logging.info("[feed_loading] attempt %d: sensor not reached", load_attempt + 1)
-                                    self._note_feed_verdict(_ace_slot, load_attempt,
-                                                            self.reactor.monotonic() - _feed_start,
-                                                            _motion_seq0)
+                                    _end = self._note_feed_verdict(_ace_slot, load_attempt,
+                                                                   self.reactor.monotonic() - _feed_start,
+                                                                   _motion_seq0)
+                                    if load_attempt > 0 and self._blocked_same_place(
+                                            _prev_end, _end, load_retry_retract):
+                                        logging.info(
+                                            "[feed_loading] attempt %d: MMU %d slot %d blocked"
+                                            " again after %.0f mm, the place the last attempt"
+                                            " stopped at - a hard stop in the path, no further"
+                                            " retry", load_attempt + 1,
+                                            self.ace._active_device_index, _ace_slot,
+                                            _end[1])
+                                        break
+                                    _prev_end = _end
 
                                 if not load_found and self.channel_error[ch] != FEED_ERR_NO_FILAMENT:
                                     self.channel_error[ch] = FEED_ERR_TIMEOUT
@@ -1842,7 +1970,7 @@ class FilamentFeed:
                                     "(ace %d slot %d, attempt %d, moved %s)",
                                     _press, _p_idx, _p_slot, _pa + 1,
                                     _psp[0] if _psp[0] is not None
-                                    else 'n/a (V1)')
+                                    else 'n/a (no decoder)')
                                 # Zero span with turning gears = slip at the
                                 # ACE / blockage before it; the load-slip
                                 # pause names that end (note_seat_press_span).
@@ -2424,9 +2552,19 @@ class FilamentFeed:
                         # (swap_purge_length / Pro override); 0 omits it so the
                         # stock macro uses its default (80mm).
                         _purge_len = self.ace.get_purge_length() if self.ace else 0
-                        _flush_cmd = ("INNER_FLUSH_FILAMENT TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f" %
-                                      (filament_feed_temp, int(filament_soft),
-                                       self.toolhead.get_extruder().nozzle_diameter))
+                        _nozzle = self.toolhead.get_extruder().nozzle_diameter
+                        # The lean macro has one feed rate, tuned for rigid
+                        # filament on a 0.4+ nozzle; soft filament and small
+                        # nozzles keep the stock macro and its slower rates.
+                        _lean = (self._lean_flush_swap()
+                                 and not filament_soft and _nozzle >= 0.3)
+                        if self.ace is not None:
+                            self.ace._lean_flush_ran = bool(_lean)
+                        _flush_cmd = ("%s TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f" %
+                                      ("ACE_LEAN_FLUSH" if _lean
+                                       else "INNER_FLUSH_FILAMENT",
+                                       filament_feed_temp, int(filament_soft),
+                                       _nozzle))
                         if _purge_len and _purge_len > 0:
                             _flush_cmd += " LENGTH=%d" % _purge_len
                         self.gcode.run_script_from_command(_flush_cmd + "\r\n")
@@ -2836,6 +2974,8 @@ class FilamentFeed:
                                     'msg.unload_no_mapping_skip',
                                     head=self.ace._disp(head_idx),
                                     ace=self.ace._disp(self.ace._active_device_index)))
+                            _moved_proven = 0.0
+                            _remnant = False
                             for unload_attempt in range(unload_max):
                                 self.ace._check_calibration_unload_cancel()
                                 # Wait ready BEFORE the span wrapper: its
@@ -2847,6 +2987,7 @@ class FilamentFeed:
                                 # span window covered the whole wait).
                                 # _retract's internal wait is then instant.
                                 self.ace.wait_ace_ready()
+                                _smseq = self._unit_motion_seq()
                                 _usp = self.ace._retract_with_decoder_span(
                                     self.ace._active_device_index, _ace_slot,
                                     lambda: self.ace._retract(
@@ -2857,6 +2998,8 @@ class FilamentFeed:
                                 self._unload_dec_log(
                                     head_idx, _ace_slot, 'short', _short_retract,
                                     _usp, unload_attempt + 1)
+                                _moved_proven += self._short_retract_moved(
+                                    _ace_slot, _usp, _smseq, _short_retract)
 
                                 # Pin-first verify (unload_gpio default on):
                                 # the raw presence pin reads the short
@@ -2895,6 +3038,23 @@ class FilamentFeed:
                                         self.runout_sensor[ch].runout_helper.note_filament_present(False, True)
                                     except Exception:
                                         logging.info("[feed][gpio] motion-helper sync failed")
+                                    unload_ok = True
+                                    break
+                                elif (_pin is True
+                                      and _moved_proven >= UNLOAD_REMNANT_MIN_MM):
+                                    # The MMU measured the strand coming
+                                    # back this far and the head still reads
+                                    # filament: what sits at the sensor is no
+                                    # longer attached to the strand. More
+                                    # pulls only empty the tube.
+                                    logging.warning(
+                                        "[feed][unload] head %d: MMU slot %d "
+                                        "pulled %.0f mm back (measured) and the "
+                                        "head sensor still reads filament - a "
+                                        "remnant sits in the head, no further "
+                                        "pull", self.filament_ch[ch], _ace_slot,
+                                        _moved_proven)
+                                    _remnant = True
                                     unload_ok = True
                                     break
                                 elif _pin is True and not _last_attempt:
@@ -3023,6 +3183,7 @@ class FilamentFeed:
                                     # site is where the 60s stall actually hit).
                                     self.ace.wait_ace_ready()
                                     _rmseq = self._unit_motion_seq()
+                                    _rest_t0 = self.reactor.monotonic()
                                     _rsp = self.ace._retract_with_decoder_span(
                                         self.ace._active_device_index, _ace_slot,
                                         lambda: self.ace._retract(
@@ -3048,7 +3209,33 @@ class FilamentFeed:
                                             head_idx, _ace_slot, _rmseq):
                                         unload_ok = False
                                         unload_reason = 'bowden_stall'
-                            if not unload_ok:
+                                    if (unload_reason == 'bowden_stall'
+                                            and self._slot_left_unit(
+                                                head_idx, _ace_slot,
+                                                _rest_t0)):
+                                        unload_ok = True
+                                        unload_reason = 'toolhead'
+                            if _remnant:
+                                # The strand itself is back in the MMU (the
+                                # bulk retract above ran); the head is not
+                                # clear. Marked like a gate-empty source: no
+                                # later unload pulls this slot again, and a
+                                # cleared sensor makes the head count as empty.
+                                unload_ok = False
+                                unload_reason = 'head_remnant'
+                                if source and not _hint:
+                                    source['gate_empty'] = True
+                                    try:
+                                        self.ace._save_head_source()
+                                    except Exception:
+                                        pass
+                                try:
+                                    self.ace.log_error(self.ace._t(
+                                        'msg.unload_head_remnant',
+                                        head=self.ace._disp(self.filament_ch[ch])))
+                                except Exception:
+                                    pass
+                            elif not unload_ok:
                                 logging.info("[feed][unload] filament genuinely stuck after %d unload attempts (sensor never cleared)", unload_max)
 
                             if self.ace is not None:
@@ -3308,6 +3495,8 @@ class FilamentFeed:
                                     'msg.unload_no_mapping_skip',
                                     head=self.ace._disp(head_idx),
                                     ace=self.ace._disp(self.ace._active_device_index)))
+                            _moved_proven = 0.0
+                            _remnant = False
                             for unload_attempt in range(unload_max):
                                 self.ace._check_calibration_unload_cancel()
                                 # Wait ready BEFORE the span wrapper: its
@@ -3319,6 +3508,7 @@ class FilamentFeed:
                                 # span window covered the whole wait).
                                 # _retract's internal wait is then instant.
                                 self.ace.wait_ace_ready()
+                                _smseq = self._unit_motion_seq()
                                 _usp = self.ace._retract_with_decoder_span(
                                     self.ace._active_device_index, _ace_slot,
                                     lambda: self.ace._retract(
@@ -3329,6 +3519,8 @@ class FilamentFeed:
                                 self._unload_dec_log(
                                     head_idx, _ace_slot, 'short', _short_retract,
                                     _usp, unload_attempt + 1)
+                                _moved_proven += self._short_retract_moved(
+                                    _ace_slot, _usp, _smseq, _short_retract)
 
                                 # Pin-first verify (unload_gpio default on):
                                 # the raw presence pin reads the short
@@ -3367,6 +3559,23 @@ class FilamentFeed:
                                         self.runout_sensor[ch].runout_helper.note_filament_present(False, True)
                                     except Exception:
                                         logging.info("[feed][gpio] motion-helper sync failed")
+                                    unload_ok = True
+                                    break
+                                elif (_pin is True
+                                      and _moved_proven >= UNLOAD_REMNANT_MIN_MM):
+                                    # The MMU measured the strand coming
+                                    # back this far and the head still reads
+                                    # filament: what sits at the sensor is no
+                                    # longer attached to the strand. More
+                                    # pulls only empty the tube.
+                                    logging.warning(
+                                        "[feed][unload] head %d: MMU slot %d "
+                                        "pulled %.0f mm back (measured) and the "
+                                        "head sensor still reads filament - a "
+                                        "remnant sits in the head, no further "
+                                        "pull", self.filament_ch[ch], _ace_slot,
+                                        _moved_proven)
+                                    _remnant = True
                                     unload_ok = True
                                     break
                                 elif _pin is True and not _last_attempt:
@@ -3495,6 +3704,7 @@ class FilamentFeed:
                                     # site is where the 60s stall actually hit).
                                     self.ace.wait_ace_ready()
                                     _rmseq = self._unit_motion_seq()
+                                    _rest_t0 = self.reactor.monotonic()
                                     _rsp = self.ace._retract_with_decoder_span(
                                         self.ace._active_device_index, _ace_slot,
                                         lambda: self.ace._retract(
@@ -3520,7 +3730,33 @@ class FilamentFeed:
                                             head_idx, _ace_slot, _rmseq):
                                         unload_ok = False
                                         unload_reason = 'bowden_stall'
-                            if not unload_ok:
+                                    if (unload_reason == 'bowden_stall'
+                                            and self._slot_left_unit(
+                                                head_idx, _ace_slot,
+                                                _rest_t0)):
+                                        unload_ok = True
+                                        unload_reason = 'toolhead'
+                            if _remnant:
+                                # The strand itself is back in the MMU (the
+                                # bulk retract above ran); the head is not
+                                # clear. Marked like a gate-empty source: no
+                                # later unload pulls this slot again, and a
+                                # cleared sensor makes the head count as empty.
+                                unload_ok = False
+                                unload_reason = 'head_remnant'
+                                if source and not _hint:
+                                    source['gate_empty'] = True
+                                    try:
+                                        self.ace._save_head_source()
+                                    except Exception:
+                                        pass
+                                try:
+                                    self.ace.log_error(self.ace._t(
+                                        'msg.unload_head_remnant',
+                                        head=self.ace._disp(self.filament_ch[ch])))
+                                except Exception:
+                                    pass
+                            elif not unload_ok:
                                 logging.info("[feed][unload] filament genuinely stuck after %d unload attempts (sensor never cleared)", unload_max)
                             if self.ace is not None:
                                 self.ace._last_unload_ok = unload_ok
@@ -3781,12 +4017,22 @@ class FilamentFeed:
     # per-slot status (ACE Pro) carry no verdict and keep the old wording.
     FEED_VERDICT_WAIT_S = 1.5
 
-    def _unit_motion(self):
+    def _unit_motion(self, slot=None):
         """The status 'motion' report of the active unit (units that
-        report their own distance, the CFS Nano), or None."""
+        report their own distance, the CFS Nano), or None. With a slot, the
+        report of that slot's own move when the unit gives one per lane
+        (ace2k: two lanes can move at once, the unit report shows only the
+        newest move)."""
         try:
             idx = self.ace._active_device_index
             info = self.ace._info_per_ace.get(idx) or {}
+            if slot is not None:
+                slots = info.get('slots') or []
+                if 0 <= int(slot) < len(slots) and isinstance(
+                        slots[int(slot)], dict):
+                    lm = slots[int(slot)].get('motion')
+                    if isinstance(lm, dict):
+                        return lm
             m = info.get('motion')
             return m if isinstance(m, dict) else None
         except Exception:
@@ -3802,7 +4048,7 @@ class FilamentFeed:
     def _unit_feed_running(self, slot, seq0):
         """True while the active unit reports a feed of this slot that
         started after seq0 as still running."""
-        m = self._unit_motion()
+        m = self._unit_motion(slot)
         if not m or not m.get('running'):
             return False
         try:
@@ -3812,12 +4058,36 @@ class FilamentFeed:
         except Exception:
             return False
 
+    def _short_retract_moved(self, slot, span, seq0, commanded):
+        """Millimetres the MMU measured for the short probe retract, 0 when
+        nothing measures it (ACE Pro: no decoder, no motion report). ACE 2:
+        the lane decoder's span; ace2k and CFS Nano: the unit's own motion
+        report of this retract. Never more than was commanded."""
+        moved = None
+        try:
+            if span is not None and span[0] is not None:
+                moved = float(span[0])
+        except (TypeError, ValueError, IndexError):
+            moved = None
+        if moved is None:
+            m = self._unit_motion(slot)
+            try:
+                if (m and not m.get('running') and m.get('kind') == 'retract'
+                        and int(m.get('slot', -1)) == int(slot)
+                        and int(m.get('seq', 0)) > int(seq0)):
+                    moved = float(m.get('mm') or 0.0)
+            except (TypeError, ValueError):
+                moved = None
+        if moved is None or moved <= 0.0:
+            return 0.0
+        return min(moved, float(commanded))
+
     def _unit_retract_short(self, head, slot, seq0):
         """True when the unit measured its bulk retract and reports it
         short (units with a motion report, the CFS Nano: the wheel shows
         the strand did not come back the full length, so the old tip can
         still sit in a splitter)."""
-        m = self._unit_motion()
+        m = self._unit_motion(slot)
         try:
             if (not m or m.get('running') or m.get('kind') != 'retract'
                     or int(m.get('slot', -1)) != int(slot)
@@ -3828,6 +4098,16 @@ class FilamentFeed:
             return False
         if short <= 0.0:
             return False
+        if m.get('stop') == 'runout':
+            # The strand's tip passed the unit's input sensor on the way
+            # back: the whole strand left the MMU, nothing of it can sit
+            # between head and MMU. Short of the commanded length only
+            # because there was less filament in the path than that.
+            logging.info(
+                '[multiACE] [feed][unload] head %d MMU slot %d: bulk retract '
+                'ended with runout after %.0f mm - the strand left the MMU, '
+                'counts as back' % (head, slot, float(m.get('mm') or 0.0)))
+            return False
         logging.warning(
             '[multiACE] [feed][unload] head %d MMU slot %d: bulk retract came '
             'back %.0f mm short of %.0f mm (measured by the MMU) - this '
@@ -3835,11 +4115,37 @@ class FilamentFeed:
             % (head, slot, short, float(m.get('target') or 0.0)))
         return True
 
+    def _slot_left_unit(self, head, slot, since):
+        """True when the source slot's input gate went EMPTY after `since`.
+        The bulk retract only starts with the gate reading filament (the
+        gate-empty guard skips it otherwise), and a backward move can only
+        empty the gate when the strand's tip passes it, or when the strand
+        is pulled out by hand. Either way nothing of it can still sit
+        between head and MMU, so a short or stalled bulk retract is no
+        reason to keep the mapping."""
+        ace = self.ace
+        try:
+            src = ace._head_source.get(head)
+            idx = (src['ace_index'] if src else ace._active_device_index)
+            gates = ace._gate_status_per_ace.get(idx) or []
+            if int(slot) >= len(gates) or gates[int(slot)] != 0:
+                return False
+            ts = getattr(ace, '_gate_flip_ts', {}).get((idx, int(slot)))
+            if ts is None or ts < since:
+                return False
+        except Exception:
+            return False
+        logging.info(
+            '[multiACE] [feed][unload] head %d MMU %d slot %d: the slot went '
+            'empty during the unload - the strand left the MMU, unload '
+            'counts as verified' % (head, idx, slot))
+        return True
+
     def _unit_feed_stop(self, slot, seq0):
         """Why the unit's own motion report says the feed of this slot
         (started after seq0) ended: 'slip' (the wheel stood while the motor
         ran), 'distance', or None (no report, still running, other job)."""
-        m = self._unit_motion()
+        m = self._unit_motion(slot)
         try:
             if (not m or m.get('running') or m.get('kind') != 'feed'
                     or int(m.get('slot', -1)) != int(slot)
@@ -3849,7 +4155,32 @@ class FilamentFeed:
             return None
         return m.get('stop') or None
 
+    # A retry (retract N mm, push again) that the unit ends 'blocked'
+    # within this of N came back to the place the attempt before stopped at.
+    SAME_PLACE_TOL_MM = 10.0
+
+    def _blocked_same_place(self, prev, cur, back_mm):
+        """True when a retry feed ran into the same hard stop as the
+        attempt before it: both ended by the unit itself (prev blocked or
+        slip, this one blocked) and this one moved just the retry's
+        retract. prev/cur = (stop, mm) of _note_feed_verdict, None without
+        a motion report (ACE Pro, ACE 2: unchanged, every retry runs).
+        HW 2026-11-09 (ace2k): 18 of 19 such retries ended blocked after
+        51-52 mm again; three of them per load only pushed the strand
+        against the obstacle three more times."""
+        try:
+            if not prev or not cur:
+                return False
+            if prev[0] not in ('blocked', 'slip') or cur[0] != 'blocked':
+                return False
+            return abs(float(cur[1]) - float(back_mm)) <= self.SAME_PLACE_TOL_MM
+        except (TypeError, ValueError, IndexError):
+            return False
+
     def _note_feed_verdict(self, slot, attempt, elapsed, motion_seq0=None):
+        """Log why the feed did not arrive and keep the slip verdict for
+        the load-fail wording. Returns (stop, mm) of the unit's own end
+        report (units with a motion report), else None."""
         ace = self.ace
         idx = ace._active_device_index
         store = getattr(ace, '_load_feed_error', None)
@@ -3882,7 +4213,12 @@ class FilamentFeed:
                         "[feed_loading] attempt %d: MMU %d feed ended (%s) after %.1fs"
                         " - filament moved but did not arrive (path downstream)",
                         attempt + 1, idx, stop, elapsed)
-            return
+            if stop is None:
+                return None
+            try:
+                return (stop, float((self._unit_motion(slot) or {}).get('mm') or 0.0))
+            except (TypeError, ValueError):
+                return None
         deadline = self.reactor.monotonic() + self.FEED_VERDICT_WAIT_S
         status = None
         while True:
@@ -4258,11 +4594,25 @@ class FilamentFeed:
                     return
                 if virtual_raw and self._virtual_preload(gcmd, channel):
                     return
+                # A loaded ACE head needs no load, whatever its channel
+                # state says (a stale start state read wait_insert on a
+                # loaded head): skip it like stock skips a load_finish
+                # channel, before the raw-print refusal below.
+                head = self.filament_ch[channel]
+                if (self.ace is not None and self.ace.head_uses_ace(head)
+                        and self._ace_head_holds_filament(head)):
+                    src = self.ace._head_source.get(head) or {}
+                    logging.info("[feed] FEED_AUTO LOAD skipped: channel[%d] "
+                                 "is_printing=1, head %d already holds "
+                                 "filament (MMU %s slot %s, state %s)",
+                                 channel, head, src.get('ace_index'),
+                                 src.get('slot'),
+                                 self.channel_state[channel])
+                    return
                 # An ACE head only has an unambiguous slot in multi mode with
                 # one ACE (slot k feeds head k). With several ACEs, or four
                 # slots per ACE in head mode, the slot would be a guess: stop
                 # the print and point to the preflight instead.
-                head = self.filament_ch[channel]
                 if (self.ace is not None and self.ace.head_uses_ace(head)
                         and not (getattr(self.ace, '_ace_mode', '') == 'multi'
                                  and len(getattr(self.ace, '_ace_devices',

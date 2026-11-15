@@ -601,6 +601,7 @@ class CfsLink(object):
     def _end_job(self, why):
         job = self._job
         self._job = None
+        job['why'] = why
         self._last_motion = self._motion_of(job, False)
         logging.info('[multiACE] CFS Nano: %s slot %d ended (%s) after '
                      '%.0f mm' % (job['kind'], job['slot'], why,
@@ -616,6 +617,8 @@ class CfsLink(object):
                'running': bool(running)}
         if job.get('stop'):
             out['stop'] = str(job['stop'])
+        if job.get('why'):
+            out['why'] = str(job['why'])
         if job['kind'] == 'retract':
             out['target'] = round(float(job.get('target', 0.0)), 1)
             if not running:
@@ -968,6 +971,8 @@ def make_status(mask, box_frame=None):
 
 
 class AceProtocolCfs(AceProtocol):
+    # The link sends a long retract in pieces; it ends with the host.
+    MOTION_STOPS_WITH_HOST = True
     NAME = 'cfs'
     DEFAULT_BAUD = 230400
     # Set from ace.py at init from [ace] cfs_usb_ids; a path matches when
@@ -1000,6 +1005,9 @@ class AceProtocolCfs(AceProtocol):
         # so the calibration feeds once to the sensor and reads the
         # distance from the status (motion.mm, from the wheel).
         'calibration_feed': 'single',
+        'host_tag_session': False,
+        'buffer_relax': False,
+        'fa_stop_rollback': True,
         'self_stops_on_resistance': True,
         'has_decoder': False,
         'v1_fa_health_log': False,

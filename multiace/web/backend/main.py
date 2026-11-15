@@ -322,7 +322,8 @@ def _tag_read_possible(a: dict, caps: dict | None = None) -> bool:
     says no. Without caps the firmware-string rules of older engines."""
     avail = (a.get("tag_tunnel") or {}).get("available")
     if caps is not None:
-        if caps.get("rc522_tunnel") or caps.get("gen1_tunnel"):
+        if (caps.get("rc522_tunnel") or caps.get("gen1_tunnel")
+                or caps.get("host_tag_session")):
             return True
         if avail is not None:
             return bool(avail)
@@ -883,6 +884,7 @@ def _parse_state(status: dict) -> dict:
         "quad_replenish": bool(ace.get("quad_replenish", False)),
         "purge_matrix": bool(ace.get("purge_matrix", True)),
         "purge_scale": _int_or(ace.get("purge_scale", 100), 100),
+        "purge_custom": bool(ace.get("purge_custom", False)),
         "purge_floor": _int_or(ace.get("purge_floor", 0), 0),
         "purge_cap": _int_or(ace.get("purge_cap", 0), 0),
         # Multifilament-Optimierung: targets per slicer colour (1 = off).
@@ -958,6 +960,7 @@ def _parse_state(status: dict) -> dict:
             "version":       bg.get("version"),
             "enabled_heads": bg.get("enabled_heads", []) or [],
             "busy":          bg.get("busy", []) or [],
+            "load_mode":     bg.get("load_mode"),
         },
         # Per-material tip forming ([ace_tipform]) - the LIVE state (what
         # Klipper currently runs). The cfg may differ until a restart; the
@@ -1418,6 +1421,15 @@ async def _head_mode_context() -> dict:
                        and a.get("connected")
                        and a.get("unit_present", True)]
                       if _aces else None)
+    # Multi mode background swaps: the connected units that move one lane
+    # while another feeds (caps lanes_concurrent, ace2k). Only those may
+    # carry a bg swap there - one MMU feeds several heads.
+    concurrent_aces = [int(a["idx"]) for a in _aces
+                       if isinstance(a.get("idx"), int)
+                       and a.get("connected")
+                       and a.get("unit_present", True)
+                       and isinstance(a.get("caps"), dict)
+                       and a["caps"].get("lanes_concurrent") is True]
     empty_slots = []
     for a in parsed.get("aces", []) or []:
         for sl in a.get("slots", []) or []:
@@ -1449,6 +1461,7 @@ async def _head_mode_context() -> dict:
             "copies_strict": bool(parsed.get("preflight_copies_strict")),
             "empty_slots": empty_slots,
             "connected_aces": connected_aces,
+            "concurrent_aces": concurrent_aces,
             "bg_available": bool(bgs.get("available")),
             "bg_heads": [int(h) for h in (bgs.get("enabled_heads") or [])]}
 
@@ -4066,7 +4079,8 @@ async def _sweep_kick_run() -> None:
 
 _ACEFW_DIR = Path("/tmp/multiace-acefw")
 _acefw = {"state": "idle", "pct": None, "msg": "", "ace": None,
-          "result": None, "error": "", "file": "", "size": 0}
+          "result": None, "error": "", "file": "", "size": 0,
+          "calibration": ""}
 
 
 def _acefw_running() -> bool:
@@ -4080,14 +4094,20 @@ async def acefw_upload(file: UploadFile = File(...)) -> dict:
     time so the .swu password does not need to travel twice."""
     if _acefw_running():
         raise HTTPException(409, "a firmware update is running")
-    _ACEFW_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _ACEFW_DIR / "upload.bin"
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty file")
+    return _acefw_stage(file.filename or "upload", data)
+
+
+def _acefw_stage(filename: str, data: bytes) -> dict:
+    """Put a firmware file into the one staging slot (upload or download)
+    and answer what the card needs to show it."""
+    _ACEFW_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _ACEFW_DIR / "upload.bin"
     dest.write_bytes(data)
-    _acefw.update({"file": file.filename or "upload",
-                   "size": len(data), "state": "idle",
+    _acefw.update({"file": filename,
+                   "size": len(data), "state": "idle", "calibration": "",
                    "msg": "", "error": "", "result": None, "pct": None})
     # Guess the version from the upload NAME (no password needed - the
     # inner name is only reachable once decrypted, that guess is refined
@@ -4096,15 +4116,103 @@ async def acefw_upload(file: UploadFile = File(...)) -> dict:
     guess = ""
     try:
         import ace2_ota
-        guess = ace2_ota.guess_version(file.filename or "")
+        guess = ace2_ota.guess_version(filename or "")
     except Exception:
         pass
+    # An ace2k image (tobecwb) carries its version and its own checksum;
+    # the flash route goes to the ace2k flasher for it.
+    image = {}
+    try:
+        import ace2k_flasher
+        image = ace2k_flasher.classify_image(str(dest))
+    except Exception as e:
+        image = {"kind": "", "error": str(e)}
+    _acefw["image"] = image
+    ace2k_image = None
+    if image.get("kind") == "ace2k":
+        try:
+            entry = ace2k_flasher.KNOWN_ACE2K.get(image.get("version") or "")
+        except Exception:
+            entry = None
+        ace2k_image = {"version": image.get("version") or "",
+                       "known": entry is not None,
+                       "tested": (entry or {}).get("tested", ""),
+                       "error": image.get("error", "")}
     # md5 of the upload: a Gen-1 image is identified by its bytes, not by
     # its name (the tunnel build ships as ACE_V1.3.863_tunnel_ops.bin), so
     # the card preselects the Gen-1 entry by md5.
     return {"ok": True, "name": _acefw["file"], "size": len(data),
             "version_guess": guess,
-            "md5": hashlib.md5(data).hexdigest()}
+            "md5": hashlib.md5(data).hexdigest(),
+            "ace2k_image": ace2k_image}
+
+
+class _Ace2kDownload(BaseModel):
+    version: str
+
+
+@app.post("/api/acefw/download_ace2k")
+async def acefw_download_ace2k(req: _Ace2kDownload) -> dict:
+    """Fetch a listed ace2k release image from tobecwb's GitHub releases
+    into the staging slot, instead of an upload. Only versions on
+    KNOWN_ACE2K with a sha256, and the bytes must match it."""
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is running")
+    import ace2k_flasher
+    ver = (req.version or "").strip()
+    if not ace2k_flasher.downloadable(ver):
+        raise HTTPException(400, f"ace2k {ver or '?'} is not offered for "
+                                 "download")
+    url = ace2k_flasher.release_url(ver)
+    try:
+        async with httpx.AsyncClient(
+                timeout=ace2k_flasher.DOWNLOAD_TIMEOUT_S,
+                follow_redirects=True) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.content
+    except Exception as e:
+        _trace.warning("acefw: ace2k %s download failed: %s", ver, e)
+        raise HTTPException(502, f"download of ace2k {ver} failed: "
+                                 f"{str(e) or type(e).__name__}")
+    if not data or len(data) > ace2k_flasher.DOWNLOAD_MAX_BYTES:
+        raise HTTPException(502, f"download of ace2k {ver}: unexpected "
+                                 f"size {len(data)} bytes")
+    try:
+        ace2k_flasher.check_download(ver, data)
+    except ace2k_flasher.FlasherError as e:
+        raise HTTPException(502, str(e))
+    _trace.info("acefw: ace2k %s downloaded from %s (%d bytes, sha256 ok)",
+                ver, url, len(data))
+    out = _acefw_stage(f"ace2k-{ver}.bin", data)
+    out["downloaded"] = True
+    return out
+
+
+def _ace2k_calibration_dir() -> str:
+    import ace2k_flasher
+    return ace2k_flasher.calibration_dir(MULTIACE_DATA_DIR)
+
+
+@app.get("/api/acefw/calibrations")
+async def acefw_calibrations() -> dict:
+    """The factory calibrations the ace2k flasher saved, newest first."""
+    import ace2k_flasher
+    d = await asyncio.to_thread(_ace2k_calibration_dir)
+    files = await asyncio.to_thread(ace2k_flasher.calibration_files, d)
+    return {"dir": d, "files": files}
+
+
+@app.get("/api/acefw/calibration/{name}")
+async def acefw_calibration(name: str):
+    """One saved calibration as a download. Only the tool's own file
+    names out of the calibration folder."""
+    import ace2k_flasher
+    d = await asyncio.to_thread(_ace2k_calibration_dir)
+    path = await asyncio.to_thread(ace2k_flasher.calibration_path, d, name)
+    if not path:
+        raise HTTPException(404, "no such calibration file")
+    return FileResponse(path, media_type="text/plain", filename=name)
 
 
 async def _acefw_run(ace: int, port: str, version: str,
@@ -4189,6 +4297,216 @@ async def _acefw_run(ace: int, port: str, version: str,
                     _acefw["state"], _acefw["result"], _acefw["error"])
 
 
+async def _acefw_release_confirmed(ace: int) -> None:
+    """ACE_FW_RELEASE, then flash only against a CONFIRMED hold: if the
+    state does not show it, hand the port back and stop."""
+    _acefw.update({"state": "releasing", "ace": ace, "pct": None,
+                   "msg": "releasing serial port", "error": "",
+                   "result": None, "calibration": ""})
+    try:
+        await _mr_post("/printer/gcode/script",
+                       {"script": f"ACE_FW_RELEASE ACE={ace}"})
+    except Exception as e:
+        _acefw.update({"state": "error", "error": f"release failed: {e}"})
+        raise HTTPException(500, f"ACE_FW_RELEASE failed: {e}")
+    state2 = _parse_state(await _query_state_gated())
+    entry2 = next((a for a in (state2.get("aces") or [])
+                   if int(a.get("idx", -1)) == ace), None)
+    if not (entry2 and entry2.get("fw_hold")):
+        try:
+            await _mr_post("/printer/gcode/script",
+                           {"script": f"ACE_FW_RESUME ACE={ace}"})
+        except Exception:
+            pass
+        _acefw.update({"state": "error",
+                       "error": "release not confirmed by the printer"})
+        raise HTTPException(500, "release not confirmed by the printer")
+
+
+def _acefw_ace2k_route(engine: str, image: dict, patch_to_open: bool):
+    """Which flash goes to the ace2k flasher: an ace2k image on an ACE 2
+    (stock, ACE2-Open or ace2k), and any image on a unit that runs ace2k
+    (the way back to the factory firmware). Returns 'ace2k', 'factory' or
+    None (the ACE 1 / ACE 2 engines)."""
+    kind = (image or {}).get("kind") or ""
+    if kind == "ace2k":
+        if engine == "iap_v1":
+            raise HTTPException(400, "an ace2k image is for an ACE 2 Pro, "
+                                     "not for an ACE Pro")
+        if engine in ("ota_v2", "ace2k"):
+            return "ace2k"
+        return None
+    if engine == "ace2k":
+        if patch_to_open:
+            raise HTTPException(
+                400, "the unit runs ace2k: flash the factory firmware "
+                     "1.1.31 first, ACE2-Open afterwards")
+        return "factory"
+    return None
+
+
+async def _acefw_run_ace2k(ace: int, port: str, target: str, version: str,
+                           password, md5, dry_run: bool,
+                           was_ace2k: bool) -> None:
+    """Flash with tobecwb's ace2k flasher (vendor/ace2k_flash.pyz), then
+    hand the port back: unchanged driver -> ACE_FW_RESUME; a unit that
+    changes between stock and ace2k -> ACE_FW_SET_DRIVER + FIRMWARE_RESTART
+    (its port is named in [ace] ace2k_ports, never guessed)."""
+    def _prog(pct, msg):
+        _acefw["pct"] = pct
+        _acefw["msg"] = str(msg)
+    after = "resume"
+    try:
+        import ace2k_flasher
+        _acefw["state"] = "flashing"
+        upload = str(_ACEFW_DIR / "upload.bin")
+        image = dict(_acefw.get("image") or {})
+        calib = await asyncio.to_thread(ace2k_flasher.calibration_dir,
+                                        MULTIACE_DATA_DIR)
+        if dry_run:
+            cmd = ace2k_flasher.command(upload, port, calib, MOONRAKER_URL,
+                                        identify=True)
+            code, lines = await ace2k_flasher.run(
+                cmd, calib, _prog, timeout=60.0,
+                log=lambda l: _trace.info("ace2k flasher: %s", l))
+            res = ace2k_flasher.verdict(code, lines, identify=True)
+            res.update({"dry_run": True, "engine": "ace2k",
+                        "image_ok": image.get("kind") in ("ace2k",
+                                                          "factory"),
+                        "size": image.get("size"),
+                        "crc": image.get("crc32", "-"),
+                        "md5": image.get("md5"),
+                        "source": ("ace2k %s" % image.get("version", "?")
+                                   if image.get("kind") == "ace2k"
+                                   else "factory .bin"
+                                   if image.get("kind") == "factory"
+                                   else "-"),
+                        "image_error": (image.get("error") or
+                                        "not a raw image for the unit")})
+            _acefw["result"] = res
+            return
+        image_path, flash_version = upload, None
+        if target == "factory":
+            # Stock 1.1.31 only, byte-exact (the ACE 2 gate), also out of
+            # a .swu package.
+            import ace2_ota
+            fw = await asyncio.to_thread(ace2_ota.load_image, upload,
+                                         version, md5, password)
+            ace2_ota.check_known(fw)
+            image_path = str(_ACEFW_DIR / "factory.bin")
+            await asyncio.to_thread(Path(image_path).write_bytes, fw.data)
+            flash_version = ace2k_flasher.FACTORY_VERSION
+        cmd = ace2k_flasher.command(image_path, port, calib, MOONRAKER_URL,
+                                    version=flash_version)
+        _trace.info("acefw: ace2k flasher %s, MMU %s, %s -> %s",
+                    ace2k_flasher.FLASHER_VERSION, ace, port,
+                    "ace2k " + version if target == "ace2k"
+                    else "factory " + version)
+        code, lines = await ace2k_flasher.run(
+            cmd, calib, _prog,
+            log=lambda l: _trace.info("ace2k flasher: %s", l))
+        # Saved before the first write, so also after a failed flash.
+        _acefw["calibration"] = ace2k_flasher.saved_calibration(lines)
+        # One file per unit: a copy of the factory backup goes again.
+        _pruned = await asyncio.to_thread(
+            ace2k_flasher.prune_calibrations, calib)
+        if _pruned:
+            _trace.info("acefw: %d duplicate calibration file(s) removed: %s",
+                        len(_pruned), ", ".join(sorted(_pruned)))
+            _acefw["calibration"] = _pruned.get(
+                _acefw["calibration"], _acefw["calibration"])
+        res = ace2k_flasher.verdict(code, lines)
+        res.update({"engine": "ace2k", "target": target, "new": version,
+                    "calibration_dir": calib})
+        _acefw["result"] = res
+        if target == "ace2k" and not was_ace2k:
+            after = "ace2k"
+        elif target == "factory" and was_ace2k:
+            after = "stock"
+    except Exception as e:
+        _acefw["error"] = str(e)
+        _trace.warning("acefw: ace2k flash failed: %s", e)
+    finally:
+        _acefw["state"] = "resuming"
+        try:
+            if after == "resume":
+                await _mr_post("/printer/gcode/script",
+                               {"script": f"ACE_FW_RESUME ACE={ace}"})
+            else:
+                await _mr_post("/printer/gcode/script",
+                               {"script": f"ACE_FW_SET_DRIVER ACE={ace} "
+                                          f"DRIVER={after}"})
+                try:
+                    await _mr_post("/printer/firmware_restart", {},
+                                   timeout=15.0)
+                except (httpx.ReadTimeout, httpx.ReadError,
+                        httpx.RemoteProtocolError):
+                    pass
+                if isinstance(_acefw.get("result"), dict):
+                    _acefw["result"]["restart"] = True
+            _acefw["state"] = "error" if _acefw["error"] else "done"
+        except Exception as e:
+            _acefw["error"] = ((_acefw["error"] + "; ") if _acefw["error"]
+                               else "") + f"hand-back failed: {e}"
+            _acefw["state"] = "error"
+            if after != "resume":
+                try:
+                    await _mr_post("/printer/gcode/script",
+                                   {"script": f"ACE_FW_RESUME ACE={ace}"})
+                except Exception:
+                    pass
+        _trace.info("acefw: finished state=%s result=%s error=%s",
+                    _acefw["state"], _acefw["result"], _acefw["error"])
+
+
+async def _acefw_flash_ace2k(ace: int, p: dict, dry_run: bool):
+    """The ace2k half of /api/acefw/flash: returns the response, or None
+    when this flash belongs to the ACE 1 / ACE 2 engines."""
+    image = dict(_acefw.get("image") or {})
+    if not (_ACEFW_DIR / "upload.bin").exists():
+        return None
+    state = _parse_state(await _query_state_gated())
+    entry = next((a for a in (state.get("aces") or [])
+                  if int(a.get("idx", -1)) == ace), None)
+    if entry is None:
+        return None
+    engine = str(entry.get("flash_engine") or "")
+    target = _acefw_ace2k_route(engine, image, bool(p.get("patch_to_open")))
+    if target is None:
+        return None
+    port = str(entry.get("serial_path") or "").strip()
+    if not port:
+        raise HTTPException(400, "MMU reports no serial path")
+    try:
+        import ace2k_flasher
+        ace2k_flasher.check_tool()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    version = ""
+    if target == "ace2k":
+        version = image.get("version") or ""
+        if not dry_run:
+            if image.get("error"):
+                raise HTTPException(400, image["error"])
+            try:
+                ace2k_flasher.check_known(image)
+            except Exception as e:
+                raise HTTPException(400, str(e))
+    else:
+        version = str(p.get("version") or "").strip()
+        if not dry_run and version != ace2k_flasher.FACTORY_VERSION:
+            raise HTTPException(
+                400, "the unit runs ace2k: only the factory firmware %s "
+                     "can be flashed back" % ace2k_flasher.FACTORY_VERSION)
+    await _acefw_release_confirmed(ace)
+    asyncio.create_task(_acefw_run_ace2k(
+        ace, port, target, version, p.get("password") or None,
+        p.get("md5") or None, dry_run, engine == "ace2k"))
+    return {"ok": True, "engine": "ace2k", "target": target}
+
+
 @app.post("/api/acefw/flash")
 async def acefw_flash(payload: dict | None = None) -> dict:
     """Release the port via Klipper, then flash in the background with the
@@ -4204,6 +4522,11 @@ async def acefw_flash(payload: dict | None = None) -> dict:
     except (TypeError, ValueError):
         raise HTTPException(400, "ace index required")
     dry_run = bool(p.get("dry_run"))
+    # tobecwb's ace2k flasher: an ace2k image, or a unit that runs ace2k.
+    # Decided by the staged file and the engine Klipper reports.
+    _ace2k = await _acefw_flash_ace2k(ace, p, dry_run)
+    if _ace2k is not None:
+        return _ace2k
     version = str(p.get("version") or "").strip()
     # The client's pick, before a patch target may overwrite it below. On
     # a Gen-1 target the patch stage does not exist, so the rewrite below
@@ -4297,29 +4620,8 @@ async def acefw_flash(payload: dict | None = None) -> dict:
         version = version_req
         if not version and not dry_run:
             raise HTTPException(400, "a Gen-1 image id is required")
-    _acefw.update({"state": "releasing", "ace": ace, "pct": None,
-                   "msg": "releasing serial port", "error": "",
-                   "result": None})
-    try:
-        await _mr_post("/printer/gcode/script",
-                       {"script": f"ACE_FW_RELEASE ACE={ace}"})
-    except Exception as e:
-        _acefw.update({"state": "error", "error": f"release failed: {e}"})
-        raise HTTPException(500, f"ACE_FW_RELEASE failed: {e}")
-    # Paranoia gate: flash only against a CONFIRMED hold - if the state
-    # does not show it, hand the port back and stop.
-    state2 = _parse_state(await _query_state_gated())
-    entry2 = next((a for a in (state2.get("aces") or [])
-                   if int(a.get("idx", -1)) == ace), None)
-    if not (entry2 and entry2.get("fw_hold")):
-        try:
-            await _mr_post("/printer/gcode/script",
-                           {"script": f"ACE_FW_RESUME ACE={ace}"})
-        except Exception:
-            pass
-        _acefw.update({"state": "error",
-                       "error": "release not confirmed by the printer"})
-        raise HTTPException(500, "release not confirmed by the printer")
+    # Paranoia gate inside: flash only against a CONFIRMED hold.
+    await _acefw_release_confirmed(ace)
     asyncio.create_task(_acefw_run(
         ace, port, version, p.get("password") or None,
         p.get("md5") or None, dry_run, bool(p.get("force")),
@@ -4392,6 +4694,23 @@ async def acefw_versions() -> dict:
         # A broken Gen-1 module must not take the Gen-2 list down with it.
         out["gen1_versions"] = []
         out["gen1_error"] = str(e)
+    # ace2k (tobecwb): the released images and the vendored flasher. The
+    # image is chosen by the uploaded file (it carries its version).
+    try:
+        import ace2k_flasher
+        out["ace2k_versions"] = [
+            {"version": v, "tested": e.get("tested", ""),
+             "md5": e.get("md5", ""),
+             "download": ace2k_flasher.downloadable(v)}
+            for v, e in sorted(ace2k_flasher.KNOWN_ACE2K.items(),
+                               reverse=True)]
+        out["ace2k_flasher"] = {
+            "version": ace2k_flasher.FLASHER_VERSION,
+            "available": ace2k_flasher.available(),
+            "factory": ace2k_flasher.FACTORY_VERSION}
+    except Exception as e:
+        out["ace2k_versions"] = []
+        out["ace2k_error"] = str(e)
     return out
 
 # What this process last knew Spoolman's PA field to hold, per smid - the
@@ -7159,7 +7478,9 @@ async def queue_original_put(request: Request, queue_id: str) -> dict:
                 if size > _QUEUE_ORIG_MAX:
                     raise HTTPException(status_code=413,
                                         detail="original too large")
-                fh.write(chunk)
+                # Off the event loop: a large original on a slow eMMC would
+                # otherwise hold up every other request while it is written.
+                await asyncio.to_thread(fh.write, chunk)
         if size == 0 or head != b"\x1f\x8b":
             raise HTTPException(status_code=400, detail="expected gzip data")
         os.replace(tmp, dst)

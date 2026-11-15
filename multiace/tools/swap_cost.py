@@ -710,21 +710,39 @@ class SwapCostModel(object):
         below PURGE_MIN_MM or a lower swap_purge_floor, nor above
         INNER_FLUSH_FILAMENT's own limit."""
         value = float(length_mm or 0.0)
-        if (self.swap_purge_scale == 100 and not self.swap_purge_floor
+        eff_scale = self.purge_scale_effective()
+        if (eff_scale == 100 and not self.swap_purge_floor
                 and not self.swap_purge_cap):
             # Policy at its defaults: the engine leaves the length alone
             # (a fixed swap_purge_length below 40 stays what it is).
             return min(value, PURGE_LENGTH_MAX_MM)
-        scale = min(max(self.swap_purge_scale, PURGE_SCALE_MIN_PCT),
+        scale = min(max(eff_scale, PURGE_SCALE_MIN_PCT),
                     PURGE_SCALE_MAX_PCT)
         value *= scale / 100.0
         if self.swap_purge_floor > 0:
             value = max(value, self.swap_purge_floor)
         if self.swap_purge_cap > 0:
             value = min(value, self.swap_purge_cap)
-        hard = (min(self.swap_purge_floor, PURGE_MIN_MM)
-                if self.swap_purge_floor > 0 else PURGE_MIN_MM)
+        hard_min = PURGE_MIN_MM * self.purge_shrink()
+        hard = (min(self.swap_purge_floor, hard_min)
+                if self.swap_purge_floor > 0 else hard_min)
         return min(max(value, hard), PURGE_LENGTH_MAX_MM)
+
+    def purge_shrink(self):
+        """Engine's purge_shrink: below 100 % the purge control also shrinks
+        the hard minimum and the dock prime's extra."""
+        return min(max(self.purge_scale_effective(), PURGE_SCALE_MIN_PCT),
+                   100) / 100.0
+
+    def purge_custom(self):
+        """Engine's purge_custom: own purge options switch the control off."""
+        return bool(self.swap_purge_length or self.swap_purge_floor
+                    or self.swap_purge_cap
+                    or abs(self.bg_prime_scale - 1.0) > 1e-6
+                    or abs(self.bg_prime_extra - BG_LOAD_PRIME_EXTRA_MM) > 1e-6)
+
+    def purge_scale_effective(self):
+        return 100.0 if self.purge_custom() else self.swap_purge_scale
 
     def clamp_purge_mm(self, requested_mm):
         """Clamp a flush-matrix stamp to the range the post-processor uses."""
@@ -803,7 +821,9 @@ def build_estimate(model, header, timeline, *, materials=None,
             scale = getattr(model, "bg_prime_scale", 1.0)
             if scale != 1.0:
                 purge = model.apply_purge_policy(purge * scale)
-            purge += getattr(model, "bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM)
+            shrink = getattr(model, "purge_shrink", None)
+            purge += (getattr(model, "bg_prime_extra", BG_LOAD_PRIME_EXTRA_MM)
+                      * (shrink() if shrink else 1.0))
         added_s += float(seconds or 0.0)
         purge_mm_total += purge
         if not bg_parked:
@@ -888,6 +908,10 @@ def build_estimate(model, header, timeline, *, materials=None,
         tool_total_g = print_g + pg
         totals_mm += print_mm + pmm
         totals_g += tool_total_g
+        # The header lists every filament of the profile; one this print
+        # never uses (no print, no purge) gets no row.
+        if not used_tools and print_mm <= 0 and pmm <= 0:
+            continue
         row = {
             "t": t,
             "print_mm": _round(print_mm), "print_g": _round(print_g, 2),

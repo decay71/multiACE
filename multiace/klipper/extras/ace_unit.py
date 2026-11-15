@@ -33,7 +33,8 @@ STATIC_FIELDS = (
     'fw_tag_pair_dedupe', 'has_humidity', 'has_dryer', 'has_exhaust_valve',
     'has_feed_check', 'flash_engine', 'v2_command_set', 'lanes_concurrent',
     'speed_unit', 'busy_reply', 'has_stable_id', 'freewheel_print_mode',
-    'locate_method', 'calibration_feed',
+    'locate_method', 'calibration_feed', 'host_tag_session',
+    'buffer_relax', 'fa_stop_rollback',
 )
 
 # Caps derived from the firmware string and the Gen-1 probe.
@@ -78,7 +79,8 @@ REASONS = {
     'has_exhaust_valve': 'SET_VALVE (cmd 66) is an ACE 2 command',
     'has_feed_check': 'set_feed_check exists on the ACE 2 only',
     'flash_engine': 'ACE Pro flashes over the V1 IAP JSON-RPC, ACE 2 over '
-                    'the protobuf OTA',
+                    'the protobuf OTA, an ace2k unit with the ace2k '
+                    'flasher',
     'v2_command_set': 'the A_* diagnostics speak protobuf commands',
     'calibration_feed': 'chunked: 500 mm then 100 mm steps, the position '
                         'from the lane encoder or the time; single: one feed '
@@ -93,6 +95,18 @@ REASONS = {
                     'patch; the ACE Pro community firmware is CV-prefixed '
                     'and has the Gen-1 tunnel instead',
     'gen1_tunnel': 'a Gen-1 CFW ACE Pro that answered the tunnel probe',
+    'host_tag_session': 'the host drives the reader and decodes the tag '
+                        '(ace2k): reads arrive in the status as tag_read and '
+                        'go through the host-read ingest',
+    'buffer_relax': 'the unit reports its buffer plunger and can roll a '
+                    'lane back until the plunger is at rest (ace2k); a lane '
+                    'left full pauses the assist of every lane on the unit '
+                    '(the pulled switches share one input)',
+    'fa_stop_rollback': 'the feed assist is switched off with a 5 mm '
+                        'rollback (ACE Pro); a unit that takes '
+                        'stop_feed_assist alone must not get it: on the '
+                        'ace2k the rollback wound a loose strand out of '
+                        'the inlet',
     'has_stable_id': 'the ACE 2 answers discover_device with its 96-bit MCU '
                      'id (uid1..3), unique per device; the ACE Pro has no '
                      'such query and an empty USB serial, so it is only '
@@ -208,7 +222,8 @@ def _none_fields():
               'v2_command_set', 'blocking_write_on_reactor',
               'lanes_concurrent', 'bootloader_held', 'rc522_tunnel',
               'can_write_tags', 'insert_bites_while_busy', 'dryer_flag_bits',
-              'gen1_tunnel', 'tag_read', 'freewheel_print_mode'):
+              'gen1_tunnel', 'tag_read', 'freewheel_print_mode',
+              'host_tag_session', 'buffer_relax', 'fa_stop_rollback'):
         d[k] = False
     d['community_fw'] = ''
     return d
@@ -253,6 +268,10 @@ def caps_for(codec, firmware='', gen1_probe=None):
             tunnel and ver is not None and ver >= DRYER_FLAG_BITS_MIN_FW)
         fields['gen1_tunnel'] = bool(gen1_probe and gen1_probe[1])
         fields['tag_read'] = bool(tunnel or fields['gen1_tunnel'])
+    if fields.get('host_tag_session'):
+        # The host serves the unit's tag sessions itself (no firmware
+        # string needed): reading is always possible.
+        fields['tag_read'] = True
     key = (codec if isinstance(codec, type) else type(codec), firmware,
            gen1_probe)
     return UnitCaps(fields, REASONS, key=key)

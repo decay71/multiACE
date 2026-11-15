@@ -35,6 +35,23 @@ SECTION_RE = re.compile(r'^\[\s*(ace(?:\s+\d+)?|ace_bg_swap|ace_tipform)\s*\]\s*
 # (the normal merge only carries keys present - live or commented - in
 # the new default; a tip-form table would be silently dropped).
 PRESERVE_ALL_KEYS_SECTIONS = ('ace_tipform',)
+# Options the shipped default no longer lists (one purge control instead of
+# eight) but the code still reads: a value the user set survives a refresh.
+# A line that only repeats the code default is dropped.
+KEEP_USER_KEYS = {
+    'ace': {'swap_purge_length': 0., 'swap_purge_floor': 0.,
+            'swap_purge_cap': 0.},
+    'ace_bg_swap': {'prime_extra': 40., 'prime_scale': 1.,
+                    'prime_speed': 4., 'grip_length': 60.,
+                    'grip_speed': 5.},
+}
+
+
+def _is_default(value: str, default: float) -> bool:
+    try:
+        return float(value.split('#')[0].strip()) == default
+    except ValueError:
+        return False
 # '-' in the key body: DB material names are hyphenated (petg-cf, pla-cf)
 # and [ace_tipform] keys are spelled exactly like the lowercased material.
 KEY_RE = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_\-@]*)\s*:\s*(.*)$')
@@ -78,10 +95,20 @@ def parse_user_values(path: str) -> dict[str, dict[str, str]]:
 def _flush_preserved(current, user_values, written, out_lines, notes):
     """Emit user keys of a PRESERVE_ALL_KEYS_SECTIONS section that the new
     default does not carry, before the section ends."""
-    if current not in PRESERVE_ALL_KEYS_SECTIONS or current not in user_values:
+    if current not in user_values:
         return
-    extra = [k for k in sorted(user_values[current].keys())
-             if (current, k) not in written]
+    if current in PRESERVE_ALL_KEYS_SECTIONS:
+        keep = sorted(user_values[current].keys())
+    else:
+        keep = []
+        for k, default in KEEP_USER_KEYS.get(current, {}).items():
+            if k not in user_values[current]:
+                continue
+            if _is_default(user_values[current][k], default):
+                written.add((current, k))
+                continue
+            keep.append(k)
+    extra = [k for k in keep if (current, k) not in written]
     if not extra:
         return
     insert_at = len(out_lines)

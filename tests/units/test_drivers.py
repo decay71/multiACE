@@ -58,11 +58,34 @@ def test_defaults_and_order():
     enabled = D.read_enabled_drivers(_Cfg({}))
     assert enabled == {d.name: d.default for d in D.DRIVERS}
     on = D.read_enabled_drivers(_Cfg({'enable_ace_v2': 'true',
-                                      'enable_cfs': 'true'}))
+                                      'enable_cfs': 'true',
+                                      'enable_ace2k': 'true'}))
     assert D.enabled_codecs(on) == D.KNOWN_PROTOCOLS
-    assert D.describe(on) == ('ace_v1 on, ace_v2 on, '
-                              'cfs on (untested, opt-in)')
+    assert D.describe(on) == ('ace_v1 on, ace2k on (new, opt-in), '
+                              'ace_v2 on, cfs on (new, opt-in)')
     assert 'ace_v2 off' in D.describe(enabled)
+    # ace2k claims its named ports before ace_v2 sees the same USB id.
+    names = [d.name for d in D.DRIVERS]
+    assert names.index('ace2k') < names.index('ace_v2')
+
+
+def test_broken_optional_driver_disables_itself():
+    """An optional driver whose module fails to import becomes a stand-in
+    that discovers nothing; its switch is still read and the log names
+    the reason."""
+    D = _mod()
+    stub = D._unavailable_codec('demo', ImportError('boom'))
+    assert stub.NAME == 'demo'
+    assert stub.discover() == []
+    assert 'boom' in stub.UNAVAILABLE
+    drv = D.Driver('demo', stub, 'enable_demo', False)
+    saved = D.DRIVERS
+    try:
+        D.DRIVERS = saved + (drv,)
+        assert 'demo on (unavailable: ImportError: boom)' in D.describe(
+            {'demo': True})
+    finally:
+        D.DRIVERS = saved
 
 
 def test_shipped_cfg_names_every_switch():
