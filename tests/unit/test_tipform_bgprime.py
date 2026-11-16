@@ -24,14 +24,19 @@ def _mod(tf, mode, **tables):
 
 
 def test_the_token_is_a_parameter_not_a_step(tf):
-    toks, ut, lt, bt, prime, bgpf = tf.parse_table(
-        "57@400, -57@1500, bgprimespeed:360")
+    (toks, ut, lt, bt, prime, bgpf, bgchunk, bgretract, bgretractf,
+     bgscale, bgseat, bgseatf) = tf.parse_table(
+        "57@400, -57@1500, bgprimespeed:360, bgchunk:12, bgretract:2.0, "
+        "bgretractspeed:1800, bgprimescale:0.35, bgseat:38, bgseatspeed:450")
     assert toks == [("move", 57.0, 400.0), ("move", -57.0, 1500.0)]
-    assert bgpf == 360.0 and ut is lt is bt is prime is None
+    assert bgpf == 360.0 and bgchunk == 12.0 and bgretract == 2.0
+    assert bgretractf == 1800.0 and bgscale == 0.35
+    assert bgseat == 38.0 and bgseatf == 450.0
+    assert ut is lt is bt is prime is None
 
 
 def test_it_may_be_the_only_content_of_a_table(tf):
-    toks, *_rest, bgpf = tf.parse_table("bgprimespeed:300")
+    toks, ut, lt, bt, prime, bgpf, *_rest = tf.parse_table("bgprimespeed:300")
     assert toks == [] and bgpf == 300.0
 
 
@@ -42,8 +47,8 @@ def test_out_of_range_is_refused(tf, bad):
 
 
 def test_the_range_edges_are_allowed(tf):
-    assert tf.parse_table("bgprimespeed:60")[-1] == 60.0
-    assert tf.parse_table("bgprimespeed:1200")[-1] == 1200.0
+    assert tf.parse_table("bgprimespeed:60")[5] == 60.0
+    assert tf.parse_table("bgprimespeed:1200")[5] == 1200.0
 
 
 def test_it_follows_the_material_vendor_soft_default_lookup(tf):
@@ -79,3 +84,36 @@ def test_a_bad_value_drops_only_that_table(tf):
                                   ("petg", "bgprimespeed:360")])
     assert dropped == ["pla"]
     assert m.bg_prime_speed_for("petg") == 360.0
+
+
+def test_new_bg_tokens_lookup_and_status(tf):
+    m = _mod(tf, "custom",
+             default="bgchunk:8, bgretract:1.5, bgretractspeed:1200, "
+                     "bgprimescale:0.5, bgseat:40, bgseatspeed:300",
+             pla="bgchunk:10, bgretract:2.0, bgretractspeed:1800, "
+                 "bgprimescale:0.35, bgseat:38, bgseatspeed:450")
+    assert m.bg_chunk_for("pla") == 10.0
+    assert m.bg_retract_for("pla") == 2.0
+    assert m.bg_retract_speed_for("pla") == 1800.0
+    assert m.bg_prime_scale_for("pla") == 0.35
+    assert m.bg_seat_for("pla") == 38.0
+    assert m.bg_seat_speed_for("pla") == 450.0
+    assert m.bg_retract_speed_for("petg") == 1200.0
+    assert m.bg_seat_speed_for("petg") == 300.0
+    st = m.get_status(0)
+    assert st["bg_retract_speeds"] == {"default": 1200.0, "pla": 1800.0}
+    assert st["bg_seat_speeds"] == {"default": 300.0, "pla": 450.0}
+    assert st["bg_seats"] == {"default": 40.0, "pla": 38.0}
+
+
+@pytest.mark.parametrize("bad", [
+    "bgchunk:1", "bgchunk:51",
+    "bgretract:-1", "bgretract:11",
+    "bgretractspeed:59", "bgretractspeed:3601",
+    "bgprimescale:0.04", "bgprimescale:2.1",
+    "bgseat:9", "bgseat:61",
+    "bgseatspeed:59", "bgseatspeed:901",
+])
+def test_new_bg_tokens_out_of_range_refused(tf, bad):
+    with pytest.raises(ValueError):
+        tf.parse_table(bad)

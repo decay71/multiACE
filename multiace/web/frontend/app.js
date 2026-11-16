@@ -5121,7 +5121,7 @@ createApp({
     // {type, a, b}: move -> a@b, others -> type:a. Mirrors the token grammar
     // in ace_tipform.parse_table; the backend parse_table remains the strict
     // gate on save, so a half-built table can never reach Klipper.
-    const TIPFORM_STEP_TYPES = ["move", "pause", "temp", "waittemp", "fan", "unloadtemp", "loadtemp", "bgtemp", "bgprimespeed", "prime", "primetemp"];
+    const TIPFORM_STEP_TYPES = ["move", "pause", "temp", "waittemp", "fan", "unloadtemp", "loadtemp", "bgtemp", "bgprimespeed", "bgchunk", "bgretract", "bgretractspeed", "bgprimescale", "bgseat", "bgseatspeed", "prime", "primetemp"];
     function tipformParseSteps(tableStr) {
       const steps = [];
       for (let part of String(tableStr || "").split(",")) {
@@ -5129,7 +5129,7 @@ createApp({
         if (!part) continue;
         const low = part.toLowerCase();
         let m;
-        if ((m = /^(pause|waittemp|unloadtemp|loadtemp|bgtemp|bgprimespeed|primetemp|prime|temp|fan)\s*:\s*(.*)$/.exec(low))) {
+        if ((m = /^(pause|waittemp|unloadtemp|loadtemp|bgtemp|bgprimespeed|bgchunk|bgretract|bgretractspeed|bgprimescale|bgseat|bgseatspeed|primetemp|prime|temp|fan)\s*:\s*(.*)$/.exec(low))) {
           steps.push({type: m[1], a: m[2].trim(), b: ""});
         } else if (part.includes("@")) {
           const [mm, f] = part.split("@");
@@ -5163,7 +5163,9 @@ createApp({
       if (step.type === "move") return "mm";
       if (step.type === "pause") return "ms";
       if (step.type === "fan") return "0-255";
-      if (step.type === "bgprimespeed") return "mm/min";
+      if (step.type === "bgprimespeed" || step.type === "bgretractspeed" || step.type === "bgseatspeed") return "mm/min";
+      if (step.type === "bgchunk" || step.type === "bgretract" || step.type === "bgseat" || step.type === "prime") return "mm";
+      if (step.type === "bgprimescale") return "0.05-2.0";
       return "°C";
     }
     // The firmware's stock pull (CONTROL_RETRACT_ACTION), as a starting point
