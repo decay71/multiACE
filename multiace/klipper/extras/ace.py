@@ -1865,6 +1865,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # truth, not flow truth. Consumed ONE-SHOT by the arrival swap's
         # pick-time flow check (_bg_pick_flow_check, LOG-ONLY for now).
         self._bg_load_unverified = set()
+        # (head, seconds) of the last ACE_BG_WAIT hold, taken by the arrival
+        # swap that follows (ace_swap._take_bg_hold).
+        self._bg_hold = None
         # head -> missing prime mm from a grip/prime pick-abort (a pick cut
         # the bg purge short; the head is bookkept loaded and the arrival
         # no-ops, so WITHOUT a top-up the melt zone keeps the old colour).
@@ -6742,6 +6745,26 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self._job = None
             logging.info('[multiACE] history start failed (ignored): %s' % e)
 
+    # The history file is capped at 2 MB for 200 jobs, so a 1000-swap print
+    # must not eat it: the calibration only needs a few samples per kind
+    # (MIN_CALIBRATION_SAMPLES), ~40 bytes each.
+    JOB_SWAPS_MAX = 300
+
+    def _job_note_swap(self, kind, seconds):
+        """Record how long one ACE_SWAP_HEAD took (its flush included, the
+        load ends in it) under its swap_cost kind. The history aggregates
+        these into the per-printer medians the estimate calibrates on."""
+        try:
+            job = self._job
+            if job is None or not kind:
+                return
+            swaps = job.setdefault('swaps', [])
+            if len(swaps) < self.JOB_SWAPS_MAX:
+                swaps.append({'kind': kind, 'seconds': round(seconds, 1)})
+        except Exception as e:
+            logging.info('[multiACE] history swap note failed (ignored): %s'
+                         % e)
+
     def _job_note_end(self):
         try:
             job = self._job
@@ -6813,6 +6836,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 'duration': now - job['start_time'],
                 'result': result,
                 'assignment': assignment,
+                'swaps': job.get('swaps', []),
             })
         except Exception as e:
             logging.info('[multiACE] history write failed (ignored): %s' % e)

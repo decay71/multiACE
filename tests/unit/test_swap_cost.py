@@ -52,11 +52,112 @@ class TestSwapArithmetic:
     def test_day_one_matches_the_old_hardcoded_costs(self, model):
         """The constants were seeded so the shipped defaults land on the
         old whole-swap figures (BG_SWAP_COST_INLINE_S=210 / _BG_S=30),
-        before the purge, which the estimate bills on top. If this drifts,
-        every existing plan silently changes shape."""
-        assert model.swap_seconds("cross_ace_inline") == pytest.approx(210,
-                                                                       abs=2)
+        before the purge, which the estimate bills on top. The inline seed
+        was then lowered to the measured 141-146 s (deliberate, see
+        UNMEASURED_S). If this drifts, every existing plan silently changes
+        shape."""
+        assert model.swap_seconds("cross_ace_inline") == pytest.approx(
+            146, abs=3)
         assert model.swap_seconds("cross_ace_bg") == pytest.approx(30, abs=1)
+
+    def test_spool_change_does_not_bill_retract_and_feed_twice(self, model):
+        """The retract and the feed come from the config. What
+        ace_spool_change adds on top must leave room for them inside the
+        62 s the unit's whole spool change used to be priced at."""
+        retract = CFG["swap_retract_length"] / CFG["retract_speed"]
+        feed = CFG["load_length"] / CFG["feed_speed"]
+        assert (sc.UNMEASURED_S["ace_spool_change"] + retract + feed
+                <= 62.0)
+
+
+class TestTipFormFromTokens:
+    def test_stock_pull_is_about_19_seconds(self):
+        assert sc.STOCK_TIP_PULL_S == pytest.approx(19.0, abs=0.1)
+
+    def test_pull_seconds_is_length_over_feedrate_plus_pauses(self):
+        # 60 mm at 600 mm/min = 6 s, 10 mm at 300 = 2 s, 0.5 s pause
+        assert sc.tip_pull_seconds([(60, 600), (-10, 300)], 0.5) \
+            == pytest.approx(8.5)
+
+    def test_pull_seconds_skips_bad_entries(self):
+        assert sc.tip_pull_seconds([(10, 0), ("x", 5), (), (6, 360)]) \
+            == pytest.approx(1.0)
+        assert sc.tip_pull_seconds(None) == 0.0
+
+    def test_no_table_leaves_the_stock_constant(self, model):
+        assert model.tip_form_seconds() == sc.UNMEASURED_S["tip_form"]
+
+    def test_the_stock_table_changes_nothing(self):
+        stock = sc.SwapCostModel.from_params(
+            dict(CFG, tip_form_pull_s=sc.STOCK_TIP_PULL_S))
+        plain = sc.SwapCostModel.from_params(CFG)
+        assert stock.swap_seconds("same_ace") \
+            == pytest.approx(plain.swap_seconds("same_ace"))
+
+    def test_a_longer_pull_lengthens_an_inline_swap_one_for_one(self, model):
+        slow = sc.SwapCostModel.from_params(
+            dict(CFG, tip_form_pull_s=sc.STOCK_TIP_PULL_S + 10))
+        assert slow.swap_seconds("same_ace") \
+            == pytest.approx(model.swap_seconds("same_ace") + 10)
+        assert slow.swap_seconds("cross_ace_inline") \
+            == pytest.approx(model.swap_seconds("cross_ace_inline") + 10)
+
+    def test_a_shorter_pull_never_goes_below_the_frame(self):
+        quick = sc.SwapCostModel.from_params(dict(CFG, tip_form_pull_s=0))
+        frame = sc.UNMEASURED_S["tip_form"] - sc.STOCK_TIP_PULL_S
+        assert quick.tip_form_seconds() == pytest.approx(frame)
+
+    def test_the_pull_does_not_touch_a_background_arrival_or_first_load(
+            self, model):
+        slow = sc.SwapCostModel.from_params(dict(CFG, tip_form_pull_s=90))
+        for kind in ("cross_ace_bg", "first_load", "head_change"):
+            assert slow.swap_seconds(kind) == model.swap_seconds(kind)
+
+    def test_the_bg_window_follows_the_pull(self, model):
+        slow = sc.SwapCostModel.from_params(
+            dict(CFG, tip_form_pull_s=sc.STOCK_TIP_PULL_S + 60))
+        assert slow.bg_window_minutes() \
+            == pytest.approx(model.bg_window_minutes() + 60 * 1.25 / 60,
+                             abs=0.02)
+
+    def test_a_bad_pull_value_falls_back_to_stock(self):
+        m = sc.SwapCostModel.from_params(dict(CFG, tip_form_pull_s="abc"))
+        assert m.tip_form_seconds() == sc.UNMEASURED_S["tip_form"]
+
+
+class TestBgPrimeScale:
+    @staticmethod
+    def _purge_mm(**params):
+        m = sc.SwapCostModel.from_params(params)
+        est = sc.build_estimate(
+            m, None, [{"kind": "cross_ace_bg", "seconds": 0,
+                       "purge_mm": 100, "t": 0}])
+        return est["totals"]["mm"]
+
+    def test_default_scale_is_off(self):
+        assert self._purge_mm() == pytest.approx(140.0)
+
+    def test_scale_applies_to_the_purge_before_prime_extra(self):
+        assert self._purge_mm(bg_prime_scale=0.5) == pytest.approx(90.0)
+        assert self._purge_mm(bg_prime_scale=0.5, bg_prime_extra=0) \
+            == pytest.approx(50.0)
+
+    def test_scale_leaves_an_inline_purge_alone(self):
+        m = sc.SwapCostModel.from_params({"bg_prime_scale": 0.5})
+        est = sc.build_estimate(
+            m, None, [{"kind": "cross_ace_inline", "seconds": 0,
+                       "purge_mm": 100, "t": 0}])
+        assert est["totals"]["mm"] == pytest.approx(100.0)
+
+    def test_scale_leaves_an_aborted_bg_swap_alone(self):
+        m = sc.SwapCostModel.from_params({"bg_prime_scale": 0.5})
+        est = sc.build_estimate(
+            m, None, [{"kind": "cross_ace_bg", "seconds": 0,
+                       "purge_mm": 100, "purge_inline": True, "t": 0}])
+        assert est["totals"]["mm"] == pytest.approx(100.0)
+
+    def test_a_bad_scale_means_off(self):
+        assert self._purge_mm(bg_prime_scale="abc") == pytest.approx(140.0)
 
     def test_a_longer_bowden_costs_more(self, model):
         slow = sc.SwapCostModel.from_params(dict(CFG, load_length=4200))
@@ -132,6 +233,36 @@ class TestCalibration:
         assert cal.swap_seconds("same_ace") == pytest.approx(400.0)
         assert cal.swap_seconds("cross_ace_bg") \
             == pytest.approx(model.swap_seconds("cross_ace_bg"))
+
+    def test_a_measured_swap_already_holds_its_purge(self, model):
+        """A recorded swap time is the whole ACE_SWAP_HEAD, which ends in the
+        flush. Billing the purge on top of a measured median counts it
+        twice. Job 000086: 38 same-ace, 8 inline and 28 background swaps,
+        recorded medians 138.7 / 50.7 / 7.3 s, about 6,000 s in all, where
+        the estimate said 10,189 s."""
+        cal = model.with_calibration({
+            "same_ace": {"median_s": 138.7, "n": 38},
+            "cross_ace_inline": {"median_s": 50.7, "n": 8},
+            "cross_ace_bg": {"median_s": 7.3, "n": 28}})
+        timeline = ([{"kind": "same_ace"}] * 38
+                    + [{"kind": "cross_ace_inline"}] * 8
+                    + [{"kind": "cross_ace_bg"}] * 28)
+        est = sc.build_estimate(cal, None, timeline)
+        recorded = 38 * 138.7 + 8 * 50.7 + 28 * 7.3
+        assert est["added_s"] == pytest.approx(recorded, abs=1)
+
+    def test_an_unmeasured_swap_still_pays_its_purge(self, model):
+        est = sc.build_estimate(model, None, [{"kind": "same_ace"}])
+        assert est["added_s"] == pytest.approx(
+            model.swap_seconds("same_ace")
+            + model.purge_seconds(model.resolve_swap_purge_mm()), abs=1)
+
+    def test_an_aborted_background_swap_pays_its_inline_purge(self, model):
+        cal = model.with_calibration(
+            {"cross_ace_bg": {"median_s": 7.3, "n": 28}})
+        est = sc.build_estimate(
+            cal, None, [{"kind": "cross_ace_bg", "purge_inline": True}])
+        assert est["added_s"] > 7.3 + 5
 
 
 class TestResolveSwapPurgeMm:

@@ -1397,16 +1397,81 @@ class SwapMixin:
                 '[multiACE] dwell fan toggle failed (ignored): %s' % e)
             self._dwell_fan_prev = None
 
+    def _swap_kind_before(self, gcmd):
+        """The swap_cost kind of the ACE_SWAP_HEAD about to run, or None
+        when it is not worth timing (a head without an ACE, bad arguments,
+        or a swap onto the filament it already holds). Never raises."""
+        try:
+            head = gcmd.get_int('HEAD')
+            ace_index = gcmd.get_int('ACE')
+            slot = gcmd.get_int('SLOT', head)
+            if not self.head_uses_ace(head):
+                return None
+            if gcmd.get_int('INITIAL', 0):
+                return 'first_load'
+            source = self._head_source.get(head)
+            if not source:
+                # The background engine only transported the filament to
+                # the head (or a full swap was picked before grip): the
+                # head is empty and ACE_SWAP_HEAD runs just the load, about
+                # 55 s. Not a real inline swap, so it must not calibrate
+                # cross_ace_inline.
+                staged = (getattr(self, '_bg_staged', None) or {}).get(head)
+                if (staged is not None and int(staged[0]) == ace_index
+                        and int(staged[1]) == slot):
+                    return 'cross_ace_staged'
+            if source:
+                if (source['ace_index'] == ace_index
+                        and source['slot'] == slot
+                        and not source.get('load_failed')):
+                    # Already there: a head the background engine loaded is
+                    # the handover (cross_ace_bg), anything else a plain
+                    # pick that needs no filament change.
+                    return ('cross_ace_bg'
+                            if head in self._bg_load_unverified else None)
+                if source['ace_index'] == ace_index:
+                    return 'same_ace'
+            return 'cross_ace_inline'
+        except Exception:
+            return None
+
+    def _take_bg_hold(self, gcmd):
+        """Seconds this head spent held in ACE_BG_WAIT right before this
+        swap (0 if none). Always consumed, so a stale hold never carries over
+        to a later swap. Never raises."""
+        try:
+            hold = getattr(self, '_bg_hold', None)
+            self._bg_hold = None
+            if hold and hold[0] == gcmd.get_int('HEAD'):
+                return float(hold[1])
+        except Exception:
+            pass
+        return 0.0
+
     def cmd_ACE_SWAP_HEAD(self, gcmd):
         # Wrapper: a bg-wait park (see _wait_bg_op park=True) must never
         # outlive the command - whatever exit the body takes, the head
         # returns to the print position unless a capture consumed it.
         self._bg_wait_parked = None
+        # What this swap is, read BEFORE the body consumes it: the head's
+        # current source and whether a finished background load is waiting
+        # on it. Recorded in the job history once the swap succeeded.
+        swap_t0 = time.monotonic()
+        swap_kind = self._swap_kind_before(gcmd)
+        # The arrival hold (ACE_BG_WAIT, just before this command) is not
+        # part of this command's own time. A background arrival's real cost
+        # is the hold plus the arrival, so take it in; any other swap just
+        # clears it.
+        hold_s = self._take_bg_hold(gcmd)
+        if swap_kind not in ('cross_ace_bg', 'cross_ace_staged'):
+            hold_s = 0.0
         with self._object_exclusion_suspended('ACE_SWAP_HEAD'):
             try:
                 result = self._cmd_ACE_SWAP_HEAD_body(gcmd)
             finally:
                 self._bg_wait_unpark()
+        self._job_note_swap(swap_kind,
+                            time.monotonic() - swap_t0 + hold_s)
         # Auto-load block: a flow calibration deferred for this head (it was
         # empty when the start gcode asked) runs now that it is loaded.
         if gcmd.get_int('INITIAL', 0):
