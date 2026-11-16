@@ -146,6 +146,10 @@ PICK_NOTICE_PHASES = ('HEAT', 'PULL', 'LD_FEED', 'LD_GRIP', 'LD_PRIME')
 # Default of [ace_bg_swap] prime_extra.
 BG_LOAD_PRIME_EXTRA = 40.
 BG_LOAD_RETRACT_SPEED = 25.  # mm/s anti-ooze end retract
+# Minimum temperature (C) considered hot/holding for parked idle evaluation
+BG_PARKED_MIN_TEMP = 150.0
+# Periodic tick interval (seconds) for evaluating parked head timeouts
+BG_PARKED_CHECK_INTERVAL = 5.0
 # A retry (retract N mm, push again) the unit ends 'blocked' within this of
 # N came back to the place the attempt before stopped at.
 BG_SAME_PLACE_TOL_MM = 10.0
@@ -332,6 +336,18 @@ class AceBgSwap:
         # are echoed to the console on every arrival (same as passing DEBUG=1).
         # False = quiet console, decisions logged to klippy.log only. Read unconditionally.
         self.debug = config.getboolean('debug', False)
+        # Parked head idle timeout: seconds a docked head may sit hot (>=150C)
+        # before dropping its temperature to parked_standby_temp (0 = disabled).
+        self.parked_head_timeout = config.getfloat(
+            'parked_head_timeout', 0.0, minval=0.0)
+        # Temperature to set when parked_head_timeout expires (default 0C = off).
+        self.parked_standby_temp = config.getfloat(
+            'parked_standby_temp', 0.0, minval=0.0, maxval=300.0)
+        # Tracking per parked head: head -> monotonic timestamp when it entered park
+        self._parked_since = {}
+        # Saved pre-timeout target temp per head to restore on reheat
+        self._saved_parked_target = {}
+        self._parked_timer = None
         # Arrival holds (ACE_BG_WAIT, stamped by the preflight before a
         # toolchange to a head with a running background op). False turns
         # every stamp into a no-op, so the same processed file prints with
@@ -480,6 +496,10 @@ class AceBgSwap:
         self.gcode.register_command('ACE_BG_AWAIT_PHASE',
                                     self.cmd_ACE_BG_AWAIT_PHASE,
                                     desc=self.cmd_ACE_BG_AWAIT_PHASE_help)
+        if self.parked_head_timeout > 0:
+            self._parked_timer = self.reactor.register_timer(
+                self._parked_timeout_tick,
+                self.reactor.monotonic() + BG_PARKED_CHECK_INTERVAL)
 
 
     def get_status(self, eventtime):
@@ -499,6 +519,8 @@ class AceBgSwap:
             'debug': bool(self.debug),
             'arrival_wait': bool(self.arrival_wait),
             'load_mode': str(self.load_mode),
+            'parked_head_timeout': float(self.parked_head_timeout),
+            'parked_standby_temp': float(self.parked_standby_temp),
         }
 
     # Web/gcode names of the three load modes and the config value each
@@ -590,6 +612,7 @@ class AceBgSwap:
         path. Returns True when the caller may wait for the handover
         (a phase that polls _check_docked), False when nothing runs on
         this head or the phase never aborts (bulk retract)."""
+        self.on_head_active(head)
         _drop = getattr(self, '_drop_deferred', None)
         if _drop is not None and _drop(head):
             # A held swap for the head that is about to be picked: it would
@@ -851,6 +874,116 @@ class AceBgSwap:
 
     def _ext_name(self, head):
         return 'extruder' if head == 0 else 'extruder%d' % head
+
+    def _get_active_head(self):
+        try:
+            toolhead = self.printer.lookup_object('toolhead', None)
+            if toolhead is None:
+                return None
+            ext = toolhead.get_extruder()
+            if ext is None:
+                return None
+            idx = getattr(ext, 'extruder_index',
+                          getattr(ext, 'extruder_num', None))
+            if idx is not None:
+                return int(idx)
+            name = (getattr(ext, 'name', '')
+                    or (ext.get_name() if hasattr(ext, 'get_name') else ''))
+            if name == 'extruder':
+                return 0
+            if name.startswith('extruder'):
+                return int(name.replace('extruder', ''))
+        except Exception:
+            pass
+        return None
+
+    def on_print_end(self):
+        """Clear parked idle timers and saved targets when a print ends so
+        stale targets never carry over to a subsequent print."""
+        self._parked_since.clear()
+        self._saved_parked_target.clear()
+
+    def on_head_active(self, head):
+        """Called when a head becomes active or is picked to print.
+        Resets the parked timer and re-heats only if its current target is
+        still the standby temperature set by the timeout."""
+        self._parked_since.pop(head, None)
+        saved = self._saved_parked_target.pop(head, None)
+        if saved is not None and saved > 0:
+            try:
+                ext = self.printer.lookup_object(self._ext_name(head), None)
+                pheaters = self.printer.lookup_object('heaters', None)
+                ace = self.printer.lookup_object('ace', None)
+                if ext is not None and pheaters is not None:
+                    heater = ext.get_heater()
+                    cur_tgt = float(getattr(heater, 'target_temp', 0.) or 0.)
+                    standby = float(self.parked_standby_temp)
+                    if abs(cur_tgt - standby) < 0.5 and cur_tgt < saved:
+                        self._set_heat(ace, pheaters, heater, saved)
+                        self._say('head %d: reheating from standby '
+                                  '(%.0fC -> %.0fC)'
+                                  % (self._dh(head), cur_tgt, saved))
+            except Exception as e:
+                logging.info('[multiACE] [parked-timer] head %d restore heat '
+                             'failed: %s' % (head, e))
+
+    def _parked_timeout_tick(self, eventtime):
+        if self.parked_head_timeout <= 0:
+            return self.reactor.NEVER
+        try:
+            if not self._print_active():
+                self._parked_since.clear()
+                ps = self.printer.lookup_object('print_stats', None)
+                ps_state = ''
+                if ps is not None:
+                    try:
+                        ps_state = str(
+                            ps.get_status(eventtime).get('state', '')
+                        ).lower()
+                    except Exception:
+                        ps_state = ''
+                if ps_state != 'paused':
+                    self._saved_parked_target.clear()
+                return eventtime + BG_PARKED_CHECK_INTERVAL
+
+            active_h = self._get_active_head()
+            now = self.reactor.monotonic()
+            pheaters = self.printer.lookup_object('heaters', None)
+            ace = self.printer.lookup_object('ace', None)
+
+            for h in range(4):
+                if h == active_h:
+                    self._parked_since.pop(h, None)
+                    continue
+                # Heads running a background op manage their own heater
+                if h in self._busy:
+                    self._parked_since.pop(h, None)
+                    continue
+
+                ext = self.printer.lookup_object(self._ext_name(h), None)
+                if ext is None:
+                    continue
+                heater = ext.get_heater()
+                target = float(getattr(heater, 'target_temp', 0.) or 0.)
+
+                if target >= BG_PARKED_MIN_TEMP:
+                    if h not in self._parked_since:
+                        self._parked_since[h] = now
+                    elif (now - self._parked_since[h]) >= self.parked_head_timeout:
+                        self._saved_parked_target[h] = target
+                        self._set_heat(ace, pheaters, heater,
+                                       self.parked_standby_temp)
+                        self._say('head %d: parked hot for %.0fs - dropping '
+                                  'heater from %.0fC to %.0fC (idle standby)'
+                                  % (self._dh(h), now - self._parked_since[h],
+                                     target, self.parked_standby_temp))
+                        self._parked_since.pop(h, None)
+                else:
+                    self._parked_since.pop(h, None)
+        except Exception as e:
+            logging.info('[multiACE] [parked-timer] tick error: %s' % e)
+
+        return eventtime + BG_PARKED_CHECK_INTERVAL
 
     def _raw(self, idx):
         # Internal (0-based) index for internal log lines.
@@ -2279,6 +2412,8 @@ class AceBgSwap:
             return
         # Clear any residual abort request from previous cycles
         self._abort_requested.discard(head)
+        # Notify parked timer that head is actively arriving/being waited for
+        self.on_head_active(head)
         # Defaults to [ace_bg_swap] debug config (False by default = quiet console)
         debug = gcmd.get_int('DEBUG', 1 if self.debug else 0)
         # RESTORE_POS: 0 = leave at discard chute for direct arrival dock; 1 = restore coordinates

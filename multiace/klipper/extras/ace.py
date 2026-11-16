@@ -7157,6 +7157,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
     def _on_print_end(self, *args):
         self._job_note_end()
+        try:
+            _bg = self.printer.lookup_object('ace_bg_swap', None)
+            if _bg is not None and hasattr(_bg, 'on_print_end'):
+                _bg.on_print_end()
+        except Exception:
+            pass
         self._auto_feed_enabled = False
         self._print_tool_pins = {}
         self._print_virtual_raw = False
@@ -19190,6 +19196,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 'reason': 'no_head_index',
             })
             return
+
+        # Parked head idle timeout reset: notify ace_bg_swap that head_index is active
+        try:
+            _bg = self.printer.lookup_object('ace_bg_swap', None)
+            if _bg is not None and hasattr(_bg, 'on_head_active'):
+                _bg.on_head_active(head_index)
+        except Exception:
+            pass
 
         # Per-spool pressure advance: the toolchange is the one moment that
         # covers load, swap AND resume, so the bound spool's stored value
