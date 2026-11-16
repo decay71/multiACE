@@ -1865,6 +1865,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # truth, not flow truth. Consumed ONE-SHOT by the arrival swap's
         # pick-time flow check (_bg_pick_flow_check, LOG-ONLY for now).
         self._bg_load_unverified = set()
+        # (head, seconds) of the last ACE_BG_WAIT hold, taken by the arrival
+        # swap that follows (ace_swap._take_bg_hold).
+        self._bg_hold = None
         # head -> missing prime mm from a grip/prime pick-abort (a pick cut
         # the bg purge short; the head is bookkept loaded and the arrival
         # no-ops, so WITHOUT a top-up the melt zone keeps the old colour).
@@ -6748,8 +6751,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     JOB_SWAPS_MAX = 300
 
     def _job_note_swap(self, kind, seconds):
-        """Record how long one ACE_SWAP_HEAD took (purge not included, it is
-        separate gcode) under its swap_cost kind. The history aggregates
+        """Record how long one ACE_SWAP_HEAD took (its flush included, the
+        load ends in it) under its swap_cost kind. The history aggregates
         these into the per-printer medians the estimate calibrates on."""
         try:
             job = self._job

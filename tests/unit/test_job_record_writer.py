@@ -349,3 +349,29 @@ def test_a_head_without_an_ace_is_not_timed(ace):
 def test_a_malformed_command_never_raises(ace):
     ace.head_uses_ace = lambda head: True
     assert ace._swap_kind_before(_Gcmd(HEAD=0)) is None     # no ACE=
+
+
+def test_a_staged_arrival_is_not_an_inline_swap(ace):
+    """The background engine only transported the filament: the head is
+    empty and the swap runs just the load (about 55 s). Filing it as
+    cross_ace_inline would calibrate real inline swaps about 100 s short."""
+    ace.head_uses_ace = lambda head: True
+    ace._bg_load_unverified = set()
+    ace._bg_staged = {0: (1, 2)}
+    assert ace._swap_kind_before(
+        _Gcmd(HEAD=0, ACE=1, SLOT=2)) == 'cross_ace_staged'
+    # staged for another slot: the swap really is a full one
+    assert ace._swap_kind_before(
+        _Gcmd(HEAD=0, ACE=1, SLOT=3)) == 'cross_ace_inline'
+    # staged on another head does not count
+    assert ace._swap_kind_before(
+        _Gcmd(HEAD=1, ACE=1, SLOT=2)) == 'cross_ace_inline'
+
+
+def test_the_arrival_hold_is_taken_once_and_only_for_its_head(ace):
+    ace._bg_hold = (0, 53.0)
+    assert ace._take_bg_hold(_Gcmd(HEAD=1)) == 0.0     # other head
+    assert ace._bg_hold is None                        # consumed anyway
+    ace._bg_hold = (0, 53.0)
+    assert ace._take_bg_hold(_Gcmd(HEAD=0)) == 53.0
+    assert ace._take_bg_hold(_Gcmd(HEAD=0)) == 0.0     # already taken

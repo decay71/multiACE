@@ -40,6 +40,7 @@
 # ace.py coupling is the optional _wait_bg_op lookup.
 
 import logging
+import time
 import chelper
 from . import force_move
 
@@ -2249,12 +2250,24 @@ class AceBgSwap:
     def cmd_ACE_BG_WAIT(self, gcmd):
         # The park at the chute is a gcode move: inside the block of an
         # excluded object stock would drop it.
-        suspend = getattr(self.printer.lookup_object('ace', None),
-                          '_object_exclusion_suspended', None)
-        if suspend is None:
-            return self._cmd_ACE_BG_WAIT_body(gcmd)
-        with suspend('ACE_BG_WAIT'):
-            return self._cmd_ACE_BG_WAIT_body(gcmd)
+        ace = self.printer.lookup_object('ace', None)
+        t0 = time.monotonic()
+        try:
+            suspend = getattr(ace, '_object_exclusion_suspended', None)
+            if suspend is None:
+                return self._cmd_ACE_BG_WAIT_body(gcmd)
+            with suspend('ACE_BG_WAIT'):
+                return self._cmd_ACE_BG_WAIT_body(gcmd)
+        finally:
+            # How long the arrival head was held: the job history adds it to
+            # the background arrival that follows (ACE_SWAP_HEAD), whose own
+            # time does not include it.
+            try:
+                if ace is not None:
+                    ace._bg_hold = (gcmd.get_int('HEAD'),
+                                    time.monotonic() - t0)
+            except Exception:
+                pass
 
     def _cmd_ACE_BG_WAIT_body(self, gcmd):
         # HEAD is required and must be a valid toolhead index (0-3), same
