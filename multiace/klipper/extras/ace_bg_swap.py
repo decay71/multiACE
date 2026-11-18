@@ -3800,10 +3800,12 @@ class AceBgSwap:
                     if (_since_grip_pulse >= _chunk_size
                             and _grip_fed < grip - 2.0):
                         self._wait_move(toolhead, _gend)
+                        self._check_docked(toolhead, ext, head)
                         _rs, _rend, _ren = self.queue_move(
                             ext, -_retract_size, _retract_speed, CHOREO_ACCEL)
                         self._wait_move(toolhead, _rend)
                         self._pause(0.15)
+                        self._check_docked(toolhead, ext, head)
                         _us, _uend, _uen = self.queue_move(
                             ext, _retract_size, _retract_speed, CHOREO_ACCEL)
                         _gend = _uend
@@ -3884,10 +3886,12 @@ class AceBgSwap:
                         and _since_pulse >= _chunk_size
                         and primed < prime_target - 1.0):
                     self._wait_move(toolhead, _pend)
+                    self._check_docked(toolhead, ext, head)
                     _rs, _rend, _ren = self.queue_move(
                         ext, -_retract_size, _retract_speed, CHOREO_ACCEL)
                     self._wait_move(toolhead, _rend)
                     self._pause(0.15)
+                    self._check_docked(toolhead, ext, head)
                     _us, _uend, _uen = self.queue_move(
                         ext, _retract_size, _retract_speed, CHOREO_ACCEL)
                     _pend = _uend

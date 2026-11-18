@@ -117,3 +117,18 @@ def test_new_bg_tokens_lookup_and_status(tf):
 def test_new_bg_tokens_out_of_range_refused(tf, bad):
     with pytest.raises(ValueError):
         tf.parse_table(bad)
+
+
+def test_pulse_retract_and_unretract_check_docked():
+    bg_path = TF.with_name("ace_bg_swap.py")
+    src = bg_path.read_text(encoding="utf-8")
+    for anchor in ("_since_grip_pulse >= _chunk_size", "_since_pulse >= _chunk_size"):
+        idx = src.index(anchor)
+        block = src[idx:idx + 750]
+        check_before_retract = block.index("self._check_docked(toolhead, ext, head)")
+        retract_move = block.index("-_retract_size")
+        pause_call = block.index("self._pause(0.15)")
+        check_before_push = block.index(
+            "self._check_docked(toolhead, ext, head)", pause_call)
+        push_move = block.index("_retract_size, _retract_speed", check_before_push)
+        assert check_before_retract < retract_move < pause_call < check_before_push < push_move
