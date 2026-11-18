@@ -114,6 +114,24 @@ MIN_MOVE_TEMP = 175.
 # bgprimespeed: (mm/min): 1-20 mm/s. The stock bg prime is 4 mm/s.
 MIN_BG_PRIME_F = 60.
 MAX_BG_PRIME_F = 1200.
+# bgchunk: 2-50 mm dock prime segment length before micro-retract pulse
+MIN_BG_CHUNK_MM = 2.
+MAX_BG_CHUNK_MM = 50.
+# bgretract: 0-10 mm dock prime pulse retract length
+MIN_BG_RETRACT_MM = 0.
+MAX_BG_RETRACT_MM = 10.
+# bgretractspeed: (mm/min): 1-60 mm/s dock prime pulse retract feedrate (stock 25 mm/s)
+MIN_BG_RETRACT_F = 60.
+MAX_BG_RETRACT_F = 3600.
+# bgprimescale: 0.05-2.0 dock prime scaling factor
+MIN_BG_PRIME_SCALE = 0.05
+MAX_BG_PRIME_SCALE = 2.0
+# bgseat: 10-60 mm mechanical gear grip seating distance
+MIN_BG_SEAT_MM = 10.
+MAX_BG_SEAT_MM = 60.
+# bgseatspeed: (mm/min): 1-15 mm/s mechanical gear grip seating feedrate (stock 5 mm/s)
+MIN_BG_SEAT_F = 60.
+MAX_BG_SEAT_F = 900.
 
 
 def parse_table(raw):
@@ -127,6 +145,12 @@ def parse_table(raw):
     load_temp = None
     bg_temp = None
     bg_prime_f = None
+    bg_chunk_mm = None
+    bg_retract_mm = None
+    bg_retract_f = None
+    bg_prime_scale = None
+    bg_seat_mm = None
+    bg_seat_f = None
     prime_temp = None
     prime_mm = None
     prime_f = 300.
@@ -198,6 +222,54 @@ def parse_table(raw):
                                  '%r' % (int(MIN_BG_PRIME_F),
                                          int(MAX_BG_PRIME_F), part))
             bg_prime_f = f
+        elif low.startswith('bgchunk:'):
+            # Parameter: dock prime segment length (mm) between pulse micro-retracts
+            c = float(low.split(':', 1)[1])
+            if not MIN_BG_CHUNK_MM <= c <= MAX_BG_CHUNK_MM:
+                raise ValueError('bgchunk out of range (%d-%d mm): %r'
+                                 % (int(MIN_BG_CHUNK_MM),
+                                    int(MAX_BG_CHUNK_MM), part))
+            bg_chunk_mm = c
+        elif low.startswith('bgretract:'):
+            # Parameter: dock prime pulse micro-retract length (mm)
+            r = float(low.split(':', 1)[1])
+            if not MIN_BG_RETRACT_MM <= r <= MAX_BG_RETRACT_MM:
+                raise ValueError('bgretract out of range (%d-%d mm): %r'
+                                 % (int(MIN_BG_RETRACT_MM),
+                                    int(MAX_BG_RETRACT_MM), part))
+            bg_retract_mm = r
+        elif low.startswith('bgretractspeed:'):
+            # Parameter: feedrate (mm/min) of the dock prime pulse retract
+            f = float(low.split(':', 1)[1])
+            if not MIN_BG_RETRACT_F <= f <= MAX_BG_RETRACT_F:
+                raise ValueError('bgretractspeed out of range (%d-%d mm/min): '
+                                 '%r' % (int(MIN_BG_RETRACT_F),
+                                         int(MAX_BG_RETRACT_F), part))
+            bg_retract_f = f
+        elif low.startswith('bgprimescale:'):
+            # Parameter: dock prime scaling factor (0.05-2.0)
+            ps = float(low.split(':', 1)[1])
+            if not MIN_BG_PRIME_SCALE <= ps <= MAX_BG_PRIME_SCALE:
+                raise ValueError('bgprimescale out of range (%.2f-%.2f): %r'
+                                 % (MIN_BG_PRIME_SCALE,
+                                    MAX_BG_PRIME_SCALE, part))
+            bg_prime_scale = ps
+        elif low.startswith('bgseat:'):
+            # Parameter: mechanical gear grip seating distance (mm)
+            s = float(low.split(':', 1)[1])
+            if not MIN_BG_SEAT_MM <= s <= MAX_BG_SEAT_MM:
+                raise ValueError('bgseat out of range (%d-%d mm): %r'
+                                 % (int(MIN_BG_SEAT_MM),
+                                    int(MAX_BG_SEAT_MM), part))
+            bg_seat_mm = s
+        elif low.startswith('bgseatspeed:'):
+            # Parameter: feedrate (mm/min) of the mechanical gear grip seat
+            f = float(low.split(':', 1)[1])
+            if not MIN_BG_SEAT_F <= f <= MAX_BG_SEAT_F:
+                raise ValueError('bgseatspeed out of range (%d-%d mm/min): '
+                                 '%r' % (int(MIN_BG_SEAT_F),
+                                         int(MAX_BG_SEAT_F), part))
+            bg_seat_f = f
         elif low.startswith('primetemp:'):
             # Parameter pair with prime: temperature of the pre-purge.
             c = float(low.split(':', 1)[1])
@@ -249,8 +321,10 @@ def parse_table(raw):
             raise ValueError("unrecognised token %r (expected mm@feedrate, "
                              "pause:ms, temp:C, waittemp:C, fan:0-255, "
                              "unloadtemp:C, loadtemp:C, bgtemp:C, "
-                             "bgprimespeed:mm/min, prime:mm or "
-                             "primetemp:C)"
+                             "bgprimespeed:mm/min, bgchunk:mm, bgretract:mm, "
+                             "bgretractspeed:mm/min, bgprimescale:float, "
+                             "bgseat:mm, bgseatspeed:mm/min, "
+                             "prime:mm or primetemp:C)"
                              % part)
     if tokens and not any(t[0] == TOKEN_MOVE for t in tokens):
         raise ValueError('table has no moves')
@@ -259,6 +333,9 @@ def parse_table(raw):
                          % int(prime_temp))
     if (not tokens and unload_temp is None and load_temp is None
             and bg_temp is None and bg_prime_f is None
+            and bg_chunk_mm is None and bg_retract_mm is None
+            and bg_retract_f is None and bg_prime_scale is None
+            and bg_seat_mm is None and bg_seat_f is None
             and prime_mm is None):
         raise ValueError('table has no moves')
     if net > 0.:
@@ -266,7 +343,9 @@ def parse_table(raw):
                          'retracted out of the melt zone' % net)
     prime = ((prime_temp, prime_mm, prime_f) if prime_mm is not None
              else None)
-    return tokens, unload_temp, load_temp, bg_temp, prime, bg_prime_f
+    return (tokens, unload_temp, load_temp, bg_temp, prime, bg_prime_f,
+            bg_chunk_mm, bg_retract_mm, bg_retract_f, bg_prime_scale,
+            bg_seat_mm, bg_seat_f)
 
 
 class AceTipform:
@@ -282,6 +361,12 @@ class AceTipform:
         self.load_temps = {}
         self.bg_temps = {}
         self.bg_prime_speeds = {}
+        self.bg_chunks = {}
+        self.bg_retracts = {}
+        self.bg_retract_speeds = {}
+        self.bg_prime_scales = {}
+        self.bg_seats = {}
+        self.bg_seat_speeds = {}
         self.primes = {}
         # Every option in the section is a table (keys are free-form
         # material names); read them ALL so Klipper's every-option-must-be-
@@ -305,24 +390,39 @@ class AceTipform:
         reload that dies mid-parse cannot leave half-swapped state."""
         tables, unload_temps, load_temps, bg_temps = {}, {}, {}, {}
         bg_prime_speeds = {}
+        bg_chunks, bg_retracts, bg_retract_speeds = {}, {}, {}
+        bg_prime_scales, bg_seats, bg_seat_speeds = {}, {}, {}
         primes = {}
         dropped = []
         for opt, raw in items:
             try:
                 (_toks, _utemp, _ltemp, _btemp, _prime,
-                 _bgpf) = parse_table(raw)
+                 _bgpf, _bgc, _bgr, _bgrf, _bgps, _bgs, _bgsf) = parse_table(raw)
+                key = opt.strip().lower()
                 if _bgpf is not None:
-                    bg_prime_speeds[opt.strip().lower()] = _bgpf
+                    bg_prime_speeds[key] = _bgpf
+                if _bgc is not None:
+                    bg_chunks[key] = _bgc
+                if _bgr is not None:
+                    bg_retracts[key] = _bgr
+                if _bgrf is not None:
+                    bg_retract_speeds[key] = _bgrf
+                if _bgps is not None:
+                    bg_prime_scales[key] = _bgps
+                if _bgs is not None:
+                    bg_seats[key] = _bgs
+                if _bgsf is not None:
+                    bg_seat_speeds[key] = _bgsf
                 if _prime is not None:
-                    primes[opt.strip().lower()] = _prime
+                    primes[key] = _prime
                 if _toks:
-                    tables[opt.strip().lower()] = _toks
+                    tables[key] = _toks
                 if _utemp is not None:
-                    unload_temps[opt.strip().lower()] = _utemp
+                    unload_temps[key] = _utemp
                 if _ltemp is not None:
-                    load_temps[opt.strip().lower()] = _ltemp
+                    load_temps[key] = _ltemp
                 if _btemp is not None:
-                    bg_temps[opt.strip().lower()] = _btemp
+                    bg_temps[key] = _btemp
             except ValueError as e:
                 dropped.append(opt)
                 logging.error('[multiACE] ace_tipform: table %r DISABLED '
@@ -333,18 +433,35 @@ class AceTipform:
         self.load_temps = load_temps
         self.bg_temps = bg_temps
         self.bg_prime_speeds = bg_prime_speeds
+        self.bg_chunks = bg_chunks
+        self.bg_retracts = bg_retracts
+        self.bg_retract_speeds = bg_retract_speeds
+        self.bg_prime_scales = bg_prime_scales
+        self.bg_seats = bg_seats
+        self.bg_seat_speeds = bg_seat_speeds
         self.primes = primes
         logging.info('[multiACE] ace_tipform: mode=%s tables=%s '
                      'unload_temps=%s load_temps=%s bg_temps=%s '
-                     'bg_prime_speeds=%s primes=%s'
+                     'bg_prime_speeds=%s bg_chunks=%s bg_retracts=%s '
+                     'bg_retract_speeds=%s bg_prime_scales=%s '
+                     'bg_seats=%s bg_seat_speeds=%s primes=%s'
                      % (self.mode, sorted(self.tables.keys()) or 'none',
                         sorted(self.unload_temps.keys()) or 'none',
                         sorted(self.load_temps.keys()) or 'none',
                         sorted(self.bg_temps.keys()) or 'none',
                         sorted(self.bg_prime_speeds.keys()) or 'none',
+                        sorted(self.bg_chunks.keys()) or 'none',
+                        sorted(self.bg_retracts.keys()) or 'none',
+                        sorted(self.bg_retract_speeds.keys()) or 'none',
+                        sorted(self.bg_prime_scales.keys()) or 'none',
+                        sorted(self.bg_seats.keys()) or 'none',
+                        sorted(self.bg_seat_speeds.keys()) or 'none',
                         sorted(self.primes.keys()) or 'none'))
         if ((self.unload_temps or self.load_temps or self.bg_temps
-                or self.bg_prime_speeds or self.primes)
+                or self.bg_prime_speeds or self.bg_chunks
+                or self.bg_retracts or self.bg_retract_speeds
+                or self.bg_prime_scales or self.bg_seats
+                or self.bg_seat_speeds or self.primes)
                 and self.mode != 'custom'):
             # A set-but-inert knob must be LOUD, never silently skipped.
             logging.error(
@@ -355,6 +472,12 @@ class AceTipform:
                          | set(self.load_temps.keys())
                          | set(self.bg_temps.keys())
                          | set(self.bg_prime_speeds.keys())
+                         | set(self.bg_chunks.keys())
+                         | set(self.bg_retracts.keys())
+                         | set(self.bg_retract_speeds.keys())
+                         | set(self.bg_prime_scales.keys())
+                         | set(self.bg_seats.keys())
+                         | set(self.bg_seat_speeds.keys())
                          | set(self.primes.keys())))
         return dropped
 
@@ -427,7 +550,10 @@ class AceTipform:
                % (self.mode,
                   len(set(self.tables) | set(self.unload_temps)
                       | set(self.load_temps) | set(self.bg_temps)
-                      | set(self.bg_prime_speeds) | set(self.primes)),
+                      | set(self.bg_prime_speeds) | set(self.bg_chunks)
+                      | set(self.bg_retracts) | set(self.bg_retract_speeds)
+                      | set(self.bg_prime_scales) | set(self.bg_seats)
+                      | set(self.bg_seat_speeds) | set(self.primes)),
                   (', DROPPED invalid: %s' % ', '.join(dropped))
                   if dropped else ''))
         gcmd.respond_info(msg)
@@ -505,6 +631,42 @@ class AceTipform:
         return self._lookup(self.bg_prime_speeds, material, vendor, soft,
                             device)
 
+    def bg_chunk_for(self, material, vendor=None, soft=False, device=None):
+        """The custom dock prime chunk length (mm), or None = use
+        [ace_bg_swap] prime_chunk."""
+        return self._lookup(self.bg_chunks, material, vendor, soft, device)
+
+    def bg_retract_for(self, material, vendor=None, soft=False, device=None):
+        """The custom dock prime micro-retract length (mm), or None = use
+        [ace_bg_swap] prime_retract."""
+        return self._lookup(self.bg_retracts, material, vendor, soft, device)
+
+    def bg_retract_speed_for(self, material, vendor=None, soft=False,
+                             device=None):
+        """The custom dock prime pulse retract feedrate (mm/min), or None =
+        use [ace_bg_swap] prime_retract_speed."""
+        return self._lookup(self.bg_retract_speeds, material, vendor, soft,
+                            device)
+
+    def bg_prime_scale_for(self, material, vendor=None, soft=False,
+                           device=None):
+        """The custom dock prime scaling factor, or None = use
+        [ace_bg_swap] prime_scale."""
+        return self._lookup(self.bg_prime_scales, material, vendor, soft,
+                            device)
+
+    def bg_seat_for(self, material, vendor=None, soft=False, device=None):
+        """The custom mechanical gear grip seating distance (mm), or None =
+        use [ace_bg_swap] grip_length."""
+        return self._lookup(self.bg_seats, material, vendor, soft, device)
+
+    def bg_seat_speed_for(self, material, vendor=None, soft=False,
+                          device=None):
+        """The custom mechanical gear grip seating feedrate (mm/min), or
+        None = use [ace_bg_swap] grip_speed."""
+        return self._lookup(self.bg_seat_speeds, material, vendor, soft,
+                            device)
+
     def get_status(self, eventtime):
         # tables = UNION of move-tables and param-only (unloadtemp:/
         # loadtemp:) keys - the web's restart-pending banner compares cfg
@@ -517,11 +679,23 @@ class AceTipform:
                              | set(self.load_temps.keys())
                              | set(self.bg_temps.keys())
                              | set(self.bg_prime_speeds.keys())
+                             | set(self.bg_chunks.keys())
+                             | set(self.bg_retracts.keys())
+                             | set(self.bg_retract_speeds.keys())
+                             | set(self.bg_prime_scales.keys())
+                             | set(self.bg_seats.keys())
+                             | set(self.bg_seat_speeds.keys())
                              | set(self.primes.keys())),
             'unload_temps': dict(self.unload_temps),
             'load_temps': dict(self.load_temps),
             'bg_temps': dict(self.bg_temps),
             'bg_prime_speeds': dict(self.bg_prime_speeds),
+            'bg_chunks': dict(self.bg_chunks),
+            'bg_retracts': dict(self.bg_retracts),
+            'bg_retract_speeds': dict(self.bg_retract_speeds),
+            'bg_prime_scales': dict(self.bg_prime_scales),
+            'bg_seats': dict(self.bg_seats),
+            'bg_seat_speeds': dict(self.bg_seat_speeds),
             'primes': {k: list(v) for k, v in self.primes.items()},
         }
 
