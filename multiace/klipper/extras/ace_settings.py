@@ -4,12 +4,16 @@ write-through (config line surgery, atomic write, legacy save-variable
 migration, `_wt_persist`) with the ACE_SET_* setters that persist through it.
 
 Mixin of MultiAce, imported by ace.py. ``self`` is the MultiAce instance;
-state is created in ace.py.__init__. Every definition here is byte-identical
-to its former place in ace.py (tests/units/tools/move_check.py).
+state is created in ace.py.__init__. Settings retain their existing interfaces;
+routing persistence adds cooperative locking and pre-commit validation.
 """
 import json
 import logging
 import os
+import hashlib, threading
+from contextlib import contextmanager
+
+from .ace_config_transaction import ace_config_lock
 
 from .ace_spool import SPOOLLINK_RESOLVE_METHOD
 
@@ -187,41 +191,51 @@ class SettingsMixin:
         except (TypeError, ValueError):
             return idx
 
-    def _cfg_write_ace_option(self, option, value_str, section='ace'):
+    def _cfg_write_ace_option(self, option, value_str, section='ace', expected_sha256=None, preflight=None, additional_options=None):
         """Settings write-through: persist a toggle
         by editing its one visible line in the canonical ace.cfg -
         atomic (tmp + fsync + os.replace), .bak of the prior content
         alongside. Returns None on success, else a short reason string;
         the caller reports it (the RAM value stays applied either way -
         the toggle worked, it just will not survive a restart).
-        Concurrent writers (Fluidd editor open in a second tab) are
-        last-writer-wins by design."""
+        Cooperating settings writers share an advisory lock. Routing callers
+        supply an expected fingerprint and preflight; external editors that
+        ignore the lock cannot be made fully transactional by this helper."""
+        try:
+            with ace_config_lock(self.ACE_CFG_PATH):
+                return self._cfg_write_ace_option_locked(option, value_str, section, expected_sha256, preflight, additional_options)
+        except (OSError, ValueError) as exc:
+            return str(exc)
+
+    def _cfg_write_ace_option_locked(self, option, value_str, section, expected_sha256, preflight, additional_options):
         path = self.ACE_CFG_PATH
         try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                text = f.read()
-        except OSError as e:
-            return 'cannot read %s (%s)' % (path, e)
-        new_text, err = _ace_cfg_edit_option(text, option, value_str,
-                                             section=section)
-        if err is not None:
-            return '%s (%s) - set "%s: %s" there by hand' % (
-                err, path, option, value_str)
-        if new_text == text:
-            return None
-        if ('%s: %s' % (option, value_str)) not in new_text:
-            return 'internal: edited text lost the option line (not written)'
-        try:
-            with open(path + '.bak', 'w', encoding='utf-8') as f:
-                f.write(text)
+            with open(path, 'rb') as f: original = f.read()
+            revision = hashlib.sha256(original).hexdigest()
+            if expected_sha256 is not None and revision != expected_sha256:
+                return 'Routing conflict: configuration changed since editing began; discard/reload and retry'
+            text = original.decode('utf-8')
+            if preflight is not None:preflight(original)
+            new_text, err = _ace_cfg_edit_option(text, option, value_str, section=section)
+            if err is not None:return '%s (%s)' % (err, path)
+            for extra_option, extra_value in (additional_options or {}).items():
+                new_text, err = _ace_cfg_edit_option(new_text, extra_option, extra_value, section=section)
+                if err is not None:return '%s (%s)' % (err, path)
+            if new_text == text:return None
+            if ('%s: %s' % (option, value_str)) not in new_text:
+                return 'internal: edited text lost the option line (not written)'
             tmp = path + '.tmp'
-            with open(tmp, 'w', encoding='utf-8') as f:
-                f.write(new_text)
-                f.flush()
-                os.fsync(f.fileno())
+            with open(tmp, 'wb') as f:
+                f.write(new_text.encode('utf-8'));f.flush();os.fsync(f.fileno())
+            with open(path + '.bak', 'wb') as f:f.write(original)
+            # Catch non-cooperating editor changes during preparation as well.
+            with open(path, 'rb') as f: current = f.read()
+            if hashlib.sha256(current).hexdigest() != revision:
+                os.unlink(tmp)
+                return 'Routing conflict: configuration changed during save; reload before retrying'
             os.replace(tmp, path)
-        except OSError as e:
-            return 'cannot write %s (%s)' % (path, e)
+        except (OSError, ValueError) as exc:
+            return 'cannot save %s (%s)' % (path, exc)
         return None
 
     # Settings write-through migration table:

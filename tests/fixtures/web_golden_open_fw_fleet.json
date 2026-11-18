@@ -20,8 +20,11 @@
    },
    "auto_dry_running": false,
    "community_fw": "ace2_open",
+   "configured": true,
    "connect_error": "",
    "connected": true,
+   "detected": true,
+   "device_state": "connected",
    "dryer": {
     "auto_roll_allowed": false,
     "duration": 0,
@@ -46,6 +49,8 @@
    "open_fw": true,
    "protocol": "v2",
    "serial_path": "/dev/serial/by-path/platform-xhci-hcd.0.auto-usb-0:1.3:1.0",
+   "slot_count": 4,
+   "slot_count_source": "reported",
    "slots": [
     {
      "brand": "",
@@ -122,6 +127,7 @@
    ],
    "status": "ready",
    "tag_read": true,
+   "tag_read_mode": "ace2_tunnel",
    "temp": 26,
    "unit_key": "uid:8f3b5218-07b09108-3131334a",
    "unit_name": "",
@@ -140,8 +146,11 @@
    },
    "auto_dry_running": false,
    "community_fw": "gen1_cfw",
+   "configured": true,
    "connect_error": "",
    "connected": true,
+   "detected": true,
+   "device_state": "connected",
    "dryer": {
     "duration": 0,
     "remain_time": 0,
@@ -163,6 +172,8 @@
    "open_fw": false,
    "protocol": "v1",
    "serial_path": "/dev/serial/by-path/platform-xhci-hcd.0.auto-usb-0:1.1:1.0",
+   "slot_count": 4,
+   "slot_count_source": "reported",
    "slots": [
     {
      "brand": "",
@@ -239,6 +250,7 @@
    ],
    "status": "ready",
    "tag_read": true,
+   "tag_read_mode": "gen1_stock",
    "temp": 24,
    "unit_key": "port:platform-xhci-hcd.0.auto-usb-0:1.1:1.0",
    "unit_name": "",
@@ -283,7 +295,7 @@
   "retract_length_mm": null,
   "return_decoder_span": null,
   "scope": "ace",
-  "session_id": 0,
+  "session_id": "<volatile>",
   "slot": null,
   "speed_mm_s": 0,
   "state": "idle",
@@ -308,7 +320,10 @@
   "verify_sensor_mm": null,
   "verify_swap_mm": null
  },
+ "configured_device_count": 2,
  "confirm_commands": false,
+ "connected_device_count": 2,
+ "detected_device_count": 2,
  "device_count": 2,
  "devices": [
   {
@@ -319,7 +334,8 @@
    "path": "platform-xhci-hcd.0.auto-usb-0:1.3:1.0",
    "place": 0,
    "present": true,
-   "removed": false
+   "removed": false,
+   "slot_count": 4
   },
   {
    "connected": true,
@@ -329,7 +345,8 @@
    "path": "platform-xhci-hcd.0.auto-usb-0:1.1:1.0",
    "place": 1,
    "present": true,
-   "removed": false
+   "removed": false,
+   "slot_count": 4
   },
   {
    "connected": false,
@@ -339,7 +356,8 @@
    "path": "",
    "place": 2,
    "present": false,
-   "removed": false
+   "removed": false,
+   "slot_count": 0
   },
   {
    "connected": false,
@@ -349,7 +367,8 @@
    "path": "",
    "place": 3,
    "present": false,
-   "removed": false
+   "removed": false,
+   "slot_count": 0
   }
  ],
  "display_index_base": 0,
@@ -392,6 +411,605 @@
   "status": "stop",
   "target_temp": 0
  },
+ "failover_allow_color": [],
+ "failover_preview": {
+  "0": {
+   "enabled": false,
+   "if_loaded": [],
+   "loaded": null,
+   "reachable": 0,
+   "reason": "no head_source",
+   "rejected": [],
+   "spares": [],
+   "want": null
+  },
+  "1": {
+   "enabled": false,
+   "if_loaded": [],
+   "loaded": null,
+   "reachable": 0,
+   "reason": "no head_source",
+   "rejected": [],
+   "spares": [],
+   "want": null
+  },
+  "2": {
+   "enabled": false,
+   "if_loaded": [],
+   "loaded": null,
+   "reachable": 0,
+   "reason": "no head_source",
+   "rejected": [],
+   "spares": [],
+   "want": null
+  },
+  "3": {
+   "enabled": false,
+   "if_loaded": [],
+   "loaded": null,
+   "reachable": 0,
+   "reason": "no head_source",
+   "rejected": [],
+   "spares": [],
+   "want": null
+  }
+ },
+ "failover_priority": {},
+ "flexi": {
+  "available": true,
+  "capabilities": {
+   "automatic_failover": false,
+   "color_switching": false,
+   "live_interlocks": false,
+   "manual_filament": false,
+   "printing": false
+  },
+  "connections": {},
+  "controlled_test": {
+   "execution_enabled": false,
+   "prepared": false
+  },
+  "diagnostics": {
+   "available": true,
+   "expected_head": null,
+   "explanation": "Unexpected raw assertions require inspection; unverified polarity cannot prove wrong-head arrival. Poll freshness is host/cache freshness only; transitions between polls may be missed.",
+   "missing_qualifications": [
+    "Physical sensor polarity and startup state",
+    "Idle ACE-only arrival response, latency and missed-edge bounds",
+    "Feed stop latency and worst-case overshoot; unwind drain behavior",
+    "Route-specific retained parking window and shared-junction clearance",
+    "Connection loss, interruption and physical recovery verification"
+   ],
+   "native_dispatch_enabled": false,
+   "pathchek": {
+    "hardware_qualified": false,
+    "journal_present": false,
+    "missing_qualifications": [
+     "Physical sensor polarity and startup state",
+     "Idle ACE-only arrival response, latency and missed-edge bounds",
+     "Feed stop latency and worst-case overshoot; unwind drain behavior",
+     "Route-specific retained parking window and shared-junction clearance",
+     "Connection loss, interruption and physical recovery verification"
+    ],
+    "native_dispatch_enabled": false,
+    "reason": "Native execution remains locked. Request previews are not commands, movement receipts or arrival evidence.",
+    "resources_busy": false,
+    "sensor_poll_ready": false,
+    "transport": "MultiACE V1 send_request_to; not dispatched"
+   },
+   "physical_verified": false,
+   "poll_sequence": 1,
+   "read_only": true,
+   "routes": {},
+   "routing_context": {},
+   "schema": 1,
+   "sensors": [
+    {
+     "arrival_qualified": false,
+     "communication": "unavailable",
+     "communication_scope": "Klipper object read only",
+     "enabled": null,
+     "error": "Sensor object is not registered",
+     "head": 0,
+     "mcu_link": "unqualified",
+     "object": "filament_motion_sensor e0_filament",
+     "observed_at": null,
+     "physical_freshness": "unknown",
+     "physical_sample_at": null,
+     "polarity": "unverified",
+     "poll_age_s": null,
+     "poll_fresh": false,
+     "printer_state": "standby",
+     "raw_present": null,
+     "semantics": "cached idle presence-like / print runout-window",
+     "usable_for_arrival": false
+    },
+    {
+     "arrival_qualified": false,
+     "communication": "unavailable",
+     "communication_scope": "Klipper object read only",
+     "enabled": null,
+     "error": "Sensor object is not registered",
+     "head": 1,
+     "mcu_link": "unqualified",
+     "object": "filament_motion_sensor e1_filament",
+     "observed_at": null,
+     "physical_freshness": "unknown",
+     "physical_sample_at": null,
+     "polarity": "unverified",
+     "poll_age_s": null,
+     "poll_fresh": false,
+     "printer_state": "standby",
+     "raw_present": null,
+     "semantics": "cached idle presence-like / print runout-window",
+     "usable_for_arrival": false
+    },
+    {
+     "arrival_qualified": false,
+     "communication": "unavailable",
+     "communication_scope": "Klipper object read only",
+     "enabled": null,
+     "error": "Sensor object is not registered",
+     "head": 2,
+     "mcu_link": "unqualified",
+     "object": "filament_motion_sensor e2_filament",
+     "observed_at": null,
+     "physical_freshness": "unknown",
+     "physical_sample_at": null,
+     "polarity": "unverified",
+     "poll_age_s": null,
+     "poll_fresh": false,
+     "printer_state": "standby",
+     "raw_present": null,
+     "semantics": "cached idle presence-like / print runout-window",
+     "usable_for_arrival": false
+    },
+    {
+     "arrival_qualified": false,
+     "communication": "unavailable",
+     "communication_scope": "Klipper object read only",
+     "enabled": null,
+     "error": "Sensor object is not registered",
+     "head": 3,
+     "mcu_link": "unqualified",
+     "object": "filament_motion_sensor e3_filament",
+     "observed_at": null,
+     "physical_freshness": "unknown",
+     "physical_sample_at": null,
+     "polarity": "unverified",
+     "poll_age_s": null,
+     "poll_fresh": false,
+     "printer_state": "standby",
+     "raw_present": null,
+     "semantics": "cached idle presence-like / print runout-window",
+     "usable_for_arrival": false
+    }
+   ],
+   "session_id": "<volatile>",
+   "slot_status": {},
+   "transition_sequence": 0,
+   "transitions": [],
+   "unexpected_raw_heads": [],
+   "wrong_toolhead_confirmed": false
+  },
+  "discoveries": {},
+  "display_sources": {
+   "0": null,
+   "1": null,
+   "2": null,
+   "3": null
+  },
+  "execution_enabled": false,
+  "feature_support": {
+   "eligible_backup_failover": true,
+   "hardware_qualified": false,
+   "live_ace_replacement": false,
+   "native_mode": true,
+   "route_aware_load_unload": true,
+   "shared_switching": true,
+   "slot_routing": true,
+   "spool_metadata": true
+  },
+  "interlocks": {
+   "clear_attestations": {},
+   "confirmed_sources": {},
+   "devices": {},
+   "engineering_feed": null,
+   "execution_enabled": false,
+   "history": [],
+   "nozzle_recovery": {},
+   "operations": {},
+   "pathchek_discoveries": {},
+   "pathchek_job": null,
+   "pathchek_qualifications": {},
+   "pathchek_results": [],
+   "paths": {
+    "0": {
+     "observed": null,
+     "owner": null,
+     "state": "unknown"
+    },
+    "1": {
+     "observed": null,
+     "owner": null,
+     "state": "unknown"
+    },
+    "2": {
+     "observed": null,
+     "owner": null,
+     "state": "unknown"
+    },
+    "3": {
+     "observed": null,
+     "owner": null,
+     "state": "unknown"
+    }
+   },
+   "physical_path_verified": false,
+   "printing": {},
+   "recipe_calibrations": [],
+   "recovery_required": [],
+   "recovery_resolutions": [],
+   "revision": 0,
+   "routes_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+   "schema": 1,
+   "session": "<volatile>",
+   "simulation": false,
+   "wizard_results": []
+  },
+  "live_evidence_available": false,
+  "observations": {
+   "available": false,
+   "execution_enabled": false,
+   "reason": "Live reader unavailable: 'FakeWebhooks' object has no attribute 'get_status'"
+  },
+  "pathchek": {
+   "commissioning_enabled": false,
+   "default_execution_enabled": false,
+   "discoveries": {},
+   "hardware_qualified": false,
+   "job": null,
+   "name": "Flexi PathChek",
+   "native_dispatch_enabled": false,
+   "persistence_error": null,
+   "production_authorized": false,
+   "qualifications": {},
+   "reason": "Operator-stepped native V1 execution. No movement without current measured qualification, physical routing confirmation, exclusive journal and per-segment approval.",
+   "results": [],
+   "routes": [],
+   "schema": 2
+  },
+  "physical_path_verified": false,
+  "production": {
+   "adapters": {
+    "ace2_pro": {
+     "hardware_validated": false,
+     "registered": true
+    },
+    "original_ace_pro": {
+     "hardware_validated": false,
+     "registered": true
+    }
+   },
+   "authorized_actions": [],
+   "authorized_sources": [],
+   "availability_dependencies": [],
+   "backups": [],
+   "calibration": {
+    "fields": {
+     "extrude_speed": {
+      "group": "Speed",
+      "label": "Nozzle and tip movement speed",
+      "unit": "mm/s"
+     },
+     "feed_assist_test_s": {
+      "group": "Feed assist",
+      "label": "Bounded feed-assist observation window",
+      "unit": "seconds"
+     },
+     "feed_assist_timeout_s": {
+      "group": "Feed assist",
+      "label": "Feed-assist acknowledgment time limit",
+      "unit": "seconds"
+     },
+     "feed_speed": {
+      "group": "Speed",
+      "label": "ACE loading speed",
+      "unit": "mm/s"
+     },
+     "flow_interval_s": {
+      "group": "Evidence",
+      "label": "Coil sampling interval",
+      "unit": "seconds"
+     },
+     "flow_min_delta": {
+      "group": "Evidence",
+      "label": "Qualified coil engagement threshold",
+      "unit": "sensor units"
+     },
+     "flow_samples": {
+      "group": "Evidence",
+      "label": "Coil sample count",
+      "unit": "samples"
+     },
+     "load_limit_mm": {
+      "group": "Path",
+      "label": "Maximum feed to toolhead sensor",
+      "unit": "mm"
+     },
+     "prime_mm": {
+      "group": "Nozzle",
+      "label": "Extrusion verification amount",
+      "unit": "mm"
+     },
+     "purge_mm": {
+      "group": "Nozzle",
+      "label": "Color-change purge amount",
+      "unit": "mm"
+     },
+     "retract_mm": {
+      "group": "Path",
+      "label": "Complete withdrawal distance",
+      "unit": "mm"
+     },
+     "retract_speed": {
+      "group": "Speed",
+      "label": "ACE withdrawal speed",
+      "unit": "mm/s"
+     },
+     "seat_mm": {
+      "group": "Nozzle",
+      "label": "Toolhead sensor to nozzle seating",
+      "unit": "mm"
+     },
+     "target_temp": {
+      "group": "Temperature",
+      "label": "Loading / printing nozzle temperature",
+      "unit": "\u00b0C"
+     },
+     "temperature_max": {
+      "group": "Temperature",
+      "label": "Manufacturer maximum nozzle temperature",
+      "unit": "\u00b0C"
+     },
+     "temperature_min": {
+      "group": "Temperature",
+      "label": "Manufacturer minimum nozzle temperature",
+      "unit": "\u00b0C"
+     },
+     "timeout_s": {
+      "group": "Timing",
+      "label": "Whole operation time limit",
+      "unit": "seconds"
+     },
+     "tip_temperature_max": {
+      "group": "Temperature",
+      "label": "Verified tip-forming maximum",
+      "unit": "\u00b0C"
+     },
+     "tip_temperature_min": {
+      "group": "Temperature",
+      "label": "Verified tip-forming minimum",
+      "unit": "\u00b0C"
+     },
+     "unload_temp": {
+      "group": "Temperature",
+      "label": "Tip-forming nozzle temperature",
+      "unit": "\u00b0C"
+     }
+    },
+    "instructions": {
+     "measure": [
+      "Keep devices stopped. Trace the selected ACE slot through every PTFE tube and combiner to the stated physical toolhead. Inspect every source sharing that head.",
+      "Measure along the actual PTFE centerline with a tape or a removed, marked tube; include the adapter path. Record the endpoints and measurement uncertainty. Do not command filament movement to measure it.",
+      "The PTFE measurement is not automatically a safe motor travel limit. Sensor-to-nozzle seating and complete withdrawal must be qualified separately.",
+      "Read the filament manufacturer\u2019s nozzle range from the spool label or its exact datasheet. Leave unknown values blank. Do not copy temperatures from a different spool."
+     ],
+     "observe": [
+      "For loading, confirm visible, continuous extrusion from the intended nozzle. Coil readings are an engagement proxy, not a direct flow meter.",
+      "For unloading, inspect the complete withdrawal, including the deformed tip passing every adapter. Empty toolhead sensors alone do not prove the shared tubing is clear.",
+      "For feed assist, observe the selected slot only during the bounded test window. Confirm feeding, tension and positive stop. Other slots must remain inactive.",
+      "Cancellation, missing acknowledgments, timeouts or sensor loss require explicit recovery. Restart never restores execution permission."
+     ],
+     "test": [
+      "Movement stays locked until a separately approved, scoped calibration session is armed. Preparing the journal, entering measurements and reviewing the route do not arm it.",
+      "After explicit physical-test approval, verify clear surroundings, safe nozzle/discard position, homing, tool identity, sensors and shared-path clearance. Selection and heating occur when an approved test starts.",
+      "Each single-step permission permits one 5 mm ACE frame (at most 1 mm for a coupled nozzle/tip move). A progressive feed segment is a separate reviewed budget of at most 200 mm and is executed as individual 5 mm ACE frames; it never becomes one long command. Both expire if unused. Stop if filament buckles, slips, jams, or reaches an unexpected toolhead.",
+      "A sensor transition is not proof of nozzle extrusion or clearance of unsensed tubing. Inspect visible extrusion and the entire withdrawn tip; never push a backup into an uncertain shared path."
+     ]
+    },
+    "movement_authorized": false,
+    "pending_step": null,
+    "reason": null,
+    "requires_separate_authorization": true,
+    "results": [],
+    "schema": 1,
+    "session": "<volatile>",
+    "step_ready": false,
+    "steps": [
+     "Choose route",
+     "Measure path",
+     "Set recipe",
+     "Review safeguards",
+     "Controlled test",
+     "Observe results",
+     "Saved"
+    ]
+   },
+   "clearance": {
+    "execution_enabled": false,
+    "heads": [],
+    "instruction": "Path inspection is optional for normal load, unload and switching. Use it when a path is unknown, after an interrupted operation, or when you want extra verification. A clear toolhead sensor alone does not prove a shared PTFE branch is empty.",
+    "recovery_required": [],
+    "required_confirmation": "ALL PATHS CLEAR",
+    "schema": 1,
+    "shared_heads": [],
+    "topology": {
+     "joiners": {},
+     "manual_overrides": {}
+    }
+   },
+   "device_adapters": {},
+   "effective_profiles": {},
+   "execution_authorized": false,
+   "inventory": [],
+   "last_plan": null,
+   "path_ledger": {
+    "0": {
+     "at": null,
+     "basis": "no Flexi path record yet",
+     "owner": null,
+     "state": "uncertain"
+    },
+    "1": {
+     "at": null,
+     "basis": "no Flexi path record yet",
+     "owner": null,
+     "state": "uncertain"
+    },
+    "2": {
+     "at": null,
+     "basis": "no Flexi path record yet",
+     "owner": null,
+     "state": "uncertain"
+    },
+    "3": {
+     "at": null,
+     "basis": "no Flexi path record yet",
+     "owner": null,
+     "state": "uncertain"
+    }
+   },
+   "pathchek": {
+    "commissioning_enabled": false,
+    "default_execution_enabled": false,
+    "discoveries": {},
+    "hardware_qualified": false,
+    "job": null,
+    "name": "Flexi PathChek",
+    "native_dispatch_enabled": false,
+    "persistence_error": null,
+    "production_authorized": false,
+    "qualifications": {},
+    "reason": "Operator-stepped native V1 execution. No movement without current measured qualification, physical routing confirmation, exclusive journal and per-segment approval.",
+    "results": [],
+    "routes": [],
+    "schema": 2
+   },
+   "print_ready": false,
+   "profiles": {
+    "heads": {},
+    "routes": {}
+   },
+   "recipe_revision": "2c74582af26b09a972be917bf089cbf6ec1fd029a832a2fdbdefcb1e2a5c9bf7",
+   "replacement": {
+    "automatic_reassignment": false,
+    "automatic_resume": false,
+    "devices": [
+     {
+      "ace": 0,
+      "connected": true,
+      "decoder": true,
+      "dryer": true,
+      "feed_assist": true,
+      "firmware": "V1.1.60O",
+      "flash_engine": "ota_v2",
+      "generation": "v2",
+      "generation_label": "Gen2",
+      "humidity": true,
+      "model": "ACE 2 Pro",
+      "protocol": "v2",
+      "slot_count": 4,
+      "slot_state_reporting": true,
+      "stable_id_available": true,
+      "unit_key": "uid:8f3b5218-07b09108-3131334a"
+     },
+     {
+      "ace": 1,
+      "connected": true,
+      "decoder": false,
+      "dryer": true,
+      "feed_assist": true,
+      "firmware": "CV1.3.871",
+      "flash_engine": "iap_v1",
+      "generation": "v1",
+      "generation_label": "Gen1",
+      "humidity": false,
+      "model": "Anycubic ACE",
+      "protocol": "v1",
+      "slot_count": 4,
+      "slot_state_reporting": false,
+      "stable_id_available": false,
+      "unit_key": "port:platform-xhci-hcd.0.auto-usb-0:1.1:1.0"
+     }
+    ],
+    "file": null,
+    "paused": false
+   },
+   "requires_physical_validation": true,
+   "route_readiness": {
+    "counts": {},
+    "total": 0
+   },
+   "selection": {},
+   "settings_mode": "standard",
+   "source_select": {
+    "ace_routes_preserved": {},
+    "configuration_only": true,
+    "configured": {},
+    "context": "856ba0989d94447119c0d73a8483f233104b1ffbde793787902f92b5d9c1a23b",
+    "execution_qualified": false,
+    "heads": {
+     "0": {
+      "type": "ace"
+     },
+     "1": {
+      "type": "ace"
+     },
+     "2": {
+      "type": "ace"
+     },
+     "3": {
+      "type": "ace"
+     }
+    },
+    "name": "Flexi SourceSelect",
+    "native_manual_dispatch_enabled": false,
+    "note": "PathCheck is optional for source configuration. External source selection blocks ACE automation. Stock/manual hardware integration needs separate qualification. Temporary overrides expire on restart; execution permissions never survive restart.",
+    "pathchek_required_for_source": false,
+    "stock_dispatch_enabled": false,
+    "temporary_heads": []
+   },
+   "standard_profiles": {},
+   "tool_targets": {},
+   "workflow": {
+    "execution_enabled": false,
+    "job": null,
+    "owners": {}
+   }
+  },
+  "reason": "Filament operations remain locked until live interlocks and routing are validated.",
+  "release_candidate": "multiace-1.30b-flexi-s2.35-20261118",
+  "route_conflict": false,
+  "route_revision": "34afcceb206fcbe0cf705474366bc6723246647e6e2d4f9ad1865434ca233fc8",
+  "route_verification": {},
+  "routes": {},
+  "schema": 1,
+  "shared_heads": [],
+  "slot_status": {},
+  "stage": "offline-routing",
+  "test_profiles": {
+   "heads": {},
+   "routes": {}
+  },
+  "topology": {
+   "joiners": {},
+   "manual_overrides": {}
+  }
+ },
+ "flexi_discovery": {
+  "available": false
+ },
  "head_ace": {
   "0": 0,
   "1": 1,
@@ -407,9 +1025,12 @@
  "head_tag_seen": {},
  "language": "en",
  "locate_busy": false,
- "mode": "normal",
+ "max_ace_slots": 4,
+ "max_ace_units": 4,
+ "mode": "multi",
  "nozzle_keys": [],
  "pa_sync": true,
+ "pending_mode": "normal",
  "pickup_cleaning": false,
  "preflight_copies_strict": false,
  "preflight_inbox": {
@@ -424,7 +1045,10 @@
  "quad_first": true,
  "quad_replenish": false,
  "rc522": true,
+ "restart_required": true,
  "save_variables": {},
+ "saved_mode": "normal",
+ "sensor_max_age_s": 15.0,
  "spool_binding": {},
  "spool_mode": "local",
  "spoollink": false,
@@ -454,11 +1078,18 @@
    "channel_error": null,
    "channel_state": null,
    "color": null,
+   "configured_sources": [],
    "feeder": false,
    "filament_at_extruder": null,
    "filament_detected": null,
    "filament_in_ace": null,
    "filament_in_toolhead": null,
+   "filament_sensor": {
+    "present": null,
+    "source": "toolhead",
+    "state": "unavailable"
+   },
+   "flexi_source": null,
    "head_source_known": false,
    "idx": 0,
    "load_failed": false,
@@ -466,10 +1097,13 @@
    "material": "",
    "module_exist": null,
    "name": "T0",
+   "preview_source": null,
    "reader_spool_id": 0,
    "sku": "",
    "slot": null,
    "source": null,
+   "source_scope": "native",
+   "source_type": "ace",
    "subtype": ""
   },
   {
@@ -478,11 +1112,18 @@
    "channel_error": null,
    "channel_state": null,
    "color": null,
+   "configured_sources": [],
    "feeder": false,
    "filament_at_extruder": null,
    "filament_detected": null,
    "filament_in_ace": null,
    "filament_in_toolhead": null,
+   "filament_sensor": {
+    "present": null,
+    "source": "toolhead",
+    "state": "unavailable"
+   },
+   "flexi_source": null,
    "head_source_known": false,
    "idx": 1,
    "load_failed": false,
@@ -490,10 +1131,13 @@
    "material": "",
    "module_exist": null,
    "name": "T1",
+   "preview_source": null,
    "reader_spool_id": 0,
    "sku": "",
    "slot": null,
    "source": null,
+   "source_scope": "native",
+   "source_type": "ace",
    "subtype": ""
   },
   {
@@ -502,11 +1146,18 @@
    "channel_error": null,
    "channel_state": null,
    "color": null,
+   "configured_sources": [],
    "feeder": false,
    "filament_at_extruder": null,
    "filament_detected": null,
    "filament_in_ace": null,
    "filament_in_toolhead": null,
+   "filament_sensor": {
+    "present": null,
+    "source": "toolhead",
+    "state": "unavailable"
+   },
+   "flexi_source": null,
    "head_source_known": false,
    "idx": 2,
    "load_failed": false,
@@ -514,10 +1165,13 @@
    "material": "",
    "module_exist": null,
    "name": "T2",
+   "preview_source": null,
    "reader_spool_id": 0,
    "sku": "",
    "slot": null,
    "source": null,
+   "source_scope": "native",
+   "source_type": "ace",
    "subtype": ""
   },
   {
@@ -526,11 +1180,18 @@
    "channel_error": null,
    "channel_state": null,
    "color": null,
+   "configured_sources": [],
    "feeder": false,
    "filament_at_extruder": null,
    "filament_detected": null,
    "filament_in_ace": null,
    "filament_in_toolhead": null,
+   "filament_sensor": {
+    "present": null,
+    "source": "toolhead",
+    "state": "unavailable"
+   },
+   "flexi_source": null,
    "head_source_known": false,
    "idx": 3,
    "load_failed": false,
@@ -538,13 +1199,17 @@
    "material": "",
    "module_exist": null,
    "name": "T3",
+   "preview_source": null,
    "reader_spool_id": 0,
    "sku": "",
    "slot": null,
    "source": null,
+   "source_scope": "native",
+   "source_type": "ace",
    "subtype": ""
   }
  ],
+ "unassigned_devices": [],
  "units_restart_needed": false,
  "unload_all_active": false,
  "wiring": []

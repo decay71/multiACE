@@ -133,6 +133,9 @@ nav button.active { background: var(--accent); color: var(--accent-fg); border-c
 }
 .screen-btn:hover, .screen-btn.active { border-color: var(--accent); color: var(--accent); }
 .conn.ok { color: var(--ok); }
+/* Local preview: its websocket is healthy but no printer is attached. Amber
+   "simulated" is deliberate - never the green live evidence badge. */
+.conn.simulated { color: var(--warn); }
 .conn.warn { color: var(--warn); }
 .conn.err { color: var(--error); }
 main { padding: 1rem; max-width: 1200px; margin: 0 auto; }
@@ -474,6 +477,7 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
                      border: 1px solid var(--border); border-radius: 3px; cursor: pointer; font-size: .8rem; }
 .dryer-form button:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .dryer-form button.warn:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+.th-section-hint { margin: .1rem 0 .5rem; font-size: .78rem; color: var(--muted); }
 .toolhead-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .8rem;
                   grid-auto-rows: 1fr; }
 .toolhead-card { background: var(--card); border: 1px solid var(--border); padding: .8rem; border-radius: 6px;
@@ -589,6 +593,8 @@ button.slot.state-unknown { background: #333; color: #555; text-shadow: none; }
 .toolhead-actions button:hover:not(:disabled) { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .toolhead-actions button:disabled { opacity: .3; cursor: not-allowed; }
 .toolhead-actions button.warn:hover:not(:disabled) { background: var(--danger); color: #fff; border-color: var(--danger); }
+.toolhead-actions button.unavailable { color: var(--muted); opacity: 1; border-style: dashed; }
+.toolhead-actions button.unavailable:disabled { opacity: .75; cursor: not-allowed; }
 .meta { margin: .25rem 0 0 0; color: var(--muted); font-size: .85rem; }
 .meta strong { color: var(--fg); }
 .meta strong.ok { color: var(--ok); }
@@ -1801,6 +1807,8 @@ body.panel-embedded:has(.panel) { background: transparent; }
 .panel-btn {
   padding: .25em .3em; font-size: .85em; min-height: 24px; white-space: nowrap;
 }
+.panel-btn.unavailable { color: var(--muted); border-style: dashed; opacity: .75;
+  white-space: normal; font-size: .75em; line-height: 1.1; }
 .panel-all { display: flex; gap: .35em; }
 .panel-all button {
   flex: 1; padding: .35em 0; font-size: .9em; min-height: 26px;

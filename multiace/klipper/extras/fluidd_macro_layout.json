@@ -1,0 +1,868 @@
+{
+  "schema": 1,
+  "layout_version": "1.0.0",
+  "name": "MultiACE Flexi recommended Fluidd macro layout",
+  "description": "Reference 16-category layout from development printer 192.168.1.210. Categories are added in this order; unknown macros are ignored and user customizations are preserved.",
+  "source_reference": "192.168.1.210, captured 2026-11-16",
+  "platforms": [
+    "snapmaker-u1",
+    "snapmaker-u1-paxx12"
+  ],
+  "default_visibility": true,
+  "categories": [
+    {
+      "id": "multiace-status",
+      "name": "multiACE | Status",
+      "order": 1,
+      "owner": "multiace"
+    },
+    {
+      "id": "multiace-mode-tools",
+      "name": "multiACE | Mode & Tool Selection",
+      "order": 2,
+      "owner": "multiace"
+    },
+    {
+      "id": "multiace-loading",
+      "name": "multiACE | Loading",
+      "order": 3,
+      "owner": "multiace"
+    },
+    {
+      "id": "multiace-unloading",
+      "name": "multiACE | Unloading",
+      "order": 4,
+      "owner": "multiace"
+    },
+    {
+      "id": "multiace-drying",
+      "name": "multiACE | Drying",
+      "order": 5,
+      "owner": "multiace"
+    },
+    {
+      "id": "multiace-maintenance",
+      "name": "multiACE | Update & Maintenance",
+      "order": 6,
+      "owner": "multiace"
+    },
+    {
+      "id": "snapmaker-tool-selection",
+      "name": "Snapmaker | Tool Selection",
+      "order": 7,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "snapmaker-filament-loading",
+      "name": "Snapmaker | Filament Loading",
+      "order": 8,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "snapmaker-filament-unloading",
+      "name": "Snapmaker | Filament Unloading",
+      "order": 9,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "snapmaker-print-control",
+      "name": "Snapmaker | Print Control",
+      "order": 10,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "snapmaker-print-preparation",
+      "name": "Snapmaker | Print Preparation",
+      "order": 11,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "snapmaker-homing-motion",
+      "name": "Snapmaker | Homing & Motion",
+      "order": 12,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "snapmaker-calibration",
+      "name": "Snapmaker | Calibration",
+      "order": 13,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "snapmaker-nozzle-maintenance",
+      "name": "Snapmaker | Nozzle Maintenance",
+      "order": 14,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "snapmaker-internal-helpers",
+      "name": "Snapmaker | Internal Helpers",
+      "order": 15,
+      "owner": "snapmaker"
+    },
+    {
+      "id": "system-diagnostics-utilities",
+      "name": "System | Diagnostics & Utilities",
+      "order": 16,
+      "owner": "system"
+    }
+  ],
+  "assignments": [
+    {
+      "name": "ACEG__List",
+      "category": "multiace-status",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "ACEG__Status",
+      "category": "multiace-status",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "ACEA__Switch_0",
+      "category": "multiace-mode-tools",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "ACEA__Switch_1",
+      "category": "multiace-mode-tools",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "ACEA__Switch_2",
+      "category": "multiace-mode-tools",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "ACEA__Switch_3",
+      "category": "multiace-mode-tools",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "ACEF__Mode_Head",
+      "category": "multiace-mode-tools",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "ACEF__Mode_Multi",
+      "category": "multiace-mode-tools",
+      "order": 5,
+      "visible": true
+    },
+    {
+      "name": "ACEF__Mode_Normal",
+      "category": "multiace-mode-tools",
+      "order": 6,
+      "visible": true
+    },
+    {
+      "name": "SET_ACE_MODE",
+      "category": "multiace-mode-tools",
+      "order": 7,
+      "visible": true
+    },
+    {
+      "name": "ACEB__Load_0",
+      "category": "multiace-loading",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "ACEB__Load_1",
+      "category": "multiace-loading",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "ACEB__Load_2",
+      "category": "multiace-loading",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "ACEB__Load_3",
+      "category": "multiace-loading",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Load_T0",
+      "category": "multiace-loading",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Load_T1",
+      "category": "multiace-loading",
+      "order": 5,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Load_T2",
+      "category": "multiace-loading",
+      "order": 6,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Load_T3",
+      "category": "multiace-loading",
+      "order": 7,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Unload_All",
+      "category": "multiace-unloading",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Unload_T0",
+      "category": "multiace-unloading",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Unload_T1",
+      "category": "multiace-unloading",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Unload_T2",
+      "category": "multiace-unloading",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "ACEC__Unload_T3",
+      "category": "multiace-unloading",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "ACED__Dry_Start_0",
+      "category": "multiace-drying",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "ACED__Dry_Start_1",
+      "category": "multiace-drying",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "ACED__Dry_Start_2",
+      "category": "multiace-drying",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "ACED__Dry_Start_3",
+      "category": "multiace-drying",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "ACED__Dry_Stop",
+      "category": "multiace-drying",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "ACEH__Update_Apply",
+      "category": "multiace-maintenance",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "ACEH__Update_Check",
+      "category": "multiace-maintenance",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "T4",
+      "category": "snapmaker-tool-selection",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "T5",
+      "category": "snapmaker-tool-selection",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "T6",
+      "category": "snapmaker-tool-selection",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "T7",
+      "category": "snapmaker-tool-selection",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "T8",
+      "category": "snapmaker-tool-selection",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "T9",
+      "category": "snapmaker-tool-selection",
+      "order": 5,
+      "visible": true
+    },
+    {
+      "name": "T10",
+      "category": "snapmaker-tool-selection",
+      "order": 6,
+      "visible": true
+    },
+    {
+      "name": "T11",
+      "category": "snapmaker-tool-selection",
+      "order": 7,
+      "visible": true
+    },
+    {
+      "name": "T12",
+      "category": "snapmaker-tool-selection",
+      "order": 8,
+      "visible": true
+    },
+    {
+      "name": "T13",
+      "category": "snapmaker-tool-selection",
+      "order": 9,
+      "visible": true
+    },
+    {
+      "name": "T14",
+      "category": "snapmaker-tool-selection",
+      "order": 10,
+      "visible": true
+    },
+    {
+      "name": "T15",
+      "category": "snapmaker-tool-selection",
+      "order": 11,
+      "visible": true
+    },
+    {
+      "name": "T16",
+      "category": "snapmaker-tool-selection",
+      "order": 12,
+      "visible": true
+    },
+    {
+      "name": "T17",
+      "category": "snapmaker-tool-selection",
+      "order": 13,
+      "visible": true
+    },
+    {
+      "name": "T18",
+      "category": "snapmaker-tool-selection",
+      "order": 14,
+      "visible": true
+    },
+    {
+      "name": "T19",
+      "category": "snapmaker-tool-selection",
+      "order": 15,
+      "visible": true
+    },
+    {
+      "name": "T20",
+      "category": "snapmaker-tool-selection",
+      "order": 16,
+      "visible": true
+    },
+    {
+      "name": "T21",
+      "category": "snapmaker-tool-selection",
+      "order": 17,
+      "visible": true
+    },
+    {
+      "name": "T22",
+      "category": "snapmaker-tool-selection",
+      "order": 18,
+      "visible": true
+    },
+    {
+      "name": "T23",
+      "category": "snapmaker-tool-selection",
+      "order": 19,
+      "visible": true
+    },
+    {
+      "name": "T24",
+      "category": "snapmaker-tool-selection",
+      "order": 20,
+      "visible": true
+    },
+    {
+      "name": "T25",
+      "category": "snapmaker-tool-selection",
+      "order": 21,
+      "visible": true
+    },
+    {
+      "name": "T26",
+      "category": "snapmaker-tool-selection",
+      "order": 22,
+      "visible": true
+    },
+    {
+      "name": "T27",
+      "category": "snapmaker-tool-selection",
+      "order": 23,
+      "visible": true
+    },
+    {
+      "name": "T28",
+      "category": "snapmaker-tool-selection",
+      "order": 24,
+      "visible": true
+    },
+    {
+      "name": "T29",
+      "category": "snapmaker-tool-selection",
+      "order": 25,
+      "visible": true
+    },
+    {
+      "name": "T30",
+      "category": "snapmaker-tool-selection",
+      "order": 26,
+      "visible": true
+    },
+    {
+      "name": "T31",
+      "category": "snapmaker-tool-selection",
+      "order": 27,
+      "visible": true
+    },
+    {
+      "name": "CHANGE_TOOL",
+      "category": "snapmaker-tool-selection",
+      "order": 28,
+      "visible": true
+    },
+    {
+      "name": "AUTO_FEEDING",
+      "category": "snapmaker-filament-loading",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "AUTO_FEEDING_BATCH",
+      "category": "snapmaker-filament-loading",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "AUTO_FEEDING_PREHEAT",
+      "category": "snapmaker-filament-loading",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "MANUAL_FEEDING",
+      "category": "snapmaker-filament-loading",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "M600",
+      "category": "snapmaker-filament-loading",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "INNER_FILAMENT_UNLOAD",
+      "category": "snapmaker-filament-unloading",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "LANE_UNLOAD",
+      "category": "snapmaker-filament-unloading",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "TOOL_UNLOAD",
+      "category": "snapmaker-filament-unloading",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_END_AUTO_UNLOAD_FILAMENT",
+      "category": "snapmaker-filament-unloading",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "CANCEL_PRINT",
+      "category": "snapmaker-print-control",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "PAUSE",
+      "category": "snapmaker-print-control",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "RESUME",
+      "category": "snapmaker-print-control",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "PRINT_START",
+      "category": "snapmaker-print-control",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "PRINT_END",
+      "category": "snapmaker-print-control",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "SET_PAUSE_AT_LAYER",
+      "category": "snapmaker-print-control",
+      "order": 5,
+      "visible": true
+    },
+    {
+      "name": "SET_PAUSE_NEXT_LAYER",
+      "category": "snapmaker-print-control",
+      "order": 6,
+      "visible": true
+    },
+    {
+      "name": "SET_PRINT_STATS_INFO",
+      "category": "snapmaker-print-control",
+      "order": 7,
+      "visible": true
+    },
+    {
+      "name": "PRINT_PRESTART_CHECK",
+      "category": "snapmaker-print-preparation",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_AUTO_FEED",
+      "category": "snapmaker-print-preparation",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_CHECK_SWITCH_EXTRUDER",
+      "category": "snapmaker-print-preparation",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_EXTRUDER_PREHEAT",
+      "category": "snapmaker-print-preparation",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_START_LINE",
+      "category": "snapmaker-print-preparation",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_START_LINE_EXTRUDER_0",
+      "category": "snapmaker-print-preparation",
+      "order": 5,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_START_LINE_EXTRUDER_1",
+      "category": "snapmaker-print-preparation",
+      "order": 6,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_START_LINE_EXTRUDER_2",
+      "category": "snapmaker-print-preparation",
+      "order": 7,
+      "visible": true
+    },
+    {
+      "name": "SM_PRINT_START_LINE_EXTRUDER_3",
+      "category": "snapmaker-print-preparation",
+      "order": 8,
+      "visible": true
+    },
+    {
+      "name": "SENSORLESS_HOME_X",
+      "category": "snapmaker-homing-motion",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "SENSORLESS_HOME_Y",
+      "category": "snapmaker-homing-motion",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "SENSORLESS_HOME_Z",
+      "category": "snapmaker-homing-motion",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "SHAKE_Z",
+      "category": "snapmaker-homing-motion",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "AUTO_BED_MESH_CALIBRATE",
+      "category": "snapmaker-calibration",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "EXTRUDER_OFFSET_ACTION_PROBE_CALIBRATE_ALL",
+      "category": "snapmaker-calibration",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "SHAPER_CALIBRATE",
+      "category": "snapmaker-calibration",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "XYZ_OFFSET_CALIBRATE",
+      "category": "snapmaker-calibration",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "XYZ_OFFSET_CALIBRATE_ALL",
+      "category": "snapmaker-calibration",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "CONTROL_EXTRUDE_ACTION",
+      "category": "snapmaker-nozzle-maintenance",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "CONTROL_RETRACT_ACTION",
+      "category": "snapmaker-nozzle-maintenance",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "FINELY_CLEAN_NOZZLE_STAGE_1",
+      "category": "snapmaker-nozzle-maintenance",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "FINELY_CLEAN_NOZZLE_STAGE_2",
+      "category": "snapmaker-nozzle-maintenance",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "MOVE_TO_DISCARD_FILAMENT_POSITION",
+      "category": "snapmaker-nozzle-maintenance",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "ROUGHLY_CLEAN_NOZZLE",
+      "category": "snapmaker-nozzle-maintenance",
+      "order": 5,
+      "visible": true
+    },
+    {
+      "name": "ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD",
+      "category": "snapmaker-nozzle-maintenance",
+      "order": 6,
+      "visible": true
+    },
+    {
+      "name": "FEEDING_RUNOUT_EVENT_HANDLE",
+      "category": "snapmaker-internal-helpers",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "FEED_HANG_NEUTRAL",
+      "category": "snapmaker-internal-helpers",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "INNER_CUTOFF_BASE_DISCARD",
+      "category": "snapmaker-internal-helpers",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "INNER_DETECT_NOZZLE_STAGE_1",
+      "category": "snapmaker-internal-helpers",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "INNER_DETECT_NOZZLE_STAGE_2",
+      "category": "snapmaker-internal-helpers",
+      "order": 4,
+      "visible": true
+    },
+    {
+      "name": "INNER_DISCARD_FILAMENT_BASE_DISCARD",
+      "category": "snapmaker-internal-helpers",
+      "order": 5,
+      "visible": true
+    },
+    {
+      "name": "INNER_FLOW_CALIB_END_BASE_DISCARD",
+      "category": "snapmaker-internal-helpers",
+      "order": 6,
+      "visible": true
+    },
+    {
+      "name": "INNER_FLOW_MEASURE_END_BASE_DISCARD",
+      "category": "snapmaker-internal-helpers",
+      "order": 7,
+      "visible": true
+    },
+    {
+      "name": "INNER_FLUSH_FILAMENT",
+      "category": "snapmaker-internal-helpers",
+      "order": 8,
+      "visible": true
+    },
+    {
+      "name": "INNER_MANUAL_FEED_STAGE_CANCEL",
+      "category": "snapmaker-internal-helpers",
+      "order": 9,
+      "visible": true
+    },
+    {
+      "name": "INNER_MANUAL_FEED_STAGE_EXTRUDE",
+      "category": "snapmaker-internal-helpers",
+      "order": 10,
+      "visible": true
+    },
+    {
+      "name": "INNER_MANUAL_FEED_STAGE_FINISH",
+      "category": "snapmaker-internal-helpers",
+      "order": 11,
+      "visible": true
+    },
+    {
+      "name": "INNER_MANUAL_FEED_STAGE_FLUSH",
+      "category": "snapmaker-internal-helpers",
+      "order": 12,
+      "visible": true
+    },
+    {
+      "name": "INNER_MANUAL_FEED_STAGE_PREPARE",
+      "category": "snapmaker-internal-helpers",
+      "order": 13,
+      "visible": true
+    },
+    {
+      "name": "INNER_PAUSE",
+      "category": "snapmaker-internal-helpers",
+      "order": 14,
+      "visible": true
+    },
+    {
+      "name": "INNER_PREEXTRUDE_FILAMENT",
+      "category": "snapmaker-internal-helpers",
+      "order": 15,
+      "visible": true
+    },
+    {
+      "name": "INNER_RESUME",
+      "category": "snapmaker-internal-helpers",
+      "order": 16,
+      "visible": false
+    },
+    {
+      "name": "INNER_ROUGHLY_CLEAN_NOZZLE_BASE_DISCARD",
+      "category": "snapmaker-internal-helpers",
+      "order": 17,
+      "visible": true
+    },
+    {
+      "name": "SET_COLOR",
+      "category": "system-diagnostics-utilities",
+      "order": 0,
+      "visible": true
+    },
+    {
+      "name": "SET_MAP",
+      "category": "system-diagnostics-utilities",
+      "order": 1,
+      "visible": true
+    },
+    {
+      "name": "SET_MATERIAL",
+      "category": "system-diagnostics-utilities",
+      "order": 2,
+      "visible": true
+    },
+    {
+      "name": "SET_VENDOR",
+      "category": "system-diagnostics-utilities",
+      "order": 3,
+      "visible": true
+    },
+    {
+      "name": "SET_WEIGHT",
+      "category": "system-diagnostics-utilities",
+      "order": 4,
+      "visible": true
+    }
+  ],
+  "migration": {
+    "minimum_multiACE_version": "1.30b",
+    "legacy_layouts": [
+      "multiACE-6-category"
+    ],
+    "fresh_installation": "apply_recommended",
+    "existing_installation": "merge_missing",
+    "multiACE_update": "merge_missing",
+    "restore": "replace_managed_assignments_preserve_custom_categories",
+    "preserve_user_categories": true,
+    "preserve_user_assignments": true
+  }
+}

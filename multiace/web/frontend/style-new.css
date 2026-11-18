@@ -385,13 +385,21 @@ html[data-theme="new"] .toolhead-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 10px;
   margin-top: 10px; border: 0; background: transparent;
 }
+/* @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi (card text lines) */
 html[data-theme="new"] .toolhead-card {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto;
-  grid-template-areas: "num mat mat gauge" "num meta meta gauge" "num chan chan gauge" "act act act act" "opt opt opt opt";
-  grid-template-rows: 16px 20px auto auto auto;
-  align-items: center; align-content: start; column-gap: 0; row-gap: 0;
-  padding: 12px 0 0; border: 1px solid var(--border); border-radius: 0;
-  background: var(--card);
+  display: grid;   grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto;
+  /* Text lines own the whole width: in two half-columns "Waiting for
+     filament" and "Flexi feed: ACE" were ellipsized no matter the card
+     height. Only number, material and gauge share the top row now. */
+  grid-template-areas: "num mat mat gauge" "meta meta meta meta" "chan chan chan chan" "act act act act" "opt opt opt opt";
+  /* Fixed rows, not auto: T0 hides its channel line once a terminal state
+     goes stale, and an auto row collapsed under it - the number then centred
+     in a shorter span and sat higher than T1-T3. Every card now owns the same
+     row heights whether or not each line renders. */
+  grid-template-rows: 34px 20px 22px auto auto;
+  align-items: start; align-content: start; column-gap: 0; row-gap: 0;
+  padding: 14px 0 0; border: 1px solid var(--border); border-radius: 0;
+  background: var(--card); min-height: 168px;
 }
 html[data-theme="new"] .toolhead-card.present,
 html[data-theme="new"] .toolhead-card.unknown,
@@ -402,29 +410,39 @@ html[data-theme="new"] .toolhead-card:not(.nt-head):not(.present):not(.unknown):
 html[data-theme="new"] .toolhead-card > .meta.meta-empty { display: none; }
 html[data-theme="new"] .toolhead-card:has(> .meta-empty) .nt-th-mat { grid-row: 1 / 3; align-self: center; }
 html[data-theme="new"] .toolhead-card > h2 {
-  grid-area: num; margin: 0 0 0 14px; padding: 0; font-size: 26px; line-height: 1; font-weight: 600;
+  grid-area: num; align-self: start; margin: 2px 0 0 14px; padding: 0;
+  font-size: 26px; line-height: 1; font-weight: 600;
 }
 html[data-theme="new"] .toolhead-card > h2 small { display: block; font-size: 11px; }
 html[data-theme="new"] .toolhead-card .th-color { display: none; }
 html[data-theme="new"] .nt-th-mat {
-  grid-area: mat; align-self: end; padding-left: 12px; font-size: 14px; font-weight: 600;
+  grid-area: mat; align-self: center; padding-left: 12px; font-size: 14px; font-weight: 600;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 html[data-theme="new"] .toolhead-card > .meta:not(.meta-channel) {
-  grid-area: meta; align-self: start; margin: 2px 0 0; padding: 0 0 0 12px; min-height: 0;
+  grid-area: meta; align-self: start; margin: 2px 0 0; padding: 0 14px;
+  min-height: 20px; line-height: 1.35;
   font-size: 12px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, meta-flexi, meta.meta-flexi */
+/* Session 2: the Flexi feed line shares the meta grid cell; show it only
+   when no source/status line is present, otherwise the two overlap. */
+html[data-theme="new"] .toolhead-card > .meta:not(.meta-empty):not(.meta-flexi):not(.meta-channel) ~ .meta.meta-flexi { display: none; }
+html[data-theme="new"] .toolhead-card > .meta.meta-flexi {
+  white-space: normal; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden;
 }
 html[data-theme="new"] .toolhead-card > .meta br,
 html[data-theme="new"] .toolhead-card > .meta .th-meta-mat,
 html[data-theme="new"] .toolhead-card > .meta br + .muted { display: none; }
 html[data-theme="new"] .toolhead-card .meta-channel {
-  grid-area: chan; align-self: start; margin: 2px 0 0; padding: 0 0 0 12px; min-height: 0;
+  grid-area: chan; align-self: start; margin: 0; padding: 0 14px; min-height: 16px;
   font-size: 11px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 html[data-theme="new"] .toolhead-card .meta-channel code { font-size: 11px; color: var(--muted); background: none; padding: 0; }
-html[data-theme="new"] .nt-spool-th { grid-area: gauge; height: 40px; margin: 0 14px 0 12px; }
+html[data-theme="new"] .nt-spool-th { grid-area: gauge; align-self: center; height: 30px; margin: 0 14px 0 12px; }
 html[data-theme="new"] .nt-spool-th .nt-core { width: 18px; margin: 3px 2px; border-radius: 3px; }
 html[data-theme="new"] .nt-spool-th .nt-fill { border-radius: 0; }
 /* feeder / manual heads keep their clickable identity tile, now as the gauge */
@@ -932,6 +950,14 @@ html[data-theme="new"] .nt-rfid-bar button {
 }
 html[data-theme="new"] .nt-rfid-bar button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 html[data-theme="new"] .nt-rfid-uid { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+html[data-theme="new"] .nt-rfid-uid { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+html[data-theme="new"] .nt-rfid-unsupported { flex-basis: 100%; font-size: 12px; line-height: 1.45; color: var(--muted); }
+html[data-theme="new"] .nt-rfid-reseat { margin-left: 8px; height: 26px; padding: 0 9px; font-size: 12px; background: transparent; border: 1px solid var(--nt-ctl); color: var(--fg); }
+html[data-theme="new"] .nt-rfid-reseat:hover { border-color: var(--accent); color: var(--accent); }
+html[data-theme="new"] .nt-rfid-guide { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 8px; font-size: 12px; line-height: 1.45; color: var(--fg); }
+html[data-theme="new"] .nt-rfid-guide p { margin: 0; flex-basis: 100%; }
+html[data-theme="new"] .nt-rfid-guide-actions { display: flex; gap: 8px; }
+html[data-theme="new"] .nt-rfid-guide-actions button { height: 34px; padding: 0 12px; background: transparent; border: 1px solid var(--nt-ctl); color: var(--fg); font-size: 12.5px; }
 html[data-theme="new"] .nt-dlg-foot {
   display: flex; align-items: center; gap: 8px; margin: 0; padding: 12px 18px;
 }
@@ -1795,6 +1821,107 @@ html[data-theme="new"][data-shade="light"] .panel-card.op-unloading { animation-
 html[data-theme="new"][data-shade="light"] .ace-card.offline > :not(h2) { opacity: .5; }
 html[data-theme="new"][data-shade="light"] .panel:has(.panel-temp .ace-offline-text) .panel-cards { opacity: .55; }
 html[data-theme="new"][data-shade="light"] .preflight-dialog .row > button.primary:disabled { opacity: 1; background: var(--nt-main-dis-bg); border-color: var(--nt-main-dis-bg); color: var(--nt-main-dis-fg); }
+/* @MULTIACE_FLEXI_HOOK Flexi-only routing table styles; original mode rules are untouched. */
+.flexi-routing { margin: 1rem 0; }
+.flexi-routing table { width: 100%; max-width: 32rem; border-collapse: collapse; margin: 1rem 0; }
+.flexi-routing th, .flexi-routing td { padding: .4rem .8rem; text-align: left; }
+.flexi-routing select { min-width: 8rem; }
+
+/* Flexi route discovery */
+.fx-auto-discovery { margin: .75rem 0 1rem; padding: .75rem 1.25rem 1rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+.fx-auto-discovery summary { cursor: pointer; padding: .25rem 0; }
+.fx-auto-discovery summary strong { font-size: 1.05rem; margin-right: .5rem; }
+.fx-auto-discovery-params { display: flex; flex-wrap: wrap; gap: .75rem 1.5rem; margin: .75rem 0; }
+.fx-auto-discovery-params input { width: 5.5rem; }
+.fx-auto-discovery-start { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+.fx-disc-table-wrap { overflow-x: auto; margin: 1rem 0 .5rem; border: 1px solid var(--border); border-radius: 8px; }
+.flexi-routing table.fx-auto-discovery-results { width: 100%; max-width: none; margin: 0; border-collapse: collapse; font-size: .95rem; }
+.fx-auto-discovery-results th { text-align: left; font-weight: 600; color: var(--nt-label); font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; padding: .6rem 1rem; border-bottom: 1px solid var(--border); white-space: nowrap; background: var(--nt-well); }
+.fx-auto-discovery-results td { padding: .65rem 1rem; border-bottom: 1px solid var(--nt-line); vertical-align: middle; }
+.fx-auto-discovery-results tbody tr:last-child td { border-bottom: 0; }
+.fx-auto-discovery-results tbody tr:hover td { background: var(--nt-sel); }
+.fx-auto-discovery-results .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fx-disc-slot { white-space: nowrap; }
+.fx-disc-act { text-align: right; white-space: nowrap; }
+.fx-disc-badge { display: inline-block; padding: .15rem .6rem; border-radius: 999px; font-size: .85rem; font-weight: 600; white-space: nowrap; border: 1px solid transparent; cursor: default; }
+.fx-disc-badge-ok { color: var(--nt-ok); border-color: color-mix(in srgb, var(--nt-ok) 45%, transparent); background: color-mix(in srgb, var(--nt-ok) 12%, transparent); }
+.fx-disc-badge-warn { color: var(--nt-warn-fg); border-color: color-mix(in srgb, var(--nt-warn-hi) 55%, transparent); background: var(--nt-warn-bg); }
+.fx-disc-badge-none { color: var(--muted); border-color: var(--border); }
+.fx-disc-badge-route { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.fx-len-cell { white-space: nowrap; }
+.fx-len-input { display: inline-flex; align-items: center; gap: .35rem; }
+.fx-len-input input { width: 6.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+.fx-len-suggest { display: block; margin-top: .25rem; padding: 0; border: 0; background: none; color: var(--accent); font-size: .8rem; cursor: pointer; text-decoration: underline dotted; }
+.fx-len-suggest:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+.fx-disc-actions { display: flex; flex-wrap: wrap; gap: .75rem 2.5rem; margin-top: .75rem; }
+.fx-disc-group { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
+.fx-disc-group-label { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--nt-label); margin-right: .25rem; }
+@media (max-width: 640px) {
+  .fx-auto-discovery { padding: .5rem .75rem .75rem; }
+  .fx-auto-discovery-results th, .fx-auto-discovery-results td { padding: .5rem .6rem; }
+  .fx-disc-actions { gap: .75rem; }
+}
+
+/* Splitter editor worked example */
+.fx-joiner-example { margin: .5rem 0 .9rem; padding: .6rem .9rem; border-left: 3px solid var(--accent); background: var(--nt-well); border-radius: 0 6px 6px 0; max-width: 60rem; }
+.fx-joiner-example p { margin: .35rem 0; color: var(--fg); font-size: .92rem; line-height: 1.45; }
+.fx-joiner-example code { padding: 0 .3rem; border-radius: 4px; background: var(--nt-ctl); }
+
+/* Diagnostics (live) and failover order */
+.fx-diag-table { width: 100%; border-collapse: collapse; font-size: .93rem; }
+.fx-diag-table th { text-align: left; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--nt-label); padding: .55rem .9rem; background: var(--nt-well); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.fx-diag-table td { padding: .55rem .9rem; border-bottom: 1px solid var(--nt-line); vertical-align: middle; }
+.fx-diag-table tbody tr:last-child td { border-bottom: 0; }
+.fx-diag-more { margin-top: .75rem; }
+.failover-head { padding: .5rem 0; border-top: 1px solid var(--nt-line); }
+.failover-head:first-of-type { border-top: 0; }
+.failover-head-title { display: flex; gap: .6rem; align-items: baseline; }
+.failover-list { margin: .35rem 0 .35rem 1.2rem; padding: 0; }
+.failover-list li { display: flex; align-items: center; gap: .55rem; padding: .2rem 0; }
+.failover-swatch { width: .9rem; height: .9rem; border-radius: 50%; border: 1px solid var(--border); flex: none; }
+.failover-slot { min-width: 7.5rem; }
+.failover-move { margin-left: auto; display: inline-flex; gap: .25rem; }
+.failover-actions { display: flex; gap: .5rem; margin: .25rem 0 .25rem 1.2rem; }
+
+/* Checkboxes/radios in setting forms keep their natural size (the general
+   input rule stretched the ACE firmware "Force" box into a large white block). */
+html[data-theme] .config-form input[type="checkbox"], html[data-theme] .config-form input[type="radio"],
+.acefw-force-row input[type="checkbox"] { width: auto; height: auto; min-width: 0; flex: none; margin: 0; }
+.acefw-force-row { display: flex; align-items: center; gap: .6rem; }
+
+/* Phone width (found by the 390 px sweep): wide tables scroll inside their
+   own box instead of pushing the whole page sideways; tip-forming rows wrap. */
+@media (max-width: 640px) {
+  main table:not(.fx-auto-discovery-results):not(.fx-diag-table) { display: block; max-width: 100%; overflow-x: auto; }
+  .tipform-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tipform-row .tipform-table { flex: 1 1 100%; min-width: 0; width: 100%; }
+  .tipform-row .tipform-name, .tipform-row .tipform-vendor { flex: 1 1 40%; min-width: 0; }
+}
+
+/* @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi */
+/* Prepare to print (Flexi dashboard) */
+.fx-prepare { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+.fx-prepare-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.fx-prepare-load { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--nt-line); }
+.fx-prepare-failover { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--nt-line); }
+.fx-failover-check { list-style: none; margin: 6px 0; padding: 0; }
+.fx-failover-check li { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--nt-line); }
+.fx-failover-check li:last-child { border-bottom: 0; }
+.fx-failover-check .failover-swatch { margin-top: 3px; }
+.fx-spinner { width: 12px; height: 12px; border: 2px solid var(--nt-ctl-hi); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: fx-spin 0.9s linear infinite; }
+@keyframes fx-spin { to { transform: rotate(360deg); } }
+.fx-multi-pick { display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; user-select: none; }
+.fx-multi-pick input[type="checkbox"] { width: auto; height: auto; margin: 0; }
+.fx-multi-pick.picked { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--fg); }
+.fx-multi-pick.blocked { opacity: .45; cursor: not-allowed; }
+
+/* Runout check: one-line lead and per-slot preview for empty toolheads */
+.fx-fc-lead { margin: 0 0 4px; }
+.fx-fc-opts { list-style: none; margin: 4px 0 0; padding: 0; font-size: .9rem; }
+.fx-fc-opts li { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+.fx-fc-mark { width: 1.1em; text-align: center; font-weight: 700; }
+.fx-fc-mark.ok { color: var(--nt-ok); }
+.fx-fc-mark.warn { color: var(--nt-warn-fg); }
 
 /* Control tab (Print Hub): camera, print panel, console. The shared rules in
    style.css use the theme variables; this squares the cards with the other

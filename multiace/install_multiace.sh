@@ -183,9 +183,73 @@ cp "$INSTALL_DIR/klipper/extras/ace_unit.py" "$EXTRAS_DIR/ace_unit.py"
 cp "$INSTALL_DIR/klipper/extras/ace_drivers.py" "$EXTRAS_DIR/ace_drivers.py"
 chmod 644 "$EXTRAS_DIR/ace.py" "$EXTRAS_DIR/ace_macro_layout.py" "$EXTRAS_DIR/ace_protocol.py" "$EXTRAS_DIR/ace_protocol_v1.py" "$EXTRAS_DIR/ace_protocol_v2.py" "$EXTRAS_DIR/ace_protocol_cfs.py" "$EXTRAS_DIR/filament_feed_ace.py" "$EXTRAS_DIR/filament_switch_sensor_ace.py" "$EXTRAS_DIR/ace_bg_swap.py" "$EXTRAS_DIR/ace_tipform.py" "$EXTRAS_DIR/ace_rc522.py" "$EXTRAS_DIR/ace_gen1_tunnel.py" "$EXTRAS_DIR/ace_resistance.py" "$EXTRAS_DIR/ace_display.py" "$EXTRAS_DIR/ace_spool.py" "$EXTRAS_DIR/ace_swap.py" "$EXTRAS_DIR/ace_settings.py" "$EXTRAS_DIR/ace_unit.py" "$EXTRAS_DIR/ace_drivers.py"
 log "  Klipper extras installed"
+# Flexi (fourth mode, ace__mode = 'flexi'): its modules are imported by
+# ace.py and inert in normal/multi/head. flexi.py + flexi_h1_adapter.py +
+# flexi_h2*.py are the [flexi] plugin (motion guards), loaded from
+# extended/klipper/flexi.cfg.
+cp "$INSTALL_DIR/klipper/extras/ace_config_transaction.py" "$EXTRAS_DIR/ace_config_transaction.py"
+cp "$INSTALL_DIR/klipper/extras/ace_failover.py" "$EXTRAS_DIR/ace_failover.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi.py" "$EXTRAS_DIR/ace_flexi.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_adapters.py" "$EXTRAS_DIR/ace_flexi_adapters.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_authorization.py" "$EXTRAS_DIR/ace_flexi_authorization.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_calibration.py" "$EXTRAS_DIR/ace_flexi_calibration.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_controlled_test.py" "$EXTRAS_DIR/ace_flexi_controlled_test.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_diagnostics.py" "$EXTRAS_DIR/ace_flexi_diagnostics.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_discovery.py" "$EXTRAS_DIR/ace_flexi_discovery.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_engine.py" "$EXTRAS_DIR/ace_flexi_engine.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_engineering.py" "$EXTRAS_DIR/ace_flexi_engineering.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_evidence.py" "$EXTRAS_DIR/ace_flexi_evidence.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_executor.py" "$EXTRAS_DIR/ace_flexi_executor.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_interlocks.py" "$EXTRAS_DIR/ace_flexi_interlocks.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_pathchek.py" "$EXTRAS_DIR/ace_flexi_pathchek.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_pathchek_native.py" "$EXTRAS_DIR/ace_flexi_pathchek_native.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_pathchek_policy.py" "$EXTRAS_DIR/ace_flexi_pathchek_policy.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_pathchek_session.py" "$EXTRAS_DIR/ace_flexi_pathchek_session.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_paths.py" "$EXTRAS_DIR/ace_flexi_paths.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_production.py" "$EXTRAS_DIR/ace_flexi_production.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_profiles.py" "$EXTRAS_DIR/ace_flexi_profiles.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_service.py" "$EXTRAS_DIR/ace_flexi_service.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_sources.py" "$EXTRAS_DIR/ace_flexi_sources.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_thermal.py" "$EXTRAS_DIR/ace_flexi_thermal.py"
+cp "$INSTALL_DIR/klipper/extras/ace_flexi_transport.py" "$EXTRAS_DIR/ace_flexi_transport.py"
+cp "$INSTALL_DIR/klipper/extras/ace_poll_gate.py" "$EXTRAS_DIR/ace_poll_gate.py"
+cp "$INSTALL_DIR/klipper/extras/flexi.py" "$EXTRAS_DIR/flexi.py"
+cp "$INSTALL_DIR/klipper/extras/flexi_h1_adapter.py" "$EXTRAS_DIR/flexi_h1_adapter.py"
+cp "$INSTALL_DIR/klipper/extras/flexi_h2.py" "$EXTRAS_DIR/flexi_h2.py"
+cp "$INSTALL_DIR/klipper/extras/flexi_h2_interceptor.py" "$EXTRAS_DIR/flexi_h2_interceptor.py"
+cp "$INSTALL_DIR/klipper/extras/flexi_web_policy.py" "$EXTRAS_DIR/flexi_web_policy.py"
+cp "$INSTALL_DIR/klipper/extras/fluidd_macro_layout.json" "$EXTRAS_DIR/fluidd_macro_layout.json"
+chmod 644 "$EXTRAS_DIR/ace_config_transaction.py" "$EXTRAS_DIR/ace_failover.py" "$EXTRAS_DIR/ace_flexi.py" "$EXTRAS_DIR/ace_flexi_adapters.py" "$EXTRAS_DIR/ace_flexi_authorization.py" "$EXTRAS_DIR/ace_flexi_calibration.py" "$EXTRAS_DIR/ace_flexi_controlled_test.py" "$EXTRAS_DIR/ace_flexi_diagnostics.py" "$EXTRAS_DIR/ace_flexi_discovery.py" "$EXTRAS_DIR/ace_flexi_engine.py" "$EXTRAS_DIR/ace_flexi_engineering.py" "$EXTRAS_DIR/ace_flexi_evidence.py" "$EXTRAS_DIR/ace_flexi_executor.py" "$EXTRAS_DIR/ace_flexi_interlocks.py" "$EXTRAS_DIR/ace_flexi_pathchek.py" "$EXTRAS_DIR/ace_flexi_pathchek_native.py" "$EXTRAS_DIR/ace_flexi_pathchek_policy.py" "$EXTRAS_DIR/ace_flexi_pathchek_session.py" "$EXTRAS_DIR/ace_flexi_paths.py" "$EXTRAS_DIR/ace_flexi_production.py" "$EXTRAS_DIR/ace_flexi_profiles.py" "$EXTRAS_DIR/ace_flexi_service.py" "$EXTRAS_DIR/ace_flexi_sources.py" "$EXTRAS_DIR/ace_flexi_thermal.py" "$EXTRAS_DIR/ace_flexi_transport.py" "$EXTRAS_DIR/ace_poll_gate.py" "$EXTRAS_DIR/flexi.py" "$EXTRAS_DIR/flexi_h1_adapter.py" "$EXTRAS_DIR/flexi_h2.py" "$EXTRAS_DIR/flexi_h2_interceptor.py" "$EXTRAS_DIR/flexi_web_policy.py" "$EXTRAS_DIR/fluidd_macro_layout.json"
+log "  Flexi modules installed"
 cp "$INSTALL_DIR/klipper/kinematics/extruder_ace.py" "$KINEMATICS_DIR/extruder_ace.py"
 chmod 644 "$KINEMATICS_DIR/extruder_ace.py"
 log "  Klipper kinematics installed"
+# [flexi] plugin section: added once, never overwritten (it may carry the
+# user's own choices). Loaded by PAXX's [include extended/klipper/*.cfg].
+if [ -f "$INSTALL_DIR/config/extended/klipper/flexi.cfg" ] && [ ! -f "$CONFIG_DIR/klipper/flexi.cfg" ]; then
+    mkdir -p "$CONFIG_DIR/klipper"
+    cp "$INSTALL_DIR/config/extended/klipper/flexi.cfg" "$CONFIG_DIR/klipper/flexi.cfg"
+    chmod 644 "$CONFIG_DIR/klipper/flexi.cfg"
+    chown lava:lava "$CONFIG_DIR/klipper/flexi.cfg" 2>/dev/null || true
+    log "  Installed extended/klipper/flexi.cfg"
+fi
+# PAXX12's boot-time mode script applies the ACE modules for multi|single|head;
+# add flexi to that list (one word, backup kept). Root only.
+S58=/etc/init.d/S58multiace-mode
+if [ -f "$S58" ] && ! grep -q 'flexi' "$S58"; then
+    if [ "$IS_ROOT" = "1" ]; then
+        cp "$S58" "${S58}.pre_flexi"
+        sed -i 's/^\( *\)multi|single|head)$/\1multi|single|head|flexi)/' "$S58"
+        if grep -q 'multi|single|head|flexi)' "$S58"; then
+            log "  $S58 now applies the ACE modules for flexi too (backup ${S58}.pre_flexi)"
+        else
+            cp "${S58}.pre_flexi" "$S58"
+            log "  WARN: $S58 has an unknown layout - left unchanged"
+        fi
+    else
+        log "  SKIP: adding flexi to $S58 needs root"
+    fi
+fi
 # Multi-MCU homing trsync window. Earlier installs raised TRSYNC_TIMEOUT
 # in mcu.py and kept the stock file as mcu.py.pre_multiace. The window is
 # now set at runtime by ace.py ([ace] trsync_timeout, default off), so the

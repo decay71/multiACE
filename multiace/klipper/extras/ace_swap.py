@@ -25,6 +25,9 @@ from .ace_resistance import RESISTANCE_PAUSE_STRIKES
 # starts, so commanded push = anti_ooze + PICK_CHECK_FLOW_PUSH, and the
 # cushion is retracted back afterwards (anti-ooze contract stays intact).
 PICK_CHECK_FLOW_PUSH = 10.
+#: Smallest flush the purge policy may produce (mm), same as the post-
+#: processor's stamp minimum.
+PURGE_HARD_MIN_MM = 40
 PICK_CHECK_PUSH_FEEDRATE = 400     # mm/min, = the phase3 extrude feedrate
 PICK_CHECK_COIL_SAMPLES = 5        # phase3 non-soft sampling: 5 x 0.5 s
 PICK_CHECK_COIL_INTERVAL = 0.5
@@ -103,10 +106,37 @@ class SwapMixin:
     def get_purge_length(self):
         """Flush LENGTH for the stock INNER_FLUSH_FILAMENT. A per-swap
         override (multiACE Pro) wins, else the swap_purge_length config
-        value. 0 means 'use the stock default' (caller omits LENGTH=)."""
-        if self._purge_length_override is not None:
-            return self._purge_length_override
-        return self.swap_purge_length
+        value. 0 means 'use the stock default' (caller omits LENGTH=).
+
+        The purge policy (swap_purge_scale percent, then swap_purge_floor
+        and swap_purge_cap in mm, 0 = off) applies to the resolved length.
+        With the policy at its defaults the result is unchanged. A policy
+        on a 0 (stock default) length works on the stock 80 mm and returns
+        a real length, so the caller then passes LENGTH=."""
+        base = (self._purge_length_override
+                if self._purge_length_override is not None
+                else self.swap_purge_length)
+        return self.apply_purge_policy(base)
+
+    def apply_purge_policy(self, length):
+        """Scale, floor and cap a resolved flush length (mm). Unchanged
+        while the policy sits at its defaults; a 0 (stock default) length
+        then stays 0. Once the policy is active the result is never below
+        PURGE_HARD_MIN_MM (the melt zone has to stay clear and the flow
+        check valid), whatever scale, floor or cap say; FLOOR only raises
+        the minimum further."""
+        scale = getattr(self, 'swap_purge_scale', 100)
+        floor = getattr(self, 'swap_purge_floor', 0)
+        cap = getattr(self, 'swap_purge_cap', 0)
+        if scale == 100 and not floor and not cap:
+            return length
+        value = (length or 80) * scale / 100.0
+        if floor:
+            value = max(value, floor)
+        if cap:
+            value = min(value, cap)
+        value = max(value, PURGE_HARD_MIN_MM)
+        return int(min(round(value), 200))
 
     def _restore_pos_for_pause(self, saved_pos):
 
@@ -498,17 +528,24 @@ class SwapMixin:
         # 240s): a hung phase must FAIL inside the greenlet (clean inline
         # handover) before this wait gives up and aborts the print.
         deadline = self.reactor.monotonic() + 300.
-        while self.reactor.monotonic() < deadline:
-            try:
-                if not bg.is_busy(head):
-                    self.log_always('[multiACE] head %d: background unload '
-                                    'finished - continuing'
-                                    % self._disp(head))
-                    self._rearm_fa_after_bg_wait(head, rearm_target)
+        waiting = getattr(self, '_bg_arrival_waiting', None)
+        if waiting is not None:
+            waiting.add(head)
+        try:
+            while self.reactor.monotonic() < deadline:
+                try:
+                    if not bg.is_busy(head):
+                        self.log_always('[multiACE] head %d: background '
+                                        'unload finished - continuing'
+                                        % self._disp(head))
+                        self._rearm_fa_after_bg_wait(head, rearm_target)
+                        return
+                except Exception:
                     return
-            except Exception:
-                return
-            self.reactor.pause(self.reactor.monotonic() + 0.5)
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+        finally:
+            if waiting is not None:
+                waiting.discard(head)
         msg = ('[multiACE] head %d: background unload did not finish '
                'within 300s' % self._disp(head))
         if gcmd is not None:

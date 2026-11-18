@@ -18,6 +18,7 @@ Environment variables:
   MULTIACE_WEB_VERSION   default "0.1.0"
 """
 from __future__ import annotations
+from ace_config_transaction import ace_config_lock, ConfigBusy, atomic_text_replace
 
 import ast
 import hashlib
@@ -29,7 +30,9 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional
@@ -45,13 +48,36 @@ if not _trace.handlers:
     _trace.propagate = False
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# @MULTIACE_FLEXI_HOOK BEGIN: optional streaming imports keep original modes bootable
+try:
+    import large_gcode
+    from preflight_staging import StageError, StageSizeError, stage_file
+    _flexi_streaming_import_error = None
+except ImportError as _exc:
+    large_gcode = None
+    _flexi_streaming_import_error = _exc
+
+    class StageError(Exception):
+        pass
+
+    class StageSizeError(StageError):
+        pass
+
+    async def stage_file(*args, **kwargs):
+        raise StageError("Flexi streaming modules are not installed")
+# @MULTIACE_FLEXI_HOOK END: optional streaming imports keep original modes bootable
+
 import preflight_core
+from ace_flexi_pathchek_policy import command as native_pathchek_command
+from ace_flexi import Routes as FlexiRoutes, RouteError as FlexiRouteError, encode_route_update as flexi_route_command
 from i18n_path import resolve_i18n_dir
+from flexi_web_policy import validate_web_script, command as flexi_production_command, METADATA_COMMANDS, slot_metadata_command, RC_RELEASE, discovery_command as flexi_discovery_command
+from ace_flexi_production import preflight_gcode_file as flexi_print_gcode_file
 
 MOONRAKER_URL = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125")
 
@@ -66,6 +92,15 @@ MOCK_DATA_DIR = os.environ.get(
 #: Which fixture under MOCK_DATA_DIR is served as /api/state. Point it at
 #: mock_state_head.json to develop against a head-mode printer.
 MOCK_STATE_FILE = os.environ.get("MULTIACE_MOCK_STATE_FILE", "mock_state.json")
+
+
+# @MULTIACE_FLEXI_HOOK Flexi code below uses _require_flexi_streaming
+def _require_flexi_streaming() -> None:
+    if large_gcode is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Flexi streaming modules are not installed: %s" % _flexi_streaming_import_error,
+        )
 
 
 def _env_flag(name: str) -> bool:
@@ -205,6 +240,10 @@ def _homing_active() -> bool:
 _LAST_STATUS: dict = {}
 _LAST_STATUS_TS: float = 0.0
 _STATUS_CACHE_TTL = float(os.environ.get("MULTIACE_STATUS_CACHE_TTL", "5.0"))
+# A UI snapshot older than this cannot prove the toolhead sensor still reads
+# what it read then. The UI uses it only for the Load/Unload label; every
+# execution path keeps its own interlocks and refuses stale evidence.
+SENSOR_MAX_AGE_S = float(os.environ.get("MULTIACE_SENSOR_MAX_AGE_S", "15"))
 _GATE_WAIT_MAX = float(os.environ.get("MULTIACE_GATE_WAIT_MAX", "0.5"))
 
 async def _query_state_gated() -> dict:
@@ -313,24 +352,42 @@ def _int_or(v, default):
         return default
 
 
-def _tag_read_possible(a: dict, caps: dict | None = None) -> bool:
-    """Tag READ possible on this unit. From the capability block when the
-    engine sends one (ACE2-Open tunnel or a probed Gen-1 tunnel); an unprobed
-    Gen-1 community-firmware unit still shows the button until its probe
-    says no. Without caps the firmware-string rules of older engines."""
-    avail = (a.get("tag_tunnel") or {}).get("available")
+# @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+# @MULTIACE_FLEXI_COMPAT BEGIN: one firmware-aware RFID mode shared by the API and UI.
+def _tag_read_mode(a: dict, caps: dict | None = None) -> str:
+    """How the dashboard can offer a manual RFID read.
+
+    'ace2_tunnel'  - ACE2-Open RC522 tunnel
+    'gen1_tunnel'  - ACE Pro CV1.3.87x RC522 tunnel
+    'gen1_stock'   - ACE Pro stock/CV ordinary recognition cycle
+    'unsupported'  - no safe host-triggered command
+    The engine's capability block (1.30b, caps) wins when present; the
+    firmware-string rules describe units from an older engine.
+    """
     if caps is not None:
-        if caps.get("rc522_tunnel") or caps.get("gen1_tunnel"):
-            return True
-        if avail is not None:
-            return bool(avail)
-        return caps.get("community_fw") == "gen1_cfw"
+        if caps.get("rc522_tunnel"):
+            return "ace2_tunnel"
+        if caps.get("gen1_tunnel"):
+            return "gen1_tunnel"
     fw = str(a.get("firmware", "") or "").strip().upper()
     if fw.endswith("O"):
-        return True
-    if avail is not None:
-        return bool(avail)
-    return fw.startswith("CV")
+        return "ace2_tunnel"
+    tunnel = a.get("tag_tunnel") or {}
+    mode = str(tunnel.get("mode") or "").lower()
+    if mode == "tunnel":
+        return "gen1_tunnel"
+    proto = str(a.get("protocol") or "").strip().lower()
+    if proto == "v1" and (fw.startswith("V") or fw.startswith("CV")):
+        return "gen1_stock"
+    if mode == "stock":
+        return "gen1_stock"
+    return "unsupported"
+
+
+def _tag_read_possible(a: dict, caps: dict | None = None) -> bool:
+    return _tag_read_mode(a, caps) != "unsupported"
+# @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+# @MULTIACE_FLEXI_COMPAT END: one firmware-aware RFID mode shared by the API and UI.
 
 
 _FLASH_ENGINE_BY_PROTOCOL = {"v1": "iap_v1", "v2": "ota_v2"}
@@ -377,8 +434,12 @@ def _parse_state(status: dict) -> dict:
     bg = status.get("ace_bg_swap", {}) or {}
     tf = status.get("ace_tipform", {}) or {}
 
-    device_count = int(ace.get("device_count", 1))
-    active_device = int(ace.get("active_device", 0))
+    MAX_ACE_UNITS = 4
+    MAX_ACE_SLOTS = 4
+    device_count = max(0, int(ace.get("device_count", 1) or 0))
+    configured_count = int(ace.get("configured_device_count", device_count) or 0)
+    configured_count = max(0, min(MAX_ACE_UNITS, configured_count))
+    active_device = int(ace.get("active_device", 0) or 0)
     head_source = ace.get("head_source", {}) or {}
     head_manual = ace.get("head_manual", {}) or {}
     head_feeder = ace.get("head_feeder", {}) or {}
@@ -419,8 +480,12 @@ def _parse_state(status: dict) -> dict:
             "color":    color_hex,
         }
 
-    SLOT_COUNT = 4
     by_idx = {a.get("idx", n): a for n, a in enumerate(raw_aces) if isinstance(a, dict)}
+    # A configured count is an operator declaration, not evidence that a
+    # unit exists. Keep those places visible, but mark them not detected.
+    highest_reported = max((int(k) for k in by_idx if isinstance(k, int)), default=-1)
+    unit_count = min(MAX_ACE_UNITS, max(device_count, configured_count, highest_reported + 1))
+    device_count = unit_count
 
     def _head_in_op(t: int) -> bool:
 
@@ -474,13 +539,19 @@ def _parse_state(status: dict) -> dict:
         loaded_by_source[(int(d_l), int(sl_l))] = t_idx
 
     aces_out: list[dict] = []
-    overrides_dirty = False
-    for i in range(device_count):
+    for i in range(unit_count):
         a = by_idx.get(i, {})
+        configured = i < configured_count or bool(a.get("configured"))
+        detected = bool(a.get("unit_present", bool(a)))
+        connected = a.get("connected") is True
         gate_status = a.get("gate_status") or (
             ace.get("gate_status", []) if i == active_device else []
         )
         ace_slots = a.get("slots", []) or []
+        reported_slot_count = int(a.get("slot_count", len(ace_slots)) or 0)
+        slot_count = max(1, min(MAX_ACE_SLOTS, reported_slot_count or MAX_ACE_SLOTS))
+        slot_count_source = ("reported" if reported_slot_count
+                             else "expected")
         slots_by_idx = {s.get("index", n): s for n, s in enumerate(ace_slots)}
         # A unit without a presence sensor (caps.presence_sensor False) has
         # no gate truth; its lanes render "no sensor" and are not loadable
@@ -488,7 +559,19 @@ def _parse_state(status: dict) -> dict:
         _caps_here = _unit_caps(a)
         _no_sensor = bool(_caps_here) and _caps_here.get("presence_sensor") is False
         slots_out = []
-        for s in range(SLOT_COUNT):
+        for s in range(slot_count):
+            if not detected:
+                # Configuration is not physical presence. Do not manufacture
+                # an Empty reading for a unit that has not answered.
+                slots_out.append({
+                    "idx": s, "state": "unknown", "raw": None,
+                    "status": "not_detected", "rfid": 0,
+                    "material": "", "brand": "", "sku": "", "subtype": "",
+                    "color": None, "color_rgb": None, "uid": "",
+                    "tag_format": "", "ident_src": "", "rfid_data": None,
+                    "source": "not_detected",
+                })
+                continue
             sd = slots_by_idx.get(s, {}) or {}
             gate = gate_status[s] if s < len(gate_status) else None
             raw_status = sd.get("status", "") or ""
@@ -499,24 +582,6 @@ def _parse_state(status: dict) -> dict:
                 or (raw_status == "" and gate is None)
             )
 
-            # An override dies with its spool: a CONFIRMED gate==0 (never the
-            # 'empty1' default status) drops the label, else a hand-pulled
-            # spool keeps showing the old material/colour. A new RFID spool
-            # brings its own identity and an undeclared one gets declared by
-            # hand. Quad replenish gets its want-side from the head_source
-            # capture inheritance (_inherit_prev_capture), not from a label
-            # outliving the spool.
-            if gate == 0:
-                _now = time.time()
-                _pending = _eject_pending_since.get((i, s))
-                if _pending is None:
-                    _eject_pending_since[(i, s)] = _now
-                elif _now - _pending >= EJECT_DEBOUNCE_S:
-                    if _drop_override_if_present(i, s):
-                        overrides_dirty = True
-                    _eject_pending_since.pop((i, s), None)
-            else:
-                _eject_pending_since.pop((i, s), None)
             rfid_status = sd.get("rfid", 0)
             rfid_data = None
             if rfid_status == 2:
@@ -647,11 +712,20 @@ def _parse_state(status: dict) -> dict:
                         "rfid_data": rfid_data,
                         "source":    source,
                     })
+        device_state = ("connected" if connected else
+                        "detected_not_connected" if detected else
+                        "configured_not_detected" if configured else
+                        "unconfigured")
         caps = _unit_caps(a)
         proto_l = str(a.get("protocol", "") or "").lower()
         aces_out.append({
             "idx":          i,
-            "connected":    a.get("connected"),
+            "configured":   configured,
+            "detected":     detected,
+            "connected":    connected,
+            "device_state": device_state,
+            "slot_count":   slot_count,
+            "slot_count_source": slot_count_source,
             # Last connect failure (Klipper, since 1.20b), e.g.
             # "[Errno 13] Permission denied"; '' when none or older ace.py.
             "connect_error": a.get("connect_error") or "",
@@ -688,11 +762,13 @@ def _parse_state(status: dict) -> dict:
             # in the letter O, V1.1.3O) for an older engine.
             "open_fw":      (bool(caps.get("rc522_tunnel")) if caps else
                              str(a.get("firmware", "") or "").strip().upper().endswith("O")),
-            # Tag READ possible on this unit: ACE2-Open, or an ACE Pro on
-            # community firmware (CV...). The tunnel probe runs on the first
-            # read, so an unprobed CV unit shows the button; a failed probe
-            # (available False) hides it again.
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+            # @MULTIACE_FLEXI_COMPAT Tag READ is offered per firmware, not by a cached record.
+            # Tag READ possible on this unit: ACE2-Open, ACE Pro tunnel,
+            # or the ACE Pro stock/CV recognition fallback. The mode is
+            # exposed so the UI can explain the command it will use.
             "tag_read":     _tag_read_possible(a, caps),
+            "tag_read_mode": _tag_read_mode(a, caps),
             # Display-only badge: 'ace2_open' | 'gen1_cfw' | ''. Klipper sends
             # it since 1.20b; derived here from the firmware string for an
             # older ace.py (same rules).
@@ -728,9 +804,6 @@ def _parse_state(status: dict) -> dict:
             "slots":        slots_out,
         })
 
-    if overrides_dirty:
-        _save_overrides_to_disk()
-
     toolheads = []
     wiring = []
     for t in range(4):
@@ -738,6 +811,28 @@ def _parse_state(status: dict) -> dict:
         feed = (fl if t < 2 else fr).get(ext_key, {}) or {}
 
         _src_raw = head_source.get(str(t)) or head_source.get(t)
+        op_mode = ace.get("mode", "multi")
+        # @MULTIACE_FLEXI_PATCH Flexi SourceSelect replaces the legacy head source in the UI projection.
+        flexi_mode = op_mode == "flexi"
+        flexi_sources = []
+        flexi_preview = None
+        flexi_source = None
+        if flexi_mode:
+            try:
+                policy = FlexiRoutes((ace.get('flexi') or {}).get('routes', {}))
+                flexi_sources = [list(source) for source in policy.sources(t)]
+                if _src_raw:
+                    policy.require_destination(_src_raw.get('ace_index'), _src_raw.get('slot'), t)
+                flexi_preview = ((ace.get('flexi') or {}).get('display_sources') or {}).get(str(t))
+                production = ((ace.get('flexi') or {}).get('production') or {})
+                source_policy = (production.get('source_select') or {})
+                # `heads` is SourceSelect's effective map, including temporary
+                # manual overrides. `configured` deliberately excludes them.
+                effective_heads = (source_policy.get('heads')
+                                   or source_policy.get('configured') or {})
+                flexi_source = (effective_heads.get(str(t)) or {'type': 'ace'})
+            except (FlexiRouteError, AttributeError):
+                _src_raw = None  # Never render a contradictory saved source.
         d_explicit, sl_explicit = _resolve_head_source(_src_raw)
         # ace.py keeps head_source on a FAILED load (the retry-unload needs the
         # slot) but stamps load_failed=True. Surface it so the UI can render
@@ -745,6 +840,19 @@ def _parse_state(status: dict) -> dict:
         load_failed = bool(isinstance(_src_raw, dict)
                            and _src_raw.get("load_failed"))
         loaded = bool(feed.get("filament_detected"))
+        # Toolhead sensor truth for the Load/Unload LABEL. This is the
+        # presence/runout pin (filament_at_extruder), not the ACE gate, the
+        # channel history or head_source. None means the sensor object is
+        # absent/unreadable - the UI must not infer an action from it.
+        _sensor_present = feed.get("filament_at_extruder")
+        if feed.get("module_exist") is False:
+            _sensor_state = "unavailable"
+        elif _sensor_present is True:
+            _sensor_state = "present"
+        elif _sensor_present is False:
+            _sensor_state = "absent"
+        else:
+            _sensor_state = "unavailable"
         color = None
         material = ""
         subtype = ""
@@ -769,19 +877,34 @@ def _parse_state(status: dict) -> dict:
                     subtype = slot_obj.get("subtype", "")
                     sku = slot_obj.get("sku", "")
                     source = slot_obj.get("source")
-        is_manual = bool(head_manual.get(str(t), head_manual.get(t, False)))
-        # head mode: each head is individually ACE or a stock feeder
-        # (head_feeder flag). A feeder head has no ACE source - render it like a
-        # manual head (identity from print_task_config, no ACE/slot wiring),
-        # just flagged "feeder".
-        op_mode = ace.get("mode", "multi")
-        is_feeder = (op_mode == "head"
-                     and bool(head_feeder.get(str(t), head_feeder.get(t, False)))
-                     and not is_manual)
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, flexi_mode, flexi_source
+        # Flexi's SourceSelect is authoritative. A persisted legacy
+        # head_manual/head_feeder flag may describe an earlier Multi/Head
+        # session and must not make the Dashboard contradict the configured
+        # Flexi source (or hide the source control behind a stale conflict).
+        if flexi_mode:
+            source_type = str((flexi_source or {}).get("type") or "ace")
+            if source_type not in ("ace", "stock", "manual"):
+                source_type = "unknown"
+            is_manual = source_type == "manual"
+            is_feeder = source_type == "stock"
+        else:
+            is_manual = bool(head_manual.get(str(t), head_manual.get(t, False)))
+            # head mode: each head is individually ACE or a stock feeder
+            # (head_feeder flag). A feeder head has no ACE source - render it
+            # like a manual head (identity from print_task_config, no ACE/slot
+            # wiring), just flagged "stock".
+            is_feeder = (op_mode == "head"
+                         and bool(head_feeder.get(str(t), head_feeder.get(t, False)))
+                         and not is_manual)
+            source_type = ("manual" if is_manual else
+                           "stock" if is_feeder else "ace")
         if is_manual or is_feeder:
             # Manual/TPU or feeder head: never show an ACE/slot mapping (even a
             # stale head_source a pre-fix display load may have stamped on).
-            # Show the filament the user set at the display (print_task_config).
+            # Show the filament the user set at the display (print_task_config),
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+            # or the Flexi manual-source record when SourceSelect owns it.
             # Also drop d_explicit/sl_explicit so the wiring SVG (built from
             # them below) draws no ACE->head line.
             d_explicit = sl_explicit = None
@@ -789,12 +912,19 @@ def _parse_state(status: dict) -> dict:
             color = None
             material = subtype = sku = brand = ""
             source = None
-            ptc_id = _ptc_at(t)
-            if ptc_id:
-                material = ptc_id.get("material", "") or ""
-                color = ptc_id.get("color")
-                subtype = ptc_id.get("sku", "") or ""
-                brand = ptc_id.get("brand", "") or ""
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi_mode, flexi_source
+            if flexi_mode and source_type == "manual":
+                record = flexi_source or {}
+                material = str(record.get("material") or "")
+                color = record.get("color") or None
+                sku = str(record.get("identity") or "")
+            else:
+                ptc_id = _ptc_at(t)
+                if ptc_id:
+                    material = ptc_id.get("material", "") or ""
+                    color = ptc_id.get("color")
+                    subtype = ptc_id.get("sku", "") or ""
+                    brand = ptc_id.get("brand", "") or ""
         toolheads.append({
             "idx":                t,
             "name":               f"T{t}",
@@ -804,6 +934,12 @@ def _parse_state(status: dict) -> dict:
             "filament_in_ace":      feed.get("filament_in_ace"),
             "filament_in_toolhead": feed.get("filament_in_toolhead"),
             "filament_at_extruder": feed.get("filament_at_extruder"),
+            "filament_sensor":   {"state": _sensor_state,
+                                  "present": (_sensor_present
+                                              if (_sensor_state != "unavailable"
+                                                  and isinstance(_sensor_present, bool))
+                                              else None),
+                                  "source": "toolhead"},
             "channel_state":      feed.get("channel_state"),
             "channel_error":      feed.get("channel_error"),
             "module_exist":       feed.get("module_exist"),
@@ -812,6 +948,12 @@ def _parse_state(status: dict) -> dict:
             "subtype":            subtype,
             "sku":                sku,
             "brand":              brand,
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi_sources, flexi_preview, flexi
+            "configured_sources": flexi_sources,
+            "preview_source":     flexi_preview,
+            "source_type":        source_type,
+            "source_scope":       "flexi" if flexi_mode else "native",
+            "flexi_source":       flexi_source if flexi_mode else None,
             "head_source_known":  (d_explicit is not None) and not is_manual and not is_feeder,
             "load_failed":        load_failed and not is_manual and not is_feeder,
             "manual":             is_manual,
@@ -819,7 +961,9 @@ def _parse_state(status: dict) -> dict:
             "reader_spool_id":    (int(head_reader.get(str(t),
                                                        head_reader.get(t, 0))
                                        or 0)
-                                   if (is_manual or is_feeder) else 0),
+                                   if ((is_manual or is_feeder)
+                                       # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi_mode
+                                       and not flexi_mode) else 0),
             "source":             source,
         })
 
@@ -831,7 +975,48 @@ def _parse_state(status: dict) -> dict:
 
     sv = status.get("save_variables", {})
     sv_vars = sv.get("variables", {}) if isinstance(sv, dict) else {}
-    mode = sv_vars.get("ace__mode", "normal")
+    saved_mode = str(sv_vars.get("ace__mode", "normal") or "normal").lower()
+    # The mode picker must show what Klipper is running, not only the mode
+    # written to ace_vars.cfg for the next boot.  They differ while a mode
+    # change that crosses the stock/ACE file boundary waits for a restart.
+    live_mode = str(ace.get("mode") or "").lower()
+    mode = (live_mode if live_mode in
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+            ("normal", "single", "multi", "head", "flexi") else saved_mode)
+    pending_mode = saved_mode if saved_mode != mode else None
+
+    # Counts are deliberately separate (configured != detected != connected),
+    # but a None/absent field must fall back to the per-unit evidence instead
+    # of becoming 0. The preview and older Klipper modules both hit that: the
+    # dashboard then showed two working units next to "detected 0".
+    _detected_reported = ace.get("detected_device_count")
+    detected_count = (int(_detected_reported)
+                      if _detected_reported is not None
+                      else sum(1 for a in aces_out if a["detected"]))
+    _connected_reported = ace.get("connected_device_count")
+    connected_count = (int(_connected_reported)
+                       if _connected_reported is not None
+                       else sum(1 for a in aces_out if a["connected"]))
+    detected_count = max(0, min(MAX_ACE_UNITS, max(detected_count, connected_count)))
+    connected_count = max(0, min(detected_count, connected_count))
+    raw_devices = ace.get("devices", []) or []
+    devices_out = []
+    for d in raw_devices:
+        if not isinstance(d, dict):
+            continue
+        place = d.get("place")
+        slot_count = 0
+        if isinstance(place, int):
+            match = next((a for a in aces_out if a["idx"] == place), None)
+            slot_count = match["slot_count"] if match else 0
+        devices_out.append({
+            **d,
+            "present": bool(d.get("present")),
+            "connected": bool(d.get("connected")),
+            "slot_count": slot_count,
+        })
+    unassigned_devices = [d for d in devices_out
+                          if d.get("place") is None and d.get("present")]
 
     ps = status.get("print_stats", {}) or {}
     it = status.get("idle_timeout", {}) or {}
@@ -852,12 +1037,32 @@ def _parse_state(status: dict) -> dict:
         "ace_temp":           ace.get("temp"),
         "printer_state":      printer_state,
         "active_device":      active_device,
+        # device_count is the number of configured/presented places kept for
+        # compatibility. The explicit counts below are the scalability API.
         "device_count":       device_count,
+        "configured_device_count": configured_count,
+        "detected_device_count": detected_count,
+        "connected_device_count": connected_count,
+        # Timestamp of this snapshot + the age at which the UI must stop
+        # treating its toolhead sensor readings as current evidence.
+        "state_ts":           time.time(),
+        # Resolve through globals so the projection stays executable when
+        # tests extract _parse_state without the module-level constant.
+        "sensor_max_age_s":   float(globals().get("SENSOR_MAX_AGE_S", 15.0)),
+        "max_ace_units":       MAX_ACE_UNITS,
+        "max_ace_slots":       MAX_ACE_SLOTS,
         "mode":               mode,
+        "saved_mode":         saved_mode,
+        "pending_mode":       pending_mode,
+        "restart_required":   pending_mode is not None,
         "pickup_cleaning":    bool(ace.get("pickup_cleaning", False)),
         "confirm_commands":   bool(ace.get("confirm_commands", False)),
         "airprint_detection": bool(ace.get("airprint_detection", False)),
         "quad_replenish": bool(ace.get("quad_replenish", False)),
+        # @MULTIACE_FLEXI_SHARED failover settings passed to the UI, all modes
+        "failover_priority": ace.get("failover_priority") or {},
+        "failover_preview": ace.get("failover_preview") or {},
+        "failover_allow_color": ace.get("failover_allow_color") or [],
         "purge_matrix": bool(ace.get("purge_matrix", True)),
         # Multifilament-Optimierung: targets per slicer colour (1 = off).
         # An older ace.py has no field -> 1, today's behaviour.
@@ -874,7 +1079,7 @@ def _parse_state(status: dict) -> dict:
         # D11 Devices list (engine, additive since 1.30b): every place of
         # the unit table and every detected unit without a place, plus the
         # "table edited, restart to apply" flag. Older ace.py: empty list.
-        "devices": [d for d in (ace.get("devices") or []) if isinstance(d, dict)],
+        # ("devices" itself is built below with present/connected/slot_count.)
         "units_restart_needed": bool(ace.get("units_restart_needed", False)),
         # Driver switches (engine, additive): configured vs running state,
         # test note, places served. Older ace.py: empty list, no block.
@@ -914,11 +1119,16 @@ def _parse_state(status: dict) -> dict:
         "ace_heads":          ace.get("ace_heads", []) or [],
         "head_feeder":        head_feeder,
         "head_ace":           ace.get("head_ace", {}) or {},
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, flexi_discovery
+        "flexi":              ace.get("flexi", {"available": False, "execution_enabled": False}),
+        "flexi_discovery":    ace.get("flexi_discovery", {"available": False}),
         "language":           language,
         "display_index_base": idx_base,
         "dryer":              ace.get("dryer_status"),
         "swap_in_progress":   bool(ace.get("swap_in_progress", False)),
         "aces":               aces_out,
+        "devices":            devices_out,
+        "unassigned_devices": unassigned_devices,
         "toolheads":          toolheads,
         "wiring":             wiring,
         "save_variables":     sv_vars,
@@ -1023,9 +1233,8 @@ class ConfigUpdate(BaseModel):
     # Optimistic-concurrency token: the sha1 the browser got from GET
     # /api/config. The config FORM patches its cached copy of the file
     # (formToCfgContent), so a stale tab silently writes back an old
-    # revision and can revert a cfg repaired via SSH. None = no check (raw
-    # editor / old
-    # frontend), so this stays backward compatible.
+    # revision. Missing tokens are rejected with HTTP 428 so old clients
+    # receive an actionable reload error instead of overwriting settings.
     base_sha1: str | None = None
 
 class TipformUpdate(BaseModel):
@@ -1090,6 +1299,73 @@ async def _mr_post(path: str, body: dict | None = None, timeout: float = 30.0) -
         r.raise_for_status()
         return r.json()
 
+
+def _moonraker_error_detail(response: httpx.Response, fallback: str) -> str:
+    """Return only the operator-facing Moonraker message.
+
+    Moonraker wraps Klipper refusals as {"error": {"message": ...,
+    "traceback": ...}}. Forwarding response.text put the whole wrapper (and
+    sometimes a Python traceback) into the dashboard log. Parse the message,
+    strip Klipper's "Error on 'COMMAND':" prefix and never expose a traceback.
+    """
+    text = ""
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            text = str(error.get("message") or error.get("error") or "")
+        elif isinstance(error, str):
+            text = error
+        if not text:
+            text = str(payload.get("detail") or payload.get("message") or "")
+    if not text:
+        text = response.text or ""
+    # Klipper may embed an HTML/terminal wrapper around the useful sentence.
+    text = re.sub(r"<[^>]*>", " ", text)
+    if "Traceback (most recent call last)" in text:
+        text = text.split("Traceback (most recent call last)", 1)[0]
+    match = re.search(r"Error on '[^']*':\s*(.*)", text, re.I | re.S)
+    if match:
+        text = match.group(1)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:512] if text else fallback
+
+
+def _legacy_head_mode_error(kind: str, mode: str | None) -> str | None:
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, flexi
+    """Explain why a legacy head setting does not apply in Flexi.
+
+    These commands only change a persisted flag, but in Flexi the source is
+    declared in SourceSelect. Refusing with the correct control avoids both a
+    bogus "filament operations are locked" message and a second, conflicting
+    source owner.
+    """
+    if mode != "flexi":
+        return None
+    label = {
+        "manual": "Manual head mode",
+        "feeder": "Stock feeder mode",
+        "ace": "ACE-to-head wiring",
+    }.get(kind, "This head setting")
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+    return (f"{label} is a Multi/Head-mode setting and is not used in Flexi. "
+            "Set the source in Setup -> Filament Sources. No printer change "
+            "was sent.")
+
+
+async def _head_mode_for_setting() -> str | None:
+    """Read mode before a legacy head toggle; never send a blind command."""
+    try:
+        return _parse_state(await _query_state_gated()).get("mode")
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Printer state is unavailable; no head setting was sent.",
+        ) from exc
+
 _mock_cache: dict[str, tuple[float, Any]] = {}
 
 def _mock_load(name: str, default: Any = None) -> Any:
@@ -1122,7 +1398,8 @@ def _mock_enabled(request: Request | None = None) -> bool:
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"status": "ok", "version": VERSION, "ts": time.time(),
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi_release
+    return {"status": "ok", "version": VERSION, "flexi_release": RC_RELEASE, "ts": time.time(),
             "mock_mode": MOCK_MODE}
 
 @app.get("/api/version")
@@ -1412,6 +1689,8 @@ async def _head_mode_context() -> dict:
 
 @app.post("/api/preflight")
 async def preflight(file: UploadFile = File(...)) -> dict:
+    state = _parse_state(await _query_state_gated())
+    mode = state.get("mode")
     raw_name = file.filename or ""
     safe_name = os.path.basename(raw_name)
     if not safe_name or safe_name in (".", "..") or "/" in safe_name or "\\" in safe_name:
@@ -1449,6 +1728,22 @@ async def preflight(file: UploadFile = File(...)) -> dict:
     with open(src_path, "r", encoding="utf-8", errors="replace") as f:
         (slicer_colors, slicer_types, num_aces, _used, plan_proxy, meta,
          header_text) = preflight_core.parse_meta(pp, f, with_header=True)
+
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, flexi, preflight_core.build_flexi_report
+    # Flexi uses the original preflight planner against its saved routes.
+    # The analysis is read-only and never heats, homes, feeds or prints.
+    if mode == "flexi":
+        try:
+            return preflight_core.build_flexi_report(
+                pp, slicer_colors=slicer_colors, slicer_types=slicer_types,
+                num_aces=num_aces, plan_proxy=plan_proxy,
+                flexi=state.get("flexi") or {}, token=token,
+                filename=safe_name, size=upload_size,
+                fuzzy=_PREFLIGHT_FUZZY, meta=meta)
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
     live_slots = await _live_slots_async()
     if not live_slots:
@@ -1955,10 +2250,20 @@ async def update_status() -> dict:
     return {
         "managed": MULTIACE_MANAGED,
         "owner": "platform" if MULTIACE_MANAGED else "multiACE",
+        "apply_allowed": False,
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+        "reason": "Use a reviewed compatible Flexi update package",
     }
 
 @app.post("/api/update/apply")
 async def update_apply(force: bool = False) -> dict:
+    # @MULTIACE_FLEXI_HOOK Flexi build: the stock updater would replace Flexi
+    # with the upstream release. The UI already disables it; refuse here too.
+    raise HTTPException(
+        status_code=409,
+        detail=("This is a MultiACE Flexi build. The stock multiACE updater would "
+                "replace it; update with the Flexi release package "
+                "(check.sh / install.sh) instead."))
 
     if MULTIACE_MANAGED:
         raise HTTPException(
@@ -1973,20 +2278,8 @@ async def update_apply(force: bool = False) -> dict:
                     "(touch /oem/.debug) and reboot before applying "
                     "updates, otherwise the install is wiped on next "
                     "boot."))
-    args = ["apply"]
-    if force:
-        args.append("--force")
-    result = await _run_update_script(args, timeout=600.0)
-    if result.get("ok") and any(
-            l.startswith("done") for l in result.get("status_lines", [])):
-        # The installer replaced our own files; the init script cannot be
-        # driven from a lava-owned instance and SIGTERM without a restart
-        # left the web dead (HW 2026-10-10). Re-exec this very process
-        # with its own command line: same PID (S98's pidfile stays valid),
-        # works as root and as lava. Delayed so the response gets out.
-        result["web_restart"] = True
-        asyncio.get_running_loop().call_later(1.5, _self_reexec)
-    return result
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+    raise HTTPException(status_code=409, detail="This Flexi build requires a reviewed compatible update package")
 
 def _self_reexec() -> None:
     """Replace this process with a fresh copy of itself (new code)."""
@@ -2899,6 +3192,9 @@ async def restart(request: Request, req: RestartRequest) -> dict:
 
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, Flexi
+    if _parse_state(await _query_state_gated()).get("mode") == "flexi":
+        raise HTTPException(status_code=409, detail="Printing in experimental Flexi mode is not enabled")
 
     raw_name = file.filename or ""
     safe_name = os.path.basename(raw_name)
@@ -2944,6 +3240,475 @@ async def get_state(request: Request) -> dict:
     except httpx.HTTPError as e:
         return {"error": f"moonraker: {e}"}
     return _parse_state(status)
+
+
+# @MULTIACE_FLEXI_HOOK BEGIN: read-only Flexi routes/diagnostics beside original APIs.
+@app.get("/api/flexi/diagnostics")
+async def flexi_diagnostics_get() -> dict:
+    # Existing object-status query only. No gcode/script, settings or serial API.
+    state = _parse_state(await _query_state_gated())
+    return state.get("flexi", {}).get("diagnostics", {
+        "available": False, "read_only": True, "native_dispatch_enabled": False,
+        "reason": "Installed engine has no RC2 sensor diagnostics"})
+
+@app.get("/api/flexi/routes")
+async def flexi_routes_get() -> dict:
+    state = _parse_state(await _query_state_gated())
+    return state.get("flexi", {"available": False, "execution_enabled": False})
+
+@app.post("/api/flexi/routes")
+async def flexi_routes_save(payload: dict) -> dict:
+    if not {"changes", "base_revision"} <= set(payload) or set(payload) - {"changes", "base_revision", "slot_status_changes", "topology_changes", "discovery_approval"}:
+        raise HTTPException(status_code=400, detail="Expected explicit changes and editing baseline")
+    if "slot_status_changes" in payload and not isinstance(payload["slot_status_changes"], dict):
+        raise HTTPException(status_code=400, detail="Expected explicit slot availability changes")
+    try:
+        script = flexi_route_command(payload["changes"], payload["base_revision"], payload.get("slot_status_changes"),payload.get("topology_changes"),payload.get("discovery_approval"))
+    except FlexiRouteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    raw = await _query_state_gated()
+    state = _parse_state(raw)
+    if not state.get("flexi", {}).get("available"):
+        raise HTTPException(status_code=409, detail="The installed engine does not support Flexi routes")
+    if payload['base_revision'] != state['flexi'].get('route_revision'):
+        raise HTTPException(status_code=409, detail="Routing conflict: saved configuration changed; discard/reload edits before saving")
+    if state['flexi'].get('route_conflict'):
+        raise HTTPException(status_code=409, detail="Saved and running routes differ; reload configuration first")
+    if (raw.get("print_stats", {}).get("state") not in ("standby", "complete", "cancelled")
+            or state.get("swap_in_progress") or state.get("unload_all_active")
+            or state.get("calibration", {}).get("state") != "idle"
+            or state.get("bg_swap", {}).get("busy")
+            or len(state.get("toolheads", [])) != 4
+            or any(h.get("filament_in_toolhead") or h.get("filament_at_extruder")
+                   or h.get("head_source_known") for h in state.get("toolheads", []))):
+        raise HTTPException(status_code=409, detail="Unload toolheads and finish all printer operations before editing routes")
+    try:
+        # Only physically connected units may be addressed by a new route.
+        # Configured-but-absent places remain visible but are not writable.
+        connected_units = [a["idx"] for a in state.get("aces", [])
+                           if a.get("connected") is True]
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses FlexiRoutes, flexi, FlexiRouteError
+        routes = FlexiRoutes(state["flexi"].get("routes", {}), state["flexi"].get("slot_status", {}),state["flexi"].get("topology", {})).patched(payload["changes"], connected_units).with_status_patch(payload.get("slot_status_changes", {}), connected_units).with_topology_patch(payload.get("topology_changes",{}))
+    except (FlexiRouteError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        result = await _mr_post("/printer/gcode/script", {"script": script})
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:1024]
+        raise HTTPException(status_code=409 if "conflict" in detail.lower() else 400, detail=detail)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=504, detail="Route save confirmation failed; refresh before retrying because the save may have completed")
+    latest = _parse_state(await _query_state_gated()).get("flexi", {})
+    if not latest.get("route_revision"):
+        raise HTTPException(status_code=409, detail="Routes may have saved, but confirmation is unavailable; refresh before retrying")
+    return {"ok": True, "routes": latest.get("routes", {}), "slot_status": latest.get("slot_status", {}), "topology":latest.get("topology",{}),"route_verification":latest.get("route_verification",{}),"discoveries":latest.get("discoveries",{}), "route_revision": latest["route_revision"],
+            "route_conflict": bool(latest.get("route_conflict")), "execution_enabled": False, "result": result}
+# @MULTIACE_FLEXI_HOOK END: read-only Flexi routes/diagnostics beside original APIs.
+
+# @MULTIACE_FLEXI_HOOK BEGIN: bounded private job store; original upload endpoints unchanged.
+# A 1 GiB source plus its prepared derivative must never be held in RAM or in
+# a browser string.  Jobs live on disk, are addressed by an opaque token and
+# are removed by age; the prepared file is the only artifact submitted.
+# On the PAXX12 printer the root/oem partitions are too small for a 1 GiB
+# source plus derivative; /userdata is the large persistent data partition.
+def _flexi_default_job_dir() -> Path:
+    override = os.environ.get("MULTIACE_FLEXI_JOB_DIR")
+    if override:
+        return Path(override)
+    if Path("/userdata").is_dir():
+        return Path("/userdata/multiace_flexi_jobs")
+    return Path(os.environ.get("MULTIACE_PRINTER_DATA", "/home/lava/printer_data")) \
+        / "multiace_flexi_jobs"
+
+
+_FLEXI_JOB_DIR = _flexi_default_job_dir()
+# FastAPI/Starlette spools large multipart uploads through tempfile once the
+# in-memory threshold is crossed.  /tmp is a small tmpfs on the PAXX12 printer,
+# so keep those transient upload files on the large persistent partition too.
+if Path("/userdata").is_dir():
+    _flexi_upload_tmp = Path("/userdata/multiace_tmp")
+    _flexi_upload_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tempfile.tempdir = str(_flexi_upload_tmp)
+_FLEXI_JOB_TTL = 7 * 86400.0
+_FLEXI_MAX_BYTES = max(1, int(os.environ.get(
+    "MULTIACE_FLEXI_MAX_MB", "2048"))) * 1024 * 1024
+_FLEXI_JOB_RE = re.compile(r"^[0-9a-f]{32}$")
+_FLEXI_MARKER = b"; multiACE Flexi prepared:"
+
+
+def _flexi_job_dir(token: str) -> Path:
+    if not _FLEXI_JOB_RE.fullmatch(token or ""):
+        raise HTTPException(status_code=400, detail="Invalid Flexi job token")
+    return _FLEXI_JOB_DIR / token
+
+
+def _flexi_cleanup_jobs() -> None:
+    if not _FLEXI_JOB_DIR.is_dir():
+        return
+    now = time.time()
+    for child in _FLEXI_JOB_DIR.iterdir():
+        try:
+            if child.is_dir() and now - child.stat().st_mtime > _FLEXI_JOB_TTL:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def _flexi_new_job() -> tuple[str, Path]:
+    _FLEXI_JOB_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _flexi_cleanup_jobs()
+    token = uuid.uuid4().hex
+    job = _FLEXI_JOB_DIR / token
+    job.mkdir(mode=0o700)
+    return token, job
+
+
+def _flexi_safe_name(name: str | None) -> str:
+    name = name or "upload.gcode"
+    if not re.fullmatch(r"[A-Za-z0-9_. -]{1,128}\.(?:gcode|gco|g)", name, re.I):
+        raise HTTPException(status_code=400, detail="Invalid g-code filename")
+    return name
+
+
+# @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_stage_upload, _require_flexi_streaming, _FLEXI_MAX_BYTES
+async def _flexi_stage_upload(file: UploadFile, job: Path, filename: str) -> tuple[Path, Any]:
+    _require_flexi_streaming()
+    source = job / "source.gcode"
+    declared = getattr(file, "size", None)
+    try:
+        staged = await stage_file(
+            file.read, source, max_bytes=_FLEXI_MAX_BYTES,
+            expected_length=declared if isinstance(declared, int) and declared > 0 else None,
+            reserve_bytes=32 * 1024 * 1024)
+    except StageSizeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except StageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return source, staged
+
+
+def _flexi_state_or_409(state: dict) -> dict:
+    flexi = state.get("flexi") or {}
+    if state.get("mode") != "flexi" or "production" not in flexi:
+        raise HTTPException(status_code=409, detail="Flexi mode with production state is required")
+    return flexi
+
+
+def _flexi_job_read(token: str) -> tuple[Path, dict]:
+    job = _flexi_job_dir(token)
+    if not job.is_dir():
+        raise HTTPException(status_code=404, detail="Flexi job not found; analyze the file again")
+    try:
+        data = json.loads((job / "job.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Flexi job metadata is unavailable; analyze the file again") from exc
+    return job, data
+
+
+def _flexi_write_json(path: Path, data: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".part")
+    tmp.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _flexi_hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+# @MULTIACE_FLEXI_HOOK END: bounded private job store; original upload endpoints unchanged.
+
+
+# @MULTIACE_FLEXI_HOOK Large-file analyze; Flexi mode only, never a raw-file fallback.
+@app.post("/api/flexi/analyze")
+async def flexi_analyze(file: UploadFile = File(...)) -> dict:
+    """Stream a large slicer file to disk and plan it without browser text."""
+    state = _parse_state(await _query_state_gated())
+    flexi = _flexi_state_or_409(state)
+    name = _flexi_safe_name(file.filename)
+    token, job = _flexi_new_job()
+    try:
+        source, staged = await _flexi_stage_upload(file, job, name)
+        pp = _load_post_processor()
+        # Session 2: multi-minute CPU work on a 350 MB+ file must not block
+        # the event loop (it froze the whole web UI). Run it in a thread.
+        scan = await asyncio.to_thread(large_gcode.scan_file, pp, source)
+        report = await asyncio.to_thread(large_gcode.build_report,
+            pp, scan, flexi, token=token, filename=name)
+        large_gcode.write_plan_manifest(job / "plan.json", report)
+        _flexi_write_json(job / "job.json", {
+            "token": token, "filename": name, "size": staged.length,
+            "sha256": staged.sha256, "created": time.time(),
+            "plans": large_gcode.plan_manifest(report)["plans"],
+        })
+        return large_gcode.report_payload(
+            report, {"large_server": True, "job_token": token},
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi_state, flexi
+            flexi_state=flexi)
+    except HTTPException:
+        shutil.rmtree(job, ignore_errors=True)
+        raise
+    except preflight_core.PreflightRejected as exc:
+        shutil.rmtree(job, ignore_errors=True)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (large_gcode.LargeGcodeError, OSError, ValueError) as exc:
+        shutil.rmtree(job, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# @MULTIACE_FLEXI_HOOK Large-file prepare; writes a verified atomic derivative.
+@app.post("/api/flexi/prepare")
+async def flexi_prepare(payload: dict) -> dict:
+    """Prepare the selected plan into a verified atomic derivative."""
+    _require_flexi_streaming()
+    state = _parse_state(await _query_state_gated())
+    flexi = _flexi_state_or_409(state)
+    if flexi.get("journal_error"):
+        raise HTTPException(status_code=409, detail="Flexi journal is unavailable; preparation is blocked.")
+    token = str(payload.get("token") or "")
+    plan = str(payload.get("plan") or "slicer")
+    job, meta = _flexi_job_read(token)
+    overlay = payload.get("override") or {}
+    if not isinstance(overlay, dict):
+        raise HTTPException(status_code=400, detail="Invalid Flexi source override")
+    for key, value in overlay.items():
+        if not re.fullmatch(r"\d{1,2}", str(key)) or not re.fullmatch(r"\d{1,2}:\d{1,2}", str(value)):
+            raise HTTPException(status_code=400, detail="Invalid Flexi source override")
+    source = job / "source.gcode"
+    if not source.is_file():
+        raise HTTPException(status_code=409, detail="Flexi source is missing; analyze the file again")
+    try:
+        manifest = large_gcode.read_plan_manifest(job / "plan.json")
+        mapping = large_gcode.resolve_mapping(manifest, plan, flexi, overlay or None)
+        prefs = ("SET_PRINT_PREFERENCES BED_LEVEL=%d FLOW_CALIBRATE=%d "
+                 "TIME_LAPSE_CAMERA=%d FORCE=1" % (
+                    1 if payload.get("bed_mesh") else 0,
+                    1 if payload.get("flow_cal") else 0,
+                    1 if payload.get("camera") else 0))
+        use_prefs = any(payload.get(k) for k in ("bed_mesh", "flow_cal", "camera"))
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, flexi_state, flexi
+        header = "; multiACE Flexi prepared: plan=%s; source_sha256=%s" % (
+            plan, meta.get("sha256", ""))
+        prepared_path = job / "prepared.gcode"
+        prepared_path.unlink(missing_ok=True)
+        prepared = await asyncio.to_thread(large_gcode.prepare_file,
+            source, prepared_path, mapping, flexi_state=flexi,
+            header=header, prefs_line=prefs if use_prefs else "")
+        extra = 1 + (1 if use_prefs else 0)
+        await asyncio.to_thread(large_gcode.validate_prepared,
+            _load_post_processor(), prepared, manifest,
+            status=flexi["production"],
+            routes=FlexiRoutes(flexi.get("routes", {})),
+            extra_lines=extra, allow_print_prefs=use_prefs,
+            allow_flow_cal=True)
+        validation = prepared.validation or {}
+        result = {
+            "ok": True, "token": token, "prepared": True, "plan": plan,
+            "filename": meta.get("filename"), "sha256": prepared.output_sha256,
+            "size": prepared.output_size, "lines": prepared.output_lines,
+            "mapping": prepared.mapping,
+            "validation": {
+                "ok": bool(validation.get("ok")),
+                "error_count": int(validation.get("error_count") or 0),
+                "errors": list(validation.get("errors") or [])[:20],
+                "tool_counts": validation.get("tool_counts") or {},
+                "lines": validation.get("lines"),
+                "sha256": validation.get("sha256"),
+            },
+        }
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_write_json
+        _flexi_write_json(job / "prepared.json", result)
+        return result
+    except HTTPException:
+        raise
+    except (large_gcode.LargeGcodeError, OSError, ValueError, KeyError, TypeError) as exc:
+        (job / "prepared.gcode").unlink(missing_ok=True)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# @MULTIACE_FLEXI_HOOK Verified prepared-file publication; rechecks marker and SHA-256.
+@app.post("/api/flexi/print-job")
+async def flexi_print_job(payload: dict) -> dict:
+    """Submit the verified prepared derivative directly from disk."""
+    raw = await _query_state_gated()
+    state = _parse_state(raw)
+    if state.get("mode") != "flexi" or raw.get("print_stats", {}).get("state") not in ("standby", "complete", "cancelled"):
+        raise HTTPException(status_code=409, detail="Printer must be idle in Flexi mode")
+    token = str(payload.get("token") or "")
+    job, meta = _flexi_job_read(token)
+    path = job / "prepared.gcode"
+    if not path.is_file():
+        raise HTTPException(status_code=409, detail="Prepared G-code is missing; prepare the file again")
+    try:
+        info = json.loads((job / "prepared.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Prepared metadata is missing; prepare the file again") from exc
+    with open(path, "rb") as fh:
+        marker = fh.read(8192)
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses _FLEXI_MARKER, Flexi, _flexi_hash_file
+    if _FLEXI_MARKER not in marker:
+        raise HTTPException(status_code=409, detail="Prepared file lacks the Flexi preparation marker")
+    actual = await asyncio.to_thread(_flexi_hash_file, path)
+    if actual != info.get("sha256") or path.stat().st_size != int(info.get("size") or -1):
+        raise HTTPException(status_code=409, detail="Prepared file changed after validation; prepare it again")
+    name = meta.get("filename") or "flexi-prepared.gcode"
+    async with httpx.AsyncClient(timeout=None) as client:
+        with open(path, "rb") as fh:
+            response = await client.post(
+                f"{MOONRAKER_URL}/server/files/upload",
+                data={"root": "gcodes", "print": "true"},
+                files={"file": (name, fh, "application/octet-stream")})
+        response.raise_for_status()
+    return {"ok": True, "sha256": actual, "size": path.stat().st_size,
+            "moonraker": response.json()}
+
+
+# @MULTIACE_FLEXI_HOOK Small-file compatibility upload; still requires a prepared marker.
+@app.post("/api/flexi/print")
+async def flexi_print(file: UploadFile = File(...)) -> dict:
+    """Compatibility path for small, already-prepared browser uploads."""
+    raw = await _query_state_gated()
+    state = _parse_state(raw)
+    if state.get("mode") != "flexi" or raw.get("print_stats", {}).get("state") not in ("standby", "complete", "cancelled"):
+        raise HTTPException(status_code=409, detail="Printer must be idle in Flexi mode")
+    name = _flexi_safe_name(file.filename)
+    token, job = _flexi_new_job()
+    try:
+        source, staged = await _flexi_stage_upload(file, job, name)
+        with open(source, "rb") as fh:
+            marker = fh.read(8192)
+        if _FLEXI_MARKER not in marker:
+            raise HTTPException(status_code=409, detail="Prepare this file with the Flexi planner before printing; PathChek is optional and is not required for preparation.")
+        flexi = _flexi_state_or_409(state)
+        check = await asyncio.to_thread(flexi_print_gcode_file,
+            source, flexi.get("production", {}),
+            FlexiRoutes(flexi.get("routes", {})), strict_live=False)
+        if not check.get("ok"):
+            raise HTTPException(status_code=409, detail={"errors": check.get("errors", [])})
+        async with httpx.AsyncClient(timeout=None) as client:
+            with open(source, "rb") as fh:
+                response = await client.post(
+                    f"{MOONRAKER_URL}/server/files/upload",
+                    data={"root": "gcodes", "print": "true"},
+                    files={"file": (name, fh, "application/octet-stream")})
+            response.raise_for_status()
+        return {"ok": True, "sha256": staged.sha256, "moonraker": response.json()}
+    finally:
+        shutil.rmtree(job, ignore_errors=True)
+
+
+# @MULTIACE_FLEXI_HOOK Stream a prepared check file to disk; no print submission.
+@app.post("/api/flexi/print-check")
+async def flexi_print_check(file: UploadFile = File(...)) -> dict:
+    state = _parse_state(await _query_state_gated())
+    flexi = _flexi_state_or_409(state)
+    name = _flexi_safe_name(file.filename)
+    token, job = _flexi_new_job()
+    try:
+        source, _staged = await _flexi_stage_upload(file, job, name)
+        return await asyncio.to_thread(flexi_print_gcode_file,
+            source, flexi.get("production", {}),
+            FlexiRoutes(flexi.get("routes", {})), strict_live=True)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(job, ignore_errors=True)
+
+@app.get("/api/flexi/pathchek")
+async def flexi_pathchek_status() -> dict:
+    state = _parse_state(await _query_state_gated())
+    feature = state.get("flexi", {}).get("pathchek") or state.get("flexi", {}).get("production", {}).get("pathchek")
+    if not feature:
+        raise HTTPException(status_code=409, detail="This engine has no Flexi PathChek support")
+    return feature
+
+@app.post("/api/flexi/pathchek")
+async def flexi_pathchek_action(payload: dict) -> dict:
+    state = _parse_state(await _query_state_gated())
+    if state.get("mode") != "flexi" or state.get("flexi",{}).get("pathchek",{}).get("schema") != 2:
+        raise HTTPException(status_code=409,detail="Native PathChek engine in Flexi mode required")
+    try:
+        script=native_pathchek_command(payload,FlexiRoutes(state['flexi'].get('routes',{}),state['flexi'].get('slot_status',{})))
+    except (ValueError,TypeError,KeyError) as exc:
+        raise HTTPException(status_code=400,detail=str(exc))
+    try:
+        result=await _mr_post("/printer/gcode/script",{"script":script})
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=409,detail=exc.response.text[:1024])
+    except httpx.HTTPError:
+        raise HTTPException(status_code=504,detail="PathChek result uncertain; do not repeat movement. Inspect current journal/state and cancel/reconcile.")
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, flexi_discovery_status, flexi_discovery
+    latest=_parse_state(await _query_state_gated()).get("flexi",{}).get("pathchek",{})
+    return {"ok":True,"result":result,"pathchek":latest}
+
+@app.get("/api/flexi/discovery")
+async def flexi_discovery_status() -> dict:
+    return _parse_state(await _query_state_gated()).get("flexi_discovery", {"available": False})
+
+@app.post("/api/flexi/discovery")
+async def flexi_discovery_action(payload: dict) -> dict:
+    state = _parse_state(await _query_state_gated())
+    if state.get("mode") != "flexi" or not state.get("flexi_discovery", {}).get("available"):
+        raise HTTPException(status_code=409, detail="Route discovery needs Flexi mode and a supporting engine")
+    try:
+        script = flexi_discovery_command(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        result = await _mr_post("/printer/gcode/script", {"script": script})
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=409, detail=exc.response.text[:1024])
+    except httpx.HTTPError:
+        raise HTTPException(status_code=504, detail="No answer from Klipper; check the discovery status before repeating.")
+    latest = _parse_state(await _query_state_gated()).get("flexi_discovery", {})
+    return {"ok": True, "result": result, "discovery": latest}
+
+@app.get("/api/flexi/source-select")
+async def flexi_source_select_status() -> dict:
+    state = _parse_state(await _query_state_gated())
+    feature = state.get("flexi", {}).get("production", {}).get("source_select")
+    if not feature:
+        raise HTTPException(status_code=409, detail="This engine has no Flexi SourceSelect support")
+    return feature
+
+# @MULTIACE_FLEXI_HOOK Production actions go through the strict native web policy.
+@app.post("/api/flexi/production/{operation}")
+async def flexi_production_action(operation: str, payload: dict) -> dict:
+    state = _parse_state(await _query_state_gated())
+    flexi = state.get("flexi", {})
+    if state.get("mode") != "flexi" or "production" not in flexi:
+        raise HTTPException(status_code=409, detail="The installed engine does not support production Flexi")
+    if flexi.get("journal_error"):
+        raise HTTPException(status_code=409, detail="Flexi journal is unavailable. Preserve it for recovery.")
+    if operation == "config":
+        if "base_revision" not in payload:
+            raise HTTPException(status_code=428, detail="Reload saved recipes before editing. The draft has no revision.")
+        current = flexi["production"].get("recipe_revision")
+        if not current or payload["base_revision"] != current:
+            raise HTTPException(status_code=409, detail="Recipe conflict. Reload saved recipes and review changes before saving.")
+    try:
+        script = flexi_production_command(operation, payload, FlexiRoutes(flexi.get("routes", {})))
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        result = await _mr_post("/printer/gcode/script", {"script": script})
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code < 500:
+            # Keep the complete Moonraker/Klipper diagnostic in the service
+            # log, but return only the operator-facing sentence. The raw
+            # response is a JSON envelope (and may contain a traceback) that
+            # must never become the dashboard's error text.
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+            _trace.warning("Flexi production %s refused: %s", operation,
+                           exc.response.text[:4096])
+            raise HTTPException(status_code=409, detail=_moonraker_error_detail(
+                exc.response,
+                "The printer refused the Flexi request; no operation was started.")) from exc
+        raise HTTPException(status_code=502, detail="Flexi request outcome is unknown. Check printer and journal status before retrying.") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=504, detail="Flexi request outcome is unknown. Check printer and journal status before retrying.") from exc
+    return {"ok": True, "result": result}
 
 @app.get("/api/aces")
 async def list_aces() -> dict:
@@ -3019,6 +3784,16 @@ def _gcode_kv(key: str, value) -> str:
     return f'{key}={s}'
 
 
+# @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, _guard_flexi_script
+# @MULTIACE_FLEXI_COMPAT Shared script guard applies only while Flexi is the active mode.
+async def _guard_flexi_script(script: str) -> None:
+    state = _parse_state(await _query_state_gated())
+    if state.get("mode") == "flexi":
+        try:
+            validate_web_script(script)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
 @app.post("/api/macro-batch", status_code=202)
 async def run_macro_batch(req: MacroBatchRequest) -> dict:
 
@@ -3032,6 +3807,8 @@ async def run_macro_batch(req: MacroBatchRequest) -> dict:
                 parts.append(_gcode_kv(k, v))
         lines.append(" ".join(parts))
     script = "\n".join(lines)
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses _guard_flexi_script
+    await _guard_flexi_script(script)
 
     async def _dispatch():
         try:
@@ -4414,6 +5191,8 @@ async def run_macro(req: MacroRequest) -> dict:
         for k, v in req.args.items():
             parts.append(_gcode_kv(k, v))
     script = " ".join(parts)
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses _guard_flexi_script
+    await _guard_flexi_script(script)
     try:
         # Moonraker's /printer/gcode/script blocks until Klipper finishes
         # the gcode. Returns immediately on completion regardless of
@@ -4856,10 +5635,11 @@ async def set_tipform(payload: TipformUpdate) -> dict:
     p = Path(_resolve_cfg_path())
     if not p.exists():
         raise HTTPException(404, f"config file not found: {_resolve_cfg_path()}")
-    text = p.read_text(encoding="utf-8")
-    backup = p.with_suffix(p.suffix + ".bak")
-    _write_cfg_atomic(backup, text)
-    _write_cfg_atomic(p, _rewrite_tipform_section(text, mode, tables))
+    with ace_config_lock(str(p), timeout=0):
+        text = p.read_text(encoding="utf-8")
+        backup = p.with_suffix(p.suffix + ".bak")
+        _write_cfg_atomic(backup, text)
+        _write_cfg_atomic(p, _rewrite_tipform_section(text, mode, tables))
     restart: dict | None = None
     if payload.restart_klipper:
         try:
@@ -4908,11 +5688,12 @@ def _write_cfg_atomic(path, text: str) -> None:
     self-healing the file the same way the Klipper-side write-through
     (_cfg_write_ace_option) already does - which is why the error was
     transient (any Klipper setter in between fixed it)."""
-    p = Path(path)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    _klipper_readable(tmp)
-    os.replace(str(tmp), str(p))
+    atomic_text_replace(path, text)
+
+@app.exception_handler(ConfigBusy)
+async def config_busy_response(request, exc):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=409, content={"detail": str(exc), "retry": "Reload configuration and retry; no save was committed by this request"})
 
 
 def _klipper_readable(path) -> None:
@@ -4950,23 +5731,26 @@ async def update_config(payload: ConfigUpdate) -> dict:
     p = Path(_resolve_cfg_path())
     if not p.exists():
         raise HTTPException(404, f"config file not found: {_resolve_cfg_path()}")
-    if payload.base_sha1:
-        # Lost-update guard (see ConfigUpdate.base_sha1): the file changed
-        # since the browser loaded it, so the payload is built on a stale
-        # base. Refuse with the CURRENT content so the client can re-apply
-        # its form values on top and retry - never silently overwrite.
-        cur = p.read_text(encoding="utf-8")
-        cur_sha1 = _cfg_sha1(cur)
-        if cur_sha1 != payload.base_sha1:
-            raise HTTPException(409, json.dumps({
-                "error": "config changed on disk since it was loaded",
-                "sha1": cur_sha1,
-                "content": cur,
-            }))
-    backup = p.with_suffix(p.suffix + ".bak")
-    _write_cfg_atomic(backup, p.read_text(encoding="utf-8"))
-    _write_cfg_atomic(p, payload.content)
-    new_sha1 = _cfg_sha1(payload.content)
+    with ace_config_lock(str(p), timeout=0):
+        if not payload.base_sha1:
+            raise HTTPException(428, "Configuration revision required; reload configuration before saving")
+        if payload.base_sha1:
+            # Lost-update guard (see ConfigUpdate.base_sha1): the file changed
+            # since the browser loaded it, so the payload is built on a stale
+            # base. Refuse with the CURRENT content so the client can re-apply
+            # its form values on top and retry - never silently overwrite.
+            cur = p.read_text(encoding="utf-8")
+            cur_sha1 = _cfg_sha1(cur)
+            if cur_sha1 != payload.base_sha1:
+                raise HTTPException(409, json.dumps({
+                    "error": "config changed on disk since it was loaded",
+                    "sha1": cur_sha1,
+                    "content": cur,
+                }))
+        backup = p.with_suffix(p.suffix + ".bak")
+        _write_cfg_atomic(backup, p.read_text(encoding="utf-8"))
+        _write_cfg_atomic(p, payload.content)
+        new_sha1 = _cfg_sha1(payload.content)
     restart: dict | None = None
     if payload.restart_klipper:
         try:
@@ -5391,6 +6175,28 @@ def _save_overrides_to_disk() -> None:
     except Exception:
         pass
 
+def _observe_ejected_overrides(status: dict) -> None:
+    """Explicit telemetry mutation; never called by GET/status projection."""
+    ace = status.get("ace") or {}
+    devices = ace.get("aces") or []
+    if not devices:
+        devices = [dict(ace, idx=ace.get("active_device", 0))]
+    changed = False
+    now = time.time()
+    for n, device in enumerate(devices):
+        index = device.get("idx", n)
+        for slot, gate in enumerate(device.get("gate_status") or []):
+            key = (index, slot)
+            if gate != 0:
+                _eject_pending_since.pop(key, None)
+                continue
+            since = _eject_pending_since.setdefault(key, now)
+            if now - since >= EJECT_DEBOUNCE_S:
+                changed = _drop_override_if_present(index, slot) or changed
+                _eject_pending_since.pop(key, None)
+    if changed:
+        _save_overrides_to_disk()
+
 def _drop_override_if_present(ace: int, slot: int) -> bool:
     """Remove any manual slot override for (ace, slot). Returns True
     when an entry was popped so the caller can batch the file write
@@ -5446,6 +6252,15 @@ async def list_slot_overrides() -> dict:
 
 @app.post("/api/slot-override")
 async def set_slot_override(req: SlotOverride) -> dict:
+    state = _parse_state(await _query_state_gated())
+    # @MULTIACE_FLEXI_HOOK Flexi slot metadata is route-aware; legacy overrides stay untouched.
+    if state.get("mode") == "flexi":
+        try:
+            script = slot_metadata_command({"source":[req.ace,req.slot],"record":{"material":req.material or "","brand":req.brand or "","subtype":req.subtype or "","color":req.color or ""}}, FlexiRoutes(state["flexi"]["routes"]))
+        except (ValueError,KeyError) as exc:
+            raise HTTPException(400, str(exc))
+        result = await _mr_post("/printer/gcode/script", {"script":script})
+        return {"ok":True,"result":result}
     key = _override_key(req.ace, req.slot)
     new = {
         "ace":      req.ace,
@@ -5464,6 +6279,15 @@ async def set_slot_override(req: SlotOverride) -> dict:
 
 @app.delete("/api/slot-override/{ace}/{slot}")
 async def delete_slot_override(ace: int, slot: int) -> dict:
+    state = _parse_state(await _query_state_gated())
+    # @MULTIACE_FLEXI_HOOK Flexi metadata deletion uses the native route-aware command.
+    if state.get("mode") == "flexi":
+        try:
+            script = slot_metadata_command({"source":[ace,slot],"record":None}, FlexiRoutes(state["flexi"]["routes"]))
+        except (ValueError,KeyError) as exc:
+            raise HTTPException(400, str(exc))
+        result = await _mr_post("/printer/gcode/script", {"script":script})
+        return {"ok":True,"result":result}
     key = _override_key(ace, slot)
     if key in _slot_overrides:
         old = _slot_overrides.pop(key, None)
@@ -5476,6 +6300,7 @@ _load_overrides_from_disk()
 
 _notifications: deque = deque(maxlen=50)
 _next_notification_id = int(time.time() * 1000)
+_ident_seen: dict = {}
 _notifications_lock = asyncio.Lock()
 
 _NOTIF_ONLY_MULTIACE = os.environ.get(
@@ -5500,6 +6325,11 @@ def _is_error_gcode_response(text: str) -> bool:
     # (reconnect attempts, retry-ladder hiccups). Captured as a WARN-level
     # notification (amber), never red - only final failures use '!!'.
     if body.startswith("[warn]") and "[multiACE]" in s:
+        return True
+    # '[ident]' marker = ace.log_ident: an identification NOTICE (a tag
+    # matching more than one spool entry). Nothing failed; shown as plain
+    # information and dismisses itself.
+    if body.startswith("[ident]") and "[multiACE]" in s:
         return True
     # '[info]' marker = ace.log_notice: progress/success of a user-started
     # operation (tag write). Info-level (green) notification.
@@ -5535,9 +6365,14 @@ def _record_notification(text: str) -> dict | None:
     # from the displayed text.
     level = "error"
     done = False
+    ident = False
     if msg.startswith("[warn]"):
         level = "warn"
         msg = msg[len("[warn]"):].strip()
+    elif msg.startswith("[ident]"):
+        level = "info"
+        ident = True
+        msg = msg[len("[ident]"):].strip()
     elif msg.startswith("[info]") or msg.startswith("[done]"):
         level = "info"
         done = msg.startswith("[done]")
@@ -5554,7 +6389,7 @@ def _record_notification(text: str) -> dict | None:
         "raw":   text.strip(),
         "level": level,
     }
-    if level == "info":
+    if level == "info" and not ident:
         # Progress of ONE running op: only the latest line stays (the
         # frontend mirrors this via replaces_info); a [done] line also
         # dismisses itself after ttl seconds.
@@ -5564,6 +6399,14 @@ def _record_notification(text: str) -> dict | None:
         note["replaces_info"] = True
         if done:
             note["ttl"] = 8
+    if ident:
+        # Same notice again (polling re-reads the tag): not a new event.
+        key = note["msg"]
+        now = time.time()
+        if now - _ident_seen.get(key, 0.0) < 900.0:
+            return None
+        _ident_seen[key] = now
+        note["ttl"] = 12
     _notifications.append(note)
     _trace.info("notification %d captured: %s", note["id"], note["msg"])
     return note
@@ -6121,6 +6964,8 @@ async def plugin_api_gcode(req: _PluginGcode) -> dict:
     script = (req.script or "").strip()
     if not script:
         raise HTTPException(status_code=400, detail="empty script")
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses _guard_flexi_script
+    await _guard_flexi_script(script)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
@@ -6141,13 +6986,21 @@ async def head_manual_set(req: HeadManual) -> dict:
     the head sensor stays active). Persisted by the Klipper module."""
     if req.head < 0 or req.head > 3:
         raise HTTPException(status_code=400, detail="head must be 0..3")
+    mode = await _head_mode_for_setting()
+    refusal = _legacy_head_mode_error("manual", mode)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
     script = "ACE_SET_HEAD_MANUAL HEAD=%d ENABLE=%d" % (
         req.head, 1 if req.enable else 0)
     try:
         await _mr_post("/printer/gcode/script", {"script": script})
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code,
-                            detail=f"moonraker: {e.response.text}")
+        raise HTTPException(
+            status_code=503 if e.response.status_code == 503 else 409,
+            detail=_moonraker_error_detail(
+                e.response,
+                "The printer refused the Manual head-mode change; no setting was applied."),
+        ) from e
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"moonraker: {e}")
     return {"ok": True, "head": req.head, "manual": req.enable}
@@ -6159,13 +7012,21 @@ async def head_feeder_set(req: HeadFeeder) -> dict:
     Persisted by the Klipper module."""
     if req.head < 0 or req.head > 3:
         raise HTTPException(status_code=400, detail="head must be 0..3")
+    mode = await _head_mode_for_setting()
+    refusal = _legacy_head_mode_error("feeder", mode)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
     script = "ACE_SET_HEAD_FEEDER HEAD=%d ENABLE=%d" % (
         req.head, 1 if req.enable else 0)
     try:
         await _mr_post("/printer/gcode/script", {"script": script})
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code,
-                            detail=f"moonraker: {e.response.text}")
+        raise HTTPException(
+            status_code=503 if e.response.status_code == 503 else 409,
+            detail=_moonraker_error_detail(
+                e.response,
+                "The printer refused the stock-feeder change; no setting was applied."),
+        ) from e
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"moonraker: {e}")
     return {"ok": True, "head": req.head, "feeder": req.enable}
@@ -6178,12 +7039,20 @@ async def head_ace_set(req: HeadAce) -> dict:
         raise HTTPException(status_code=400, detail="head must be 0..3")
     if req.ace < 0 or req.ace > 3:
         raise HTTPException(status_code=400, detail="ace must be 0..3")
+    mode = await _head_mode_for_setting()
+    refusal = _legacy_head_mode_error("ace", mode)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
     script = "ACE_SET_HEAD_ACE HEAD=%d ACE=%d" % (req.head, req.ace)
     try:
         await _mr_post("/printer/gcode/script", {"script": script})
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code,
-                            detail=f"moonraker: {e.response.text}")
+        raise HTTPException(
+            status_code=503 if e.response.status_code == 503 else 409,
+            detail=_moonraker_error_detail(
+                e.response,
+                "The printer refused the ACE wiring change; no setting was applied."),
+        ) from e
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"moonraker: {e}")
     return {"ok": True, "head": req.head, "ace": req.ace}
@@ -6340,6 +7209,7 @@ async def ws(websocket: WebSocket) -> None:
                 # for the brief homing window; it resumes on the next tick.
                 try:
                     status = await _query_state()
+                    _observe_ejected_overrides(status)
                     payload = _parse_state(status)
                     payload["type"] = "state"
                     payload["ts"] = now

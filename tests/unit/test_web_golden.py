@@ -78,8 +78,22 @@ def _fleet_status(name):
     return json.loads(json.dumps(status, default=str, sort_keys=True))
 
 
+# Per-run values: the parse time and the Flexi status's random session ids.
+VOLATILE_KEYS = ("session", "session_id")
+
+
+def _mask(obj):
+    if isinstance(obj, dict):
+        return {k: ("<volatile>" if k in VOLATILE_KEYS else _mask(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_mask(v) for v in obj]
+    return obj
+
+
 def _strip(parsed):
-    out = json.loads(json.dumps(parsed, sort_keys=True))
+    out = _mask(json.loads(json.dumps(parsed, sort_keys=True)))
+    out.pop("state_ts", None)
     for a in out.get("aces", []) or []:
         for k in ADDITIVE_ACE:
             a.pop(k, None)

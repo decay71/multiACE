@@ -6,7 +6,9 @@ const API = BASE + "/api";
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://")
              + location.host + BASE + "/ws";
 const SCREEN = "/screen";
+// @MULTIACE_FLEXI_HOOK Flexi config components mount beside the original application shell.
 createApp({
+  components: window.FlexiConfigUX.components,
   setup() {
     // Bowden-path calibration tab (physicsG, #168).
     const CALIBRATION_TAB = true;
@@ -14,7 +16,8 @@ createApp({
     const ORCA_SECTION = true;
     const _validTabs = new Set(["dashboard", "control", "history", "spools", "config", "devices"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
-    const _storedTab = localStorage.getItem("multiace.tab");
+    const _storedRaw = localStorage.getItem("multiace.tab");
+    const _storedTab = _storedRaw === "settings" ? "config" : _storedRaw;
     const _isPluginTab = (s) => typeof s === "string" && s.startsWith("plugin:");
     const tab = ref(
       (_validTabs.has(_storedTab) || _isPluginTab(_storedTab))
@@ -140,12 +143,10 @@ createApp({
     const indexBase = ref(0);
     function t(key, params) {
       const parts = key.split('.');
-      let v = catalog;
-      for (const p of parts) {
-        if (v == null) return key;
-        v = v[p];
-      }
-      if (typeof v !== "string") return key;
+      const resolve = source => parts.reduce((value, part) => value?.[part], source);
+      const localized = resolve(catalog);
+      const v = typeof localized === "string" ? localized : resolve(window.MultiACEEnglish);
+      if (typeof v !== "string") return parts.at(-1).replaceAll("_", " ");
       if (!params) return v;
       return v.replace(/\{(\w+)\}/g, (_, k) => params[k] != null ? params[k] : `{${k}}`);
     }
@@ -237,18 +238,37 @@ createApp({
     const printerName = ref("");
     const printerFw = ref("");
     const conn = ref({state: "init", text: ""});
+    // The local preview proxy injects this flag. Its websocket is healthy in
+    // the preview, but no printer is connected - a green "live" badge would
+    // claim evidence the preview does not have.
+    const previewSimulated = !!window.__MULTIACE_PREVIEW_SCENARIO;
+    // When the last payload carrying toolhead sensors arrived. A payload older
+    // than state.sensor_max_age_s cannot prove present/absent any more.
+    const stateFreshAt = ref(0);
+    const headActions = window.MultiACEHeadActions;
     const connClass = computed(() => ({
-      ok:   conn.value.state === "ok",
+      ok:   !previewSimulated && conn.value.state === "ok",
       warn: conn.value.state === "warn",
       err:  conn.value.state === "err",
+      simulated: previewSimulated,
     }));
-    const connText = computed(() => conn.value.text);
+    const connText = computed(() => previewSimulated ? t("ui.header.simulated") : conn.value.text);
     const screenAvailable = ref(false);
     const state = reactive({
       ace_status: null, ace_temp: null,
+      sensor_max_age_s: 15,
       printer_state: null,
       active_device: null, device_count: 0,
+      configured_device_count: 0, detected_device_count: 0,
+      connected_device_count: 0, max_ace_units: 4, max_ace_slots: 4,
+      devices: [], unassigned_devices: [],
       mode: "normal",
+      saved_mode: "normal",
+      pending_mode: null,
+      restart_required: false,
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, flexi_discovery
+      flexi: {available: false, routes: {}, execution_enabled: false},
+      flexi_discovery: {available: false},
       ace_head: 3,
       ace_heads: [],
       head_feeder: {},
@@ -282,6 +302,7 @@ createApp({
       tag_op: {busy: false, kind: "", seq: 0, result: null},
       nozzle_keys: [],
       quad_replenish: false,
+      failover_priority: {}, failover_allow_color: [], failover_preview: {},
       quad_first: false,
       spools: {},
       spool_binding: {},
@@ -429,13 +450,36 @@ createApp({
         return;
       }
       if (loadError.value === t('ui.common.please_restart')) loadError.value = "";
+      // Only a payload that actually carries toolheads refreshes sensor
+      // freshness - an error/partial state must not make old readings look new.
+      if (Array.isArray(s.toolheads)) stateFreshAt.value = Date.now();
+      state.sensor_max_age_s = Math.max(1, Number(s.sensor_max_age_s || 15));
       restartNoteBack();
       state.ace_status    = s.ace_status ?? null;
       state.ace_temp      = s.ace_temp ?? null;
       state.printer_state = s.printer_state ?? null;
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi_discovery, s.flexi_discovery
+      state.flexi_discovery = s.flexi_discovery || {available: false};
       state.active_device = s.active_device ?? null;
       state.device_count  = s.device_count ?? 0;
+      state.configured_device_count = s.configured_device_count
+        ?? s.device_count ?? 0;
+      state.detected_device_count = s.detected_device_count
+        ?? (Array.isArray(s.aces) ? s.aces.filter(a => a?.detected).length : 0);
+      state.connected_device_count = s.connected_device_count
+        ?? (Array.isArray(s.aces) ? s.aces.filter(a => a?.connected === true).length : 0);
+      state.max_ace_units = Math.max(1, Math.min(4, Number(s.max_ace_units || 4)));
+      state.max_ace_slots = Math.max(1, Math.min(4, Number(s.max_ace_slots || 4)));
+      state.devices = Array.isArray(s.devices) ? s.devices : [];
+      state.unassigned_devices = Array.isArray(s.unassigned_devices)
+        ? s.unassigned_devices : [];
       state.mode          = s.mode || "normal";
+      state.saved_mode    = s.saved_mode || state.mode;
+      state.pending_mode  = s.pending_mode || null;
+      state.restart_required = !!s.restart_required;
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, state.flexi
+      // @MULTIACE_FLEXI_COMPAT Keep Flexi state additive so original-mode fields keep their schema.
+      state.flexi         = s.flexi || {available: false, routes: {}, execution_enabled: false};
       state.pickup_cleaning = !!s.pickup_cleaning;
       state.preflight_max_copies = Math.max(1, Math.min(4, Number(s.preflight_max_copies || 1)));
       state.preflight_copies_strict = !!s.preflight_copies_strict;
@@ -448,6 +492,10 @@ createApp({
       state.spoollink_agent = !!s.spoollink_agent;
       state.airprint_detection = !!s.airprint_detection;
       state.quad_replenish = !!s.quad_replenish;
+      // @MULTIACE_FLEXI_SHARED runout backup settings and preview reach the page (were never copied), all modes
+      state.failover_priority = s.failover_priority || {};
+      state.failover_allow_color = s.failover_allow_color || [];
+      state.failover_preview = s.failover_preview || {};
       state.quad_first = !!s.quad_first;
       state.purge_matrix = (s.purge_matrix === undefined)
         ? true : !!s.purge_matrix;
@@ -527,8 +575,10 @@ createApp({
         const j = await r.json();
         loadError.value = j.error || "";
         applyState(j);
+        return !j.error && j.klippy !== "disconnected";
       } catch (e) {
         loadError.value = String(e);
+        return false;
       } finally {
         hideSplash();
       }
@@ -1815,6 +1865,8 @@ createApp({
     }
     function slotTitle(ace, slot) {
       const bits = [`MMU ${dispIdx(ace.idx)} / Slot ${dispIdx(slot.idx)}`];
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, state.flexi
+      if (state.mode === 'flexi') bits.push('→ T'+(state.flexi?.routes?.[`${ace.idx}:${slot.idx}`] ?? 'unassigned'));
       if (slot.material) bits.push(slot.material);
       if (slot.brand) bits.push(slot.brand);
       bits.push(slot.state);
@@ -1897,6 +1949,8 @@ createApp({
     watch(() => state.toolheads.length, scheduleWiringRecompute);
     watch(() => tab.value, (v) => { if (v === "dashboard") scheduleWiringRecompute(); });
     function switchAce(idx) {
+      // @MULTIACE_FLEXI_HOOK Flexi addresses every slot directly; ACE_SWITCH is refused there
+      if (state.mode === 'flexi') return;
       run("ACE_SWITCH", {TARGET: idx});
     }
     // --- Panel mode (?panel=1) -------------------------------------------
@@ -1938,8 +1992,10 @@ createApp({
       if (!sp || sp.weight_g === undefined || sp.weight_g === null) return null;
       return Math.max(4, Math.min(100, Math.round(Number(sp.weight_g) / 10)));
     }
-    // New design: per-head settings (ACE, feeder/manual, BG) fold away
-    // behind a gear button on the toolhead card. View state only.
+    // Per-head settings (Manual in Normal/Multi; feeder, ACE wiring and BG in
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+    // Head) fold behind the gear. View state only. Flexi deliberately has no
+    // gear: its one source control is Filament Sources, shown on the card.
     const thSettingsOpen = reactive({});
     function slotGaugePct(aceIdx, slot) {
       if (!slot || slot.state === "empty") return 0;
@@ -2067,6 +2123,8 @@ createApp({
     // Unload is per HEAD. Multi wires slot N to head N; in head mode only
     // the ACE head unloads, and only its own slots offer it.
     function panelSlotHead(aceIdx, slotIdx) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, state.flexi
+      if (state.mode === 'flexi') return state.flexi?.routes?.[`${aceIdx}:${slotIdx}`] ?? null;
       if (state.mode === "head") {
         const h = state.ace_head;
         return (headAceOf(h) === aceIdx) ? h : null;
@@ -2152,6 +2210,19 @@ createApp({
       return window.confirm(t(key, params || {}));
     }
     function loadAll(idx) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, Flexi
+      if (state.mode === 'flexi') {
+        // Flexi: open Load several with this ACE's usable slots ticked (one per toolhead).
+        if (multiLoad.running) return;
+        multiLoad.active = true; multiLoad.msg = '';
+        const ace = (state.aces || []).find(a => Number(a.idx) === Number(idx));
+        for (const sl of (ace?.slots || [])) {
+          const k = `${idx}:${sl.idx}`;
+          if (!multiLoad.picks[k] && !multiPickBlocked(idx, sl.idx)) multiLoad.picks[k] = true;
+        }
+        setMacroLog(`ACE ${dispIdx(idx)}: usable slots ticked (one per toolhead). Review them in Prepare to print, then press Load selected.`);
+        return;
+      }
       if (_blockIfPrinting()) return;
       if (!_confirmCmd("ui.confirm.load_all", {ace: dispIdx(idx)})) return;
       run("ACE_SWITCH", {TARGET: idx, AUTOLOAD: 1});
@@ -2168,6 +2239,11 @@ createApp({
       return null;
     }
     const toolheadOps = computed(() => {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, state.flexi
+      if (state.mode === 'flexi') {
+        const job=state.flexi?.production?.workflow?.job;
+        return job ? {[job.head]:job.action==='unload'?'unloading':'loading'} : {};
+      }
       const ops = {};
       for (const t of state.toolheads) {
         const p = _phaseFor(t.channel_state);
@@ -2187,6 +2263,14 @@ createApp({
     // stays enabled (the FA-preserve in _perform_switch + the V2 watchdog keep
     // the printing head fed).
     const isPrinting = computed(() => state.printer_state === 'printing');
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, flexi
+    // Flexi owns one explicitly routed operation at a time. Bulk loading
+    // bypasses the per-route coordinator, so make that visible in the UI even
+    // though the handler below also refuses it defensively.
+    // @MULTIACE_FLEXI_HOOK Flexi: Load All opens Load several with this ACE's slots ticked
+    const loadAllDisabled = computed(() => isPrinting.value || (state.mode === 'flexi' && multiLoad.running));
+    const loadAllTitle = computed(() => isPrinting.value ? t('ui.dashboard.blocked_printing')
+      : state.mode === 'flexi' ? (multiLoad.running ? 'Loading is running' : 'Tick the usable slots of this ACE in Load several (one per toolhead)') : '');
     function _blockIfPrinting() {
       if (isPrinting.value) {
         setMacroLog(t("ui.dashboard.blocked_printing"));
@@ -2231,6 +2315,8 @@ createApp({
     // nothing from a slot - a slot load there would load the head from its
     // side feeder instead, so the slot button is off for it.
     function slotHeadHasNoAce(slotIdx) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+      if (state.mode === 'flexi') return false;
       if (state.mode === 'head') return false;
       const th = state.toolheads.find(tt => tt.idx === slotIdx);
       return !!(th && (th.manual || th.feeder));
@@ -2275,12 +2361,244 @@ createApp({
         th.filament_at_extruder === false &&
         !toolheadOps.value[th.idx]);
     }
+    // ---- per-toolhead action (sensor truth + dispatch) ----------------
+    // The label is sensor truth; these helpers keep the execution decision
+    // separate so an ACE head can never fall into the stock-feeder path (or
+    // the reverse) just because a button was clicked.
+    function _soleAceIdx() {
+      const aces = state.aces || [];
+      const live = aces.filter(a => a.connected === true);
+      if (live.length === 1) return live[0].idx;
+      if (!live.length && aces.length === 1) return aces[0].idx;
+      return null;
+    }
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses _flexiOwner, state.flexi, Flexi
+    function _flexiOwner(idx) {
+      const owners = state.flexi?.production?.workflow?.owners || {};
+      return owners[idx] ?? owners[String(idx)] ?? null;
+    }
+    // Session 2: a Flexi head can be unloaded by the original ACE_UNLOAD_HEAD
+    // whenever its source is known: the stock head_source, the path ledger
+    // owner, or (older builds) the production workflow owner.
+    function _flexiUnloadKnown(th) {
+      if (!th) return false;
+      if (th.head_source_known) return true;
+      const rec = (state.flexi?.production?.path_ledger || state.flexi?.path_ledger || {})[String(th.idx)];
+      if (rec && Array.isArray(rec.owner) && rec.state !== 'clear') return true;
+      return !!_flexiOwner(th.idx);
+    }
+    function _flexiHeadSources(idx) {
+      const routes = state.flexi?.routes || {};
+      return Object.keys(routes).filter(k => Number(routes[k]) === Number(idx));
+    }
+    function _flexiSourceLabel(source) {
+      if (!Array.isArray(source) || source.length < 2) return '';
+      return `MMU ${dispIdx(source[0])} / Slot ${dispIdx(source[1])}`;
+    }
+    function _headActionCtx(th) {
+      return {
+        mode: state.mode,
+        soleAce: _soleAceIdx(),
+        nowMs: Date.now(),
+        freshAtMs: stateFreshAt.value,
+        maxAgeS: state.sensor_max_age_s,
+        op: toolheadOps.value[th.idx] || null,
+      };
+    }
+    function headSensorState(th) {
+      return headActions.sensorState(th, _headActionCtx(th));
+    }
+    function headAction(th) {
+      return headActions.displayAction(th, _headActionCtx(th));
+    }
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiSourceLabel
+    function flexiSourceLabel(th) {
+      const type = th && (th.source_type || (th.manual ? 'manual' : th.feeder ? 'stock' : 'ace'));
+      if (type === 'manual') return t('ui.dashboard.manual');
+      if (type === 'stock') return t('ui.dashboard.stock_feeder');
+      return 'ACE';
+    }
+    // Firmware channel codes are diagnostics, not UI copy: show the state as
+    // words, keep the raw code in the tooltip.
+    const CHANNEL_STATE_KEYS = {
+      wait_insert: 'ui.dashboard.channel_wait_insert',
+      inited: 'ui.dashboard.channel_inited',
+      test: 'ui.dashboard.channel_test',
+      load_finish: 'ui.dashboard.channel_load_finish',
+      unload_finish: 'ui.dashboard.channel_unload_finish',
+      preload_finish: 'ui.dashboard.channel_preload_finish',
+    };
+    function channelStateLabel(s) {
+      if (!s) return '';
+      const key = CHANNEL_STATE_KEYS[s];
+      return key ? t(key) : String(s).replace(/_/g, ' ');
+    }
+    const CHANNEL_TERMINAL = new Set(['preload_finish', 'load_finish', 'unload_finish']);
+    function channelStateTerminal(s) { return CHANNEL_TERMINAL.has(String(s)); }
+    // Idle feed-module states ('waiting for filament') reset on every Klipper
+    // restart and contradict a loaded head; show a channel state only while it
+    // says something the sensor does not.
+    const CHANNEL_IDLE = new Set(['inited', 'wait_insert']);
+    function channelStateShown(th) {
+      const s = th && th.channel_state;
+      if (!s) return false;
+      if (th.filament_at_extruder) return !CHANNEL_IDLE.has(String(s));
+      return !channelStateTerminal(s);
+    }
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses _flexiExternalSource, flexi, state.flexi
+    function _flexiExternalSource(th) {
+      if (state.mode !== 'flexi' || !th) return false;
+      const type = th.source_type || (th.manual ? 'manual' : th.feeder ? 'stock' : 'ace');
+      return type === 'manual' || type === 'stock';
+    }
+    function headRouteReadiness(head) {
+      const routes = Object.entries(state.flexi?.routes || {})
+        .filter(([, mapped]) => Number(mapped) === Number(head));
+      const states = routes.map(([key]) => fxRouteReadinessMap.value[key]?.state).filter(Boolean);
+      if (!states.length) return null;
+      if (states.includes('ready')) return 'ready';
+      return states.includes('needs_recipe') ? 'needs_recipe' : states[0];
+    }
+    function headOperationBlocked(th) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+      if (state.mode !== 'flexi') return '';
+      if (productionRecoveryRows.value.some(row => Number(row.head) === Number(th.idx))) return 'recovery_required';
+      const readiness = headRouteReadiness(th.idx);
+      return readiness && readiness !== 'ready' ? readiness : '';
+    }
+    function headActionDisabled(th) {
+      if (isPrinting.value) return true;
+      if (toolheadOps.value[th.idx]) return true;
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, _flexiExternalSource, flexi
+      // Flexi source configuration is authoritative. Stock/manual sources are
+      // configuration-only in this build: no validated dispatcher exists, so
+      // the ACE Load/Unload path must stay unavailable instead of producing a
+      // backend rejection.
+      if (_flexiExternalSource(th)) return true;
+      const action = headAction(th);
+      if (action === 'unavailable') return true;
+      if (action === 'load' && headOperationBlocked(th)) return true;
+      if (action === 'unload') {
+        if (state.mode === 'flexi') return !_flexiUnloadKnown(th);
+        if (!th.manual && !th.feeder && !th.head_source_known) return true;
+      }
+      return false;
+    }
+    function headActionTitle(th) {
+      if (isPrinting.value) return t('ui.dashboard.blocked_printing');
+      if (toolheadOps.value[th.idx]) return '';
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses _flexiExternalSource, ui.dashboard.flexi_external_source, flexiSourceLabel
+      if (_flexiExternalSource(th)) {
+        return t('ui.dashboard.flexi_external_source',
+                 {head: dispIdx(th.idx), source: flexiSourceLabel(th)});
+      }
+      const sensor = headSensorState(th);
+      if (sensor === 'stale') return t('ui.dashboard.sensor_stale_hint');
+      if (sensor === 'unavailable') return t('ui.dashboard.sensor_unavailable_hint');
+      if (headAction(th) === 'load' && state.mode === 'flexi') {
+        const blocked = headOperationBlocked(th);
+        if (blocked === 'recovery_required') return `Recovery required for T${dispIdx(th.idx)}. Use the recovery banner before loading.`;
+        if (blocked) return `No load-ready route for T${dispIdx(th.idx)} yet. Configure the route recipe first.`;
+      }
+      if (headAction(th) === 'load') {
+        if (state.mode === 'flexi') {
+          const owner = _flexiOwner(th.idx);
+          if (owner) return t('ui.dashboard.flexi_owner_mismatch',
+            {head: dispIdx(th.idx), source: _flexiSourceLabel(owner.source)});
+          const sources = _flexiHeadSources(th.idx);
+          if (sources.length !== 1) return sources.length
+            ? t('ui.dashboard.flexi_choose_source',
+                {head: dispIdx(th.idx), count: sources.length})
+            : t('ui.dashboard.flexi_no_source', {head: dispIdx(th.idx)});
+        }
+        const plan = headActions.loadTarget(th, _headActionCtx(th));
+        if (plan.kind === 'guide') {
+          return plan.reason === 'choose-head-slot'
+            ? t('ui.dashboard.load_choose_head_slot',
+                {head: dispIdx(th.idx), ace: dispIdx(headAceOf(th.idx))})
+            : t('ui.dashboard.load_choose_ace_slot', {head: dispIdx(th.idx)});
+        }
+        return t('ui.dashboard.load_head_hint', {head: dispIdx(th.idx)});
+      }
+      const plan = headActions.unloadTarget(th, _headActionCtx(th));
+      if (plan.kind === 'reconcile'
+          // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, _flexiUnloadKnown
+          || (plan.kind === 'flexi' && !_flexiUnloadKnown(th))) {
+        return t('ui.dashboard.unload_reconcile_hint', {head: dispIdx(th.idx)});
+      }
+      return t('ui.dashboard.unload_head_hint', {head: dispIdx(th.idx)});
+    }
+    function loadHeadAt(idx) {
+      if (_blockIfPrinting()) return;
+      const th = (state.toolheads || []).find(x => Number(x.idx) === Number(idx));
+      if (!th) return;
+      if (headSensorState(th) !== 'absent') {
+        setMacroLog(headActionTitle(th) || t('ui.dashboard.sensor_unavailable_hint'));
+        return;
+      }
+      const plan = headActions.loadTarget(th, _headActionCtx(th));
+      if (plan.kind === 'stock') return loadFeederHead(idx);
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, flexiLoadHead
+      if (plan.kind === 'flexi') return flexiLoadHead(idx);
+      if (plan.kind === 'ace') {
+        if (!_confirmCmd('ui.confirm.load_head', {head: dispIdx(idx)})) return;
+        enqueue('ACE_LOAD_HEAD', plan.args);
+        return;
+      }
+      if (plan.kind === 'guide') {
+        const ace = state.mode === 'head' ? headAceOf(idx) : _soleAceIdx();
+        setMacroLog(plan.reason === 'choose-head-slot'
+          ? t('ui.dashboard.load_choose_head_slot',
+              {head: dispIdx(idx), ace: ace == null ? '-' : dispIdx(ace)})
+          : t('ui.dashboard.load_choose_ace_slot', {head: dispIdx(idx)}));
+      }
+    }
+        // @MULTIACE_FLEXI_PATCH Flexi load uses one verified source per head, not a legacy feeder path.
+    function flexiLoadHead(idx) {
+      if (state.mode !== 'flexi') return;
+      if (_blockIfPrinting()) return;
+      const th = (state.toolheads || []).find(x => Number(x.idx) === Number(idx));
+      if (_flexiExternalSource(th)) {
+        setMacroLog(t('ui.dashboard.flexi_external_source',
+          {head: dispIdx(idx), source: flexiSourceLabel(th)}));
+        return;
+      }
+      // Session 2: Flexi loads run the original MultiACE ACE_LOAD_HEAD.
+      // Klipper checks the route, shared-path ledger and recovery state.
+      const sources = _flexiHeadSources(idx);
+      if (sources.length === 1) {
+        const [a, s] = String(sources[0]).split(':').map(Number);
+        return enqueue('ACE_LOAD_HEAD', {HEAD: idx, ACE: a, SLOT: s});
+      }
+      setMacroLog(sources.length
+        ? t('ui.dashboard.flexi_choose_source',
+            {head: dispIdx(idx), count: sources.length})
+        : t('ui.dashboard.flexi_no_source', {head: dispIdx(idx)}));
+    }
     function unloadHead(idx) {
       if (_blockIfPrinting()) return;
       const th = (state.toolheads || []).find(x => Number(x.idx) === Number(idx));
-      if (th && (th.manual || th.feeder)) return unloadHeadStaged(idx);
-      if (!_confirmCmd("ui.confirm.unload_head", {head: dispIdx(idx)})) return;
-      run("ACE_UNLOAD_HEAD", {HEAD: idx});
+      const plan = headActions.unloadTarget(th, _headActionCtx(th));
+      if (plan.kind === 'flexi') {
+        if (_flexiExternalSource(th)) {
+          setMacroLog(t('ui.dashboard.flexi_external_source',
+            {head: dispIdx(idx), source: flexiSourceLabel(th)}));
+          return;
+        }
+        // Original MultiACE unload; it retracts the recorded source.
+        return run('ACE_UNLOAD_HEAD', {HEAD: idx});
+      }
+      if (plan.kind === 'reconcile') {
+        // Filament is present but no authoritative source/path exists.
+        // Retracting an arbitrary feeder would pull the wrong spool.
+        setMacroLog(t('ui.dashboard.unload_reconcile_hint', {head: dispIdx(idx)}));
+        return;
+      }
+      if (plan.kind === 'stock') return unloadHeadStaged(idx);
+      if (plan.kind === 'ace') {
+        if (!_confirmCmd("ui.confirm.unload_head", {head: dispIdx(idx)})) return;
+        run("ACE_UNLOAD_HEAD", {HEAD: idx});
+      }
     }
     // Feeder/manual head: the touchscreen's unload has a "manual
     // intervention" stop between heating and the tip-pull, because the
@@ -2351,6 +2669,54 @@ createApp({
     // dialog as their own Unload button; a cancel or failure stops the
     // whole run. The engine's Unload All then takes the ACE heads (the
     // emptied feeder/manual heads read clear and are skipped there).
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, _waitFlexiHeadClear, flexi
+    // Flexi has no bulk command: its unload is per verified route. Walk the
+    // loaded heads' owners one at a time so a route is never guessed, and
+    // wait for each head to read clear before asking for the next one -
+    // overlapping production requests would be refused as busy anyway.
+    function _waitFlexiHeadClear(idx, timeoutMs) {
+      return new Promise((resolve) => {
+        const t0 = Date.now();
+        const tick = () => {
+          if (state.mode !== 'flexi') return resolve('mode');
+          const th = (state.toolheads || []).find(x => Number(x.idx) === Number(idx));
+          if (!th) return resolve('gone');
+          if (!th.filament_at_extruder && !_flexiUnloadKnown(th)) return resolve('cleared');
+          if (Date.now() - t0 > timeoutMs) return resolve('timeout');
+          setTimeout(tick, 1000);
+        };
+        tick();
+      });
+    }
+    // @MULTIACE_FLEXI_PATCH Flexi unloads one verified route at a time; no bulk stock unload.
+    async function unloadAllFlexi() {
+      const heads = (state.toolheads || []).filter(th =>
+        th.module_exist && (th.filament_at_extruder || _flexiUnloadKnown(th)));
+      if (!heads.length) {setMacroLog(t('ui.dashboard.flexi_unload_none'));return;}
+      const skipped = [];
+      let done = 0;
+      for (const th of heads) {
+        // Session 2: the original ACE_UNLOAD_HEAD retracts the recorded
+        // source; Klipper refuses it if the path is not safe.
+        if (!_flexiUnloadKnown(th)) {skipped.push(dispIdx(th.idx));continue;}
+        if (await run('ACE_UNLOAD_HEAD', {HEAD: th.idx}) === false) {
+          setMacroLog(t('ui.dashboard.flexi_unload_failed', {head: dispIdx(th.idx)}));
+          return;
+        }
+        const outcome = await _waitFlexiHeadClear(th.idx, 150000);
+        if (outcome !== 'cleared' && outcome !== 'gone') {
+          setMacroLog(t('ui.dashboard.flexi_unload_timeout',
+            {head: dispIdx(th.idx)}));
+          return;
+        }
+        done += 1;
+      }
+      setMacroLog(skipped.length
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses ui.dashboard.flexi_unload_partial, ui.dashboard.flexi_unload_done
+        ? t('ui.dashboard.flexi_unload_partial',
+            {done: done, skipped: skipped.join(', ')})
+        : t('ui.dashboard.flexi_unload_done', {done: done}));
+    }
     async function unloadAll() {
       if (_blockIfPrinting()) return;
       if (!_confirmCmd("ui.confirm.unload_all")) return;
@@ -2362,7 +2728,167 @@ createApp({
       }
       const rest = (state.toolheads || [])
         .some(th => !th.manual && !th.feeder && _headHoldsFilament(th));
-      if (!staged.length || rest) run("ACE_UNLOAD_ALL_HEADS");
+      // Only the ACE-fed heads need the engine loop. `!staged.length` used
+      // to trigger it too, so an idle printer still announced "All heads
+      // unloaded" after walking four clear sensors.
+      if (rest) run("ACE_UNLOAD_ALL_HEADS");
+    }
+    // @MULTIACE_FLEXI_SHARED failover settings (Config), all modes
+    function setFailoverPriority(head, text) {
+      const order = String(text || '').split(',').map(x => x.trim()).filter(Boolean);
+      if (order.some(x => !/^[0-3]:[0-3]$/.test(x))) { setMacroLog('Use ACE:slot pairs such as 1:1, 1:2'); return; }
+      return enqueue('ACE_FAILOVER_PRIORITY', {HEAD: head, ORDER: order.join(',')});
+    }
+    // Diagnostics page (live state).
+    function diagLedger(head) {
+      const rec = (state.flexi?.production?.path_ledger || {})[String(head)];
+      if (!rec) return {text: 'unknown', basis: 'No record yet'};
+      const own = Array.isArray(rec.owner) ? ` from ACE${rec.owner[0]} slot ${rec.owner[1]}` : '';
+      const text = rec.state === 'clear' ? 'clear' : rec.state === 'loaded' ? 'loaded' + own
+        : rec.state === 'in_progress' ? 'load or unload running' + own : 'uncertain' + own;
+      return {text, basis: rec.basis || ''};
+    }
+    function diagRoutes(head) {
+      const routes = state.flexi?.routes || {};
+      const keys = Object.keys(routes).filter(k => Number(routes[k]) === Number(head))
+        .sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
+      return keys.length ? keys.map(k => { const [a, sl] = k.split(':'); return `ACE${a} S${sl}`; }).join(', ') : 'none';
+    }
+    // ---- Prepare to print (Flexi dashboard): Load several + runout check ----
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.routes
+    const multiLoad = reactive({active: false, picks: {}, running: false, stop: false, step: '', msg: ''});
+    function slotRouteHead(ace, slot) {
+      const h = (state.flexi?.routes || {})[`${ace}:${slot}`];
+      return Number.isInteger(Number(h)) && h !== null && h !== undefined ? Number(h) : null;
+    }
+    function headHasFilament(h) {
+      const th = (state.toolheads || []).find(x => Number(x.idx) === Number(h));
+      return !!th && (th.head_source_known || th.filament_sensor?.present === true || th.filament_at_extruder);
+    }
+    function multiPickBlocked(ace, slot) {
+      if (isPrinting.value) return 'Not while printing';
+      const h = slotRouteHead(ace, slot);
+      if (h === null) return 'This slot is not routed to a toolhead (Config → Paths)';
+      if (slotIsEmpty(ace, slot)) return 'This slot is empty';
+      const th = (state.toolheads || []).find(x => Number(x.idx) === h);
+      if (th && th.source_type && th.source_type !== 'ace') return `T${h} is not fed by an ACE (Filament Sources)`;
+      if (headHasFilament(h)) return `T${h} already has filament`;
+      const other = Object.keys(multiLoad.picks).find(k => multiLoad.picks[k] && k !== `${ace}:${slot}` && slotRouteHead(...k.split(':').map(Number)) === h);
+      if (other) { const [a, s] = other.split(':'); return `Only one slot per toolhead: ACE${a} slot ${s} is already picked for T${h}`; }
+      return '';
+    }
+    const multiPickList = computed(() => Object.keys(multiLoad.picks).filter(k => multiLoad.picks[k])
+      .map(k => { const [ace, slot] = k.split(':').map(Number); return {key: k, ace, slot, head: slotRouteHead(ace, slot)}; })
+      .sort((a, b) => a.head - b.head));
+    function toggleMultiLoad() {
+      if (multiLoad.running) return;
+      multiLoad.active = !multiLoad.active; multiLoad.picks = {}; multiLoad.msg = '';
+    }
+    function toggleMultiPick(ace, slot) {
+      const k = `${ace}:${slot}`;
+      if (multiLoad.picks[k]) { delete multiLoad.picks[k]; return; }
+      if (multiPickBlocked(ace, slot)) return;
+      multiLoad.picks[k] = true;
+    }
+    async function runMultiLoad() {
+      const list = multiPickList.value;
+      if (!list.length || multiLoad.running) return;
+      const lines = list.map(p => `ACE${p.ace} slot ${p.slot} → T${p.head}`).join('\n');
+      if (!window.confirm(`Load these one after another?\n\n${lines}\n\nEach load heats its toolhead, feeds the filament, purges and turns the heater off again.`)) return;
+      multiLoad.running = true; multiLoad.stop = false; multiLoad.msg = '';
+      let done = 0;
+      for (const p of list) {
+        if (multiLoad.stop) break;
+        multiLoad.step = `Loading ${done + 1} of ${list.length}: ACE${p.ace} slot ${p.slot} → T${p.head}`;
+        const ok = await enqueue('ACE_LOAD_HEAD', {HEAD: p.head, ACE: p.ace, SLOT: p.slot});
+        if (ok === false) { multiLoad.msg = `Stopped: loading ACE${p.ace} slot ${p.slot} → T${p.head} did not finish. ${done} of ${list.length} loaded; check the message above.`; break; }
+        done++;
+        delete multiLoad.picks[p.key];
+      }
+      if (!multiLoad.msg) multiLoad.msg = multiLoad.stop ? `Stopped after ${done} of ${list.length}.` : `All ${done} loaded. Next: press G-code (top right) to run the preflight and print.`;
+      multiLoad.running = false; multiLoad.step = '';
+      if (!Object.keys(multiLoad.picks).length) multiLoad.active = false;
+    }
+    const failoverCheckOpen = ref(false);
+    function _prettyReject(r) {
+      return String(r).replace(/ace(\d+)\/s(\d+)/g, 'ACE$1 slot $2:')
+        .replace(/color [0-9A-F]+!=[0-9A-F]+/i, 'different colour')
+        .replace(/brand .*$/i, 'different brand').replace(/type .*$/i, 'different material');
+    }
+    const failoverCheckRows = computed(() => [0, 1, 2, 3].map(h => {
+      const p = (state.failover_preview || {})[String(h)] || {};
+      const th = (state.toolheads || []).find(x => Number(x.idx) === h) || {};
+      if (!p.loaded) {
+        const opts = (p.if_loaded || []).map(o => {
+          const w = o.want || {};
+          const what = [String(w.type || '').toUpperCase(), w.brand].filter(Boolean).join(' ');
+          return {slot: `ACE${o.slot[0]} slot ${o.slot[1]}`, what, color: w.color ? '#' + w.color : null, ok: !!(o.spares || []).length,
+                  text: (o.spares || []).length
+                    ? 'spares: ' + o.spares.map(s => `ACE${s[0]} slot ${s[1]}`).join(', then ')
+                    : (o.rejected || []).length && !/no reachable/.test(o.rejected.join(' '))
+                      ? 'no spare (' + o.rejected.map(_prettyReject).join('; ') + ')' : 'no spare'};
+        });
+        const anyOk = opts.some(o => o.ok);
+        return {head: h, tone: opts.length ? (anyOk ? 'ok-preview' : 'warn-preview') : 'none', opts,
+                title: `T${h}: not loaded`,
+                detail: opts.length ? 'If you load it from:' : 'No ACE slot with filament is routed to this toolhead.'};
+      }
+      const w = p.want || {};
+      const what = [String(w.type || '').toUpperCase(), w.brand].filter(Boolean).join(' ');
+      const from = `ACE${p.loaded[0]} slot ${p.loaded[1]}`;
+      if (p.spares?.length) return {head: h, tone: 'ok', color: w.color ? '#' + w.color : null,
+        title: `T${h} (${what || 'filament'} from ${from}): ${p.spares.length} spare${p.spares.length === 1 ? '' : 's'} ready`,
+        detail: 'If it runs out, the print continues from ' + p.spares.map(s => `ACE${s[0]} slot ${s[1]}`).join(', then ') + '.'};
+      return {head: h, tone: 'warn', color: w.color ? '#' + w.color : null,
+        title: `T${h} (${what || 'filament'} from ${from}): no spare`,
+        detail: p.reachable ? 'Slots that reach this toolhead but cannot be used: ' + (p.rejected || []).map(_prettyReject).join('; ') + '. A runout would pause the print.'
+          : `Only ${from} reaches T${h}, so a runout would pause the print. To add a spare, connect another slot to T${h} through a splitter and route it in Paths.`};
+    }));
+    const failoverCheckOff = computed(() => !state.quad_replenish);
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, state.flexi
+    // Flexi: the spare order per toolhead, built from the slots routed to it.
+    const failoverDraft = reactive({});
+    const failoverRows = computed(() => [0, 1, 2, 3].map(h => {
+      const routes = state.flexi?.routes || {};
+      const keys = Object.keys(routes).filter(k => Number(routes[k]) === h)
+        .sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
+      const saved = ((state.failover_priority || {})[String(h)] || []).filter(k => keys.includes(k));
+      const base = [...saved, ...keys.filter(k => !saved.includes(k))];
+      const order = (failoverDraft[h] || base).filter(k => keys.includes(k));
+      const slots = order.map(key => {
+        const [ace, slot] = key.split(':').map(Number);
+        const sl = (state.aces || []).find(x => Number(x.idx) === ace)?.slots?.[slot] || {};
+        const label = sl.status === 'empty' ? 'empty' : [sl.material, sl.subtype, sl.brand].filter(Boolean).join(' ');
+        return {key, ace, slot, label, color: /^#[0-9a-f]{6}$/i.test(sl.color || '') ? sl.color : 'transparent'};
+      });
+      const [a0, s0] = (keys[0] || '0:0').split(':');
+      return {head: h, slots, base,
+              summary: keys.length > 1 ? `${keys.length} slots can feed T${h}; spares are tried top to bottom`
+                : keys.length === 1 ? 'one slot, no spare' : 'no ACE slot routed',
+              none: keys.length === 1
+                ? `Only ACE${a0} slot ${s0} reaches T${h}, so T${h} has no spare. To give it one, connect another slot to T${h} through a splitter and route it in Paths.`
+                : `No ACE slot is routed to T${h}.`,
+              dirty: !!failoverDraft[h] && failoverDraft[h].join() !== base.join(),
+              custom: saved.length > 0};
+    }));
+    function moveFailover(row, i, dir) {
+      const order = row.slots.map(s => s.key);
+      const j = i + dir;
+      if (j < 0 || j >= order.length) return;
+      [order[i], order[j]] = [order[j], order[i]];
+      failoverDraft[row.head] = order;
+    }
+    async function saveFailover(row) {
+      const order = row.slots.map(s => s.key);
+      await enqueue('ACE_FAILOVER_PRIORITY', {HEAD: row.head, ORDER: order.join(',')});
+      delete failoverDraft[row.head];
+    }
+    async function resetFailover(head) {
+      await enqueue('ACE_FAILOVER_PRIORITY', {HEAD: head, ORDER: ''});
+      delete failoverDraft[head];
+    }
+    function setFailoverAllowColor(on) {
+      return enqueue('ACE_FAILOVER_ALLOW_COLOR', {HEAD: -1, ENABLE: on ? 1 : 0});
     }
     function cancelUnloadAll() {
       run("ACE_UNLOAD_ALL_CANCEL");
@@ -2373,6 +2899,12 @@ createApp({
     // it would appear and do nothing. Engine state rather
     // than a local flag, so a reload or a second browser sees the truth.
     const anyUnloading = computed(() => !!state.unload_all_active);
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+    // Never disabled merely for Flexi: an end user may want every loaded
+    // toolhead cleared. Flexi gets its own per-route walk instead.
+    const unloadAllDisabled = computed(() => isPrinting.value);
+    const unloadAllTitle = computed(
+      () => isPrinting.value ? t('ui.dashboard.blocked_printing') : '');
     // The three head-mode setters used to swallow the outcome entirely
     // (empty catch, no res.ok, fire-and-forget reload). A REFUSAL from the
     // engine - "unload it first", the 1:1 wiring collision - was therefore
@@ -2380,6 +2912,73 @@ createApp({
     // otherwise, and nothing explained why. Same lesson as spoolMacro, so the
     // same shape: report the reason, and AWAIT the reload so the controls are
     // repainted from the truth before the caller returns.
+    // Moonraker returns {error:{message,traceback}}; never print the wrapper
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+    // or a traceback in the dashboard log. Also used by Flexi production
+    // requests so refusals read as one actionable sentence.
+    function _apiErrorText(detail) {
+      let text = typeof detail === "string" ? detail : "";
+      if (!text && detail != null) {
+        try { text = JSON.stringify(detail); } catch (_) { text = String(detail); }
+      }
+      try {
+        const parsed = (detail && typeof detail === "object") ? detail : JSON.parse(text);
+        const error = parsed && parsed.error;
+        text = typeof error === "string" ? error
+          : (error && (error.message || error.error)) || parsed?.detail || text;
+      } catch (_) { /* already plain text */ }
+      text = String(text).replace(/<[^>]*>/g, " ");
+      text = text.replace(/[Ee]rror on '[^']*':\s*/g, "");
+      text = text.replace(/Traceback \(most recent[\s\S]*/i, "");
+      text = text.replace(/\s+/g, " ").trim();
+      return text.slice(0, 300) || "The printer refused the change; no setting was applied.";
+    }
+    // Keep the raw response in the browser console for diagnosis, but translate
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+    // known Flexi refusals into the operator's next action. The backend also
+    // strips Moonraker JSON wrappers, so a traceback never reaches the page.
+    function _operatorErrorText(detail) {
+      let raw;
+      try { raw = typeof detail === "string" ? detail : JSON.stringify(detail); }
+      catch (_) { raw = String(detail); }
+      const text = _apiErrorText(detail);
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+      try { console.warn("Flexi operation refused:", raw); } catch (_) { /* no console */ }
+      const rules = [
+        [/Stock loading command|stock loading command/i,
+          "The stock touchscreen/Fluidd load control is disabled in Flexi mode. No preheat or filament movement was started. Use Dashboard > Filament operations, choose the routed source, then use Load; use Paths to review route readiness."],
+        [/Missing route profile fields|settings are incomplete|recipe is incomplete|Set up recipe/i,
+          "This route's settings are incomplete. Open Paths, review or customize the highlighted route, or choose the standard MultiACE settings, then save. The route was kept; no filament was moved."],
+        [/Load needs fresh clear-path evidence|Path evidence missing or stale/i,
+          "The path cannot be loaded in its current state. If it is known occupied, unload or recover it first; if the live sensor data is unavailable, restore the ACE connection. A normal load does not require a recorded inspection."],
+        [/known occupied|path is known/i,
+          "The filament path is known occupied. Unload the current source or use the recovery controls before loading another source."],
+        [/Unknown source cannot be retracted automatically/i,
+          "The loaded source is unknown, so automatic retraction is blocked. Use the recovery controls to identify and clear the path first."],
+        [/No verified nozzle owner/i,
+          "No verified toolhead owner is recorded for this head, so automatic unload cannot start. Open Dashboard > Filament operations > Recover a filament path, select the affected route, and record your physical inspection. If the entire ACE-to-toolhead tube and every shared branch are empty, choose Entire path empty, tick the confirmation and press Reset failed operation (empty path). Filament parked in the ACE slot does not block this action; no filament was moved."],
+        [/Shared workflow requires explicit recovery/i,
+          "An interrupted filament operation still owns this toolhead or ACE. Open Dashboard > Filament operations > Recover a filament path, select the affected route, inspect the complete tube and shared branches, and record what you observed. Recovery is available even though ordinary load and unload are blocked; it does not require clearance to be granted first and does not move filament."],
+        [/Required physical toolhead sensor is unknown|sensor.*(stale|contradictory)|fresh, clear toolhead/i,
+          "The toolhead sensor is not reporting a fresh, trustworthy clear state, so an empty-path recovery cannot be recorded yet. Refresh the dashboard and check that the toolhead sensor is connected and shows Off with a current reading. Do not record the path as empty while the sensor is unknown, stale or showing filament. No filament was moved."],
+        [/Shared-path bay identity|source identity|identity\/generation unavailable/i,
+          "The ACE did not provide a stable slot identity for this route, so recovery cannot bind the inspection to the current hardware. Restore the ACE connection, refresh the dashboard, and confirm the ACE and slot are still the recorded source. If the ACE was replaced, keep the recovery record and review the replacement procedure. No filament was moved."],
+        [/Printer must be idle/i,
+          "The printer is not idle, so recovery cannot record an inspection. Wait for the current print or operation to stop, then refresh the dashboard and try again. No filament was moved."],
+        [/Clearance evidence changed during recovery/i,
+          "The toolhead sensor or ACE state changed while the inspection was being recorded, so the recovery was refused to avoid recording contradictory evidence. Keep the feeder stopped, refresh the dashboard, re-check the sensor reading and the physical path, then repeat the recovery action. No filament was moved."],
+        [/No exclusive stopped-arrival recovery checkpoint/i,
+          "This recovery record has no stopped-arrival checkpoint, so Resume loading and Confirm traced loaded source are unavailable. If you have confirmed the entire ACE-to-toolhead tube and every shared branch are empty, select Entire path empty and use Reset failed operation (empty path). Otherwise keep the recovery in place and inspect where the filament is. No filament was moved."],
+        [/Outstanding recovery|recovery must be resolved|explicit recovery|interrupted operation/i,
+          "An interrupted filament operation still owns this path. Open Dashboard > Filament operations > Recover a filament path, select the affected route, inspect the complete tube, and record what you observed. The recovery record is preserved; no new operation was started."],
+        [/reserved|conflict|Exclusive filament|background queue/i,
+          "Another filament operation or recovery currently reserves this ACE, toolhead or queue. Stop or wait for it, then try again."],
+        [/Device identity\/readiness|Device disconnected|source identity/i,
+          "An ACE connection or spool identity changed. Refresh the dashboard and verify the selected source before trying again."],
+      ];
+      for (const [pattern, message] of rules) if (pattern.test(text)) return message;
+      return text;
+    }
     async function headSet(path, body, label) {
       try {
         const r = await fetch(`${API}/${path}`, {
@@ -2389,9 +2988,7 @@ createApp({
         });
         if (!r.ok) {
           const b = await r.json().catch(() => ({}));
-          const detail = String(b.detail || `HTTP ${r.status}`);
-          const m = detail.match(/[Ee]rror on '[^']*':\s*(.*)/);
-          setMacroLog(`${label}: ${(m ? m[1] : detail).slice(0, 200)}`);
+          setMacroLog(`${label}: ${_apiErrorText(b.detail || `HTTP ${r.status}`)}`);
         }
       } catch (e) {
         setMacroLog(`${label}: ${e}`);
@@ -4591,6 +5188,13 @@ createApp({
       unwiredAces.value.map(a => Object.assign({}, a, {_unwired: true}))));
     function loadSlot(aceIdx, slotIdx) {
       if (_blockIfPrinting()) return;
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, Flexi, state.flexi
+      if (state.mode === 'flexi') {
+        // Session 2: the original multi-mode path below already resolves the
+        // head from the saved Flexi route and queues unload + ACE_LOAD_HEAD.
+        const key=`${aceIdx}:${slotIdx}`,head=state.flexi?.routes?.[key];
+        if (head == null) {setMacroLog('This slot has no configured Flexi route.');return;}
+      }
       // Before anything is enqueued: an empty source slot cannot load, and
       // the unload half would otherwise run and strand the head.
       if (slotIsEmpty(aceIdx, slotIdx)) {
@@ -4626,25 +5230,34 @@ createApp({
         enqueue("ACE_LOAD_HEAD", {HEAD: h, ACE: aceIdx, SLOT: slotIdx});
         return;
       }
-      // multi: slot N feeds head N.
-      if (slotHeadHasNoAce(slotIdx)) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, state.flexi
+      // multi: the saved Flexi route names the head this slot's tube reaches.
+      // The stock slot==head assumption is wrong once one ACE feeds several
+      // heads or a head is fed by another ACE: slot 3 of ACE0 reaches T2 and
+      // ACE1 reaches T3 on a two-unit printer. Fall back to slot==head only
+      // when no route exists.
+      const routed = state.flexi?.routes?.[`${aceIdx}:${slotIdx}`];
+      const h = (typeof routed === "number") ? routed : slotIdx;
+      if (slotHeadHasNoAce(h)) {
         setMacroLog(t("ui.dashboard.slot_head_no_ace",
-                      {head: dispIdx(slotIdx)}));
+                      {head: dispIdx(h)}));
         return;
       }
-      if (!_confirmCmd("ui.confirm.load_slot", {head: dispIdx(slotIdx),
+      if (!_confirmCmd("ui.confirm.load_slot", {head: dispIdx(h),
               ace: dispIdx(aceIdx), slot: dispIdx(slotIdx)})) return;
-      const th = state.toolheads.find(tt => tt.idx === slotIdx);
+      const th = state.toolheads.find(tt => tt.idx === h);
       if (th && th.head_source_known && th.ace !== aceIdx) {
-        enqueue("ACE_UNLOAD_HEAD", {HEAD: slotIdx});
-        enqueue("ACE_LOAD_HEAD",   {HEAD: slotIdx, ACE: aceIdx});
+        enqueue("ACE_UNLOAD_HEAD", {HEAD: h});
+        enqueue("ACE_LOAD_HEAD",   {HEAD: h, ACE: aceIdx, SLOT: slotIdx});
         return;
       }
-      enqueue("ACE_LOAD_HEAD", {HEAD: slotIdx, ACE: aceIdx});
+      enqueue("ACE_LOAD_HEAD", {HEAD: h, ACE: aceIdx, SLOT: slotIdx});
     }
     // Load a head without ACE (feeder, or manual in multi) via its native
     // stock side feeder.
     function loadFeederHead(h) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, Flexi
+      if (state.mode === 'flexi') {setMacroLog('Choose an explicitly routed ACE source in Flexi; legacy feeder loading is disabled.');return;}
       if (_blockIfPrinting()) return;
       if (!_confirmCmd("ui.confirm.load_head", {head: dispIdx(h)})) return;
       enqueue("ACE_LOAD_HEAD", {HEAD: h});
@@ -4655,12 +5268,76 @@ createApp({
     // picker hides both otherwise.
     function aceOpenFw(aceIdx) {
       const a = (state.aces || []).find(x => x.idx === aceIdx);
-      return !!(a && a.open_fw);
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, MULTIACE_FLEXI_COMPAT
+      return state.mode !== 'flexi' && !!(a && a.open_fw);
     }
-    // Tag READ on that unit: ACE2-Open or an ACE Pro with the Gen-1 tunnel.
+    // @MULTIACE_FLEXI_COMPAT Tag READ is offered only for a firmware that has a safe command.
+    // Tag READ on that unit: ACE2-Open, ACE Pro tunnel, or the ACE Pro
+    // stock/CV recognition fallback.
     function aceTagRead(aceIdx) {
       const a = (state.aces || []).find(x => x.idx === aceIdx);
-      return !!(a && (a.open_fw || a.tag_read));
+      return !!(a && (state.mode === 'flexi' ? a.tag_read && !a.open_fw : a.open_fw || a.tag_read));
+    }
+    // @MULTIACE_FLEXI_COMPAT Mirror the backend read mode so the button explains stock vs tunnel.
+    function aceTagReadMode(aceIdx) {
+      const a = (state.aces || []).find(x => x.idx === aceIdx) || {};
+      if (a.tag_read_mode) return a.tag_read_mode;
+      return aceTagRead(aceIdx) ? 'gen1_tunnel' : 'unsupported';
+    }
+    function aceTagReadTitle(aceIdx) {
+      return aceTagReadMode(aceIdx) === 'gen1_stock'
+        ? t('ui.dialog.read_tag_stock_title')
+        : t('ui.dialog.read_tag_title');
+    }
+    // Reported firmware of that unit, for the plain-language note shown when
+    // a manual tag read is not supported (the control stays visible but
+    // disabled instead of vanishing without explanation).
+    function aceFirmware(aceIdx) {
+      const a = (state.aces || []).find(x => x.idx === aceIdx);
+      return (a && a.firmware) || 'unknown';
+    }
+    // Guided re-read for firmware without the RC522 tunnel (CV1.3.863). The
+    // ACE Pro scans a tag when the spool is INSERTED and has no host command
+    // to start a scan, so the honest end-user path is: re-seat the spool,
+    // watch the slot, report what the firmware says. No motion is commanded
+    // here - the user moves the spool by hand.
+    const rfidGuide = ref({ show: false, phase: 'waiting', left: 120, found: '' });
+    let _rfidGuideTimer = null;
+    function _rfidGuideStop() {
+      if (_rfidGuideTimer) { clearInterval(_rfidGuideTimer); _rfidGuideTimer = null; }
+    }
+    function closeRfidGuide() { _rfidGuideStop(); rfidGuide.value.show = false; }
+    function openRfidGuide() {
+      if (picker.ace === null || picker.ace === undefined) return;
+      const aceIdx = picker.ace, slotIdx = picker.slot;
+      const started = Date.now();
+      rfidGuide.value = { show: true, phase: 'waiting', left: 120, found: '' };
+      _rfidGuideStop();
+      _rfidGuideTimer = setInterval(async () => {
+        const g = rfidGuide.value;
+        if (!g.show) { _rfidGuideStop(); return; }
+        await reloadState();
+        const a = (state.aces || []).find(x => x.idx === aceIdx);
+        const s = a && (a.slots || [])[slotIdx];
+        if (s && s.rfid === 2 && (s.sku || s.material || s.color)) {
+          g.found = [s.sku, s.material, s.color].filter(Boolean).join(' · ');
+          g.phase = 'ok';
+          _rfidGuideStop();
+          return;
+        }
+        g.left = Math.max(0, 120 - Math.round((Date.now() - started) / 1000));
+        if (g.left <= 0) { g.phase = 'timeout'; _rfidGuideStop(); }
+      }, 1500);
+    }
+    async function clearGuideOverride() {
+      const aceIdx = picker.ace, slotIdx = picker.slot;
+      try {
+        await slotOverrideRequest(`${API}/slot-override/${aceIdx}/${slotIdx}`, {method: "DELETE"});
+      } catch (e) {
+        setMacroLog(`${t("ui.common.error")}: ${e}`);
+      }
+      enqueue("MULTIACE_REFRESH_OVERRIDES", {}, {silent: true});
+      await reloadState();
     }
     function aceHeadForAce(aceIdx) {
       const heads = state.ace_heads || [];
@@ -4674,6 +5351,12 @@ createApp({
     // head mode: is this ACE slot the one currently loaded into its ACE head?
     // (used to disable that slot's Load button; other slots stay loadable=swap).
     function slotLoadedInHead(aceIdx, slotIdx) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, state.flexi
+      if (state.mode === 'flexi') {
+        const head=panelSlotHead(aceIdx,slotIdx),owner=state.flexi?.production?.workflow?.owners?.[head];
+        if (head == null) return true;
+        return !!(owner?.nozzle_verified && owner.source?.join(':')===`${aceIdx}:${slotIdx}`);
+      }
       if (state.mode !== "head") return false;
       const h = aceHeadForAce(aceIdx);
       if (h === null) return false;
@@ -5099,6 +5782,9 @@ createApp({
     }
     function closePicker() {
       picker.show = false;
+      // A running re-seat watch must not outlive the dialog: it would keep
+      // polling in the background and reopen stale next time.
+      closeRfidGuide();
       // The search dropdown must not survive the dialog: reopened later it
       // would show stale rows over a different slot/head context.
       smOpen.value = false;
@@ -5354,12 +6040,22 @@ createApp({
           && _ovSub(picker.subtype) === _ovSub(r.subtype)
           && _ovColor(picker.color) === _ovColor(r.color);
     }
+    async function slotOverrideRequest(url,options) {
+      const response=await fetch(url,options);
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+      if (state.mode==='flexi' && !response.ok) {
+        const body=await response.json().catch(()=>({}));
+        throw new Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail || `HTTP ${response.status}`));
+      }
+      return response;
+    }
     async function savePicker(loadAfter) {
       // "Save + load" is a load like any other; plain "Save" only writes the
       // identity and is not gated.
       if (loadAfter && picker.ace !== null && picker.ace !== undefined
           && !_confirmCmd("ui.confirm.load_slot", {
-                head: dispIdx(state.mode === "head"
+                // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+                head: dispIdx(state.mode === 'flexi' ? panelSlotHead(picker.ace,picker.slot) : state.mode === "head"
                                 ? (aceHeadForAce(picker.ace) ?? picker.slot)
                                 : picker.slot),
                 ace: dispIdx(picker.ace), slot: dispIdx(picker.slot)})) return;
@@ -5433,9 +6129,11 @@ createApp({
         // Values equal the RFID tag -> drop any existing override so the
         // RFID identity stays the source of truth (no shadow override).
         try {
-          await fetch(`${API}/slot-override/${aceIdx}/${slotIdx}`, {method: "DELETE"});
+          await slotOverrideRequest(`${API}/slot-override/${aceIdx}/${slotIdx}`, {method: "DELETE"});
         } catch (e) {
           setMacroLog(`${t("ui.common.error")}: ${e}`);
+          // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+          if(state.mode==='flexi')return;
         }
         closePicker();
         enqueue("MULTIACE_REFRESH_OVERRIDES", {}, {silent: true});
@@ -5446,7 +6144,7 @@ createApp({
         return;
       }
       try {
-        await fetch(`${API}/slot-override`, {
+        await slotOverrideRequest(`${API}/slot-override`, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
@@ -5460,6 +6158,8 @@ createApp({
         });
       } catch (e) {
         setMacroLog(`${t("ui.common.error")}: ${e}`);
+          // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+          if(state.mode==='flexi')return;
       }
       closePicker();
       enqueue("MULTIACE_REFRESH_OVERRIDES", {}, {silent: true});
@@ -5472,9 +6172,11 @@ createApp({
       const aceIdx = picker.ace;
       const slotIdx = picker.slot;
       try {
-        await fetch(`${API}/slot-override/${aceIdx}/${slotIdx}`, {method: "DELETE"});
+        await slotOverrideRequest(`${API}/slot-override/${aceIdx}/${slotIdx}`, {method: "DELETE"});
       } catch (e) {
         setMacroLog(`${t("ui.common.error")}: ${e}`);
+          // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+          if(state.mode==='flexi')return;
       }
       closePicker();
       enqueue("MULTIACE_REFRESH_OVERRIDES", {}, {silent: true});
@@ -5596,7 +6298,7 @@ createApp({
         if (writeOverrides && proposals.length) {
           for (const o of proposals) {
             try {
-              await fetch(`${API}/slot-override`, {
+              await slotOverrideRequest(`${API}/slot-override`, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify(o),
@@ -5690,6 +6392,7 @@ createApp({
                              sha1: ""});
     const configLog = ref("");
     const configLoadError = ref("");
+    const configBaseline = ref(null);
     const showRawConfig = ref(false);
     // The button sits in the save bar, which sticks to the bottom of the
     // window in the new design: open the editor and scroll to it.
@@ -6052,7 +6755,7 @@ createApp({
       try {
         const r = await fetch(`${API}/update/status`);
         const j = await r.json();
-        if (r.ok) updateState.managed = !!j.managed;
+        if (r.ok) { updateState.managed = !!j.managed; updateState.applyAllowed = j.apply_allowed === true; updateState.blockReason = j.reason || "Update compatibility has not been established"; }
       } catch (e) {
       }
     }
@@ -6132,6 +6835,8 @@ createApp({
     }
     async function updateApply() {
       if (updateState.busy) return;
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+      if (!updateState.applyAllowed) { setMacroLog(updateState.blockReason || "Use a reviewed compatible Flexi update package"); return; }
       confirm({
         title: t("ui.config.update_apply_title"),
         message: tHtml("ui.config.update_apply_msg", {
@@ -6172,6 +6877,7 @@ createApp({
         // Revision token for the lost-update guard (see saveConfigForm).
         config.sha1 = j.sha1 || "";
         paramsToForm(j.params, j.per_ace_params || {});
+        configBaseline.value = {form: JSON.stringify(configForm)};
       } catch (e) {
         configLoadError.value = t("ui.log.config_load_failed", {error: e});
       }
@@ -6201,30 +6907,1470 @@ createApp({
                                 base_sha1: sha1}),
         });
         if (r.status === 409) {
-          let fresh = null;
-          try { fresh = JSON.parse((await r.json()).detail); } catch (e) { fresh = null; }
-          if (!fresh || typeof fresh.content !== "string") {
-            throw new Error(`HTTP 409 ${t("ui.log.config_conflict_failed")}`);
-          }
-          base = fresh.content;
-          sha1 = fresh.sha1 || "";
-          newContent = formToCfgContent(base);
-          r = await fetch(`${API}/config`, {
-            method: "PUT",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({content: newContent, restart_klipper: false,
-                                  base_sha1: sha1}),
-          });
-          configLog.value = t("ui.log.config_conflict_merged");
+          throw new Error("Configuration changed elsewhere. Your edits are retained. Review them, then Reload General and reapply the intended changes.");
         }
         if (!r.ok) throw new Error(`HTTP ${r.status} ${await r.text()}`);
         const j = await r.json();
         config.content = newContent;
         config.sha1 = j.sha1 || "";
+        configBaseline.value = {form: JSON.stringify(configForm)};
         rebootNeeded.value = true;
         configLog.value = `✓ ${j.path}\nBackup: ${j.backup}\n${t("ui.common.please_restart")}`;
       } catch (e) { configLog.value = `${t("ui.common.error")}: ${e}`; }
     }
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiDraft, flexiDirty, flexiEdits
+    const flexiDraft = reactive({});
+    const flexiDirty = ref(false);
+    const flexiEdits = reactive({});
+    const flexiStatusDraft = reactive({}), flexiStatusEdits = reactive({});
+    const flexiJoinersText=ref('{}'), flexiJoinersBaseline=ref({}), flexiTopologyDirty=ref(false), flexiApprovalEdits=reactive({});
+    const flexiBaseRevision = ref(null);
+    const flexiConflict = computed(() => flexiDirty.value && flexiBaseRevision.value !== state.flexi.route_revision);
+    const flexiRoutingLocked=computed(()=>Object.keys(state.flexi.interlocks?.operations || {}).length>0 || Object.keys(state.flexi.interlocks?.printing || {}).length>0 || (state.flexi.interlocks?.recovery_required || []).length>0);
+    const flexiSaving = ref(false);
+    const flexiMessage = ref("");
+    function aceSlotCount(ace) {
+      const reported = Number(ace?.slot_count ?? ace?.slots?.length ?? 0);
+      return Math.max(1, Math.min(state.max_ace_slots || 4,
+        Number.isInteger(reported) && reported > 0 ? reported : 4));
+    }
+    // Configured places are shown even when they have never answered. The
+    // list is bounded by state.max_ace_units, never by the development
+    // printer's two-unit layout.
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiUnits, state.flexi
+    const flexiUnits = computed(() => {
+      const aces = state.aces || [];
+      const byIdx = new Map(aces.map(ace => [Number(ace.idx), ace]));
+      const declared = Math.max(Number(state.configured_device_count || 0),
+        Number(state.device_count || 0));
+      const lastAce = aces.reduce((max, ace) => Math.max(max, Number(ace.idx) + 1), 0);
+      const lastRoute = Object.keys(state.flexi?.routes || {}).reduce((max, key) => {
+        const ace = Number(String(key).split(':')[0]);
+        return Number.isInteger(ace) ? Math.max(max, ace + 1) : max;
+      }, 0);
+      const count = Math.min(state.max_ace_units || 4,
+        Math.max(declared, lastAce, lastRoute));
+      return Array.from({ length: count }, (_, idx) => {
+        const ace = byIdx.get(idx) || null;
+        return {
+          idx,
+          ace,
+          connected: ace?.connected === true,
+          detected: ace?.detected === true
+            || (ace?.detected == null && ace?.connected === true),
+          configured: idx < declared || ace?.configured === true
+            || (ace?.configured == null && !!ace),
+          slotCount: aceSlotCount(ace),
+          slotCountSource: ace?.slot_count_source
+            || (ace?.slot_count || ace?.slots?.length ? 'reported' : 'expected'),
+        };
+      });
+    });
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiRows, flexiUnits.value.flatMap, editFlexiRoute
+    const flexiRows = computed(() => flexiUnits.value.flatMap(unit =>
+      Array.from({ length: unit.slotCount }, (_, slot) => ({
+        key: `${unit.idx}:${slot}`, ace: unit.idx, slot,
+        connected: unit.connected, detected: unit.detected,
+        configured: unit.configured,
+      }))));
+    function editFlexiRoute(key, value) {
+      if (!flexiDirty.value) flexiBaseRevision.value = state.flexi.route_revision || null;
+      flexiMessage.value = "";
+      delete flexiApprovalEdits[key];
+      flexiDraft[key] = Number(value);
+      flexiEdits[key] = Number(value) === -1 ? null : Number(value);
+      flexiDirty.value = true;
+    }
+    function editFlexiStatus(key, value) {
+      if (!flexiDirty.value) flexiBaseRevision.value = state.flexi.route_revision || null;
+      flexiStatusDraft[key] = value;
+      flexiStatusEdits[key] = value;
+      flexiDirty.value = true;
+      flexiMessage.value = '';
+    }
+    const flexiJoinerEditor=computed(()=>{try{const value=JSON.parse(flexiJoinersText.value);return value && !Array.isArray(value) && typeof value==='object' ? value : {};}catch(e){return {};}});
+    const flexiAllRoutes=computed(()=>({...state.flexi.routes,...flexiDraft}));
+    function updateJoiner(id,field,value) {
+      try {const joins=JSON.parse(flexiJoinersText.value);joins[id][field]=value;
+        if(['name','head','branches'].includes(field)){joins[id].confirmed=false;joins[id].reference='';}
+        flexiJoinersText.value=JSON.stringify(joins,null,2);editFlexiJoiners();
+      } catch(e){flexiMessage.value='Resolve the topology JSON before editing fields.';}
+    }
+    function addJoiner() {
+      try {const joins=JSON.parse(flexiJoinersText.value);joins['joiner_'+Date.now()]={name:'PTFE joiner',head:0,branches:{},confirmed:false,reference:''};flexiJoinersText.value=JSON.stringify(joins,null,2);editFlexiJoiners();}catch(e){flexiMessage.value='Resolve the topology JSON first.';}
+    }
+    function removeJoiner(id) {const joins=JSON.parse(flexiJoinersText.value);delete joins[id];flexiJoinersText.value=JSON.stringify(joins,null,2);editFlexiJoiners();}
+    function joinerBranch(id,key,enabled) {const branches={...flexiJoinerEditor.value[id].branches};if(enabled)branches[key]=key;else delete branches[key];updateJoiner(id,'branches',branches);}
+    function joinerGeometrySaved(id) {const a=flexiJoinerEditor.value[id],b=flexiJoinersBaseline.value[id];return !!a&&!!b&&['name','head','branches'].every(k=>JSON.stringify(a[k])===JSON.stringify(b[k]));}
+    function editFlexiJoiners() {
+      if(!flexiDirty.value)flexiBaseRevision.value=state.flexi.route_revision || null;
+      flexiTopologyDirty.value=true;flexiDirty.value=true;flexiMessage.value='Topology edits are unsaved. Changed definitions lose prior physical confirmation.';
+    }
+    function proposeDiscoveredRoute(key) {
+      const evidence=state.flexi.route_verification?.[key]?.evidence;
+      if(!evidence || !Number.isInteger(evidence.observed_head) || !evidence.physically_reconciled){flexiMessage.value='Reconcile physical state before approving a single-destination observation.';return;}
+      editFlexiRoute(key,evidence.observed_head);flexiApprovalEdits[key]=evidence.id;
+      flexiMessage.value='Proposed assignment staged. Save Routes requires explicit confirmation and never authorizes movement.';
+    }
+    // Route discovery (Flexi): each slot fed slowly until a toolhead sensor
+    // sees it, then pulled back. Results are only staged into the editors.
+    const fxDisc = computed(() => state.flexi_discovery || {available: false});
+    const discoveryForm = reactive({speed: 25, max_mm: 3000, margin_mm: 20});
+    const discoveryConfirmed = ref(false), discoveryBusy = ref(false), discoveryMessage = ref('');
+    // Every routed or probed slot, with its editable ace.cfg per-slot lengths.
+    const suggestedPullback = len => Math.max(100, Math.floor((len * 0.94 - 20) / 10) * 10);
+    const configLengthsReady = computed(() => !!config.sha1);
+    const discoveryLengthsBlocked = computed(() => configLengthsReady.value ? ''
+      : 'Loading the saved configuration…');
+    const customOverridesUnused = computed(() => production.value?.settings_mode === 'custom'
+      && Object.keys(production.value?.profiles?.routes || {}).length > 0);
+    const discoveryProbeBlocked = computed(() => {
+      if (fxDisc.value.state === 'running') return 'Route discovery is already running';
+      if (discoveryBusy.value) return 'Waiting for the printer to answer…';
+      if (isPrinting.value) return 'Not available while printing';
+      const b = fxDisc.value.blockers || [];
+      return b.length ? b.join(' ') : '';
+    });
+    const discoveryStartBlocked = computed(() => discoveryProbeBlocked.value
+      || (!discoveryConfirmed.value ? 'Tick "I am at the printer…" above first' : ''));
+    const discoveryRows = computed(() => {
+      const results = fxDisc.value.results || {};
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.routes
+      const keys = new Set([...Object.keys(state.flexi.routes || {}), ...Object.keys(results)]);
+      return [...keys].sort((a, b) => a.localeCompare(b, undefined, {numeric: true})).map(key => {
+        const [ace, slot] = key.split(':').map(Number);
+        const r = results[key] || {status: null};
+        const std = (production.value?.standard_profiles || {})[key] || {};
+        const cell = configForm.perAce?.[ace]?.perSlot?.[slot];
+        const slotCfg = cell || {load_length: '', retract_length: ''};
+        const editable = !!cell && !!config.sha1;
+        const result = r.status === null ? 'Not probed'
+          : r.status === 'arrived' ? 'T' + r.head
+          : r.status === 'no_arrival' ? 'No toolhead within the limit (not connected, or the filament did not move)'
+          : r.status === 'empty' ? 'Slot empty'
+          : r.status === 'pulled_out' ? 'Filament did not advance; end is at the ACE inlet (re-seat)' : r.status;
+        const tone = r.status === 'arrived' ? 'ok' : r.status === null ? 'none' : 'warn';
+        const short = r.status === 'arrived' ? 'T' + r.head : r.status === null ? 'Not probed'
+          : r.status === 'no_arrival' ? 'Not reached' : r.status === 'pulled_out' ? 'Did not advance'
+          : r.status === 'empty' ? 'Slot empty' : String(r.status);
+        return {key, ace, slot, result, short, tone, probed: r.status !== null,
+                length: r.status === 'arrived' ? r.length_mm : null,
+                load: (fxDisc.value.proposal?.load_lengths || {})[key] ?? null,
+                retract: r.status === 'arrived' ? suggestedPullback(r.length_mm) : null,
+                inUse: {load: std.load_limit_mm ?? '—', retract: std.retract_mm ?? '—'},
+                // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.routes, flexi, state.flexi_discovery
+                slotCfg, editable, current: state.flexi.routes?.[key]};
+      });
+    });
+    async function discoveryAction(body) {
+      discoveryBusy.value = true; discoveryMessage.value = '';
+      try {
+        const r = await fetch(`${API}/flexi/discovery`, {method: 'POST',
+          headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+        if (j.discovery) state.flexi_discovery = j.discovery;
+      } catch (e) { discoveryMessage.value = String(e.message || e); }
+      finally { discoveryBusy.value = false; }
+    }
+    function probeOne(row) {
+      if (discoveryProbeBlocked.value) { discoveryMessage.value = discoveryProbeBlocked.value; return; }
+      if (!window.confirm(`Probe ACE${row.ace} slot ${row.slot} now?\n\nIt feeds slowly (${discoveryForm.speed} mm/s, at most ${discoveryForm.max_mm} mm) until a toolhead sensor sees the filament, then pulls it back into the ACE. Stay near the printer.`)) return;
+      return startDiscovery(row.ace, row.slot);
+    }
+    async function saveDiscoveryLengths() {
+      await saveConfigForm();
+      discoveryMessage.value = configLog.value.startsWith('✓')
+        ? 'Lengths saved to ace.cfg. Restart Klipper (or the printer) to apply them.' : configLog.value;
+    }
+    function startDiscovery(ace, slot) {
+      const body = {action: 'start', confirmation: 'DISCOVER_ROUTES', speed: Number(discoveryForm.speed),
+                    max_mm: Number(discoveryForm.max_mm), margin_mm: Number(discoveryForm.margin_mm)};
+      if (Number.isInteger(ace)) { body.ace = ace; body.slot = slot; }
+      discoveryConfirmed.value = false;
+      return discoveryAction(body);
+    }
+    function stageDiscoveredRoutes() {
+      const p = fxDisc.value.proposal || {};
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses editFlexiRoute, flexiJoinersText.value
+      for (const [key, head] of Object.entries(p.routes || {})) editFlexiRoute(key, head);
+      for (const key of p.unconnected || []) editFlexiRoute(key, -1);
+      try {
+        const joins = JSON.parse(flexiJoinersText.value || '{}') || {};
+        const probed = new Set([...Object.keys(p.routes || {}), ...(p.unconnected || [])]);
+        // Probed slots leave every joiner; then each discovered group joins
+        // the existing joiner of its head (keeping name/reference) or a new one.
+        for (const j of Object.values(joins))
+          for (const key of Object.keys(j.branches || {})) if (probed.has(key)) delete j.branches[key];
+        for (const [id, found] of Object.entries(p.joiners || {})) {
+          const existing = Object.values(joins).find(j => j.head === found.head);
+          if (existing) { Object.assign(existing.branches, found.branches); existing.confirmed = false; }
+          else joins[id] = found;
+        }
+        for (const [id, j] of Object.entries(joins)) if (Object.keys(j.branches || {}).length < 2) delete joins[id];
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiJoinersText.value, editFlexiJoiners, flexiMessage.value
+        flexiJoinersText.value = JSON.stringify(joins, null, 2); editFlexiJoiners();
+        flexiMessage.value = 'Discovered routes and splitters staged. Review them below, then press Save Routes.';
+      } catch (e) { flexiMessage.value = 'Routes staged; resolve the joiner JSON before staging splitters.'; }
+    }
+    function stageDiscoveredLoadLengths() {
+      let n = 0;
+      for (const row of discoveryRows.value) {
+        const cell = configForm.perAce?.[row.ace]?.perSlot?.[row.slot];
+        if (!cell || row.load == null) continue;
+        cell.load_length = row.load;
+        if (row.retract != null) cell.retract_length = row.retract;
+        n++;
+      }
+      discoveryMessage.value = n ? `Suggested lengths filled in for ${n} slot(s). Review them, then press Save lengths.`
+        : 'No measured slot to fill in yet.';
+    }
+
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiTopologyPatch, flexiTopologyDirty.value, flexiJoinersText.value
+    function flexiTopologyPatch() {
+      if(!flexiTopologyDirty.value)return {};
+      const next=JSON.parse(flexiJoinersText.value),old=flexiJoinersBaseline.value,patch={};
+      if(!next || Array.isArray(next) || typeof next!=='object')throw Error('Joiners must be a JSON object keyed by joiner ID.');
+      for(const key of new Set([...Object.keys(old),...Object.keys(next)])) {
+        if(!(key in next))patch[key]=null;else if(JSON.stringify(next[key])!==JSON.stringify(old[key]))patch[key]=next[key];
+      }
+      return {joiners:patch};
+    }
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses resetFlexiDraft, flexiMessage.value, flexiJoinersBaseline.value
+    function resetFlexiDraft() {
+      flexiMessage.value = "";
+      flexiJoinersBaseline.value=JSON.parse(JSON.stringify(state.flexi.topology?.joiners || {}));
+      flexiJoinersText.value=JSON.stringify(flexiJoinersBaseline.value,null,2);flexiTopologyDirty.value=false;
+      Object.keys(flexiApprovalEdits).forEach(k=>delete flexiApprovalEdits[k]);
+      Object.keys(flexiStatusDraft).forEach(key => delete flexiStatusDraft[key]);
+      Object.assign(flexiStatusDraft, state.flexi.slot_status || {});
+      Object.keys(flexiStatusEdits).forEach(key => delete flexiStatusEdits[key]);
+      Object.keys(flexiDraft).forEach(key => delete flexiDraft[key]);
+      Object.assign(flexiDraft, state.flexi.routes || {});
+      Object.keys(flexiEdits).forEach(key => delete flexiEdits[key]);
+      flexiBaseRevision.value = state.flexi.route_revision || null;
+      flexiDirty.value = false;
+    }
+    watch(() => [state.flexi.routes, state.flexi.slot_status, state.flexi.topology, state.flexi.route_revision], () => { if (!flexiDirty.value) resetFlexiDraft(); });
+    async function saveFlexiRoutes() {
+      flexiSaving.value = true;
+      try {
+        if (!flexiBaseRevision.value) throw new Error("Routing baseline unavailable; refresh the interface before saving.");
+        if (flexiConflict.value) throw new Error("Routing conflict: configuration changed while editing. Discard/reload before saving.");
+        const proposals = Object.keys(flexiApprovalEdits).map(key => {
+          const old = state.flexi.routes?.[key];
+          return 'ACE:slot '+key+'  '+(Number.isInteger(old) ? 'T'+old : 'Unconfigured')+' → T'+flexiEdits[key];
+        });
+        if(proposals.length && !window.confirm(['Save these discovered assignments?', ...proposals,
+          'Affected qualifications will be invalidated. No movement is authorized.'].join('\n')))return;
+        const topology_changes=flexiTopologyPatch();
+        const r = await fetch(`${API}/flexi/routes`, {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({changes: {...flexiEdits}, slot_status_changes: {...flexiStatusEdits}, topology_changes, discovery_approval:{...flexiApprovalEdits}, base_revision: flexiBaseRevision.value}),
+        });
+        const result = await r.json();
+        if (!r.ok) throw new Error(result.detail || `HTTP ${r.status}`);
+        if (!result.route_revision) throw new Error("Save confirmation has no routing fingerprint; reload before editing again.");
+        state.flexi.routes = result.routes;
+        state.flexi.slot_status = result.slot_status || {};
+        state.flexi.topology=result.topology || {joiners:{},manual_overrides:{}};
+        if(result.route_verification)state.flexi.route_verification=result.route_verification;
+        if(result.discoveries)state.flexi.discoveries=result.discoveries;
+        state.flexi.route_revision = result.route_revision;
+        state.flexi.route_conflict = !!result.route_conflict;
+        flexiDirty.value = false;
+        resetFlexiDraft();
+        flexiMessage.value = "Routes and availability saved. Filament operations remain locked.";
+      } catch (e) { flexiMessage.value = String(e); }
+      finally { flexiSaving.value = false; }
+    }
+    const sensorDiagnostics = computed(() => state.flexi?.diagnostics || {});
+    const diagnosticExpectedHead = ref('');
+    const diagnosticLastReceived = ref(null), diagnosticClock = ref(Date.now());
+    const diagnosticReportKey = ref(null);
+    let diagnosticSession = null, diagnosticSequence = 0;
+    watch(() => state.flexi?.diagnostics, report => {
+      // A repeated cached backend report is NOT a new sensor poll.
+      if (!report?.available || typeof report.session_id !== 'string' || !Number.isInteger(report.poll_sequence) || report.poll_sequence < 1) return;
+      const key=report.session_id+':'+report.poll_sequence;
+      if (report.session_id === diagnosticSession && report.poll_sequence <= diagnosticSequence) return;
+      const now=Date.now(); diagnosticClock.value=now; diagnosticLastReceived.value=now; diagnosticReportKey.value=key;
+      diagnosticSession=report.session_id; diagnosticSequence=report.poll_sequence;
+    });
+    const diagnosticTimer = setInterval(() => { diagnosticClock.value = Date.now(); },500);
+    onUnmounted(() => clearInterval(diagnosticTimer));
+    const diagnosticTransportFresh = computed(() => sensorDiagnostics.value.available === true
+      && diagnosticReportKey.value === sensorDiagnostics.value.session_id+':'+sensorDiagnostics.value.poll_sequence
+      && conn.value.state === 'ok' && !loadError.value
+      && diagnosticLastReceived.value !== null && diagnosticClock.value >= diagnosticLastReceived.value
+      && diagnosticClock.value - diagnosticLastReceived.value <= 5000);
+    const diagnosticUnexpectedHeads = computed(() => (sensorDiagnostics.value.sensors || [])
+      .filter(r => diagnosticTransportFresh.value && diagnosticExpectedHead.value !== '' && r.head !== Number(diagnosticExpectedHead.value)
+        && r.communication === 'ok' && r.poll_fresh && r.enabled === true && r.raw_present === true).map(r => r.head));
+    function exportSensorDiagnostics() {
+      // Browser-local download only: no printer write, commands or qualification.
+      const report = {schema:1, captured_at_utc:new Date().toISOString(), kind:'unqualified_sensor_observations',
+        expected_head:diagnosticExpectedHead.value === '' ? null : Number(diagnosticExpectedHead.value),
+        diagnostics:JSON.parse(JSON.stringify(sensorDiagnostics.value)), report_transport_fresh:diagnosticTransportFresh.value, hardware_qualified:false};
+      const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi-sensor-observations.json, state.flexi
+      const a=document.createElement('a');a.href=url;a.download='flexi-sensor-observations.json';a.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }
+    const nativePathchek = computed(() => state.flexi?.pathchek || {});
+    const pcSource = ref('0:0'), pcLength = ref(''), pcInitialMin = ref(''), pcInitialMax = ref('');
+    const pcMin = ref(''), pcMax = ref(''), pcReference = ref(''), pcQualification = ref('{}');
+    const pcRouteConfirmed = ref(false), pcBranchesConfirmed = ref(false), pcBusy = ref(false), pcMessage = ref('');
+    const pcMode = ref('qualified'), pcRecoveryDisposition = ref('parked');
+    const pcClient = Array.from(crypto.getRandomValues(new Uint8Array(16)), x=>x.toString(16).padStart(2,'0')).join('');
+    const pcLeaseToken = ref(null);
+    watch(() => conn.value.state, value => {
+      if(value!=='ok' && pcLeaseToken.value){pcLeaseToken.value=null;pcMessage.value='Connection lost. Session cannot auto-resume; watchdog stop and physical reconciliation required.';}
+    });
+    const pcRoute = computed(() => (nativePathchek.value.routes || []).find(r=>r.key===pcSource.value));
+    const pcJob = computed(() => nativePathchek.value.job || null);
+    let pcDisplayedToken=null, pcDisplayedPhase=null;
+    watch(() => nativePathchek.value.job, job => {
+      if(!job)return;
+      if(job.token!==pcDisplayedToken){pcDisplayedToken=job.token;pcSource.value=(job.source || []).join(':');pcRouteConfirmed.value=false;pcBranchesConfirmed.value=false;}
+      if(job.phase!==pcDisplayedPhase){
+        if(job.phase==='await_stop_witness'){pcMin.value='';pcMax.value='';pcReference.value='';}
+        if(['await_clearance','recovery_required'].includes(job.phase))pcBranchesConfirmed.value=false;
+        pcDisplayedPhase=job.phase;
+      }
+    });
+    const pcOwned = computed(() => !!pcJob.value && pcLeaseToken.value===pcJob.value.token);
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.routes, flexi, state.flexi.pathchek
+    const pcBranches = computed(() => Object.entries(state.flexi.routes || {})
+      .filter(([k,h])=>new Set([pcJob.value?.head ?? pcRoute.value?.head,...(pcJob.value?.discovery?.observed_heads || [])]).has(h)).map(([k])=>k.split(':').map(Number)));
+    function pcNumber(value) { if(value==='' || value===null || !Number.isFinite(Number(value))) throw Error('Measured value required; unknown values cannot be inferred.'); return Number(value); }
+    async function pcSend(payload) {
+      pcBusy.value=true;
+      try {
+        const r=await fetch(`${API}/flexi/pathchek`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        const data=await r.json();if(!r.ok)throw Error(data.detail || `HTTP ${r.status}`);
+        if(data.pathchek?.schema===2)state.flexi.pathchek=data.pathchek;
+        pcMessage.value='Request recorded. Review actual state; no movement is inferred from an acknowledgment.';
+        return data;
+      } catch(e) {pcMessage.value=String(e);throw e;} finally {pcBusy.value=false;}
+    }
+    const pathUX = window.FlexiConfigUX;
+    const pcDraft = ref({present_polarity:[null,null,null,null]});
+    const pcSetupMessage = ref('');
+    const pcDraftKey = computed(() => pcRoute.value?.context &&
+      'multiace.path-setup.' + pcSource.value + '.' + pcRoute.value.context);
+    watch(pcDraftKey, key => {
+      pcDraft.value = {present_polarity:[null,null,null,null]};
+      pcSetupMessage.value = '';
+      pcRouteConfirmed.value = false;
+      pcBranchesConfirmed.value = false;
+      pcInitialMin.value = '';
+      pcInitialMax.value = '';
+      try {
+        const saved = key && localStorage.getItem(key);
+        if (saved) {
+          const draft = JSON.parse(saved);
+          if (Array.isArray(draft?.present_polarity) && draft.present_polarity.length === 4) pcDraft.value = draft;
+        }
+      } catch (_) { pcSetupMessage.value = 'Could not restore the notes saved in this browser.'; }
+    }, {immediate:true, flush:'sync'});
+    function pcSaveDraft() {
+      if (!pcDraftKey.value) return;
+      try {
+        localStorage.setItem(pcDraftKey.value,JSON.stringify(pcDraft.value));
+        pcSetupMessage.value = 'Observations saved in this browser. No qualification or movement permission was granted.';
+      } catch (_) { pcSetupMessage.value = 'This browser could not save the observations.'; }
+    }
+    const pcStartReason = computed(() => pathUX.pathStartBlock({
+      route:pcRoute.value, printing:isPrinting.value, busy:pcBusy.value, job:pcJob.value,
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.interlocks
+      recovery:state.flexi.interlocks?.recovery_required?.length, confirmed:pcRouteConfirmed.value,
+      branches:pcBranchesConfirmed.value, low:pcInitialMin.value, high:pcInitialMax.value,
+      record:nativePathchek.value.qualifications?.[pcSource.value]
+    }));
+    const pcQualificationState = computed(() => pcRoute.value?.qualified ? 'Verified measurements are on file.'
+      : nativePathchek.value.qualifications?.[pcSource.value]
+        ? 'The setup changed or the previous measurements can no longer be used. Review them for this setup.'
+        : 'This filament path hasn’t been verified yet.');
+
+    // Multi-route PathCheck planning is deliberately local preparation only.
+    // It never calls a new endpoint, reserves a route, or starts a batch: the
+    // existing single-route Start and step approvals remain the only actions
+    // that can lead to hardware movement.
+    const pcPlanSelected = reactive({});
+    const pcPlan = reactive({keys: [], results: {}, created_at: null, revision: null});
+    const pcTerminalPhases = ['complete', 'reconciled', 'cancelled'];
+    function pcRouteMaterial(key, fallbackSlot) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi
+      return (state.flexi?.production?.inventory || []).find(item => item.key === key) || fallbackSlot || {};
+    }
+    function pcColorHex(value) {
+      if (typeof value === 'string' && value) return value;
+      if (Array.isArray(value) && value.length === 3) {
+        return '#' + value.map(part => Number(part).toString(16).padStart(2, '0')).join('');
+      }
+      return '';
+    }
+    function pcRouteRecipe(key, head) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi, flexi, flexi.routes
+      const profiles = state.flexi?.production?.profiles || {};
+      return profiles.routes?.[key] || profiles.heads?.[String(head)] || null;
+    }
+    const pcPlanRows = computed(() => {
+      const flexi = state.flexi || {};
+      const discoveries = pathUX.discoveryRows(state.aces || [], flexi)
+        .filter(row => Number.isInteger(row.configured))
+        .slice(0, 16);
+      const headCounts = {};
+      Object.values(flexi.routes || {}).forEach(head => { headCounts[head] = (headCounts[head] || 0) + 1; });
+      const recoveries = flexi.interlocks?.recovery_required || [];
+      const job = nativePathchek.value.job;
+      const busy = !!job && !['complete', 'reconciled'].includes(job.phase);
+      return discoveries.map(row => {
+        const [ace, slot] = row.key.split(':').map(Number);
+        const unit = flexiUnits.value.find(item => item.idx === ace);
+        const aceState = (state.aces || []).find(item => Number(item.idx) === ace);
+        const slotState = (aceState?.slots || []).find(item => Number(item.idx ?? item.index) === slot);
+        const inventory = pcRouteMaterial(row.key, slotState);
+        const head = row.configured;
+        const shared = (headCounts[head] || 0) > 1;
+        const recovery = recoveries.find(item => item.source?.join?.(':') === row.key) ||
+          recoveries.find(item => Number(item.ace) === ace && Number(item.slot) === slot) || null;
+        const headRecovery = recoveries.find(item => item.head === head) || null;
+        const qualification = nativePathchek.value.qualifications?.[row.key] || null;
+        const pathchekRoute = (nativePathchek.value.routes || []).find(item => item.key === row.key) || null;
+        const qualified = !!pathchekRoute?.qualified;
+        const recipe = pcRouteRecipe(row.key, head);
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi.diagnostics, flexi.slot_status
+        const sensor = (flexi.diagnostics?.sensors || []).find(item => Number(item.head) === head) || null;
+        const sensorReady = !!sensor && sensor.communication !== 'error' &&
+          sensor.poll_fresh !== false && sensor.enabled !== false;
+        const blockers = [];
+        if (!unit?.connected) blockers.push('ACE is not connected for routing or operations.');
+        if ((flexi.slot_status?.[row.key] || 'assigned') !== 'assigned') blockers.push('Slot is marked ' + (flexi.slot_status?.[row.key] || 'assigned') + '.');
+        if (!inventory.material) blockers.push('No material is reported for this slot.');
+        if (recoveries.length) blockers.push((recovery || headRecovery) ? 'Recovery lock is active for this path.' : 'A recovery lock blocks all PathCheck starts.');
+        if (qualified && !sensorReady) blockers.push('Toolhead sensor readiness is not confirmed.');
+        if (qualified && pathchekRoute && pathchekRoute.ready !== true) blockers.push('Live source, sensor and exclusive-resource readiness has not passed.');
+        if (busy) blockers.push(job.source?.join(':') === row.key ? 'This route has the active PathCheck session.' : 'Finish or recover the current PathCheck session first.');
+        return {
+          ...row, ace, slot, head, shared, sharedCount: headCounts[head] || 1,
+          material: inventory.material || slotState?.material || '',
+          subtype: inventory.subtype || slotState?.subtype || '',
+          brand: inventory.brand || inventory.manufacturer || slotState?.brand || '',
+          color: pcColorHex(inventory.color || slotState?.color || slotState?.color_rgb),
+          connected: unit?.connected === true,
+          // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi.slot_status, flexi.route_verification
+          availability: flexi.slot_status?.[row.key] || 'assigned',
+          recovery, headRecovery, anyRecovery: recoveries.length > 0,
+          sensor, sensorReady, qualification, qualified, recipe, blockers,
+          testStatus: pathUX.status(flexi.route_verification?.[row.key], job, row.key, false, nativePathchek.value.results),
+        };
+      });
+    });
+    const pcPlanRowsByKey = computed(() => Object.fromEntries(pcPlanRows.value.map(row => [row.key, row])));
+    const pcPlanSelectedRows = computed(() => pcPlanRows.value.filter(row => pcPlanSelected[row.key]));
+    const pcSelectedCount = computed(() => pcPlanSelectedRows.value.length);
+    const pcPlanQueueRows = computed(() => pcPlan.keys.map(key => pcPlanRowsByKey.value[key]).filter(Boolean));
+    const pcPlanSharedGroups = computed(() => {
+      const groups = {};
+      pcPlanQueueRows.value.forEach(row => {
+        if (!row.shared) return;
+        (groups[row.head] ||= []).push(row.key);
+      });
+      return Object.entries(groups).map(([head, keys]) => ({head: Number(head), keys}));
+    });
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi
+    const pcPlanRecovery = computed(() => state.flexi?.interlocks?.recovery_required || []);
+    const pcPlanProgress = computed(() => {
+      const rows = pcPlanQueueRows.value;
+      const verified = rows.filter(row => row.qualified && row.testStatus === 'Verified').length;
+      const tested = rows.filter(row => pcPlan.results[row.key]?.phase === 'complete').length;
+      const blocked = rows.filter(row => row.blockers.length).length;
+      return {total: rows.length, verified, tested, blocked, remaining: Math.max(0, rows.length - verified)};
+    });
+    const pcPlanSelectionChanged = computed(() => {
+      if (!pcPlan.keys.length) return false;
+      const selected = pcPlanSelectedRows.value.map(row => row.key);
+      return selected.length !== pcPlan.keys.length || selected.some((key, index) => key !== pcPlan.keys[index]);
+    });
+    const pcPlanStale = computed(() => !!pcPlan.keys.length &&
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi
+      pcPlan.revision !== (state.flexi?.route_revision || ''));
+    function pcPlanToggle(key, checked) {
+      if (checked) pcPlanSelected[key] = true; else delete pcPlanSelected[key];
+    }
+    function pcPlanSelectAll() {
+      pcPlanRows.value.forEach(row => { pcPlanSelected[row.key] = true; });
+    }
+    function pcPlanClearSelection() {
+      Object.keys(pcPlanSelected).forEach(key => { delete pcPlanSelected[key]; });
+    }
+    function pcPlanCreate() {
+      pcPlan.keys = pcPlanSelectedRows.value.map(row => row.key);
+      pcPlan.results = {};
+      pcPlan.created_at = new Date().toISOString();
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi
+      pcPlan.revision = state.flexi?.route_revision || '';
+      pcMessage.value = 'Qualification plan prepared. No route is reserved and no movement is authorized.';
+    }
+    function pcPlanDiscard() {
+      pcPlan.keys = [];
+      pcPlan.results = {};
+      pcPlan.created_at = null;
+      pcPlan.revision = null;
+    }
+    function pcPlanState(row) {
+      if (!pcPlan.keys.includes(row.key)) return 'Not planned';
+      if (pcJob.value?.source?.join(':') === row.key && !pcTerminalPhases.includes(pcJob.value.phase)) return 'In progress';
+      if (row.blockers.length) return 'Blocked';
+      if (row.qualified && row.testStatus === 'Verified') return 'Verified';
+      if (pcPlan.results[row.key]?.phase === 'complete') return 'Tested — review';
+      if (row.qualified) return 'Ready for start';
+      return 'Needs measurement';
+    }
+    function pcPlanPrerequisites(row) {
+      const out = [{ok: row.connected, text: row.connected ? 'ACE connected' : 'Reconnect the ACE'}];
+      out.push({ok: row.availability === 'assigned', text: row.availability === 'assigned' ? 'Slot available' : 'Slot is ' + row.availability});
+      out.push({ok: !!row.material, text: row.material ? 'Material: ' + row.material : 'No material reported'});
+      out.push({ok: row.qualified, text: row.qualified ? 'Path measurements verified' : 'Path measurement and qualification required'});
+      out.push({ok: !row.anyRecovery, text: row.anyRecovery ? 'Recovery lock must be reconciled' : 'No recovery lock'});
+      out.push({ok: row.sensorReady, text: row.sensorReady ? 'T' + row.head + ' sensor online and fresh' : 'T' + row.head + ' sensor is not fresh or unavailable'});
+      if (row.shared) out.push({ok: true, text: 'Shared T' + row.head + ' branch — inspect clearance before and after this route'});
+      if (row.recipe) {
+        const thermalReady = Number.isFinite(Number(row.recipe.target_temp));
+        out.push({ok: thermalReady, text: 'Thermal gate: ' + (thermalReady ? 'target ' + row.recipe.target_temp + ' °C, bounded by the saved recipe' : 'thermal target is not saved')});
+        out.push({ok: true, text: 'Recipe limits: load ' + (row.recipe.load_limit_mm ?? '—') + ' mm, retract ' + (row.recipe.retract_mm ?? '—') + ' mm'});
+      } else out.push({ok: false, text: 'No route/head recipe limits saved'});
+      return out;
+    }
+    function pcMeasurementText(key) {
+      const record = nativePathchek.value.qualifications?.[key];
+      if (!record) return 'No measured path record on file.';
+      const fields = ['step_mm', 'speed', 'max_feed_mm', 'safe_limit_mm', 'overshoot_mm'];
+      const values = fields.filter(field => Number.isFinite(Number(record[field])))
+        .map(field => field.replaceAll('_', ' ') + ': ' + record[field]);
+      return values.length ? values.join(' · ') : 'Record exists, but measured limits are incomplete.';
+    }
+    function pcPlanPrepare(key) {
+      const row = pcPlanRowsByKey.value[key];
+      if (!row) return;
+      if (pcJob.value && !pcTerminalPhases.includes(pcJob.value.phase)
+          && pcJob.value.source?.join(':') !== key) {
+        pcMessage.value = 'Finish or recover the active PathCheck session before opening another route.';
+        return;
+      }
+      pcSource.value = key;
+      pcRouteConfirmed.value = false;
+      pcBranchesConfirmed.value = false;
+      nextTick(() => document.getElementById('fx-pathchek-single')?.scrollIntoView({block: 'start'}));
+    }
+    watch(() => pcJob.value?.phase, phase => {
+      const job = pcJob.value;
+      if (!job || !phase || !pcPlan.keys.includes(job.source?.join(':'))) return;
+      if (!['complete', 'reconciled', 'recovery_required', 'canceled', 'cancelled'].includes(phase)) return;
+      pcPlan.results[job.source.join(':')] = {
+        phase, head: job.head, reason: job.reason || '',
+        at: new Date().toISOString(),
+      };
+    });
+    function pcEmptyQualification() {
+      pcQualification.value=JSON.stringify({
+        context:pcRoute.value?.context || '',reference:'',present_polarity:[null,null,null,null],
+        ...Object.fromEntries(pathUX.pathWitnesses.map(([key])=>[key,false])),
+        ...Object.fromEntries(pathUX.pathMeasurements.map(([key])=>[key,null]))
+      },null,2);
+    }
+    async function pcSubmitMeasurements() {
+      try {
+        const record = pathUX.measuredPathRecord(pcDraft.value,pcRoute.value?.context,pcBranches.value.length>1);
+        await pcAction('qualify',record);
+      } catch (error) { pcSetupMessage.value=error.message; }
+    }
+    async function pcAction(action,direction) {
+      try {
+        let approval='Approve '+action+' for the displayed PathCheck operation? Physical evidence must be current.';
+        if(action==='step') {
+          const mm=pcNumber(pcLength.value);if(mm<=0)throw Error('A positive measured step is required.');
+          if(!diagnosticTransportFresh.value || conn.value.state!=='ok' || nativePathchek.value.state_unavailable)throw Error('Fresh connected diagnostics are required before approving movement.');
+          if(!Number.isFinite(pcJob.value?.qualification?.speed) || pcJob.value.qualification.speed<=0)throw Error('The qualified speed is unknown; movement approval is blocked.');
+          approval=`Approve exactly ONE ${direction} segment of ${mm} mm on ACE:slot ${pcJob.value?.source?.join(':')} → T${pcJob.value?.head}, speed ${pcJob.value?.qualification?.speed ?? 'unavailable'}? No further segment is authorized.`;
+        }
+        if(action==='confirm_stop')approval=`Confirm hardware physically stopped and independently measured tip interval ${pcMin.value}–${pcMax.value} mm? ACK/ready are not proof.`;
+        if(['complete','recover'].includes(action))approval='Confirm hardware physically stopped, all shared branches inspected clear, and the stated retained/removed disposition independently verified? This releases recovery ownership.';
+        // Stop revokes motion immediately; do not put a dialog in its way.
+        if(action!=='cancel' && !window.confirm(approval))return;
+        const source=pcSource.value.split(':').map(Number), j=pcJob.value;
+        let payload={action};
+        if(action==='qualify')payload={action,source,record:direction || JSON.parse(pcQualification.value),confirmation:'RECORD_PHYSICALLY_MEASURED_PATHCHEK_LIMITS'};
+        else if(action==='start') {
+          if(pcStartReason.value)throw Error(pcStartReason.value);
+          payload={action,source,client:pcClient,mode:pcMode.value,initial_min_mm:pcNumber(pcInitialMin.value),initial_max_mm:pcNumber(pcInitialMax.value),cleared_sources:pcBranches.value,confirmation:'START_PATHCHEK_WITH_PHYSICAL_ROUTE_CONFIRMED'};
+        } else {
+          if(!j)throw Error('No current native operation');
+          payload={action,token:j.token,client:pcClient,sequence:j.sequence};
+          if(action==='step')Object.assign(payload,{direction,length:pcNumber(pcLength.value),confirmation:'APPROVE_ONE_BOUNDED_PATHCHEK_MOVE'});
+          if(action==='confirm_stop')Object.assign(payload,{position_min_mm:pcNumber(pcMin.value),position_max_mm:pcNumber(pcMax.value),reference:pcReference.value,confirmation:'PHYSICALLY_STOPPED_AND_POSITION_MEASURED'});
+          if(action==='cancel')delete payload.sequence;
+          if(action==='complete' || action==='recover') {
+            if(!pcBranchesConfirmed.value)throw Error('Physically inspect every branch first.');
+            Object.assign(payload,{cleared_sources:pcBranches.value,reference:pcReference.value,confirmation:'PHYSICALLY_STOPPED_RETAINED_AND_ALL_BRANCHES_CLEAR'});
+            if(action==='recover'){delete payload.client;delete payload.sequence;payload.disposition=pcRecoveryDisposition.value;if(payload.disposition==='removed')payload.confirmation='PHYSICALLY_STOPPED_REMOVED_ISOLATED_AND_ALL_BRANCHES_CLEAR';Object.assign(payload,{position_min_mm:pcNumber(pcMin.value),position_max_mm:pcNumber(pcMax.value)});}
+          }
+        }
+        const result=await pcSend(payload);
+        if(action==='start') {
+          const token=result.pathchek?.job?.token;if(!token)throw Error('Start confirmation uncertain. Do not repeat; inspect current state.');
+          pcLeaseToken.value=token;
+        }
+        if(['cancel','complete','recover'].includes(action))pcLeaseToken.value=null;
+      }catch(e){pcMessage.value=String(e);}
+    }
+    let pcHeartbeatBusy=false;
+    const pcHeartbeatTimer=setInterval(async()=>{
+      if(!pcLeaseToken.value || !pcJob.value || ['complete','reconciled','recovery_required'].includes(pcJob.value.phase))return;
+      if(document.hidden || conn.value.state!=='ok' || loadError.value || nativePathchek.value.state_unavailable) {pcLeaseToken.value=null;pcMessage.value='Browser supervision lost. Native watchdog will stop and preserve recovery.';return;}
+      if(pcHeartbeatBusy)return;pcHeartbeatBusy=true;
+      try {
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+        const r=await fetch(`${API}/flexi/pathchek`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'heartbeat',token:pcLeaseToken.value,client:pcClient})});
+        if(!r.ok)throw Error('Heartbeat rejected');
+      } catch(e){pcLeaseToken.value=null;pcMessage.value='Heartbeat lost. No automatic retries; inspect/cancel and reconcile.';}
+      finally{pcHeartbeatBusy=false;}
+    },1000);
+    onUnmounted(()=>clearInterval(pcHeartbeatTimer));
+    function pcExport() {
+      const report={schema:1,kind:'native_pathchek_report',captured_at_utc:new Date().toISOString(),pathchek:JSON.parse(JSON.stringify(nativePathchek.value)),diagnostics:JSON.parse(JSON.stringify(sensorDiagnostics.value)),hardware_qualified:false};
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi-pathchek-report.json, state.flexi, flexi
+      const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='flexi-pathchek-report.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }
+    const production = computed(() => state.flexi?.production || {});
+    function productionLiveOperationActive(snapshot) {
+      // Fail closed: an incomplete snapshot cannot establish that the printer
+      // is idle. Recovery records alone are not an active operation.
+      const productionState = snapshot?.flexi?.production;
+      const workflow = productionState?.workflow;
+      const interlocks = snapshot?.flexi?.interlocks;
+      if (!productionState || !workflow || !interlocks) return true;
+      if (workflow.job || workflow.print_session) return true;
+      if (Object.keys(interlocks.operations || {}).length) return true;
+      if (Object.keys(interlocks.printing || {}).length) return true;
+      if (snapshot?.swap_in_progress || snapshot?.unload_all_active) return true;
+      return ["printing", "paused"].includes(snapshot?.printer_state);
+    }
+    const productionBusy = ref(false), productionMessage = ref("");
+    const productionPending = ref(null), productionSlow = ref(false);
+    const productionCompleted = ref(null);
+    let productionCompletedTimer = null;
+    const productionProgressDismissed = ref(false), productionReconcileRequired = ref(false);
+    const productionReconcileBusy = ref(false);
+    let productionWaitTimer = null;
+    const productionPhaseLabels = {
+      select: "Selecting toolhead",
+      heat_load: "Preparing nozzle temperature",
+      feed_path: "Feeding filament to the toolhead",
+      seat: "Seating filament",
+      prime: "Priming the nozzle",
+      verify_flow: "Verifying extrusion",
+      purge: "Purging",
+      heat_unload: "Preparing unload temperature",
+      tipform: "Forming the filament tip",
+      retract_path: "Retracting filament",
+      verify_clear: "Verifying the path is clear",
+    };
+    const productionProgress = computed(() => {
+      const job = production.value.workflow?.job;
+      if (job) {
+        const action = {load:"Loading filament",unload:"Unloading filament",switch:"Changing filament",failover:"Switching to backup",recover:"Recovering filament",print:"Selecting print tool"}[job.action] || "Filament operation";
+        const source = Array.isArray(job.source) && job.source.length === 2
+          ? `ACE ${dispIdx(job.source[0])} slot ${dispIdx(job.source[1])}` : "";
+        let phase = productionPhaseLabels[job.phase] || `Working (${job.phase || "starting"})`;
+        if (job.awaiting_operator_clearance) phase = "Waiting for operator path inspection";
+        if (job.stop_unconfirmed) phase = "Stop not confirmed — open the recovery controls";
+        return {title: `${action} · T${dispIdx(job.head)}`, state: job.stop_unconfirmed ? 'failed' : 'active',
+                detail: [source, phase].filter(Boolean).join(" · ")};
+      }
+      if (productionCompleted.value) return productionCompleted.value;
+      if (productionProgressDismissed.value) return null;
+      const pending = productionPending.value;
+      if (pending) {
+        const action = pending.unknown ? "Outcome unknown" : productionSlow.value ? "Waiting for printer" : {load:"Starting load",unload:"Starting unload",switch:"Starting filament change",recover:"Starting recovery"}[pending.action] || "Starting operation";
+        const source = Array.isArray(pending.source) && pending.source.length === 2
+          ? `ACE ${dispIdx(pending.source[0])} slot ${dispIdx(pending.source[1])}` : "";
+        const detail = pending.unknown
+            // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+            ? "The request may still be running. Use Check printer to query live Flexi state; controls stay locked until it is safe."
+          : productionSlow.value
+            ? "The printer is still working; this browser is still waiting for confirmation."
+            : "Sending the request to the printer…";
+        return {title: `${action} · T${dispIdx(pending.head)}`, state: pending.unknown ? 'uncertain' : 'active',
+                detail: [source, detail].filter(Boolean).join(" · ")};
+      }
+      return null;
+    });
+    const productionDraft = reactive({profiles:{heads:{},routes:{}},selection:{},backups:[],device_adapters:{},source_select:{},settings_mode:'standard'});
+    const productionBaseRevision = ref(null);
+    const productionSaveRejected = ref(false);
+    const productionConflict = computed(() => productionSaveRejected.value ||
+      (productionDirty.value && productionBaseRevision.value !== production.value.recipe_revision));
+    const productionDirty = ref(false), productionSource = ref("0:3"), productionAction = ref("load");
+    const productionSelectedRow = computed(() => (production.value.inventory || []).find(row => row.key === productionSource.value) || null);
+    const productionSelectedClearance = computed(() => (production.value.clearance?.heads || []).find(row => row.head === productionSelectedRow.value?.head) || null);
+    const productionRecoveryRows = computed(() => {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.interlocks
+      const journal = state.flexi.interlocks || {}, active = journal.recovery_required || [];
+      const rows = active.slice();
+      for (const [head, record] of Object.entries(journal.nozzle_recovery || {})) {
+        if (!rows.some(row => row.head === Number(head)) && Array.isArray(record.source)) {
+          rows.push({head:Number(head),ace:record.source[0],slot:record.source[1],token:record.receipt,pendingOwner:true});
+        }
+      }
+      return rows;
+    });
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiRows.value.map, state.flexi.routes, flexiDraft
+    const fxRouteReadinessMap = computed(() => Object.fromEntries(flexiRows.value.map(row => [row.key,
+      pathUX.routeReadiness(row, {
+        inventory: production.value.inventory || [],
+        savedRoutes: state.flexi.routes || {},
+        draft: flexiDraft, slotStatus: state.flexi.slot_status || {}, slotDraft: flexiStatusDraft,
+        recovery: productionRecoveryRows.value,
+      })])));
+    const fxReadinessCounts = computed(() => {
+      const counts = {ready:0,needs_recipe:0,recovery_required:0,blocked:0,
+        unavailable:0,disconnected:0,adapter_unsupported:0,unmapped:0,draft:0};
+      for (const row of flexiRows.value) {
+        const state = fxRouteReadinessMap.value[row.key]?.state;
+        if (state) counts[state] = (counts[state] || 0) + 1;
+      }
+      return counts;
+    });
+    const productionReadiness = computed(() => productionSource.value
+      ? fxRouteReadinessMap.value[productionSource.value] || null : null);
+    function productionFieldMissing(field) {
+      return (productionSelectedRow.value?.load_missing || []).includes(field);
+    }
+    async function fxRouteAction(row) {
+      const key = row?.key, readiness = key ? fxRouteReadinessMap.value[key] : null;
+      if (!readiness) return;
+      if (readiness.action === 'map') {
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiMessage.value
+        flexiMessage.value = 'Choose the toolhead this slot physically reaches, then Save routes.';
+        document.querySelector(`[data-route-destination="${key}"]`)?.focus();
+        return;
+      }
+      if (readiness.action === 'save') {
+        flexiMessage.value = 'Save or discard the routing changes before loading.';
+        document.querySelector('[data-route-save]')?.focus();
+        return;
+      }
+      if (readiness.action === 'review_source') {
+        flexiMessage.value = 'Set this slot to Assigned if filament is available, then Save routes. Its recipe is retained.';
+        document.querySelector(`[data-route-availability="${key}"]`)?.focus();
+        return;
+      }
+      if (readiness.action === 'set_up_recipe') {
+        productionSource.value = key;
+        productionProfileScope.value = 'route';
+        if (uiMode.value === 'operator') { await openGuidedRoute(key); return; }
+        await fxShowRouteRecipe();
+        return;
+      }
+      if (readiness.action === 'review_path' && uiMode.value === 'operator') {
+        productionSource.value = key;
+        await openGuidedRoute(key);
+        return;
+      }
+      if (readiness.action === 'open_recovery') { await openRecovery(key); return; }
+      if (readiness.action === 'open_devices') { await fxJump('devices'); return; }
+      productionSource.value = key;
+      tab.value = 'dashboard';
+      await nextTick();
+      document.getElementById('fx-operations')?.scrollIntoView({block:'start'});
+    }
+    async function fxShowRouteRecipe() {
+      await fxJump('filament');
+      await nextTick();
+      const target = document.getElementById('fx-route-recipe');
+      if (!target) return;
+      for (let node = target.parentElement; node; node = node.parentElement)
+        if (node.tagName === 'DETAILS') node.open = true;
+      target.open = true;
+      target.scrollIntoView({block:'start'});
+      target.querySelector('summary')?.focus({preventScroll:true});
+    }
+    async function openProductionRecipe() {
+      productionProfileScope.value = 'route';
+      if (uiMode.value === 'operator') { await openGuidedRoute(productionSource.value); return; }
+      await fxShowRouteRecipe();
+    }
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses customizeFlexiSettings
+    async function customizeFlexiSettings() {
+      // Customization is opt-in. Existing route overrides remain intact and
+      // any blank field continues to inherit the standard MultiACE value.
+      productionDraft.settings_mode = 'custom';
+      productionDirty.value = true;
+      productionProfileScope.value = 'route';
+      setUiMode('advanced');
+      await nextTick();
+      await fxShowRouteRecipe();
+    }
+    const productionProfileScope = ref("route"), productionHead = ref("2"), productionTipMoves = ref("");
+    watch(() => production.value.inventory, rows => {
+      if (rows?.length && !rows.some(row => row.key === productionSource.value)) productionSource.value = rows[0].key;
+    }, {immediate:true});
+    const sourceSelectHead=ref("2"), manualIdentity=ref(""), manualMaterial=ref(""), manualColor=ref("");
+    function editSourceType(head,kind) {
+      const old=productionDraft.source_select[head] || {};
+      productionDraft.source_select[head]={...old,type:kind}; productionDirty.value=true;
+    }
+    async function temporaryManualSource() {
+      await productionPost("request",{action:"source_select",head:Number(sourceSelectHead.value),record:{type:"manual",identity:manualIdentity.value,material:manualMaterial.value,color:manualColor.value},confirmation:"CHANGE_SOURCE_WITHOUT_MOVEMENT"});
+    }
+    async function restoreConfiguredSource() {
+      await productionPost("request",{action:"source_restore",head:Number(sourceSelectHead.value),confirmation:"CHANGE_SOURCE_WITHOUT_MOVEMENT"});
+    }
+    const productionFields = ["load_limit_mm","retract_mm","seat_mm","prime_mm","purge_mm","feed_speed","retract_speed","extrude_speed","temperature_min","temperature_max","target_temp","unload_temp","tip_temperature_min","tip_temperature_max","timeout_s","flow_min_delta","flow_samples","flow_interval_s","feed_assist_timeout_s","feed_assist_test_s"];
+    function productionFieldLabel(field) {
+      return production.value.calibration?.fields?.[field]?.label || field;
+    }
+    function productionFieldUnit(field) {
+      return production.value.calibration?.fields?.[field]?.unit || '';
+    }
+    function resetProduction() {
+      const v=production.value;
+      Object.assign(productionDraft, JSON.parse(JSON.stringify({profiles:v.profiles || {heads:{},routes:{}},selection:v.selection || {},backups:v.backups || [],device_adapters:v.device_adapters || {},source_select:v.source_select?.configured || {},settings_mode:v.settings_mode || 'standard'})));
+      productionBaseRevision.value = v.recipe_revision || null;
+      productionDirty.value=false;
+    }
+    watch(() => [production.value.profiles, production.value.recipe_revision], () => {
+      if (!productionDirty.value && !productionSaveRejected.value) resetProduction();
+    });
+    async function reloadProduction() {
+      if (productionBusy.value) return;
+      if (productionDirty.value && !window.confirm("Discard this draft and load the saved recipes?")) return;
+      productionBusy.value = true;
+      try {
+        if (!await reloadState() || !production.value.recipe_revision) {
+          productionMessage.value = "Saved recipes could not be reloaded. Try reloading again before editing.";
+          return;
+        }
+        resetProduction();
+        productionSaveRejected.value = false;
+        productionMessage.value = "Saved recipes reloaded. Review the current settings before editing.";
+      } finally { productionBusy.value = false; }
+    }
+    const productionProfile = computed(() => productionProfileScope.value === "head"
+      ? productionDraft.profiles.heads[productionHead.value] || {} : productionDraft.profiles.routes[productionSource.value] || {});
+    function editProductionField(key,value) {
+      const group=productionProfileScope.value === "head" ? "heads" : "routes";
+      const name=group === "heads" ? productionHead.value : productionSource.value;
+      const profile=productionDraft.profiles[group][name] ||= {};
+      // Explicit unset masks a head default; never copy old tubing values.
+      profile[key]=value === "" ? null : Number(value); productionDirty.value=true;
+    }
+
+    // Operator guide for a single route. It edits the same production draft as
+    // the advanced recipe editor and saves through saveProduction(); it never
+    // supplies a value, starts a heater, feeds filament or authorizes a test.
+    const fxGuideDialog = ref(null), fxGuideStep = ref(1), fxGuideRouteConfirmed = ref(false);
+    const fxGuideMaterialConfirmed = ref(false), fxGuideAcknowledge = ref(false);
+    const fxGuideSaving = ref(false), fxGuideMessage = ref('');
+    const FX_GUIDE_FIELDS = [
+      {key:'load_limit_mm', group:'Path', hint:'Measure the filament travel from the ACE outlet to the toolhead sensor.'},
+      {key:'feed_speed', group:'Path', hint:'The ACE speed supported by a successful feed test on this path.'},
+      {key:'seat_mm', group:'Nozzle', hint:'Measured travel from the toolhead sensor to the nozzle seat.'},
+      {key:'prime_mm', group:'Nozzle', hint:'Amount extruded to verify flow; confirm it by observation, not estimation.'},
+      {key:'extrude_speed', group:'Nozzle', hint:'Nozzle and tip movement speed used by the verified recipe.'},
+      {key:'timeout_s', group:'Timing', hint:'Upper bound for the complete operation, including stop confirmation.'},
+      {key:'temperature_min', group:'Material', hint:'Manufacturer minimum nozzle temperature for this material.'},
+      {key:'temperature_max', group:'Material', hint:'Manufacturer maximum nozzle temperature for this material.'},
+      {key:'target_temp', group:'Material', hint:'Loading/printing temperature; must remain inside the verified range.'},
+      {key:'flow_min_delta', group:'Flow evidence', hint:'Qualified coil engagement threshold from a witnessed flow check.'},
+      {key:'flow_samples', group:'Flow evidence', hint:'Coil sample count used by the qualified flow check.'},
+      {key:'flow_interval_s', group:'Flow evidence', hint:'Coil sampling interval used by the qualified flow check.'},
+    ];
+    const fxGuideRow = computed(() => productionSelectedRow.value);
+    const fxGuideMeta = computed(() => production.value.calibration?.fields || {});
+    const fxGuideProfile = computed(() => {
+      const row = fxGuideRow.value; if (!row) return {};
+      return {...(productionDraft.profiles.heads[String(row.head)] || {}),
+        ...(productionDraft.profiles.routes[row.key] || {})};
+    });
+    const fxGuideFields = computed(() => FX_GUIDE_FIELDS.map(field => {
+      const meta = fxGuideMeta.value[field.key] || {};
+      const row = fxGuideRow.value || {};
+      const route = productionDraft.profiles.routes[row.key] || {};
+      const head = productionDraft.profiles.heads[String(row.head)] || {};
+      const value = fxGuideProfile.value[field.key];
+      const origin = Object.hasOwn(route, field.key) ? 'This route'
+        : Object.hasOwn(head, field.key) ? `T${row.head} default` : 'Not set';
+      const missing = value === undefined || value === null || value === '' ||
+        (typeof value === 'number' && (!Number.isFinite(value) || value <= 0));
+      return {...field, label:meta.label || field.key, unit:meta.unit || '', origin,
+        value:value === undefined ? null : value, missing};
+    }));
+    const fxGuideGroups = computed(() => {
+      const groups = new Map();
+      for (const field of fxGuideFields.value) {
+        if (!groups.has(field.group)) groups.set(field.group, []);
+        groups.get(field.group).push(field);
+      }
+      return [...groups].map(([label, fields]) => ({label, fields}));
+    });
+    const fxGuideMissing = computed(() => fxGuideFields.value.filter(field => field.missing));
+    const fxGuideStatus = computed(() => {
+      const row = fxGuideRow.value; if (!row) return 'Not configured';
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.route_verification
+      const verification = state.flexi.route_verification?.[row.key];
+      if (verification && (verification.verification === 'Verified' ||
+          (verification.test_result === 'Pass' && verification.evidence?.physically_reconciled === true))) return 'Physically tested';
+      if ((wizard.value.results || []).some(result => result.valid && result.source?.join(':') === row.key)) return 'Calibrated';
+      return fxGuideMissing.value.length ? 'Not configured' : 'Configured';
+    });
+    const fxGuideReady = computed(() => !fxGuideMissing.value.length);
+    async function openGuidedRoute(source) {
+      if (source) productionSource.value = source;
+      productionProfileScope.value = 'route';
+      fxGuideStep.value = 1; fxGuideRouteConfirmed.value = false;
+      fxGuideMaterialConfirmed.value = false; fxGuideAcknowledge.value = false;
+      fxGuideMessage.value = '';
+      await nextTick();
+      if (!fxGuideDialog.value?.open) fxGuideDialog.value?.showModal();
+    }
+    function fxGuideClose() { fxGuideDialog.value?.close(); }
+    function fxGuideReset() {
+      // A native close event can arrive after the operator has already
+      // reopened the guide. Do not let that stale event reset the new session.
+      if (fxGuideDialog.value?.open) return;
+      fxGuideStep.value = 1; fxGuideRouteConfirmed.value = false;
+      fxGuideMaterialConfirmed.value = false; fxGuideAcknowledge.value = false;
+      fxGuideSaving.value = false; fxGuideMessage.value = '';
+    }
+    function fxGuideEdit(key, value) { editProductionField(key, value); }
+    function fxGuideNext() {
+      if (fxGuideStep.value === 1 && (!fxGuideRouteConfirmed.value || !fxGuideMaterialConfirmed.value)) {
+        fxGuideMessage.value = 'Confirm the physical route and the filament identity before entering values.';
+        return;
+      }
+      fxGuideMessage.value = '';
+      fxGuideStep.value = Math.min(3, fxGuideStep.value + 1);
+    }
+    function fxGuideBack() { fxGuideMessage.value = ''; fxGuideStep.value = Math.max(1, fxGuideStep.value - 1); }
+    async function fxGuideSave() {
+      if (fxGuideSaving.value) return;
+      if (!productionDirty.value) { fxGuideStep.value = 4; return; }
+      if (!fxGuideAcknowledge.value) {
+        fxGuideMessage.value = 'Confirm that saving does not test or move filament.';
+        return;
+      }
+      fxGuideSaving.value = true; fxGuideMessage.value = 'Saving verified values…';
+      try {
+        const ok = await saveProduction();
+        if (ok) { fxGuideStep.value = 4; fxGuideMessage.value = 'Recipe saved. The route is not physically tested by saving.'; }
+        else fxGuideMessage.value = productionMessage.value || 'The recipe could not be saved. Review the message and try again.';
+      } finally { fxGuideSaving.value = false; }
+    }
+    async function fxGuideOpenPathchek() {
+      fxGuideClose(); await nextTick(); await fxJump(fxActiveJob.value ? 'pathchek' : 'routing');
+    }
+    const productionClearHead=ref("0"), productionClearConfirmed=ref(false);
+    const productionClearRow=computed(() => (production.value.clearance?.heads || []).find(row => String(row.head) === String(productionClearHead.value)) || null);
+    watch(() => (production.value.clearance?.heads || []).map(row => String(row.head)), heads => {
+      if (heads.length && !heads.includes(String(productionClearHead.value))) productionClearHead.value=heads[0];
+    }, {immediate:true});
+    watch(productionClearHead,()=>{ productionClearConfirmed.value=false; });
+    // Keep the inspection acknowledgement visible after recording. It is
+    // cleared only when the recorded evidence is no longer valid (expiry,
+    // sensor/source/topology change) or another toolhead is selected.
+    watch(() => productionClearRow.value?.attestation_valid, valid => {
+      if (valid === false) productionClearConfirmed.value=false;
+    });
+    async function attestProductionClearance() {
+      const row=productionClearRow.value, clearance=production.value.clearance;
+      if (!row || !clearance) return;
+      if (!row.can_attest) { productionMessage.value=row.blockers.join(' '); return; }
+      if (!productionClearConfirmed.value) { productionMessage.value="Confirm that you physically inspected every listed path and shared branch first."; return; }
+      if (!await productionPost("request",{action:"attest_clear",head:Number(row.head),confirmation:clearance.required_confirmation})) return;
+      await reloadState();
+      const recorded=productionClearRow.value;
+      const remaining=recorded?.attestation_remaining_s;
+      productionMessage.value='Optional path inspection recorded against the current routes and topology.'
+        +(recorded?.attestation_valid
+          ? ' It remains valid for about '+Math.max(1,Math.ceil(remaining || 0))+' seconds. You do not need it to load; it is invalidated by relevant sensor, source or topology changes.'
+          : ' It is not currently valid. A normal load can still proceed if the path is clear or unknown; inspect again only if you want extra confidence.');
+    }
+    async function reconcileProductionOutcome() {
+      if (!productionReconcileRequired.value || productionReconcileBusy.value) return false;
+      productionReconcileBusy.value = true;
+      try {
+        // One idle snapshot can race a queued request that has not started yet.
+        // Require two consecutive fresh snapshots, separated by a short pause,
+        // before releasing the controls. Any active snapshot keeps the lock.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (attempt) await new Promise(resolve => setTimeout(resolve, 1500));
+          if (!await reloadState()) {
+            productionMessage.value = "Live printer state could not be read. Controls remain locked; restore the connection and try Check printer again.";
+            return false;
+          }
+          if (productionLiveOperationActive(state)) {
+            productionProgressDismissed.value = false;
+            // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+            productionMessage.value = "Live state still reports an active Flexi operation or unknown printer state. Controls remain locked; wait for it to finish or use the recovery controls.";
+            return false;
+          }
+        }
+        productionReconcileRequired.value = false;
+        productionPending.value = null;
+        productionSlow.value = false;
+        productionProgressDismissed.value = false;
+        if (productionWaitTimer) { clearTimeout(productionWaitTimer); productionWaitTimer = null; }
+        productionBusy.value = false;
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+        productionMessage.value = "Live state reports no active Flexi operation. Controls are released; review the printer and any recovery condition before another command.";
+        return true;
+      } finally {
+        productionReconcileBusy.value = false;
+      }
+    }
+    async function productionPost(kind,payload) {
+      if (kind==="request") {
+        productionCompleted.value=null;
+        if (productionCompletedTimer) { clearTimeout(productionCompletedTimer); productionCompletedTimer=null; }
+      }
+      productionBusy.value=true;productionReconcileRequired.value=false;
+      productionSlow.value=false;productionProgressDismissed.value=false;
+      if(productionWaitTimer)clearTimeout(productionWaitTimer);
+      // The browser wait is not a printer-operation timeout. After 45 seconds
+      // only the status text changes; the request keeps running and every
+      // conflicting control stays blocked until the backend answers.
+      productionWaitTimer=kind==="request" ? setTimeout(()=>{productionSlow.value=true;},45000) : null;
+      let r;
+      try {
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, Flexi
+        r=await fetch(`${API}/flexi/production/${kind}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      } catch(e) {
+        if(kind==="request"){
+          productionReconcileRequired.value=true;
+          if(productionPending.value)productionPending.value={...productionPending.value,unknown:true};
+          productionMessage.value="The browser lost contact with the printer. The request outcome is unknown; use Check printer to query live Flexi state before another command.";
+        } else {
+          productionMessage.value=_operatorErrorText(e?.message || e);
+        }
+        return false;
+      }
+      try {
+        let result;
+        try { result=await r.json(); }
+        catch(e) {
+          if(kind==="request"){
+            productionReconcileRequired.value=true;
+            if(productionPending.value)productionPending.value={...productionPending.value,unknown:true};
+            // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+            productionMessage.value="The printer returned an unreadable response. The request outcome is unknown; use Check printer to query live Flexi state before another command.";
+          } else {
+            productionMessage.value=_operatorErrorText(e?.message || e);
+          }
+          return false;
+        }
+        if (kind === "config" && [409, 428, 502, 504].includes(r.status)) productionSaveRejected.value = true;
+        // 502/504 mean Moonraker did not give the backend a definite answer;
+        // the gcode request may still be running. Keep the operation lock and
+        // the unknown banner instead of allowing a conflicting retry.
+        if (kind === "request" && [502, 504].includes(r.status)) {
+          productionReconcileRequired.value = true;
+          if (productionPending.value) productionPending.value = {...productionPending.value, unknown: true};
+          productionMessage.value = _operatorErrorText(result?.detail ?? result?.error ?? `HTTP ${r.status}`);
+          return false;
+        }
+        if(!r.ok) {
+          productionMessage.value=_operatorErrorText(result?.detail ?? result?.error ?? result ?? `HTTP ${r.status}`);
+          return false;
+        }
+        productionMessage.value="Request accepted. Check the live operation and printer status below.";
+        return true;
+      }
+      finally {
+        if(productionWaitTimer){clearTimeout(productionWaitTimer);productionWaitTimer=null;}
+        if(!productionReconcileRequired.value)productionBusy.value=false;
+      }
+    }
+    function editProductionTip(value) {
+      try {
+        const v=JSON.parse(value), g=productionProfileScope.value === "head" ? "heads" : "routes", k=g === "heads" ? productionHead.value : productionSource.value;
+        productionDraft.profiles[g][k] ||= {}; productionDraft.profiles[g][k].tip_moves=v; productionDirty.value=true;
+      } catch(e) {productionMessage.value="Invalid tip recipe JSON";}
+    }
+    async function saveProduction() {
+      if (productionBusy.value || !productionDirty.value) return false;
+      if (!productionBaseRevision.value || productionConflict.value) {
+        productionMessage.value = "Reload saved recipes and review changes before saving.";
+        return false;
+      }
+      const draft = JSON.stringify(productionDraft);
+      const payload = {base_revision: productionBaseRevision.value, config: JSON.parse(draft)};
+      if (!await productionPost("config", payload)) return false;
+      productionBusy.value = true;
+      try {
+        if (await reloadState() && production.value.recipe_revision && JSON.stringify(productionDraft) === draft) {
+          resetProduction();
+          productionMessage.value = "Recipes saved. Review the current settings before continuing.";
+          return true;
+        } else {
+          productionSaveRejected.value = true;
+          productionMessage.value = "Save accepted. Reload the saved recipes and review them before continuing.";
+          return false;
+        }
+      } finally { productionBusy.value = false; }
+    }
+    async function productionRequest(action, controlledTest = false) {
+      const row=(production.value.inventory || []).find(r=>r.key===productionSource.value);
+      if (["cancel","end_print"].includes(action))return productionPost("request",{action});
+      if (!row) {productionMessage.value="Select a configured source.";return;}
+      const base={source:row.source,head:row.head};
+      // Session 2: ordinary load/unload/switch run the original MultiACE
+      // commands (Klipper enforces route, shared-path ledger and recovery).
+      if (!controlledTest && ["load","switch"].includes(action)) return loadSlot(row.source[0], row.source[1]);
+      if (!controlledTest && action === "unload") return run('ACE_UNLOAD_HEAD', {HEAD: row.head});
+      if(action === "plan")return productionPost("request",{...base,action,operation:productionAction.value});
+      if(action === "prepare")return productionPost("request",{action,source:row.source,operation:productionAction.value});
+      if(controlledTest && !window.confirm(`Run the approved ${action} test for ACE ${row.source[0]} slot ${row.source[1]} to T${row.head}?`))return;
+      const pending={action,source:row.source.slice(),head:row.head};
+      productionPending.value=pending;
+      try {
+        // The gcode request blocks while the tool is selected. Keep the local
+        // progress visible during that wait, then replace it with the live job
+        // phase from the state feed as soon as the request returns.
+        const ok=await productionPost("request",{...base,action,test:controlledTest});
+        if(ok){
+          productionPending.value=null;await reloadState();
+          if(!productionLiveOperationActive(state)){
+            const label={load:"Load",unload:"Unload",switch:"Filament change",failover:"Backup switch",recover:"Recovery",print:"Print tool selection"}[action] || "Filament operation";
+            // @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+            productionCompleted.value={state:"completed",title:`${label} complete · T${row.head}`,detail:"The printer reports no active Flexi operation. Review the result before continuing."};
+            if(productionCompletedTimer)clearTimeout(productionCompletedTimer);
+            productionCompletedTimer=setTimeout(()=>{productionCompleted.value=null;productionCompletedTimer=null;},8000);
+          }
+        }
+        return ok;
+      } catch(e) {
+        productionMessage.value=_operatorErrorText(e?.message || e);
+        return false;
+      } finally {
+        if(productionPending.value===pending && !productionReconcileRequired.value)productionPending.value=null;
+      }
+    }
+    function dismissProductionPending() {
+      // Hide the banner only. The request may still be running, so the
+      // operation lock and pending state must remain until the backend speaks.
+      productionProgressDismissed.value=true;
+    }
+    function dismissProductionCompleted() {
+      productionCompleted.value=null;
+      if(productionCompletedTimer){clearTimeout(productionCompletedTimer);productionCompletedTimer=null;}
+    }
+    const productionScope=ref([]);
+    const productionCalibrationTest=ref(false), productionActions=ref(["load"]), productionSeconds=ref(900);
+    function authorizeProduction(wizardId=null) {
+      const source=productionSource.value.split(":").map(Number);
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses ENABLE_CONTROLLED_FLEXI_TEST, flexibleProductionConsent, flexible
+      const confirmation=window.prompt("After approving the physical test, type ENABLE_CONTROLLED_FLEXI_TEST");
+      if(!confirmation)return;
+      return productionPost("arm",{sources:productionScope.value.length ? productionScope.value.map(k=>k.split(":").map(Number)) : [source],actions:productionActions.value,seconds:Number(productionSeconds.value),test:true,confirmation,...(typeof wizardId==='string'?{wizard_id:wizardId}:{})});
+    }
+    function flexibleProductionConsent() {
+      const confirmation=window.prompt("TPU/TPE may jam or fail. HIGH RISK: soft flexible material, long withdrawal, bends, long PTFE and repeated swaps may jam or buckle. One acknowledgment covers this selected path for normal operations, including automatic switching and failover while valid; it cannot waive any other safeguard. Type TPU_TPE_AT_OWN_RISK to accept.");
+      if(!confirmation)return;
+      return productionPost("request",{action:"risk",source:productionSource.value.split(":").map(Number),scope:"path",seconds:Number(productionSeconds.value),confirmation});
+    }
+    const productionFile=ref(null), productionPrintReview=ref(null);
+    const productionPrintBlock = computed(() => {
+      if (state.mode !== "flexi") return "Flexi mode is required to submit this file.";
+      if (!productionFile.value) return "Choose a sliced G-code file first.";
+      if (productionFile.value.size > FlexiPreflight.limit) return "Flexi accepts G-code up to 1 GiB. Split larger files before printing.";
+      if (state.flexi.journal_error) return "The Flexi journal is unavailable.";
+      if (state.flexi.interlocks?.recovery_required?.length ||
+          Object.keys(state.flexi.interlocks?.nozzle_recovery || {}).length) return "Resolve interrupted filament operations first.";
+      // The web status can project Moonraker standby as idle_timeout Ready/Idle.
+      // The print endpoint still checks print_stats directly at submission.
+      if (!["standby", "ready", "idle", "complete", "cancelled"].includes(state.printer_state)) return "The printer must report an idle state.";
+      return "";
+    });
+    const recoveryPosition = ref(''), recoveryConfirmed = ref(false);
+    const failedStop = computed(() => {
+      const workflow=production.value.workflow;
+      return [workflow?.job,workflow?.print_session].find(record=>record?.stop_unconfirmed) || null;
+    });
+    function isolateFailedStop() {
+      const record=failedStop.value;
+      if (!record) return;
+      confirm({
+        title:`Confirm T${record.head} isolation`,
+        message:'<p>You have confirmed:</p><ul><li>The affected feeders are physically stopped and isolated.</li>'+
+          '<li>All affected branches have been inspected.</li><li>The print is cancelled.</li></ul>'+
+          '<p class="muted small">This retires the failed stop but does not mark the tube clear or move filament.</p>',
+        okLabel:'Confirm isolation',
+        onOk:()=>productionPost('request',{action:'isolate_failed_stop',source:record.isolation_source || record.source,head:record.head,
+          recovery_token:record.token,confirmation:'AFFECTED_FILAMENT_PATH_PHYSICALLY_ISOLATED'}),
+      });
+    }
+    const productionSelectedRecovery = computed(() => {
+      const selected=productionSelectedRow.value;
+      if (!selected) return null;
+      return productionRecoveryRows.value.find(row => row.head === selected.head ||
+        (row.ace === selected.source?.[0] && row.slot === selected.source?.[1])) || null;
+    });
+    const productionOwnerForSelected = computed(() => {
+      const selected=productionSelectedRow.value;
+      if (!selected) return null;
+      const owners=production.value.workflow?.owners || {};
+      const owner=owners[String(selected.head)] || owners[selected.head];
+      if (owner) return owner;
+      // Original loader: the toolhead's recorded source / sensor is the owner.
+      const th=(state.toolheads || []).find(x => Number(x.idx) === Number(selected.head));
+      if (th && (th.filament_at_extruder || th.head_source_known)) return {source:[th.ace, th.slot]};
+      const led=production.value.path_ledger?.[String(selected.head)];
+      return (led && led.owner && led.state !== 'clear') ? {source:led.owner} : null;
+    });
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiLoadedSlotCount, flexiLoadedHeadCount, flexiClearHeadCount
+    const flexiLoadedSlotCount = computed(() => (production.value.inventory || [])
+      .filter(row => row.present !== false && row.key).length);
+    const flexiLoadedHeadCount = computed(() => (state.toolheads || []).filter(t => t.filament_at_extruder || t.head_source_known).length);
+    const flexiClearHeadCount = computed(() => (state.toolheads || []).filter(t => t.filament_at_extruder === false).length);
+    const flexiSharedHeadCount = computed(() => {
+      const counts={};
+      for (const head of Object.values(state.flexi.routes || {})) counts[head]=(counts[head]||0)+1;
+      return Object.values(counts).filter(count => count>1).length;
+    });
+    const fxRecoveryDialog = ref(null), recoveryBannerDetails = ref(false);
+    const recoverySelection = ref('');
+    const recoveryKey = row => JSON.stringify([row.head,row.ace,row.slot,row.token]);
+    function selectRecovery(row) { recoverySelection.value = recoveryKey(row); }
+    const recoveryRow = computed(() => productionRecoveryRows.value.find(row =>
+      recoveryKey(row) === recoverySelection.value));
+    const recoverySource = computed(() => recoveryRow.value ? recoveryRow.value.ace+':'+recoveryRow.value.slot : '');
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.routes, state.flexi, state.flexi.interlocks
+    const recoveryBranches = computed(() => Object.entries(state.flexi.routes || {})
+      .filter(([,head]) => head === recoveryRow.value?.head).map(([source]) => source));
+    watch(() => recoveryRow.value && recoveryKey(recoveryRow.value), () => {
+      recoveryPosition.value='';
+      recoveryConfirmed.value=false;
+    }, {flush:'sync'});
+    watch(() => pathUX.recoveryContext(recoveryRow.value, state.flexi, production.value), () => {
+      recoveryConfirmed.value=false;
+    }, {flush:'sync'});
+    const recoveryAdvice = computed(() => {
+      const journal = state.flexi.interlocks || {}, row = recoveryRow.value;
+      const saved = journal.nozzle_recovery?.[row?.head];
+      const matches = !!row && saved?.nozzle_verified === true && !!saved.receipt &&
+        saved.routes_sha256 === journal.routes_sha256 && saved.source?.join(':') === recoverySource.value &&
+        (row.pendingOwner || (journal.recovery_required || []).filter(r=>r.head===row.head).every(r=>r.token===saved.receipt));
+      let resumeBlock;
+      if (row?.arrival_checkpoint) {
+        const checkpoint = row.arrival_checkpoint;
+        const inventory = production.value.inventory?.find(item=>item.key===recoverySource.value);
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.diagnostics, state.flexi.routes
+        const sensor = state.flexi.diagnostics?.sensors?.find(item=>item.head===row.head);
+        if (Object.values(state.flexi.routes || {}).filter(head=>head===row.head).length!==1)
+          resumeBlock='This path shares a toolhead. A stopped-arrival record cannot establish clearance for the other branches.';
+        else if (checkpoint.source.join(':')!==recoverySource.value || checkpoint.routes!==journal.routes_sha256 ||
+                 checkpoint.device!==journal.devices?.[row.ace]?.identity || checkpoint.spool!==inventory?.identity)
+          resumeBlock='The saved arrival no longer matches the selected route, ACE or spool.';
+        else if (!sensor?.poll_fresh || sensor.communication!=='ok' || sensor.raw_present!==true)
+          resumeBlock='Resume needs a fresh toolhead reading showing filament still present.';
+        else if ((journal.recovery_required || []).length!==1 || production.value.workflow?.job || production.value.workflow?.print_session)
+          resumeBlock='Stop active operations and resolve any other outstanding recovery before resuming.';
+        else if (!inventory?.validated_actions?.includes('load') && !(productionCalibrationTest.value &&
+                 production.value.execution_authorized && production.value.authorized_actions?.includes('load') &&
+                 production.value.authorized_sources?.some(source=>source.join(':')===recoverySource.value)))
+          resumeBlock='The stopped load can resume once its saved load recipe is validated or a controlled test is approved.';
+        else resumeBlock='';
+      }
+      return pathUX.productionRecovery(recoveryPosition.value,matches,resumeBlock);
+    });
+    const recoveryAttestationLabel = computed(() => {
+      const action=recoveryAdvice.value.action;
+      if (action==='inspect_clear') return 'I inspected the complete ACE-to-toolhead path and every shared branch. It is empty, the feeder is stopped, and no filament movement will occur.';
+      if (action==='resume_loading') return 'The filament has not moved since the recorded stop, and the saved checkpoint still belongs to this path.';
+      if (action==='trace_loaded') return 'I traced the same spool through the full route, it remains loaded at the nozzle, and no withdrawal or source change occurred.';
+      return 'I physically inspected this path.';
+    });
+    function _recoveryConfirmHtml(row, action) {
+      const path=escapeHtml(`ACE${row.ace} slot${row.slot} → T${row.head}`);
+      if (action==='inspect_clear') return `<p><strong>${path}</strong></p><p>You have confirmed:</p><ul>`+
+        '<li>The complete ACE-to-toolhead transport path and every shared branch are empty.</li>'+
+        '<li>The feeder is stopped.</li><li>No filament movement will occur.</li></ul>'+
+        '<p class="muted small">This records the physical inspection against the current route and sensor generation. It does not clear any other toolhead.</p>';
+      if (action==='resume_loading') return `<p><strong>${path}</strong></p><p>You have confirmed:</p><ul>`+
+        '<li>The filament has not moved since the recorded stop.</li>'+
+        '<li>The saved stopped-arrival checkpoint still belongs to this path.</li></ul>'+
+        '<p class="muted small">The printer will select and heat the toolhead, then resume the remaining load. It will not repeat the ACE feed.</p>';
+      return `<p><strong>${path}</strong></p><p>You have confirmed:</p><ul>`+
+        '<li>You traced the same spool through the full route.</li>'+
+        '<li>The filament remains loaded at the nozzle.</li>'+
+        '<li>No withdrawal or source change occurred.</li></ul>'+
+        '<p class="muted small">This restores the recorded loaded source. It does not move filament.</p>';
+    }
+    function inspectProductionPath() {
+      const row = recoveryRow.value, action = recoveryAdvice.value.action;
+      if (!row || !action || !recoveryConfirmed.value || isPrinting.value || productionBusy.value ||
+          production.value.workflow?.job || production.value.workflow?.print_session) return;
+      const source=recoverySource.value.split(':').map(Number);
+      const payload = action==='resume_loading'
+        ? {action,source,head:row.head,recovery_token:row.token,test:productionCalibrationTest.value,
+           confirmation:'RESUME_STOPPED_SENSOR_ARRIVAL'}
+        : {action,source,head:row.head,recovery_token:row.token,
+           ...(action==='trace_loaded'?{rebind:true}:{}),
+           confirmation:action==='trace_loaded'?'SOURCE_TRACED_AND_STOPPED':'ALL_SHARED_PATHS_INSPECTED_CLEAR'};
+      // A native modal <dialog> paints in the browser top layer, above the
+      // application confirm overlay. Close it first, then restore it if the
+      // operator cancels or the request fails.
+      const dialogWasOpen=!!fxRecoveryDialog.value?.open;
+      if (dialogWasOpen) fxRecoveryDialog.value.close();
+      confirm({
+        title: action==='inspect_clear' ? `Confirm T${row.head} recovery`
+          : action==='resume_loading' ? `Confirm T${row.head} resume` : `Confirm T${row.head} loaded source`,
+        message: _recoveryConfirmHtml(row, action),
+        okLabel: action==='inspect_clear' ? 'Confirm recovery'
+          : action==='resume_loading' ? 'Resume loading' : 'Confirm source',
+        onCancel: () => { if (dialogWasOpen) fxRecoveryDialog.value?.showModal(); },
+        onOk: async () => {
+          const ok=await productionPost('request',payload);
+          if (!ok && dialogWasOpen) fxRecoveryDialog.value?.showModal();
+        },
+      });
+    }
+    const recoverySameSourceConfirmed = ref(false);
+    async function recordSameSourceInTube() {
+      const row = recoveryRow.value;
+      if (!row || !recoverySameSourceConfirmed.value || isPrinting.value || productionBusy.value) return;
+      const ok = await productionPost('request', {action:'same_source_in_tube', source:[Number(row.ace), Number(row.slot)],
+        head:row.head, recovery_token:row.token, confirmation:'FILAMENT_OF_SOURCE_IN_TUBE'});
+      if (ok) { recoverySameSourceConfirmed.value = false; fxCloseRecovery(); }
+    }
+    function confirmProductionClear() {
+      const confirmation=window.prompt("Physically inspect the entire shared PTFE path. Only after confirming full clearance, type INSPECTED_FULL_SHARED_PATH_CLEAR");
+      if(confirmation)return productionPost("request",{action:"confirm_clearance",confirmation});
+    }
+    const productionObservations=reactive({nozzle_flow:false,full_path_clear:false,correct_head:false,feed_assist:false});
+    function validateProductionRecipe() {
+      const confirmation=window.prompt("Record only observations from a completed, approved physical test. Type PHYSICALLY_VERIFIED_RECIPE");
+      if(confirmation)return productionPost("validate",{source:productionSource.value.split(":").map(Number),actions:productionActions.value,observations:productionObservations,confirmation});
+    }
+    const wizard = computed(() => production.value.calibration || {steps:[],session:null,fields:{},instructions:{}});
+    const wizardDraft=reactive({ace:"",slot:"",head:"",material:"",operation:"load",transport_only:false});
+    const wizardMeasurement=reactive({path_length_mm:null,uncertainty_mm:null,endpoints:"",physical_route_confirmed:false,temperature_label_confirmed:false});
+    const wizardStepMm=ref(1),wizardSegmentMm=ref(100),wizardError=ref(""),wizardNotes=ref("");
+    const wizardObservations=reactive({correct_head:false,nozzle_flow:false,full_path_clear:false,feed_assist:false,stopped:false,sensor_arrival:false});
+    const wizardSession=computed(()=>wizard.value.session),wizardSource=computed(()=>wizardSession.value?.source?.join(":") || (wizardDraft.ace!==""&&wizardDraft.slot!==""?`${wizardDraft.ace}:${wizardDraft.slot}`:""));
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiUnits.value.filter, FlexiCalibration.layout, state.flexi
+    const wizardConnectedUnits=computed(()=>flexiUnits.value.filter(unit=>unit.connected&&unit.detected!==false));
+    const wizardAceOptions=computed(()=>wizardConnectedUnits.value.map(unit=>({value:String(unit.idx),label:`ACE${unit.idx}`})));
+    const wizardSlotOptions=computed(()=>{const unit=wizardConnectedUnits.value.find(item=>Number(item.idx)===Number(wizardDraft.ace));return unit?Array.from({length:unit.slotCount},(_,slot)=>String(slot)):[];});
+    const wizardDiagram=computed(()=>FlexiCalibration.layout(state.flexi?.routes || {},wizardSource.value,flexiUnits.value.map(unit=>({ace:unit.idx,slotCount:unit.slotCount}))));
+    const wizardRoutes=computed(()=>wizardDiagram.value.lines);
+    const wizardResolved=computed(()=>wizardSession.value?FlexiCalibration.resolved(productionDraft.profiles,wizardSource.value,wizardSession.value.head):{});
+    const wizardCanIncrement=computed(()=>FlexiCalibration.canIncrement(wizard.value,production.value.workflow,production.value.execution_authorized));
+    const wizardCanSegment=computed(()=>FlexiCalibration.canSegment(wizard.value,production.value.workflow,production.value.execution_authorized));
+    watch(()=>wizard.value.session?.id,(id,previous)=>{
+      if(id===previous)return;
+      Object.assign(wizardMeasurement,{path_length_mm:null,uncertainty_mm:null,endpoints:"",physical_route_confirmed:false,temperature_label_confirmed:false});
+      Object.keys(wizardObservations).forEach(k=>wizardObservations[k]=false);wizardNotes.value="";wizardError.value="";productionProfileScope.value="route";
+    });
+    const wizardTipList=computed(()=>productionProfileScope.value==='head'?(productionDraft.profiles.heads[String(wizardSession.value?.head)]?.tip_moves || []):(wizardResolved.value.tip_moves || []));
+    function wizardSelectSource(){
+      if(wizardDraft.ace===""||wizardDraft.slot==="")return;
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses FlexiCalibration.destination, state.flexi.routes, FlexiCalibration.fieldState
+      try {const head=FlexiCalibration.destination(state.flexi.routes,Number(wizardDraft.ace),Number(wizardDraft.slot));wizardDraft.head=String(head);
+        const row=(production.value.inventory||[]).find(r=>r.key===`${wizardDraft.ace}:${wizardDraft.slot}`);wizardDraft.material=row?.material||"";
+      } catch(e){wizardDraft.head="";wizardError.value=e.message;}
+    }
+    function wizardField(field){return wizardSession.value?FlexiCalibration.fieldState(productionDraft.profiles,wizardSource.value,wizardSession.value.head,field):{value:null,origin:"unknown"};}
+    function wizardEdit(field,value){productionSource.value=wizardSource.value;productionHead.value=String(wizardSession.value.head);editProductionField(field,value);}
+    function wizardInherit(field){const route=productionDraft.profiles.routes[wizardSource.value];if(route)delete route[field];productionDirty.value=true;}
+    async function wizardSend(payload){wizardError.value="";const ok=await productionPost("wizard",payload);if(!ok)wizardError.value=productionMessage.value;return ok;}
+    async function wizardSelect(){try {return await wizardSend(FlexiCalibration.selection(wizardDraft,state.flexi.routes));}catch(e){wizardError.value=e.message;}}
+    function wizardMeasure(){return wizardSend({action:"measure",...wizardMeasurement});}
+    async function wizardSaveRecipe(){productionSource.value=wizardSource.value;productionHead.value=String(wizardSession.value.head);return saveProduction();}
+    const wizardAffectedSources=computed(()=>{
+      const session=wizardSession.value;if(!session)return [];
+      const keys=[session.source.join(":")];
+      if(['switch','failover'].includes(session.operation)){
+        const owner=production.value.workflow?.owners?.[String(session.head)];if(owner&&!keys.includes(owner.source.join(":")))keys.push(owner.source.join(":"));
+      }
+      return keys;
+    });
+    function wizardAuthorize(){productionSource.value=wizardSource.value;productionActions.value=[wizardSession.value.operation];productionScope.value=wizardAffectedSources.value;productionCalibrationTest.value=true;return authorizeProduction(wizardSession.value.id);}
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses wizardFlexibleConsent, flexible, FlexiCalibration.increment
+    async function wizardFlexibleConsent(){
+      const confirmation=window.prompt(`HIGH RISK: flexible material may buckle or jam during long retraction/withdrawal, bends, long PTFE and repeated swaps. One acknowledgment per selected path (${wizardAffectedSources.value.join(', ')}) covers normal operations including automatic switching/failover while valid; no other safeguard is waived. Type TPU_TPE_AT_OWN_RISK`);
+      if(!confirmation)return;
+      for(const key of wizardAffectedSources.value)if(!await productionPost('request',{action:'risk',source:key.split(':').map(Number),scope:'path',seconds:Number(productionSeconds.value),confirmation}))break;
+    }
+    function wizardStart(){const confirmation=window.prompt("Only after separate approval for the physical test: starting can select the toolhead and heat the nozzle. Type START_APPROVED_CALIBRATION");if(confirmation)return wizardSend({action:"start",confirmation});}
+    function wizardIncrement(){try{return wizardSend(FlexiCalibration.increment(Number(wizardStepMm.value)));}catch(e){wizardError.value=e.message;}}
+    function wizardSegment(){try{return wizardSend(FlexiCalibration.segment(Number(wizardSegmentMm.value)));}catch(e){wizardError.value=e.message;}}
+    function wizardObserve(){return wizardSend({action:"observe",observations:{...wizardObservations},notes:wizardNotes.value});}
+    function wizardRecord(){const confirmation=window.prompt("Record only the physical observations you actually witnessed. Type RECORD_PHYSICAL_CALIBRATION");if(confirmation)return wizardSend({action:"record",confirmation});}
+    function wizardTipChange(index,column,value){
+      const moves=JSON.parse(JSON.stringify(wizardTipList.value));
+      if(!moves[index])return;moves[index][column]=value===""?null:Number(value);wizardStoreTip(moves);
+    }
+    function wizardStoreTip(moves){productionSource.value=wizardSource.value;productionHead.value=String(wizardSession.value.head);const group=productionProfileScope.value==='head'?'heads':'routes',key=group==='heads'?productionHead.value:wizardSource.value;productionDraft.profiles[group][key] ||= {};productionDraft.profiles[group][key].tip_moves=moves;productionDirty.value=true;}
+    function wizardTipAdd(){wizardStoreTip([...wizardTipList.value,[null,null]]);}
+    function wizardTipRemove(index){wizardStoreTip(wizardTipList.value.filter((_,i)=>i!==index));}
+    function wizardPrepare(){productionSource.value=wizardSource.value;productionAction.value=wizardSession.value.operation==='assist'?'load':wizardSession.value.operation;return productionRequest('prepare');}
+    function routeInventory(row) {
+      return (production.value.inventory || []).find(item => item.key === row.key) || null;
+    }
+    function slotRecoveryFor(ace, slot) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, state.flexi
+      if (state.mode !== 'flexi') return null;
+      const head=state.flexi?.routes?.[`${ace}:${slot}`];
+      return productionRecoveryRows.value.find(row =>
+        (row.ace === ace && row.slot === slot) || (head != null && row.head === head)) || null;
+    }
+    function slotReadinessFor(ace, slot) {
+      return fxRouteReadinessMap.value[`${ace}:${slot}`] || null;
+    }
+    function slotLoadBlockReason(ace, slot) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+      if (state.mode !== 'flexi') return '';
+      const recovery = slotRecoveryFor(ace, slot);
+      if (recovery) return `Recovery required for T${recovery.head}. Use the recovery banner.`;
+      const readiness = slotReadinessFor(ace, slot);
+      if (!readiness || readiness.state === 'ready') return '';
+      if (readiness.state === 'needs_recipe') return 'Route recipe incomplete. Use Configure recipe before loading.';
+      if (readiness.state === 'recovery_required') return 'Recovery required for this route. Open the recovery banner.';
+      return readiness.reason || 'This route is not ready to load.';
+    }
+    function recoverySensorText(row) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.diagnostics
+      const sensor=(state.flexi.diagnostics?.sensors || []).find(item => item.head === row?.head);
+      if (!sensor) return 'Unavailable';
+      return sensor.poll_fresh && sensor.communication === 'ok' && typeof sensor.raw_present === 'boolean'
+        ? (sensor.raw_present ? 'On (filament detected)' : 'Off (clear)') : 'Unavailable or stale';
+    }
+    function recoveryPathText(row) {
+      const head=production.value.clearance?.heads?.find(item => item.head === row?.head);
+      return head?.path?.state || head?.provider_path?.state || 'unknown';
+    }
+    async function openRecovery(source) {
+      let row = null;
+      if (source) row = productionRecoveryRows.value.find(record => record.ace+':'+record.slot === source) || null;
+      if (!row) row = recoveryRow.value || productionRecoveryRows.value[0] || null;
+      if (row) selectRecovery(row);
+      recoveryBannerDetails.value=false;
+      tab.value = 'dashboard';
+      await nextTick();
+      const dialog=fxRecoveryDialog.value;
+      if (dialog) {
+        if (!dialog.open) dialog.showModal();
+        return;
+      }
+      const target = document.getElementById('fx-production-recovery') || document.getElementById('fx-operations');
+      target?.querySelector('h3, legend, summary')?.focus({preventScroll:true});
+      target?.scrollIntoView({block:'start'});
+    }
+    function fxCloseRecovery() { fxRecoveryDialog.value?.close(); }
     async function saveConfigRaw() {
       configLog.value = t("ui.log.saving_raw");
       try {
@@ -6259,13 +8405,23 @@ createApp({
       // 'normal' need a Klipper restart. In head mode each head is toggled to
       // feeder individually (per-head feeder checkbox), no single ACE head.
       if (state.mode === m) return;
+      if (state.restart_required) {
+        confirm({
+          title: t("ui.dialog.switch_mode_title", {mode: m}),
+          message: `Saved mode is ${state.pending_mode}; the printer is still running ${state.mode}. Restart the printer before changing mode again.`,
+          okLabel: "OK",
+          dismissOnly: true,
+        });
+        return;
+      }
       // Mode changes that cross 'normal' (stock<->ACE file swap) require all
       // toolheads unloaded - mirror the SET_ACE_MODE macro guard client-side so
       // the "unload first" rejection is visible in the web, not only in Fluidd's
       // console (action_respond_info). filament_at_extruder is the same toolhead
       // motion-sensor signal the macro checks (eN_filament.filament_detected).
       const cur = state.mode || "normal";
-      if ((cur === "normal") !== (m === "normal")) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+      if ((cur === "normal") !== (m === "normal") || cur === "flexi" || m === "flexi") {
         const loaded = (state.toolheads || []).filter(th => th.filament_at_extruder);
         if (loaded.length) {
           const heads = loaded.map(th => th.name || ("T" + th.idx)).join(", ");
@@ -6279,17 +8435,27 @@ createApp({
         }
       }
       const args = {MODE: m};
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiFromNormal, flexi, Flexi
+      const flexiFromNormal = cur === "normal" && m === "flexi";
       confirm({
         title: t("ui.dialog.switch_mode_title", {mode: m}),
-        message: tHtml("ui.dialog.switch_mode_msg", {mode: m}),
+        message: flexiFromNormal
+          ? "All toolheads must be unloaded. Flexi needs the ACE Klipper modules and stages a file switch; the printer must be restarted before Flexi becomes active."
+          : (m === "flexi" || cur === "flexi") && m !== "normal"
+            ? "All toolheads must be unloaded. The mode changes without a restart. Flexi uses routed filament operations with live safety checks."
+            : tHtml("ui.dialog.switch_mode_msg", {mode: m}),
         okLabel: t("ui.dialog.switch"),
         onOk: async () => {
-          // No web reboot banner for a mode change: a transition crossing
-          // 'normal' makes ACE_RUN_MODE_SWITCH raise a reboot error, which
-          // shows on the touchscreen popup AND Fluidd AND the web - for both
-          // directions and any trigger (web or Fluidd SET_ACE_MODE), unlike a
-          // web-only banner. multi<->head is a runtime flip and raises nothing.
-          await run("SET_ACE_MODE", args);
+          // Mode changes crossing 'normal' persist the target and raise a
+          // reboot error. The banner is driven by the live/saved state from
+          // the backend, so changes made in Fluidd or on the touchscreen show
+          // it too - not only changes started from this page.
+          // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, state.flexi.journal_error, state.flexi.interlocks
+          const isolatedExit=cur==='flexi' && (state.flexi.journal_error || state.flexi.interlocks?.recovery_required?.length);
+          if(isolatedExit) {
+            if(!window.confirm('Confirm every Flexi path is physically isolated, all feeders are stopped, and no filament can be driven by the new mode. Recovery records will be kept.'))return;
+            await run("ACE_RUN_MODE_SWITCH",{...args,CONFIRM:"ALL_FLEXI_PATHS_STOPPED_AND_PHYSICALLY_ISOLATED"});
+          } else await run("SET_ACE_MODE", args);
         },
       });
     }
@@ -6783,6 +8949,12 @@ createApp({
     }
     function slotHead(ace, slot) {
       // The head an ACE slot feeds in the report's topology (null = none).
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+      if (preflight.report?.flexi) {
+        const hit = (preflight.report.targets || []).find(
+          tg => Number(tg.ace) === Number(ace) && Number(tg.slot) === Number(slot));
+        return hit ? Number(hit.head) : null;
+      }
       if (multiTopology()) {
         const heads = (preflight.report && preflight.report.ace_heads) || [];
         return heads.includes(Number(slot)) ? Number(slot) : null;
@@ -6948,7 +9120,10 @@ createApp({
       if (!tg) return "";
       const mat = tg.material || "?";
       if (tg.kind === "pin") return pinLabel(tg.head) + " · " + mat;
-      return "MMU " + dispIdx(tg.ace) + " Slot " + dispIdx(tg.slot) + " · " + mat;
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+      const route = (preflight.report?.flexi && Number.isInteger(tg.head))
+        ? " → T" + dispIdx(tg.head) : "";
+      return "MMU " + dispIdx(tg.ace) + " Slot " + dispIdx(tg.slot) + route + " · " + mat;
     }
     // Background for a colour chip or select: the "no colour" placeholder
     // goes through a CSS variable (fallback #444), so the light shade can
@@ -7543,6 +9718,29 @@ createApp({
     let preflightFile = null;
     let preflightJobId = "";
     let preflightJobSeq = 0;
+    let cancelPreflightWorker = null;
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses FLEXI-INTEGRATION, Flexi, flexi
+    // FLEXI-INTEGRATION: browser/server boundary for large Flexi G-code.
+    // Files above the local Pyodide budget use /api/flexi/analyze,
+    // /prepare and /print-job; original modes never enter this branch.
+    let preflightAbort = null;
+    const FLEXI_SERVER_THRESHOLD = 32 * 1024 * 1024;
+    const preflightMode = ref(null);
+    const flexiReportMapping = computed(() => {
+      const report = preflight.report;
+      if (!report?.flexi) return [];
+      const plan = pfSelected.value || "slicer";
+      return (report.plans?.[plan]?.mapping || []);
+    });
+    const preflightLegacyBlock = computed(() => {
+      if (preflight.report?.flexi) return preflight.report.flexi_block || "";
+      if (preflightMode.value === "flexi" || state.mode === "flexi") {
+        return "These optimization plans use MultiACE’s legacy assignment model. Flexi submission requires the saved-route planner preparation; the original slicer file is not uploaded directly.";
+      }
+      if (preflightMode.value !== state.mode) return "The operating mode changed. Open the file again before preparing it.";
+      if (preflightFile?.size > 110 * 1024 * 1024) return "This file was inspected, but optimized browser preparation requires a smaller file.";
+      return "";
+    });
 
     function ensurePreflightWorker() {
       if (!window.Worker) throw new Error(t("ui.preflight.local_worker_missing"));
@@ -7558,17 +9756,26 @@ createApp({
         if (!r.ok) throw new Error("pysrc " + r.status);
         const src = await r.json();
         await new Promise((resolve, reject) => {
+          const finish = error => {
+            clearTimeout(timer);
+            worker.removeEventListener("message", onMsg);
+            worker.removeEventListener("error", onError);
+            if (preflightWorker === worker) cancelPreflightWorker = null;
+            if (error) reject(error);
+            else resolve();
+          };
+          const onError = () => finish(new Error("The browser preflight worker could not start."));
           const onMsg = (ev) => {
             const m = ev.data || {};
-            if (m.type === "ready") {
-              preflightWorker.removeEventListener("message", onMsg); resolve();
-            } else if (m.type === "error") {
-              preflightWorker.removeEventListener("message", onMsg);
-              reject(new Error(m.message || "worker init failed"));
-            }
+            if (m.type === "ready") finish();
+            else if (m.type === "error") finish(new Error(m.message || "worker init failed"));
           };
-          preflightWorker.addEventListener("message", onMsg);
-          preflightWorker.postMessage({
+          const timer = setTimeout(onError, 30000);
+          worker.addEventListener("message", onMsg);
+          worker.addEventListener("error", onError);
+          if (preflightWorker !== worker) { finish(new Error("Preflight cancelled")); return; }
+          cancelPreflightWorker = () => finish(new Error("Preflight cancelled"));
+          worker.postMessage({
             type: "init",
             pyodideIndexURL: PYODIDE_INDEX_URL,
             postprocessSrc: src.postprocess,
@@ -7579,8 +9786,11 @@ createApp({
       })();
       // On a failed bring-up, drop the worker so the next attempt re-inits.
       preflightWorkerReady.catch(() => {
-        try { preflightWorker.terminate(); } catch (_) {}
-        preflightWorker = null; preflightWorkerReady = null;
+        worker.terminate();
+        if (preflightWorker === worker) {
+          preflightWorker = null;
+          preflightWorkerReady = null;
+        }
       });
       return preflightWorkerReady;
     }
@@ -7595,6 +9805,7 @@ createApp({
           if (msg.type === "progress") { if (onProgress) onProgress(msg); return; }
           if (msg.type === "error") {
             worker.removeEventListener("message", onMsg);
+            cancelPreflightWorker = null;
             reject(new Error(msg.message || "worker error"));
             return;
           }
@@ -7603,10 +9814,15 @@ createApp({
               || (type === "estimate" && msg.type === "estimate-done")
               || (type === "estimate-all" && msg.type === "estimate-all-done")) {
             worker.removeEventListener("message", onMsg);
+            cancelPreflightWorker = null;
             resolve(msg);
           }
         };
         worker.addEventListener("message", onMsg);
+        cancelPreflightWorker = () => {
+          worker.removeEventListener("message", onMsg);
+          reject(new Error("Preflight cancelled"));
+        };
         worker.postMessage(Object.assign({type}, payload));
       });
     }
@@ -7642,10 +9858,36 @@ createApp({
     }
     // Entry point: try the browser path, offer the server fallback on failure.
     async function _runPreflight(f) {
+      const mode = state.mode;
+      preflightMode.value = mode;
+      productionPrintReview.value = null;
+      productionMessage.value = "";
+      if (mode === "flexi") productionFile.value = f;
+      // A browser cannot hold a 1 GiB file as text. Above the local budget the
+      // backend streams it to disk, plans from bounded event data and prepares
+      // a verified atomic derivative. The small-file Pyodide path is unchanged.
+      // @MULTIACE_FLEXI_HOOK Large files leave the browser path only in Flexi mode.
+      if (mode === "flexi" && f.size > FLEXI_SERVER_THRESHOLD) {
+        await _runServerFlexiPreflight(f);
+        return;
+      }
       try {
         await _runLocalPreflight(f);
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
+        if (!preflight.open || preflightFile !== f) return;
+        if (mode === "flexi") {
+          const rejected = _preflightRejection(msg);
+          if (rejected) { preflight.error = rejected; return; }
+          // A browser without the Pyodide CDN still has the original planner
+          // on the printer. This is the same analyzer, not a second workflow.
+          await _runServerFlexiPreflight(f);
+          return;
+        }
+        if (f.size > 110 * 1024 * 1024) {
+          preflight.error = msg;
+          return;
+        }
         const rejected = _preflightRejection(msg);
         if (rejected) {
           confirm({
@@ -7681,19 +9923,29 @@ createApp({
       clearLocalPreflightJob();
       preflightFile  = f;
       preflightJobId = `local-${Date.now()}-${++preflightJobSeq}`;
+      const jobId = preflightJobId, mode = preflightMode.value;
       try {
         await ensurePreflightWorker();
-        const live = await loadLiveSlotsForPreflight();
+        if (jobId !== preflightJobId) return;
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, state.flexi
+        const flexi = mode === "flexi" ? JSON.parse(JSON.stringify(state.flexi)) : null;
+        const live = flexi ? {live_slots: [], head_ctx: {mode: "multi"}}
+                           : await loadLiveSlotsForPreflight();
+        if (jobId !== preflightJobId) return;
         const j = await runPreflightWorker("analyze", {
-          jobId: preflightJobId, file: f,
+          jobId, file: f,
           liveSlots: live.live_slots, headCtx: live.head_ctx,
+          flexi,
           costParams: live.cost_params,
         }, msg => {
           preflight.progress = {
             percent: Number(msg.percent || 0),
             stage:   String(msg.stage || ""), running: true};
         });
-        preflight.report = Object.assign({local: true}, j.report || {});
+        if (jobId !== preflightJobId) return;
+        productionPrintReview.value = j.compatibility;
+        if (j.planningError) { preflight.error = j.planningError; return; }
+        preflight.report = Object.assign({local: true}, j.report);
         pfPlanSel.value = null;
         preflight.slicerOverrides = {};
         preflight.slicerSwaps = null;
@@ -7703,12 +9955,11 @@ createApp({
         preflight.copyPlan = null;
         preflight.proposalCopies = null;
       } finally {
-        uploading.value = false;
-        preflight.busy  = false;
-        // In the finally, not at the end of the try: on an exception the bar
-        // kept its last value with running:true and sat there frozen behind
-        // the dialog (seen on the re-processing refusal).
-        preflight.progress = null;
+        if (jobId === preflightJobId) {
+          uploading.value = false;
+          preflight.busy = false;
+          preflight.progress = null;
+        }
       }
     }
 
@@ -7746,7 +9997,88 @@ createApp({
         preflight.busy  = false;
       }
     }
+    // @MULTIACE_FLEXI_HOOK Server-side Flexi analyze; the local Pyodide path is unchanged.
+    async function _runServerFlexiPreflight(f) {
+      preflight.open = true;
+      preflight.busy = true;
+      preflight.sending = "";
+      preflight.report = null;
+      preflight.error = "";
+      preflight.local = false;
+      preflight.progress = {percent: 0, stage: "upload", running: true};
+      uploading.value = true;
+      preflightAbort?.abort();
+      let xhr = null;
+      const controller = {
+        aborted: false,
+        abort() { this.aborted = true; try { xhr?.abort(); } catch (_) {} },
+      };
+      preflightAbort = controller;
+      try {
+        const fd = new FormData();
+        fd.append("file", f, f.name);
+        const report = await new Promise((resolve, reject) => {
+          xhr = new XMLHttpRequest();
+          // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+          xhr.open("POST", `${API}/flexi/analyze`);
+          xhr.responseType = "json";
+          xhr.upload.onprogress = event => {
+            const percent = event.lengthComputable && event.total
+              ? Math.min(90, 5 + 85 * event.loaded / event.total) : 5;
+            preflight.progress = {percent, stage: "upload", running: true};
+          };
+          xhr.upload.onload = () => {
+            preflight.progress = {percent: 90, stage: "analyze", running: true};
+          };
+          xhr.onerror = () => reject(new Error("The printer connection failed while analyzing the file."));
+          xhr.onabort = () => {
+            const error = new Error("Preflight cancelled");
+            error.name = "AbortError";
+            reject(error);
+          };
+          xhr.onload = () => {
+            let body = xhr.response;
+            if (!body) {
+              try { body = JSON.parse(xhr.responseText || "{}"); } catch (_) { body = {}; }
+            }
+            if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+            else reject(new Error(body?.detail || `${xhr.status} ${xhr.statusText}`));
+          };
+          xhr.send(fd);
+        });
+        if (controller.aborted) return;
+        report.large_server = true;
+        report.local = false;
+        preflight.report = report;
+        pfPlanSel.value = null;
+        preflight.slicerOverrides = {};
+        preflight.slicerSwaps = null;
+        preflight.headOverrides = {};
+        preflight.headSwaps = null;
+        preflight.headCopies = null;
+        preflight.copyPlan = null;
+        preflight.proposalCopies = null;
+        preflight.progress = {percent: 100, stage: "done", running: false};
+      } catch (e) {
+        if (e.name !== "AbortError") preflight.error = e.message || String(e);
+      } finally {
+        if (preflightAbort === controller) preflightAbort = null;
+        uploading.value = false;
+        preflight.busy = false;
+      }
+    }
     function closePreflight() {
+      preflightAbort?.abort();
+      preflightAbort = null;
+      if (preflight.busy && preflight.local) {
+        cancelPreflightWorker?.();
+        cancelPreflightWorker = null;
+        preflightWorker?.terminate();
+        preflightWorker = null;
+        preflightWorkerReady = null;
+        uploading.value = false;
+        preflight.busy = false;
+      }
       preflight.open    = false;
       preflight.report  = null;
       preflight.error   = "";
@@ -7829,11 +10161,67 @@ createApp({
       else startPreflightPrint(p);
     }
     async function startPreflightPrint(mode, headPlan) {
+      if (preflightLegacyBlock.value) return;
       if (preflight.busy || preflight.sending) return;
       const rep = preflight.report;
       if (!rep) return;
+      // Flexi still needs the ordinary runtime gate: recovery, printer state,
+      // journal availability and the endpoint size limit. PathCheck is not here.
+      if (rep.flexi && productionPrintBlock.value) {
+        preflight.error = productionPrintBlock.value;
+        return;
+      }
+      // @MULTIACE_FLEXI_HOOK The server path publishes only the verified derivative.
       if (rep.local) { await _startLocalPreflightPrint(mode, headPlan); return; }
+      if (rep.large_server) { await _startLargeFlexiPrint(mode, headPlan); return; }
       await _startServerPreflightPrint(mode, headPlan);
+    }
+
+    // @MULTIACE_FLEXI_HOOK Prepare then print-job; never upload the raw slicer file.
+    async function _startLargeFlexiPrint(mode, headPlan) {
+      const rep = preflight.report;
+      if (!rep || !rep.token) return;
+      preflight.sending = (mode === "head") ? (headPlan || "loadout") : mode;
+      preflight.error = "";
+      preflight.progress = {percent: 5, stage: "prepare", running: true};
+      try {
+        const body = {
+          token: rep.token, plan: mode,
+          bed_mesh: !!preflight.bedMesh, camera: !!preflight.camera,
+          flow_cal: !!preflight.flowCal,
+        };
+        if (mode === "slicer") {
+          const override = {};
+          for (const m of _slicerEffectiveMapping()) {
+            if (m.slot) override[String(m.t)] = `${m.slot.ace}:${m.slot.slot}`;
+          }
+          body.override = override;
+        }
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+        let r = await fetch(`${API}/flexi/prepare`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body), signal: preflightAbort?.signal,
+        });
+        let j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `${r.status} ${r.statusText}`);
+        preflight.progress = {percent: 70, stage: "upload", running: true};
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+        r = await fetch(`${API}/flexi/print-job`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({token: rep.token}),
+          signal: preflightAbort?.signal,
+        });
+        j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `${r.status} ${r.statusText}`);
+        preflight.progress = {percent: 100, stage: "done", running: true};
+        setMacroLog(t("ui.upload.started", {name: rep.filename}));
+        closePreflight();
+      } catch (e) {
+        if (e.name !== "AbortError") preflight.error = e.message || String(e);
+      } finally {
+        preflight.sending = "";
+        if (preflight.progress) preflight.progress.running = false;
+      }
     }
 
     // Browser path: rewrite in the worker, upload straight to Moonraker.
@@ -7846,7 +10234,17 @@ createApp({
       const startedAt = Date.now();
       const MIN_VISIBLE_MS = 1500;
       try {
-        const payload = {jobId: preflightJobId, file: preflightFile, mode};
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses isFlexi, rep.flexi, flexi
+        const isFlexi = !!rep.flexi;
+        const payload = {jobId: preflightJobId, file: preflightFile,
+                         mode: isFlexi ? "flexi" : mode,
+                         headPlan: isFlexi ? (headPlan || "loadout") : headPlan};
+        if (isFlexi && (headPlan || "loadout") === "loadout") {
+          const asn = {};
+          const eff = _headEffectiveAssignment();
+          for (const k of Object.keys(eff)) { if (eff[k]) asn[String(k)] = eff[k]; }
+          payload.headAssignment = asn;
+        }
         if (mode === "slicer") {
           // Same (possibly user-edited) remap the server path sends.
           const remap = {};
@@ -7867,9 +10265,12 @@ createApp({
             payload.headCopies = headCopiesEffective();
           }
         }
-        const live = await loadLiveSlotsForPreflight();
-        payload.liveSlots = live.live_slots;
-        payload.headCtx   = live.head_ctx;
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses isFlexi
+        if (!isFlexi) {
+          const live = await loadLiveSlotsForPreflight();
+          payload.liveSlots = live.live_slots;
+          payload.headCtx   = live.head_ctx;
+        }
         // The worker writes the print-preference line (and moves the flow
         // calibration) with the same preflight_core pass the printer uses.
         payload.printPrefs = {bedMesh: !!preflight.bedMesh,
@@ -7882,10 +10283,17 @@ createApp({
         });
         preflight.progress = {percent: 90, stage: "upload", running: true};
         const fd = new FormData();
-        fd.append("root", "gcodes");
-        fd.append("print", "true");
-        fd.append("file", j.blob, rep.filename || preflightFile.name);
-        const r = await fetch("/server/files/upload", {method: "POST", body: fd});
+        let r;
+        // @MULTIACE_FLEXI_HOOK Flexi code below uses isFlexi, flexi
+        if (isFlexi) {
+          fd.append("file", j.blob, rep.filename || preflightFile.name);
+          r = await fetch(`${API}/flexi/print`, {method: "POST", body: fd});
+        } else {
+          fd.append("root", "gcodes");
+          fd.append("print", "true");
+          fd.append("file", j.blob, rep.filename || preflightFile.name);
+          r = await fetch("/server/files/upload", {method: "POST", body: fd});
+        }
         const body = await r.json().catch(() => ({}));
         if (!r.ok) {
           const detail = body.error || body.detail || body.message
@@ -8058,6 +10466,7 @@ createApp({
       return {overrides, feeders};
     }
     async function applyLoadout(mode, headPlan) {
+      if (preflightLegacyBlock.value) return;
       if (preflight.applying || preflight.sending) return;
       const ops = _loadoutOps(mode, headPlan);
       const total = ops.overrides.length + ops.feeders.length;
@@ -8070,7 +10479,7 @@ createApp({
           preflight.applying = (mode === "head") ? (headPlan || "loadout") : mode;
           try {
             for (const o of ops.overrides) {
-              await fetch(`${API}/slot-override`, {
+              await slotOverrideRequest(`${API}/slot-override`, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
@@ -8746,7 +11155,219 @@ createApp({
       window.removeEventListener("resize", recomputeWiring);
       window.removeEventListener("beforeunload", _onBeforeUnload);
     });
+
+    // View-only navigation. Keep Config mounted while Help is open.
+    // @MULTIACE_FLEXI_HOOK Flexi UX helpers are isolated from the original mode views.
+    const ux = window.FlexiConfigUX;
+    // Interface mode is presentation only. It never changes authorization,
+    // dispatch, interlocks or the saved configuration.
+    const UI_MODE_KEY = 'multiace.interfaceMode';
+    const uiMode = ref('operator');
+    try { if (localStorage.getItem(UI_MODE_KEY) === 'advanced') uiMode.value = 'advanced'; } catch (e) {}
+    const FX_OPERATOR_HIDDEN = new Set(['pathchek','calibration','advanced','diagnostics','firmware']);
+    function setUiMode(mode) {
+      uiMode.value = mode === 'advanced' ? 'advanced' : 'operator';
+      try { localStorage.setItem(UI_MODE_KEY, uiMode.value); } catch (e) {}
+      if (uiMode.value === 'operator' && FX_OPERATOR_HIDDEN.has(fxActive.value)
+          && !(fxActive.value === 'pathchek' && fxActiveJob.value)) fxJump('routing');
+    }
+    const fxActive = ref('initial'), fxView = ref(fxActive.value), fxHelp = ref('welcome'), fxSearch = ref(''), fxAdapter = ref(null);
+    // The route-discovery length editor needs the saved ace.cfg form.
+    watch(() => [tab.value, fxView.value], () => {
+      if (tab.value === 'config' && fxView.value === 'routing' && !config.sha1) loadConfig();
+    }, {immediate: true});
+    const fxHelpOpen = ref(false);
+    let _initialOpen = true;
+    try { _initialOpen = localStorage.getItem('multiace.initialSetup') !== 'closed'; } catch (e) {}
+    const initialSetupOpen = ref(_initialOpen);
+    function setInitialSetupOpen(open) {
+      initialSetupOpen.value = !!open;
+      try { localStorage.setItem('multiace.initialSetup', open ? 'open' : 'closed'); } catch (e) {}
+    }
+    const fxHelpDialog = ref(null), fxAdapterDialog = ref(null);
+    let fxHelpOpener = null, fxAdapterOpener = null;
+    const fxActiveJob = computed(() => !!pcJob.value && !['complete','reconciled'].includes(pcJob.value.phase));
+    const fxConfigDirty = computed(() => !!configBaseline.value &&
+      configBaseline.value.form !== JSON.stringify(configForm));
+    const fxSections = computed(() => ux.sections.filter(([id]) => {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, state.flexi.available
+      if (state.mode === 'flexi' && uiMode.value === 'operator' && FX_OPERATOR_HIDDEN.has(id) && !(id === 'pathchek' && fxActiveJob.value)) return false;
+      if (['routing','ptfe','diagnostics'].includes(id)) return state.flexi.available;
+      // Session 2: the legacy stepped PathCheck is retired (route discovery
+      // replaces it); it stays reachable only to finish or recover a job.
+      if (id === 'pathchek') return !!fxActiveJob.value;
+      // Session 2: Guided Flexi Calibration recorded recipes for the retired
+      // Advanced transport; normal loads use ace.cfg. Shown only to finish
+      // or cancel a session that is still open.
+      if (id === 'calibration') return state.mode === 'flexi' && !!production.value.calibration?.session;
+      if (id === 'filament') return state.mode === 'flexi' && !!production.value.inventory;
+      return true;
+    }));
+    // One Config area: setup first, then preferences. PathCheck and
+    // Filament Sources stay in this order; PTFE/Calibration are subviews.
+    const fxConfigSections = ['initial','devices','routing','filament','calibration','pathchek',
+      'general','overrides','advanced','diagnostics','firmware'];
+    const fxAreaSections = computed(() => {
+      return fxConfigSections.map(id => fxSections.value.find(section => section[0] === id)).filter(Boolean);
+    });
+    const fxAreaViews = {config:'initial'};
+    function fxOpenArea() {
+      return fxJump(fxAreaViews.config);
+    }
+    function fxRouteStatus(key) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiDraft, state.flexi.routes, flexiStatusDraft
+      const pending = (flexiDraft[key] ?? -1) !== (state.flexi.routes?.[key] ?? -1)
+        || (flexiStatusDraft[key] || 'assigned') !== (state.flexi.slot_status?.[key] || 'assigned')
+        || flexiTopologyDirty.value;
+      return ux.status(state.flexi.route_verification?.[key],pcJob.value,key,pending,nativePathchek.value.results);
+    }
+    const fxDiscoveryDialog = ref(null), fxDiagnostic = ref(null);
+    const fxDiscoveryRows = computed(() => {
+      const pending = Object.fromEntries(ux.discoveryRows(state.aces || [],state.flexi)
+        .filter(row => flexiTopologyDirty.value || Object.hasOwn(flexiEdits,row.key) || Object.hasOwn(flexiStatusEdits,row.key))
+        .map(row => [row.key,true]));
+      return ux.discoveryRows(state.aces || [],state.flexi,pending);
+    });
+    // Session 2: route discovery results feed the diagram (the legacy
+    // PathCheck evidence is retired and normally empty).
+    const fxObservedTopology = computed(() => {
+      const legacy = ux.observedTopology(fxDiscoveryRows.value);
+      if (legacy.length) return legacy;
+      const rows = Object.entries(fxDisc.value.results || {})
+        .filter(([, r]) => r.status === 'arrived' && Number.isInteger(r.head))
+        .map(([key, r]) => ({key, observed: r.head, result: 'Verified'}));
+      return ux.observedTopology(rows);
+    });
+    function fxOpenDiscovery() {
+      fxDiagnostic.value = null;
+      fxDiscoveryDialog.value?.showModal();
+    }
+    function fxOpenDiagnostic(row) {
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.route_verification, flexiRoutingLocked.value, flexiDirty.value
+      fxDiagnostic.value = ux.diagnostic(row,nativePathchek.value,state.flexi.route_verification?.[row.key],sensorDiagnostics.value);
+      if (!fxDiscoveryDialog.value?.open) fxDiscoveryDialog.value?.showModal();
+    }
+    async function fxSelectDiscovery(row) {
+      if (!row.canSelect || isPrinting.value || flexiRoutingLocked.value || flexiDirty.value) return;
+      pcSource.value = row.key;
+      pcRouteConfirmed.value = false;
+      pcBranchesConfirmed.value = false;
+      pcInitialMin.value = '';
+      pcInitialMax.value = '';
+      pcLength.value = '';
+      fxDiscoveryDialog.value?.close();
+      await fxJump('pathchek');
+    }
+    async function fxCopyDiagnostic() {
+      const report = JSON.stringify(fxDiagnostic.value,null,2);
+      try { await navigator.clipboard.writeText(report); }
+      catch { fxDiscoveryDialog.value?.querySelector('textarea')?.select(); }
+    }
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses state.flexi.routes, state.flexi.topology, state.flexi.route_verification
+    const fxTopology = computed(() => ux.topology(state.flexi.routes, state.flexi.topology?.joiners, state.flexi.route_verification, state.flexi.topology?.manual_overrides));
+    const fxDiagramTopology = computed(() => flexiDirty.value
+      ? ux.topology(flexiAllRoutes.value, flexiJoinerEditor.value, {}, state.flexi.topology?.manual_overrides)
+      : fxTopology.value);
+    const fxChapter = computed(() => ux.chapters.find(row => row[0] === fxHelp.value) || ux.chapters[0]);
+    const fxMatches = computed(() => ux.search(fxSearch.value));
+    async function fxJump(id) {
+      if (id === 'help') return fxOpenHelp();
+      if (!fxSections.value.some(section => section[0] === id)) id = 'general';
+      if (fxAdapterDialog.value?.open) fxAdapterDialog.value.close();
+      if (fxHelpDialog.value?.open) { fxHelpOpener = null; fxHelpDialog.value.close(); }
+      const section = ({ptfe:'routing', sources:'filament'})[id] || id;
+      fxAreaViews.config = id;
+      fxActive.value = section;
+      fxView.value = id;
+      tab.value = 'config';
+      await nextTick();
+      const target = document.getElementById('fx-'+id);
+      if (!target) return;
+      if (target.tagName === 'DETAILS') target.open = true;
+      target.querySelector('h2,h3,summary')?.focus({preventScroll:true});
+      window.scrollTo({top:0});
+    }
+    function fxOpenHelp(chapter='welcome', opener=document.activeElement) {
+      if (fxActiveJob.value) return;
+      fxHelp.value = chapter; fxSearch.value = '';
+      if (!fxHelpDialog.value?.open) {
+        fxHelpOpener = opener;
+        // Non-modal: the guide is docked beside the page, so the controls it
+        // explains stay visible and usable. showModal would inert them.
+        fxHelpDialog.value?.show();
+        document.body.classList.add('fx-help-docked');
+      }
+      fxHelpOpen.value = true;
+      nextTick(() => {
+        if (!fxHelpDialog.value?.open) return;
+        fxHelpDialog.value.scrollTop = 0;
+        fxHelpDialog.value.focus({preventScroll:true});
+      });
+    }
+    // The top Help tab toggles its docked guide: a second click closes it,
+    // matching every other tab's open/close expectation. Inline "?" links
+    // still call fxOpenHelp directly to jump to their chapter.
+    function fxToggleHelp() {
+      if (fxHelpDialog.value?.open) { fxCloseHelpNow(); return; }
+      fxOpenHelp('welcome');
+    }
+    // close() normally emits "close", but the toggle must not depend on that
+    // timing: the dock class and nav state are cleared here as well, so the
+    // page never stays inset after the panel is gone.
+    function fxCloseHelpNow() {
+      const dialog = fxHelpDialog.value;
+      if (dialog?.open) dialog.close();
+      fxCloseHelp();
+    }
+    function fxHelpTopics() {
+      const dialog = fxHelpDialog.value;
+      if (!dialog?.open) return;
+      dialog.scrollTop = 0;
+      dialog.querySelector('input[type=search]')?.focus({preventScroll:true});
+    }
+    function fxCloseHelp() {
+      fxHelpOpen.value = false;
+      document.body.classList.remove('fx-help-docked');
+      if (fxHelpOpener?.isConnected) fxHelpOpener.focus({preventScroll:true});
+      fxHelpOpener = null;
+    }
+    async function fxChooseChapter(id) {
+      fxHelp.value = id;
+      await nextTick();
+      document.getElementById('fx-chapter-title')?.focus();
+    }
+    async function fxOpenAdapter(group, opener) {
+      if (fxActiveJob.value) return;
+      fxAdapter.value = group; fxAdapterOpener = opener;
+      await nextTick();
+      if (!fxAdapterDialog.value?.open) fxAdapterDialog.value?.showModal();
+    }
+    function fxCloseAdapter() {
+      if (fxAdapterOpener?.isConnected) fxAdapterOpener.focus({preventScroll:true});
+      fxAdapterOpener = null;
+    }
+    watch(fxActiveJob, active => {
+      if (!active) return;
+      if (fxAdapterDialog.value?.open) fxAdapterDialog.value.close();
+      if (fxHelpDialog.value?.open) fxHelpDialog.value.close();
+    });
+    watch(fxAreaSections, sections => {
+      if (tab.value === 'config' && !sections.some(([id]) => id === fxActive.value))
+        fxJump(sections[0][0]);
+      else if (fxView.value === 'calibration' && !fxSections.value.some(([id]) => id === 'calibration'))
+        fxJump('routing');
+    });
     return {
+      failoverRows, moveFailover, saveFailover, resetFailover,
+      multiLoad, multiPickBlocked, multiPickList, toggleMultiLoad, toggleMultiPick, runMultiLoad, slotRouteHead,
+      failoverCheckOpen, failoverCheckRows, failoverCheckOff,
+      diagLedger, diagRoutes,
+      fxDisc, discoveryForm, discoveryConfirmed, discoveryBusy, discoveryMessage, discoveryRows, discoveryAction, startDiscovery, stageDiscoveredRoutes, stageDiscoveredLoadLengths,
+      probeOne, saveDiscoveryLengths, configLengthsReady, discoveryLengthsBlocked, customOverridesUnused, discoveryProbeBlocked, discoveryStartBlocked,
+      fxDiscoveryDialog, fxDiagnostic, fxDiscoveryRows, fxObservedTopology, fxOpenDiscovery, fxOpenDiagnostic, fxSelectDiscovery, fxCopyDiagnostic,
+      fxHelpOpen, fxToggleHelp, fxCloseHelpNow, initialSetupOpen, setInitialSetupOpen,
+      ux, uiMode, setUiMode, fxActive, fxView, fxAreaSections, fxOpenArea, reloadState, openRecovery, fxHelp, fxSearch, fxAdapter, fxHelpDialog, fxAdapterDialog, fxActiveJob, fxConfigDirty, fxSections, fxRouteStatus, fxTopology, fxDiagramTopology, fxChapter, fxMatches, fxJump, fxOpenHelp, fxHelpTopics, fxCloseHelp, fxChooseChapter, fxOpenAdapter, fxCloseAdapter,
+      fxGuideDialog, fxGuideStep, fxGuideRouteConfirmed, fxGuideMaterialConfirmed, fxGuideAcknowledge, fxGuideSaving, fxGuideMessage, fxGuideRow, fxGuideFields, fxGuideGroups, fxGuideMissing, fxGuideStatus, fxGuideReady, openGuidedRoute, fxGuideClose, fxGuideReset, fxGuideEdit, fxGuideNext, fxGuideBack, fxGuideSave, fxGuideOpenPathchek,
       history, loadHistory, openHistoryDetail, historyRowKey, historyColors,
       fmtDuration, reprintJob, historyColumnInfo, swapKindLabel,
       subText,
@@ -8794,6 +11415,8 @@ createApp({
       spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
       spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiSourceLabel
+      loadAllDisabled, loadAllTitle, headAction, headActionDisabled, headActionTitle, flexiSourceLabel, loadHeadAt,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,
@@ -8804,7 +11427,8 @@ createApp({
       spoolSlotOptions, spoolSlotKey, spoolMoveLocked, spoolAssignTo, spoolPickerOptions,
       smRowTaken, smRowWhere, spoolWeightDialog, spoolSort, spoolNewTitle,
       tagWrite,      tagWriteFormat, tagWriteUidSku, setTagWrite, slotOccupied,
-      tagWriteOutcome, dismissTagWriteOutcome, tagRead, aceOpenFw, aceTagRead,
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses unloadAllFlexi
+      setFailoverPriority, setFailoverAllowColor, recoverySameSourceConfirmed, recordSameSourceInTube, tagWriteOutcome, dismissTagWriteOutcome, tagRead, aceOpenFw, aceTagRead, aceTagReadMode, aceTagReadTitle, aceFirmware, rfidGuide, openRfidGuide, closeRfidGuide, clearGuideOverride, channelStateLabel, channelStateTerminal, channelStateShown, unloadAllDisabled, unloadAllTitle, unloadAllFlexi,
       paDlg, paClip, spoolPaDialog, paRowDel, paAddRow, paCopy, paPaste,
       paCalibrate, paCanCalibrate, paCalibrating, paLoading, paSpoolHead, paSpoolLoadPlan,
       paSave, paDirty, paKeyValid, paValueValid, paKeyOptions, pickerPaDialog,
@@ -8820,13 +11444,20 @@ createApp({
       isPrinting,
       dryerCfg, dryStart, dryStop, dryPanelOpen, toggleDryPanel, aceDrying,
       snapshots, selectedSnapshot, snapshotPreview, saveSnapshot, loadSnapshot, deleteSnapshot,
-      config, configLog, configLoadError, showRawConfig, toggleRawConfig, configForm, rebootNeeded,
+      config, configLog, configLoadError, showRawConfig, toggleRawConfig, saveConfigRaw, configForm, rebootNeeded,
       printerRebootNeeded, restartNotice, restartOffered, restartNow, notifWantsReboot,
       aceHeadsRightSide,
-      loadConfig, saveConfigForm, saveConfigRaw, setMode,
+      loadConfig, saveConfigForm, setMode,
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses wizardFlexibleConsent, customizeFlexiSettings, flexibleProductionConsent
+      wizard, wizardDraft, wizardMeasurement, wizardStepMm, wizardSegmentMm, wizardError, wizardNotes, wizardObservations, wizardSession, wizardSource, wizardRoutes, wizardDiagram, wizardAceOptions, wizardSlotOptions, wizardResolved, wizardCanIncrement, wizardCanSegment, wizardSelectSource, wizardField, wizardEdit, wizardInherit, wizardSend, wizardSelect, wizardMeasure, wizardSaveRecipe, wizardAuthorize, wizardStart, wizardIncrement, wizardSegment, wizardObserve, wizardRecord, wizardPrepare, wizardTipChange, wizardTipAdd, wizardTipRemove, wizardTipList, wizardAffectedSources, wizardFlexibleConsent,
+      sourceSelectHead, manualIdentity, manualMaterial, manualColor, editSourceType, temporaryManualSource, restoreConfiguredSource,
+      production, productionBusy, productionMessage, productionProgress, productionPending, productionCompleted, dismissProductionCompleted, productionReconcileRequired, productionReconcileBusy, reconcileProductionOutcome, productionDraft, productionDirty, productionConflict, productionBaseRevision, productionSource, productionSelectedRow, productionSelectedClearance, productionSelectedRecovery, productionOwnerForSelected, productionReadiness, productionFieldMissing, openProductionRecipe, productionAction, productionProfileScope, productionHead, productionTipMoves, productionFields, productionFieldLabel, productionFieldUnit, productionProfile, editProductionTip, editProductionField, reloadProduction, saveProduction, customizeFlexiSettings, productionRequest, dismissProductionPending, productionFile, productionPrintReview, productionPrintBlock, productionScope, inspectProductionPath, productionCalibrationTest, productionActions, productionSeconds, authorizeProduction, flexibleProductionConsent, confirmProductionClear, productionClearHead, productionClearRow, productionClearConfirmed, attestProductionClearance, productionObservations, validateProductionRecipe,
+      nativePathchek, pcRecoveryDisposition, pcSource, pcLength, pcInitialMin, pcInitialMax, pcMin, pcMax, pcReference, pcQualification, pcRouteConfirmed, pcBranchesConfirmed, pcBusy, pcMessage, pcMode, pcRoute, pcJob, pcOwned, pcEmptyQualification, pcAction, pcExport, pcDraft, pcSetupMessage, pcSaveDraft, pcSubmitMeasurements, pcStartReason, pcQualificationState, pcPlanSelected, pcPlan, pcPlanRows, pcSelectedCount, pcPlanQueueRows, pcPlanSharedGroups, pcPlanProgress, pcPlanRecovery, pcPlanSelectionChanged, pcPlanStale, pcPlanToggle, pcPlanSelectAll, pcPlanClearSelection, pcPlanCreate, pcPlanDiscard, pcPlanState, pcPlanPrerequisites, pcMeasurementText, pcPlanPrepare, recoveryPosition, recoveryConfirmed, selectRecovery, recoverySource, recoveryBranches, productionRecoveryRows, recoveryRow, recoveryAdvice, recoveryAttestationLabel, failedStop, isolateFailedStop, recoverySensorText, recoveryPathText, slotRecoveryFor, slotReadinessFor, slotLoadBlockReason, headRouteReadiness, headOperationBlocked, fxRecoveryDialog, recoveryBannerDetails, fxCloseRecovery,
+      sensorDiagnostics, diagnosticTransportFresh, diagnosticExpectedHead, diagnosticUnexpectedHeads, exportSensorDiagnostics,
+      flexiRoutingLocked, flexiJoinerEditor, flexiAllRoutes, updateJoiner, addJoiner, removeJoiner, joinerBranch, joinerGeometrySaved, flexiJoinersText, editFlexiJoiners, proposeDiscoveredRoute, flexiDraft, flexiStatusDraft, editFlexiStatus, flexiDirty, flexiConflict, flexiBaseRevision, flexiSaving, flexiMessage, flexiRows, flexiUnits, aceSlotCount, editFlexiRoute, resetFlexiDraft, saveFlexiRoutes, fxRouteReadinessMap, fxReadinessCounts, fxRouteAction, routeInventory, flexiLoadedSlotCount, flexiLoadedHeadCount, flexiClearHeadCount, flexiSharedHeadCount,
       tipform, loadTipform, tipformAddRow, tipformRemoveRow, saveTipform, tipformRestartPending, tipformNameOptions,
       TIPFORM_STEP_TYPES, tipformToggleBuilder, tipformAddStep, tipformRemoveStep, tipformStepsToTable, tipformStepPlaceholder, tipformInsertStock,
-      preflight, closePreflight, startPreflightPrint, applyLoadout, stageLabel,
+      preflight, closePreflight, startPreflightPrint, applyLoadout, stageLabel, flexiReportMapping,
       tierLabel, tierWarn, rgbDec, sortedMapping, slicerColorsInPrintOrder,
       forcaMixed, forcaNozzleList, forcaGroups, forcaFeasible, forcaTargetHint,
       forcaSwapsDisplay, forcaBgLabel, forcaFlushG,
@@ -8838,6 +11469,7 @@ createApp({
       headTargetColor, chipBg, headTargetLabelById, onHeadTargetChange, headSwapsDisplay,
       hmDropOpen, hmDdToggle, hmDdClose, hmDdPick,
       pfPlanSel, pfPlanList, pfPlanFeasible, pfPlanSwaps, pfPlanFlush, pfPlanBg, pfSelected, pfRecommended, pfPlanTitle, pfGoLabel, pfPrintSelected,
+      preflightMode, preflightLegacyBlock,
       headFeasible, headPlanFeasible, headPlanSwaps, headPlanBg, headPlanFlushG, headPlanBgLabel, headSlicerHex,
       headSlicerMat, headProposalLabel,
       headMaxCopies, headCopiesEffective, headCopyPlan, headCopyList, copySlotLabel, setPreflightCopies,

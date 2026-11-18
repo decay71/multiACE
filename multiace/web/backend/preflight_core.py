@@ -1252,6 +1252,308 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
 
 
 # --------------------------------------------------------------------------- #
+# @MULTIACE_FLEXI_HOOK BEGIN: adapter from saved Flexi routes to the original head planner
+# Flexi adapter (saved slot -> head routes on the original head planner)      #
+# --------------------------------------------------------------------------- #
+
+def flexi_physical_rows(flexi):
+    """Available saved Flexi routes, grouped by their physical toolhead.
+
+    The original head planner needs one ACE per head. Flexi routes can point
+    any ACE slot at any head, so this adapter gives each physical head a
+    virtual four-slot ACE. The virtual index is only an internal planning
+    coordinate; every row carries the real ACE/slot that will be printed.
+    """
+    flexi = flexi or {}
+    routes = flexi.get("routes") or {}
+    inventory = {row.get("key"): row for row in
+                 ((flexi.get("production") or {}).get("inventory") or [])
+                 if isinstance(row, dict)}
+    statuses = flexi.get("slot_status") or {}
+    by_head = {}
+    for key, head in sorted(routes.items()):
+        try:
+            ace, slot = (int(part) for part in key.split(":"))
+            head = int(head)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= ace < 4 and 0 <= slot < 4 and 0 <= head < 4):
+            continue
+        if statuses.get(key) in ("empty", "unused"):
+            continue
+        row = inventory.get(key) or {}
+        if row.get("present") is False:
+            continue
+        if row.get("availability") not in (None, "", "assigned"):
+            continue
+        by_head.setdefault(head, []).append({
+            "key": key, "ace": ace, "slot": slot, "head": head,
+            "material": row.get("material") or "",
+            "color": row.get("color") or "",
+        })
+    return by_head
+
+
+# @MULTIACE_FLEXI_HOOK Flexi code below uses flexi_virtual_context, flexi, flexi_physical_rows
+def flexi_virtual_context(flexi, pp=None):
+    """Build the virtual head context plus the physical/virtual lookup."""
+    by_head = flexi_physical_rows(flexi)
+    virtual_slots = []
+    virtual = {}
+    physical_targets = []
+    for head in sorted(by_head):
+        for index, row in enumerate(by_head[head]):
+            virtual_id = "slot-%d-%d" % (head, index)
+            virtual[virtual_id] = row
+            virtual_slots.append({
+                "ace": head, "slot": index,
+                "material": row["material"], "color": row["color"],
+            })
+            physical_targets.append({
+                "id": "slot-%d-%d" % (row["ace"], row["slot"]),
+                "kind": "ace", "head": row["head"],
+                "ace": row["ace"], "slot": row["slot"],
+                "material": row["material"], "color": row["color"],
+                "name": (pp.approx_color_name(row["color"]) or "")
+                        if pp is not None else "",
+            })
+    head_ctx = {
+        "mode": "head", "ace_head": 0,
+        "ace_heads": [0, 1, 2, 3],
+        "head_ace": {str(head): head for head in range(4)},
+        "feeders": [], "max_copies": 1,
+    }
+    return {
+        "by_head": by_head,
+        "virtual_slots": virtual_slots,
+        "virtual": virtual,
+        "head_ctx": head_ctx,
+        "targets": physical_targets,
+    }
+
+
+# @MULTIACE_FLEXI_HOOK Flexi code below uses flexi_topology_block, flexi
+def flexi_topology_block(flexi):
+    """Require a recorded joiner for every head with multiple saved routes.
+
+    A direct one-to-one route needs no fitting. Two or more routes sharing a
+    toolhead are a shared path and must name the combiner and its branches;
+    missing metadata is a configuration gap, never a PathChek failure.
+    """
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, flexi_physical_rows, Flexi
+    flexi = flexi or {}
+    try:
+        by_head = flexi_physical_rows(flexi)
+    except Exception:
+        return "The saved Flexi routes could not be read."
+    joiners = ((flexi.get("topology") or {}).get("joiners") or {})
+    for head, rows in sorted(by_head.items()):
+        if len(rows) < 2:
+            continue
+        branches = set()
+        for joiner in joiners.values():
+            if int(joiner.get("head", -1)) == head:
+                branches.update((joiner.get("branches") or {}).keys())
+        missing = [row["key"] for row in rows if row["key"] not in branches]
+        if missing:
+            return ("T%d has multiple saved routes (%s), but no complete "
+                    "joiner/branch definition. Record the shared fitting and "
+                    "both branches before preparing this print."
+                    % (head, ", ".join(missing)))
+    return ""
+
+
+# @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_target_row
+def _flexi_target_row(row, virtual):
+    target_id = row.get("target_id")
+    source = virtual.get(target_id)
+    if source is None and row.get("kind") == "ace":
+        source = virtual.get("slot-%s-%s" % (row.get("ace"), row.get("slot")))
+    if source is None:
+        return None
+    return {
+        "t": row.get("t"), "kind": "ace", "head": source["head"],
+        "ace": source["ace"], "slot": source["slot"],
+        "target_id": "slot-%d-%d" % (source["ace"], source["slot"]),
+        "tier": row.get("tier"),
+    }
+
+
+# @MULTIACE_FLEXI_HOOK Flexi code below uses _translate_flexi_plan
+def _translate_flexi_plan(plan, virtual):
+    """Map a virtual head-plan mapping back to real ACE/slot rows."""
+    if not plan or not isinstance(plan, dict):
+        return plan
+    if not plan.get("mapping"):
+        return plan
+    translated = []
+    used = set()
+    invalid = False
+    for row in plan["mapping"]:
+        if not isinstance(row, dict) or row.get("kind") == "none":
+            invalid = True
+            continue
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_target_row
+        out = _flexi_target_row(row, virtual)
+        if out is None:
+            invalid = True
+            continue
+        key = (out["ace"], out["slot"])
+        if key in used:
+            invalid = True
+            break
+        used.add(key)
+        translated.append(out)
+    if invalid:
+        plan["feasible"] = False
+        plan["mapping"] = []
+        plan["reason"] = ("The proposed plan needs more physical lanes per "
+                          "head than the saved routes provide.")
+    else:
+        plan["mapping"] = translated
+    return plan
+
+
+# @MULTIACE_FLEXI_HOOK Flexi code below uses build_flexi_report, flexi, Flexi
+def build_flexi_report(pp, *, slicer_colors, slicer_types, num_aces,
+                       plan_proxy, flexi, token, filename, size,
+                       fuzzy=DEFAULT_FUZZY, meta=None):
+    """Analyze a file against saved Flexi routes using the original planner.
+
+    No PathChek certificate is read or required. The planner only needs the
+    saved routes, available slot metadata and the file itself.
+    """
+    ctx = flexi_virtual_context(flexi, pp)
+    if not ctx["virtual_slots"]:
+        raise RuntimeError(
+            "No available routed slots were found. Save at least one Flexi "
+            "route whose slot is marked assigned and present.")
+    report = head_mode_preview(
+        pp, token, filename, size, slicer_colors, slicer_types,
+        ctx["head_ctx"], ctx["virtual_slots"], plan_proxy,
+        fuzzy=fuzzy, meta=meta)
+    for plan in report.get("plans", {}).values():
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses _translate_flexi_plan, flexi, flexi_block
+        _translate_flexi_plan(plan, ctx["virtual"])
+    report["head_mode"] = True
+    report["topology"] = "flexi"
+    report["flexi"] = True
+    report["flexi_block"] = flexi_topology_block(flexi)
+    report["flexi_routes"] = dict((flexi or {}).get("routes") or {})
+    report["ace_heads"] = sorted(ctx["by_head"])
+    report["ace_head"] = report["ace_heads"][0] if report["ace_heads"] else 0
+    report["manual_heads"] = []
+    route_aces = [int(key.split(":")[0]) + 1
+                  for key in report["flexi_routes"]]
+    report["num_aces"] = max([num_aces or 0] + route_aces)
+    report["live_slots"] = [
+        {"ace": row["ace"], "slot": row["slot"],
+         "material": row["material"], "color": row["color"],
+         "name": (pp.approx_color_name(row["color"]) or "")}
+        for rows in ctx["by_head"].values() for row in rows
+    ]
+    report["targets"] = sorted(ctx["targets"],
+                               key=lambda row: (row["head"], row["ace"], row["slot"]))
+    report["missing_materials"] = []
+    report["copies"] = {}
+    report["copy_plan"] = {"max_copies": 1, "suggestions": [],
+                           "swaps_before": None, "swaps_after": None}
+    report["empty_slots"] = []
+    return report
+
+
+# @MULTIACE_FLEXI_HOOK Flexi code below uses _FLEXI_TOOL_RE, _FLEXI_HEATER_RE, flexi_prepare_text
+_FLEXI_TOOL_RE = re.compile(r'^(\s*)T(\d+)(\s*(?:;.*)?)$', re.I)
+_FLEXI_HEATER_RE = re.compile(
+    r'^(\s*M10[49]\b.*?\bT)\s*(\d+)(\b.*)$', re.I)
+
+
+def flexi_prepare_text(text, report, plan_name="loadout", assignment=None):
+    """Rewrite an original slicer file for native Flexi virtual tools.
+
+    The planner's color-to-physical-lane choice is preserved, but the produced
+    file uses the native T4..T19 targets the Flexi runtime already maps to
+    saved ACE/slot routes. It does not inject ACE_SWAP_HEAD, does not perform
+    legacy auto-loading and does not consult PathChek qualification.
+    """
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("Choose a non-empty G-code file.")
+    if not report or not report.get("flexi"):
+        raise RuntimeError("Flexi preparation requires a Flexi preflight report.")
+    if report.get("flexi_block"):
+        raise RuntimeError(report["flexi_block"])
+    plan = (report.get("plans") or {}).get(plan_name)
+    if not plan or not plan.get("feasible"):
+        reason = (plan or {}).get("reason")
+        raise RuntimeError("The selected Flexi plan is not feasible" +
+                           ((": " + reason) if reason else "."))
+    raw_targets = report.get("targets") or []
+    if isinstance(raw_targets, dict):
+        raw_targets = raw_targets.values()
+    targets = {row.get("id"): row for row in raw_targets
+               if isinstance(row, dict)}
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi_routes
+    routes = report.get("flexi_routes") or {}
+    rows = {}
+    for row in plan.get("mapping") or []:
+        if not isinstance(row, dict) or row.get("t") is None:
+            continue
+        rows[int(row["t"])] = row
+    if plan_name == "loadout" and assignment:
+        merged = {}
+        for key, target_id in assignment.items():
+            try:
+                t = int(key)
+            except (TypeError, ValueError):
+                continue
+            target = targets.get(target_id)
+            if target is None:
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi
+                raise RuntimeError("Selected Flexi target is not a saved route: %s" % target_id)
+            merged[t] = target
+        if merged:
+            rows = merged
+    if not rows:
+        raise RuntimeError("The selected Flexi plan has no usable assignments.")
+    tool_map = {}
+    old_to_head = {}
+    for t, row in sorted(rows.items()):
+        if not (0 <= t <= 31):
+            raise RuntimeError("Tool T%d is outside the Flexi virtual-tool range." % t)
+        source = (int(row.get("ace")), int(row.get("slot")))
+        key = "%d:%d" % source
+        if key not in routes:
+            raise RuntimeError("Planned source %s has no saved Flexi route." % key)
+        head = int(row.get("head"))
+        if int(routes[key]) != head:
+            raise RuntimeError("Planned source %s contradicts its saved Flexi route." % key)
+        tool = 4 + source[0] * 4 + source[1]
+        tool_map[t] = tool
+        old_to_head[t] = head
+
+    out = []
+    for line in text.splitlines():
+        match = _FLEXI_TOOL_RE.match(line)
+        if match:
+            old = int(match.group(2))
+            if old not in tool_map:
+                raise RuntimeError("Tool T%d has no planned Flexi assignment." % old)
+            out.append(match.group(1) + "T%d" % tool_map[old] + match.group(3))
+            continue
+        heater = _FLEXI_HEATER_RE.match(line)
+        if heater:
+            old = int(heater.group(2))
+            if old not in old_to_head:
+                raise RuntimeError("Heater command addresses T%d without a planned Flexi assignment." % old)
+            out.append(heater.group(1) + "%d" % old_to_head[old] + heater.group(3))
+            continue
+        out.append(line)
+    return ("; multiACE Flexi prepared: plan=%s; native virtual tools T4-T19\n" % plan_name
+            + "\n".join(out) + ("\n" if text.endswith("\n") else ""))
+# @MULTIACE_FLEXI_HOOK END: adapter from saved Flexi routes to the original head planner
+
+
+# --------------------------------------------------------------------------- #
 # report builder (analyze)                                                    #
 # --------------------------------------------------------------------------- #
 

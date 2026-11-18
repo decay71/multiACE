@@ -39,7 +39,7 @@ STATIC_FIELDS = (
 DYNAMIC_FIELDS = (
     'open_fw_version', 'community_fw', 'bootloader_held', 'rc522_tunnel',
     'can_write_tags', 'insert_bites_while_busy', 'dryer_flag_bits',
-    'gen1_tunnel', 'tag_read',
+    'gen1_tunnel', 'tag_read', 'tag_read_mode',
 )
 
 # Why V1 and V2 differ, per field where they do (design: mandatory).
@@ -140,6 +140,43 @@ def community_fw_kind(firmware):
     return ''
 
 
+# @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+# @MULTIACE_FLEXI_COMPAT BEGIN: firmware-aware manual RFID capability.
+# Gen-1 stock/CV use the stock recognition cycle; only a probed CV tunnel
+# uses direct RC522; ACE2 stock has no safe host-triggered read.
+def tag_read_mode(kind, firmware, gen1_probe=None):
+    """How a manual RFID read can be performed on this unit, or
+    'unsupported'.
+
+    Gen-1 stock and community builds both expose the ordinary
+    `filament_recognition` command; the CV tunnel build additionally
+    exposes the direct RC522 tunnel. ACE2 stock has no host-triggered read.
+    The mode is deliberately derived from the protocol and firmware, never
+    from a cached tag record.
+    """
+    fw = _fw_text(firmware).upper()
+    kind = str(kind or '').lower()
+    if kind == 'v2' and is_open_fw(fw):
+        return 'ace2_tunnel'
+    if kind == 'v1':
+        if gen1_probe and len(gen1_probe) > 1 and gen1_probe[1]:
+            return 'gen1_tunnel'
+        if fw.startswith('V') or fw.startswith('CV'):
+            return 'gen1_stock'
+    return 'unsupported'
+
+
+def gen1_recognition_observed(action, slot_status):
+    """True when a status poll shows the firmware actually ran a
+    recognition cycle. Used to reject a cached slot record as a fresh read."""
+    action = str(action or '').strip().lower()
+    slot_status = str(slot_status or '').strip().lower()
+    working = ('shifting', 'preload', 'loading', 'unloading', 'feeding')
+    return action in working or slot_status in working
+# @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+# @MULTIACE_FLEXI_COMPAT END: firmware-aware manual RFID capability.
+
+
 class UnitCaps(object):
     """Immutable capability record of one unit: str keys only, values are
     bool, str, tuple or None, exportable via as_dict()."""
@@ -204,6 +241,7 @@ def _none_fields():
               'gen1_tunnel', 'tag_read'):
         d[k] = False
     d['community_fw'] = ''
+    d['tag_read_mode'] = None
     return d
 
 
@@ -245,7 +283,13 @@ def caps_for(codec, firmware='', gen1_probe=None):
         fields['dryer_flag_bits'] = (
             tunnel and ver is not None and ver >= DRYER_FLAG_BITS_MIN_FW)
         fields['gen1_tunnel'] = bool(gen1_probe and gen1_probe[1])
-        fields['tag_read'] = bool(tunnel or fields['gen1_tunnel'])
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+        # @MULTIACE_FLEXI_COMPAT Expose one mode so the web button and Klipper agree.
+        mode = tag_read_mode(name, fw, gen1_probe)
+        fields['tag_read_mode'] = mode
+        # Upstream's rule (tunnel or probed Gen-1 tunnel) plus the Gen-1
+        # stock/CV recognition-cycle read.
+        fields['tag_read'] = bool(tunnel or fields['gen1_tunnel'] or mode != 'unsupported')
     key = (codec if isinstance(codec, type) else type(codec), firmware,
            gen1_probe)
     return UnitCaps(fields, REASONS, key=key)

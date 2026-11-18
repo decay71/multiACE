@@ -1,3 +1,6 @@
+# @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+# @MULTIACE_FLEXI_COMPAT RC6 RFID compatibility helper: direct RC522 reads on
+# tunnel-capable ACE Pro community firmware; stock firmware receives no tunnel op.
 # ace_gen1_tunnel.py - Gen-1 (ACE Pro) tag reads through the community
 # firmware's RC522 tunnel. Plain helper module, imported lazily by ace.py -
 # deliberately NOT a Klipper extra: no [ace_gen1_tunnel] config section
@@ -28,14 +31,12 @@
 #      the commands, and the release is what leaves the unit in its normal
 #      state.
 #
-# Antenna map (corrected - see the tunnel report, section 4): there are
-# TWO reader antennas, TWO bays each. Antenna 1 covers slots 0 and 1
-# (reader channels 0 and 2), antenna 2 covers slots 2 and 3 (channels 1
-# and 3). The reader CHANNEL for a slot is the bit-swap 0,1,2,3 -> 0,2,1,3,
-# i.e. channel = ((slot & 1) << 1) | ((slot >> 1) & 1) (slot_channel()).
-# The partner slot sharing the same antenna is SLOT ^ 1; the partner
-# reader CHANNEL is CHANNEL ^ 2. The tag must face the coil; ace.py rotates
-# the spool with feed/unwind to bring it there (_gen1_search_read).
+# Antenna map (owner-confirmed, see REPORT-RC522-TUNNEL-EN section 4 and
+# notes-ops section 6): Gen 1 has two antennas with two bays each. The
+# packed `reader` field addresses RF channels, and the verified map is
+# slot 0,1,2,3 -> channel 0,2,1,3. The slot index is not the channel for
+# the middle bays. The tag must face the coil; ace.py rotates the spool
+# with feed/unwind to bring it there (_gen1_search_read).
 #
 # Read sequence (tunnel-verified host order, inside ONE acquire/release):
 #   acquire -> SELECT -> TXMODE |= 0x80 -> RXMODE |= 0x80 ->
@@ -47,9 +48,9 @@
 #
 # Failure policy: every failure is "no tunnel" / "no tag" - never an error
 # the user sees, never a blocking call outside the greenlet that runs it.
-# Tunnel ops are ONLY ever sent when the firmware string matches the known
-# tunnel builds (CV1.3.87x) AND a probe op answers through the stub; a
-# stock (or older community) unit sees no tunnel traffic at all.
+# Tunnel ops are ONLY ever sent to a community (CV) build AND after a probe
+# op answers through the stub; a stock unit, or a community build that does
+# not implement the tunnel, sees no tunnel read traffic.
 
 import logging
 
@@ -61,11 +62,17 @@ from .ace_rc522 import AceTagReader
 
 # --- host contract (docs/GEN1_TAG_TUNNEL.md, REPORT-RC522-TUNNEL-EN.md) ----
 
+# @MULTIACE_FLEXI_SHARED RC522 tag tunnel probing for every ACE community build, all modes
 TUNNEL_MAGIC = 0x80000000
-# Firmware string prefix of the known tunnel builds. Stock ACE Pro reports
-# V1.3.863, the UID-only community build CV1.3.863 - neither matches, so
-# neither is ever sent a tunnel op.
+# Verified tunnel-build prefix, used for operator-facing messages. Stock ACE
+# Pro reports V1.3.863 and is never probed; the UID-only community build
+# CV1.3.863 is eligible for the probe below but does not expose the tunnel.
 GEN1_TUNNEL_FW_PREFIX = 'CV1.3.87'
+# Any leading-CV build is a community build. The version string is only an
+# eligibility gate; the probe below is the authoritative tunnel check. This
+# admits builds such as CV1.3.863 that may expose the tunnel with a different
+# version string, while stock V1.3.863 is still never sent a tunnel op.
+GEN1_COMMUNITY_FW_PREFIX = 'CV'
 # The verified tunnel reference (REPORT-RC522-TUNNEL-EN.md): CV1.3.871.
 GEN1_TUNNEL_FW_REFERENCE = 'CV1.3.871'
 
@@ -130,19 +137,18 @@ class NoReply(Exception):
     further op is sent into a unit that may still be blocked."""
 
 
+# @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+# @MULTIACE_FLEXI_COMPAT Verified Gen-1 bay-to-antenna map: 0,1,2,3 -> 0,2,1,3.
 def slot_channel(slot):
     """The RC522 reader channel for an ACE slot (bay order 0..3).
 
-    Two antennas, two bays each: antenna 1 covers slots 0/1 (reader
-    channels 0/2), antenna 2 covers slots 2/3 (channels 1/3). The channel
-    is the bit-swap of the slot - 0,1,2,3 -> 0,2,1,3:
-
-        channel = ((slot & 1) << 1) | ((slot >> 1) & 1)
-
-    The partner sharing the slot's antenna is `slot ^ 1`; its reader
-    channel is `channel ^ 2`. Never pass the raw slot as the reader."""
-    s = int(slot) & 0x3
-    return ((s & 1) << 1) | ((s >> 1) & 1)
+    Gen 1 has two antennas with two bays each. The packed `reader` field
+    addresses RF channels, and the owner-confirmed map is
+    `0,1,2,3 -> 0,2,1,3` (channels 0/2 are antenna 1, channels 1/3 are
+    antenna 2). The slot index is not the channel for the middle bays.
+    """
+    slot = int(slot) & 0x3
+    return ((slot & 1) << 1) | ((slot >> 1) & 1)
 
 
 def pack_index(op, a1=0, a2=0, reader=0):
@@ -176,14 +182,18 @@ def parse_code(response):
         return None
 
 
+# @MULTIACE_FLEXI_SHARED tunnel capability check by firmware build, all modes
 def firmware_supports_tunnel(firmware):
-    """True when the runtime firmware string is a known tunnel build.
+    """True when a community build is eligible for the tunnel probe.
 
-    This is only the cheap pre-gate that keeps tunnel traffic away from
-    stock/older units; the authoritative gate is a probe op that actually
-    answers through the stub (Gen1TagTunnel.tunnel_available)."""
+    This is a cheap pre-gate that keeps tunnel traffic away from stock
+    units; it is not proof that the tunnel exists. The authoritative gate
+    is a probe op that actually answers through the stub
+    (Gen1TagTunnel.tunnel_available). CV1.3.863 and CV1.3.871 are both
+    eligible, so a tunnel-capable build that still reports an older version
+    is not rejected by string matching alone."""
     txt = (firmware or '').strip().upper()
-    return txt.startswith(GEN1_TUNNEL_FW_PREFIX)
+    return txt.startswith(GEN1_COMMUNITY_FW_PREFIX)
 
 
 def uid_from_page0(data):
@@ -241,6 +251,11 @@ class Gen1TagTunnel:
         self.abort_check = None
         self.aborted = ''
         self.no_reply = False
+        # Last raw reply and a human-readable probe verdict. Kept for the
+        # one-time diagnostic: a stock/UID-only reply has a top-level code
+        # and no result.code, while the tunnel stub always writes result.code.
+        self.last_reply = None
+        self.last_probe = ''
 
     # -- plumbing ----------------------------------------------------------
 
@@ -271,7 +286,8 @@ class Gen1TagTunnel:
                     + (self.timeout if timeout is None else float(timeout)))
         while 'r' not in box and self.ace.reactor.monotonic() < deadline:
             self._pause(POLL_INTERVAL)
-        return box.get('r')
+        self.last_reply = box.get('r')
+        return self.last_reply
 
     def _op(self, op, a1=0, a2=0, reader=0, timeout=None):
         """One packed op, result byte or None. Raises SessionAborted when
@@ -315,18 +331,18 @@ class Gen1TagTunnel:
                 self.idx, fw or '?', GEN1_TUNNEL_FW_PREFIX + 'x')
         else:
             logging.info(
-                '[multiACE] gen1 tag tunnel: MMU %d firmware %r matches the '
-                'tunnel builds but a probe op did not answer through the '
-                'stub - no tunnel traffic from here',
-                self.idx, fw or '?')
+                '[multiACE] gen1 tag tunnel: MMU %d community firmware %r '
+                'did not answer the RC522 tunnel probe - no tunnel traffic '
+                'from here', self.idx, fw or '?')
 
     def tunnel_available(self, timeout=None):
         """True only after a probe op answered through the stub.
 
-        Gate 1 (cheap): the firmware string must match the known tunnel
-        builds. Gate 2 (authoritative): op 0 read VersionReg 0x37 must come
-        back with a `result.code` - a stock reply has no `result.code`, so
-        a stock (or older community) unit can never pass. The result is
+        Gate 1 (cheap): the firmware string must be a community build
+        (leading CV), which keeps tunnel traffic away from stock units.
+        Gate 2 (authoritative): op 0 read VersionReg 0x37 must come back
+        with a `result.code` - a stock reply has no `result.code`, so a
+        stock or UID-only community unit can never pass. The result is
         cached per firmware string; a probe is one command."""
         fw = self._fw_string()
         if not firmware_supports_tunnel(fw):
@@ -335,6 +351,7 @@ class Gen1TagTunnel:
             return False
         if self._support is not None and self._support[0] == fw:
             return bool(self._support[1])
+        self.last_probe = ''
         try:
             v = self._op(OP_READ_REG, REG_VERSION, reader=0,
                          timeout=timeout)
@@ -347,6 +364,16 @@ class Gen1TagTunnel:
         ok = v is not None
         self._support = (fw, ok)
         if not ok:
+            if isinstance(self.last_reply, dict):
+                self.last_probe = ('reply code=%r msg=%r, no result.code '
+                                   '(stock or UID-only firmware)'
+                                   % (self.last_reply.get('code'),
+                                      self.last_reply.get('msg')))
+                logging.info('[multiACE] gen1 tag tunnel: MMU %d tunnel '
+                             'probe on firmware %r: %s',
+                             self.idx, fw or '?', self.last_probe)
+            else:
+                self.last_probe = 'no reply to the RC522 tunnel probe'
             self._note_no_tunnel(fw, probed=True)
         elif v != VERSION_REG_VALUE:
             # The stub answered (a code exists) but reader 0 does not read
@@ -404,6 +431,16 @@ class Gen1TagTunnel:
         if v is None:
             return None
         self._op(OP_WRITE_REG, REG_RXMODE, v | 0x80, reader=reader,
+                 timeout=timeout)
+        # The reader bring-up triggered by the TxMode write leaves the FIFO
+        # and interrupt state from SELECT behind. Flush both before loading
+        # the READ frame; otherwise the two command bytes are appended to the
+        # SELECT residue and the tag sees a corrupt frame. This is the exact
+        # sequence used by the verified tunnel probe (REPORT-RC522-TUNNEL-EN,
+        # section 5).
+        self._op(OP_WRITE_REG, REG_FIFOLEVEL, 0x80, reader=reader,
+                 timeout=timeout)
+        self._op(OP_WRITE_REG, REG_COMIRQ, 0x7F, reader=reader,
                  timeout=timeout)
         self._op(OP_WRITE_REG, REG_BITFRAMING, 0x00, reader=reader,
                  timeout=timeout)
@@ -484,7 +521,8 @@ class Gen1TagTunnel:
              'userdata_complete' (all user pages read)}
 
         `reader` is the RC522 channel (slot_channel(slot): 0,1,2,3 ->
-        0,2,1,3), never the raw slot. `userdata` also reads the OpenSpool
+        0,2,1,3; the slot index is not the channel for the middle bays).
+        `userdata` also reads the OpenSpool
         user pages when page 0 shows a plain NTAG capability container.
         None = no card / no reply / no tunnel; the release runs on every
         path.

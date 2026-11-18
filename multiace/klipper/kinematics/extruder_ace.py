@@ -731,6 +731,13 @@ class PrinterExtruder:
     def stats(self, eventtime):
         return self.heater.stats(eventtime)
     def check_move(self, move):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, _flexi_production
+        # @MULTIACE_FLEXI_COMPAT Hold native extrusion until the first Flexi tool is selected.
+        ace = self.printer.lookup_object('ace', None)
+        service = getattr(ace, '_flexi_production', None)
+        if (getattr(ace, '_ace_mode', None) == 'flexi' and service is not None
+                and service.pending_start is not None and service.print_context()[1] == 'printing'):
+            raise self.printer.command_error('Flexi is waiting for the native print to select its first tool')
         axis_r = move.axes_r[3]
         if not self.heater.can_extrude:
             coded = f"0003-0523-{self.extruder_num:04d}-0001"
@@ -1317,6 +1324,11 @@ class PrinterExtruder:
     def cmd_M109(self, gcmd):
 
         self.cmd_M104(gcmd, wait=True)
+        # @MULTIACE_FLEXI_HOOK Native warmup completion is reported to the Flexi production service.
+        ace=self.printer.lookup_object('ace',None)
+        service=getattr(ace,'_flexi_production',None)
+        if getattr(ace,'_ace_mode',None)=='flexi' and service is not None:
+            service.finish_native_warmup()
     cmd_ACTIVATE_EXTRUDER_help = "Change the active extruder"
     def cmd_ACTIVATE_EXTRUDER(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead')

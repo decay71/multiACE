@@ -124,7 +124,11 @@ def test_caps_equal_live_predicates():
         assert caps['dryer_flag_bits'] == (
             v2 and old_ver is not None and old_ver >= (1, 1, 61))
         assert caps['gen1_tunnel'] == old_gen1
-        assert caps['tag_read'] == old_read, (codec, fw, probe)
+        # Flexi build: a Gen-1 ACE Pro on stock/CV firmware can also read
+        # its tag through the ordinary recognition cycle (tag_read_mode
+        # 'gen1_stock'), so tag_read is offered there too.
+        gen1_stock = v1 and fw.strip().upper().startswith(('V', 'CV'))
+        assert caps['tag_read'] == (old_read or gen1_stock), (codec, fw, probe)
         n += 1
     assert n == 2 * len(FW_UNIVERSE) * 3
 

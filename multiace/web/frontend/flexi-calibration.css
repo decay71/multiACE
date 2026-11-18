@@ -1,0 +1,24 @@
+/* @MULTIACE_FLEXI_HOOK Flexi-owned stylesheet for the optional fourth
+   operating mode. Original MultiACE modes do not depend on it. */
+.flexi-wizard { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border,#555); border-radius: 12px; }
+.flexi-wizard h3 { margin-top:0; }
+.flexi-wizard .wizard-steps { display:flex; gap:.5rem; padding:0; list-style:none; flex-wrap:wrap; }
+.flexi-wizard .wizard-steps li { padding:.4rem .65rem; border:1px solid var(--border,#555); border-radius:8px; }
+.flexi-wizard .wizard-steps [aria-current="step"] { border-color:var(--accent,#15bdc6); font-weight:bold; }
+.flexi-wizard .wizard-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:1rem; }
+.flexi-wizard label { display:flex; gap:.35rem; flex-direction:column; margin:.5rem 0; }
+.flexi-wizard label.wizard-check { flex-direction:row; align-items:flex-start; }
+.flexi-wizard input,.flexi-wizard select,.flexi-wizard textarea { max-width:100%; }
+.flexi-wizard .wizard-note { padding:.75rem; border-left:3px solid var(--accent,#15bdc6); background:var(--bg-alt,rgba(127,127,127,.08)); }
+.flexi-wizard .wizard-actions { display:flex; gap:.5rem; flex-wrap:wrap; margin:1rem 0; }
+.flexi-wizard .routing-map { width:100%; height:auto; }
+.flexi-wizard .routing-map text { fill:currentColor; font:15px sans-serif; }
+.flexi-wizard .routing-map .route { fill:none; stroke:var(--border,#888); stroke-width:2; }
+.flexi-wizard .routing-map .route.selected { stroke:var(--accent,#15bdc6); stroke-width:5; }
+.flexi-wizard .routing-map .unit { fill:var(--bg,#222); stroke:var(--border,#888); }
+.flexi-wizard .routing-map .head { fill:var(--bg,#222); stroke:var(--accent,#15bdc6); }
+.flexi-wizard .field-origin { font-size:.85em; opacity:.8; }
+.flexi-wizard .wizard-error { color:var(--danger,#e66); white-space:pre-wrap; }
+
+.flexi-wizard .wizard-high-risk { border:2px solid var(--warn,#ffbb66); padding:.8rem; border-radius:8px; margin:1rem 0; }
+.flexi-wizard .wizard-high-risk strong { color:var(--warn,#ffbb66); }

@@ -34,6 +34,8 @@
  * {mode, ace_head, feeders:[{head,material,color}]}.
  */
 "use strict";
+// @MULTIACE_FLEXI_HOOK Flexi scanner is loaded only for the in-browser preflight worker.
+importScripts("flexi-preflight.js?v=1.30b-rc5");
 
 let pyodide = null;
 let ready = false;
@@ -44,6 +46,8 @@ let initPromise = null;
 const files = new Map();
 const slotsByJob = new Map();
 const ctxByJob = new Map();
+const flexiByJob = new Map();
+const reportsByJob = new Map();
 // Per-job estimate capture (cost model, header, events), filled by doAnalyze
 // and read by a later "estimate" recompute (preflight_core.recompute_estimate).
 // The cost model's inputs come with each analyze, because this worker outlives
@@ -138,28 +142,70 @@ def _chunk_lines(path, size=1 << 20):
 }
 
 // Analyze: meta-parse + build the report (multi or head-mode preview).
-async function doAnalyze(jobId, file, liveSlots, headCtx, freshCostParams) {
+// @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, flexiByJob.set, FlexiPreflight.scanFile
+async function doAnalyze(jobId, file, liveSlots, headCtx, freshCostParams, flexi) {
   if (freshCostParams !== undefined) costParams = freshCostParams;
   files.set(jobId, file);
   slotsByJob.set(jobId, liveSlots);
   ctxByJob.set(jobId, headCtx);
+  flexiByJob.set(jobId, flexi || null);
   progress(jobId, "analyze", 5);
-
+  // @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, FlexiPreflight.scanFile, build_flexi_report
+  let report, bytes = file.size || 0, lines = null, compatibility = null;
   const py = pyodide;
-  const mnt = mountJob(jobId, file);
-  let reportJson;
-  try {
-    py.globals.set("_src", mnt.path);
+  if (flexi) {
+    const scanned = await FlexiPreflight.scanFile(file, flexi, percent => progress(jobId, "analyze", percent));
+    const {planText, planningLimited} = scanned;
+    ({bytes, lines, compatibility} = scanned);
+    if (planningLimited) return {report:null, bytes, lines, compatibility,
+      planningError:"The file has oversized lines or too many planning records. The planner could not build a complete preview."};
+
+    py.globals.set("_gtext", planText);
     py.globals.set("_live", JSON.stringify(liveSlots || []));
     py.globals.set("_hctx", JSON.stringify(headCtx || {mode: "multi"}));
     py.globals.set("_fname", file.name || "upload.gcode");
-    py.globals.set("_fsize", file.size || 0);
-    py.globals.set("_cost", JSON.stringify(costParams || {}));
-    py.globals.set("_job_id", jobId);
-    progress(jobId, "analyze", 10);
-    // parse_meta takes any line iterator and keeps only the head/tail
-    // windows and the plan lines - the same call the rewrite makes.
-    reportJson = py.runPython(`
+    py.globals.set("_fsize", file.size);
+    // @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi, flexi, _flexi_ctx
+    py.globals.set("_flexi", JSON.stringify(flexi || null));
+    const reportJson = py.runPython(`
+_live_slots = json.loads(_live)
+_head_ctx   = json.loads(_hctx)
+_flexi_ctx  = json.loads(_flexi)
+_colors, _types, _naces, _used, _plan, _meta = _core.parse_meta(
+    _pp, _gtext.splitlines(True))
+if _flexi_ctx:
+    _report = _core.build_flexi_report(
+        _pp,
+        slicer_colors=_colors, slicer_types=_types, num_aces=_naces,
+        plan_proxy=_plan, flexi=_flexi_ctx,
+        token="", filename=_fname, size=int(_fsize), meta=_meta)
+else:
+    _report = _core.build_report(
+        _pp,
+        slicer_colors=_colors, slicer_types=_types, num_aces=_naces,
+        plan_proxy=_plan, live_slots=_live_slots, head_ctx=_head_ctx,
+        token="", filename=_fname, size=int(_fsize), meta=_meta)
+json.dumps(_report)
+`);
+    // free the big string from the Python globals
+    py.runPython("del _gtext, _plan\n");
+    report = JSON.parse(reportJson);
+  } else {
+
+    const mnt = mountJob(jobId, file);
+    let reportJson;
+    try {
+      py.globals.set("_src", mnt.path);
+      py.globals.set("_live", JSON.stringify(liveSlots || []));
+      py.globals.set("_hctx", JSON.stringify(headCtx || {mode: "multi"}));
+      py.globals.set("_fname", file.name || "upload.gcode");
+      py.globals.set("_fsize", file.size || 0);
+      py.globals.set("_cost", JSON.stringify(costParams || {}));
+      py.globals.set("_job_id", jobId);
+      progress(jobId, "analyze", 10);
+      // parse_meta takes any line iterator and keeps only the head/tail
+      // windows and the plan lines - the same call the rewrite makes.
+      reportJson = py.runPython(`
 _live_slots = json.loads(_live)
 _head_ctx   = json.loads(_hctx)
 _colors, _types, _naces, _used, _plan, _meta, _hdr = _core.parse_meta(
@@ -175,12 +221,15 @@ _report = _core.build_report(
 _captures[_job_id] = _capture
 json.dumps(_report)
 `);
-    py.runPython("del _plan, _hdr\n");
-  } finally {
-    unmountJob(mnt.dir);
+      py.runPython("del _plan, _hdr\n");
+    } finally {
+      unmountJob(mnt.dir);
+    }
+    report = JSON.parse(reportJson);
   }
+  reportsByJob.set(jobId, report);
   progress(jobId, "done", 100);
-  return JSON.parse(reportJson);
+  return {report, bytes, lines, compatibility};
 }
 
 // Estimate: recompute {estimate, timeline} for an edited mapping or target
@@ -249,6 +298,48 @@ async function doRewrite(jobId, msg) {
   progress(jobId, "analyze", 2);
 
   const py = pyodide;
+  // @MULTIACE_FLEXI_HOOK Flexi preparation uses the saved route plan, never the raw slicer file.
+  if (mode === "flexi") {
+    const report = reportsByJob.get(jobId);
+    if (!report) throw new Error("Analyze the file before preparing the Flexi print.");
+    const text = await file.text();
+    py.globals.set("_flexi_text", text);
+    py.globals.set("_flexi_report", JSON.stringify(report));
+    py.globals.set("_flexi_plan", msg.headPlan || "loadout");
+    py.globals.set("_flexi_assignment", JSON.stringify(msg.headAssignment || null));
+    progress(jobId, "rewrite", 20);
+    const prepared = py.runPython(`
+_report = json.loads(_flexi_report)
+_assignment = json.loads(_flexi_assignment)
+_core.flexi_prepare_text(
+    _flexi_text, _report, plan_name=_flexi_plan,
+    assignment=_assignment)
+`);
+    // Same output as the other modes: a file blob, with the print
+    // preferences prepended by preflight_core (not by the page).
+    py.FS.mkdirTree("/preflight");
+    py.FS.writeFile("/preflight/a.gcode", prepared);
+    let finalPath = "/preflight/a.gcode";
+    const fprefs = msg.printPrefs || {};
+    try {
+      if (fprefs.bedMesh || fprefs.camera || fprefs.flowCal) {
+        py.globals.set("_fprefs", JSON.stringify({
+          bed_mesh: !!fprefs.bedMesh, camera: !!fprefs.camera, flow_cal: !!fprefs.flowCal}));
+        py.runPython(`
+_pf = json.loads(_fprefs)
+_core.prepend_print_prefs("/preflight/a.gcode", "/preflight/b.gcode",
+                          _pf["bed_mesh"], _pf["camera"], _pf["flow_cal"])
+`);
+        finalPath = "/preflight/b.gcode";
+      }
+      const outBlob = memfsToBlob(finalPath);
+      progress(jobId, "done", 100);
+      return outBlob;
+    } finally {
+      try { py.FS.unlink("/preflight/a.gcode"); } catch (e) {}
+      try { py.FS.unlink("/preflight/b.gcode"); } catch (e) {}
+    }
+  }
   py.FS.mkdirTree("/preflight");
   // Source straight from the File (WORKERFS), no JS string, no MEMFS copy.
   const mnt = mountJob(jobId, file);
@@ -330,9 +421,10 @@ self.onmessage = async (ev) => {
     }
     if (msg.type === "analyze") {
       await ensureInit(msg);
-      const report = await doAnalyze(
-        jobId, msg.file, msg.liveSlots, msg.headCtx, msg.costParams);
-      self.postMessage({type: "analyze-done", jobId, report});
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses msg.flexi
+      const result = await doAnalyze(
+        jobId, msg.file, msg.liveSlots, msg.headCtx, msg.costParams, msg.flexi);
+      self.postMessage({type: "analyze-done", jobId, ...result});
       return;
     }
     if (msg.type === "estimate") {
@@ -358,6 +450,9 @@ self.onmessage = async (ev) => {
       files.delete(jobId);
       slotsByJob.delete(jobId);
       ctxByJob.delete(jobId);
+      // @MULTIACE_FLEXI_HOOK Flexi code below uses flexiByJob.delete
+      flexiByJob.delete(jobId);
+      reportsByJob.delete(jobId);
       try { pyodide.runPython("_captures.pop(" + JSON.stringify(jobId) + ", None)"); } catch (e) {}
       self.postMessage({type: "cleared", jobId});
       return;

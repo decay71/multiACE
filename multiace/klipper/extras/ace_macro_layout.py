@@ -16,6 +16,7 @@ import argparse
 import copy
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from pathlib import Path
 
 
 DEFAULT_MOONRAKER_URL = "http://127.0.0.1:7125"
@@ -30,6 +32,10 @@ REQUEST_TIMEOUT = 5.0
 WATCH_WINDOW_SECONDS = 1800.0
 POLL_INTERVAL_SECONDS = 30.0
 FRONTEND_NOT_READY_LIMIT = 5
+# @MULTIACE_FLEXI_SHARED distributable Fluidd/Mainsail macro layout manifest, all modes
+LAYOUT_FILENAME = "fluidd_macro_layout.json"
+LAYOUT_ENV = "MULTIACE_FLUIDD_LAYOUT"
+LAYOUT_SCHEMA = 1
 MAINSAIL_LAYOUTS = (
     "mobileLayout",
     "tabletLayout1",
@@ -243,17 +249,61 @@ def active_groups(macro_names):
     )
 
 
+def _normalise_categories(value):
+    """Return valid category records once, preserving their first order."""
+    categories = []
+    seen = set()
+    for item in _list(value):
+        if not isinstance(item, dict):
+            continue
+        category_id = item.get("id")
+        if not isinstance(category_id, str) or not category_id:
+            continue
+        if category_id in seen:
+            continue
+        seen.add(category_id)
+        categories.append(copy.deepcopy(item))
+    return categories
+
+
+def _normalise_stored(value):
+    """Return macro records once by name, preserving their first order."""
+    stored = []
+    seen = set()
+    for item in _list(value):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if isinstance(name, str):
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+        stored.append(copy.deepcopy(item))
+    return stored
+
+
+def is_fresh_layout(current):
+    """True only when no category or macro organization exists yet."""
+    state = _dict(current)
+    return not _normalise_categories(state.get("categories")) and not _normalise_stored(
+        state.get("stored")
+    )
+
+
 def merge_fluidd_macros(current, groups, macro_names=()):
-    """Merge provider categories into Fluidd while keeping user choices."""
+    """Merge provider categories into Fluidd without moving existing categories.
+
+    The previous implementation rebuilt the list as ``custom + owned``, which
+    moved the six multiACE categories below every user category on each startup.
+    Keeping original records in place and only appending genuinely missing
+    provider records makes this operation idempotent.
+    """
     state = copy.deepcopy(_dict(current))
-    categories = _list(state.get("categories"))
-    stored = _list(state.get("stored"))
-    all_owned_ids = OWNED_FLUIDD_IDS
-    category_ids = {
-        item.get("id") for item in categories
-        if isinstance(item, dict) and item.get("id") is not None
-    }
-    custom_ids = category_ids - all_owned_ids
+    categories = _normalise_categories(state.get("categories"))
+    stored = _normalise_stored(state.get("stored"))
+    category_ids = {item["id"] for item in categories}
+    custom_ids = category_ids - OWNED_FLUIDD_IDS
 
     stored_by_name = _case_index(stored)
     active_macro_names = {name.lower() for name in macro_names}
@@ -262,11 +312,12 @@ def merge_fluidd_macros(current, groups, macro_names=()):
             continue
         item = stored_by_name.get(name.lower())
         if item is None:
-            item = {"name": name}
+            item = {"name": name, "visible": False}
             stored.append(item)
             stored_by_name[name.lower()] = item
         item["visible"] = False
-    owned_categories = []
+
+    owned_categories = {}
     for group in groups:
         assigned = False
         for name in group["macros"]:
@@ -281,31 +332,267 @@ def merge_fluidd_macros(current, groups, macro_names=()):
                 continue
             item["categoryId"] = group["fluidd_id"]
             assigned = True
-        if assigned:
-            existing_category = next(
-                (
-                    item
-                    for item in categories
-                    if isinstance(item, dict)
-                    and item.get("id") == group["fluidd_id"]
-                ),
-                None,
-            )
-            category = (
-                copy.deepcopy(existing_category)
-                if existing_category is not None else {}
-            )
-            category["id"] = group["fluidd_id"]
-            category.setdefault("name", group["name"])
-            owned_categories.append(category)
 
-    state["categories"] = [
-        item for item in categories
-        if not isinstance(item, dict) or item.get("id") not in all_owned_ids
-    ] + owned_categories
+        existing = next(
+            (item for item in categories if item["id"] == group["fluidd_id"]),
+            None,
+        )
+        if not assigned and existing is None:
+            continue
+        category = copy.deepcopy(existing) if existing is not None else {}
+        category["id"] = group["fluidd_id"]
+        category.setdefault("name", group["name"])
+        owned_categories[group["fluidd_id"]] = category
+
+    # Keep every original category in its original position. Replace an owned
+    # record in place when active; append only a genuinely missing one.
+    ordered = []
+    seen = set()
+    for item in categories:
+        category_id = item["id"]
+        replacement = owned_categories.get(category_id)
+        if category_id not in seen:
+            ordered.append(copy.deepcopy(replacement) if replacement else item)
+            seen.add(category_id)
+    for group in groups:
+        category_id = group["fluidd_id"]
+        category = owned_categories.get(category_id)
+        if category is not None and category_id not in seen:
+            ordered.append(copy.deepcopy(category))
+            seen.add(category_id)
+
+    state["categories"] = ordered
     state["stored"] = stored
     state.setdefault("expanded", [])
     return state
+
+
+def load_layout(path=None):
+    """Load and validate the versioned Fluidd layout manifest."""
+    chosen = path or os.environ.get(LAYOUT_ENV)
+    manifest_path = Path(chosen) if chosen else Path(__file__).with_name(LAYOUT_FILENAME)
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise LayoutError("Fluidd layout manifest is unavailable: %s" % error) from error
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LayoutError("Fluidd layout manifest is invalid JSON: %s" % error) from error
+    if not isinstance(data, dict):
+        raise LayoutError("Fluidd layout manifest must be an object")
+    if data.get("schema") != LAYOUT_SCHEMA:
+        raise LayoutError(
+            "Unsupported Fluidd layout schema: %r" % (data.get("schema"),)
+        )
+    if not isinstance(data.get("layout_version"), str) or not data["layout_version"]:
+        raise LayoutError("Fluidd layout manifest needs a layout_version")
+    categories = data.get("categories")
+    assignments = data.get("assignments")
+    if not isinstance(categories, list) or not categories:
+        raise LayoutError("Fluidd layout manifest needs categories")
+    if not isinstance(assignments, list):
+        raise LayoutError("Fluidd layout manifest needs assignments")
+
+    category_ids = set()
+    category_names = set()
+    for index, category in enumerate(categories):
+        if not isinstance(category, dict):
+            raise LayoutError("Layout category %d is not an object" % index)
+        category_id = category.get("id")
+        name = category.get("name")
+        if not isinstance(category_id, str) or not category_id:
+            raise LayoutError("Layout category %d has no id" % index)
+        if not isinstance(name, str) or not name:
+            raise LayoutError("Layout category %s has no name" % category_id)
+        if category_id in category_ids:
+            raise LayoutError("Duplicate layout category id: %s" % category_id)
+        if name.casefold() in category_names:
+            raise LayoutError("Duplicate layout category name: %s" % name)
+        if not isinstance(category.get("order"), int) or category["order"] < 0:
+            raise LayoutError("Layout category %s has invalid order" % category_id)
+        category_ids.add(category_id)
+        category_names.add(name.casefold())
+
+    macro_names = set()
+    default_visibility = data.get("default_visibility", True)
+    if not isinstance(default_visibility, bool):
+        raise LayoutError("default_visibility must be boolean")
+    for index, assignment in enumerate(assignments):
+        if not isinstance(assignment, dict):
+            raise LayoutError("Layout assignment %d is not an object" % index)
+        name = assignment.get("name")
+        category = assignment.get("category")
+        if not isinstance(name, str) or not name:
+            raise LayoutError("Layout assignment %d has no macro name" % index)
+        if name.casefold() in macro_names:
+            raise LayoutError("Duplicate layout macro assignment: %s" % name)
+        if category not in category_ids:
+            raise LayoutError("Layout macro %s references unknown category %r" % (name, category))
+        if not isinstance(assignment.get("order"), int) or assignment["order"] < 0:
+            raise LayoutError("Layout macro %s has invalid order" % name)
+        if not isinstance(assignment.get("visible", default_visibility), bool):
+            raise LayoutError("Layout macro %s has invalid visibility" % name)
+        macro_names.add(name.casefold())
+    return data
+
+
+def layout_supports_platform(layout, platform=None):
+    """Apply explicit platform selection when the caller supplies one.
+
+    Automatic startup has no platform detector; the manifest's platform list is
+    advisory metadata and unknown macros are filtered separately. An explicit
+    CLI platform is checked to prevent accidentally applying a Snapmaker layout
+    to a different printer.
+    """
+    if not platform:
+        return True
+    platforms = layout.get("platforms")
+    if not platforms:
+        return True
+    return str(platform).casefold() in {str(item).casefold() for item in platforms}
+
+
+def _recommended_state(current, layout, macro_names, mode):
+    if mode not in ("merge", "restore"):
+        raise LayoutError("Unknown recommended-layout mode: %s" % mode)
+    state = copy.deepcopy(_dict(current))
+    categories = _normalise_categories(state.get("categories"))
+    stored = _normalise_stored(state.get("stored"))
+    active = {str(name).casefold() for name in macro_names}
+    layout_categories = layout["categories"]
+    layout_by_id = {item["id"]: item for item in layout_categories}
+    active_assignments = [
+        item for item in layout["assignments"]
+        if str(item["name"]).casefold() in active
+    ]
+    active_ids = {item["category"] for item in active_assignments}
+    active_categories = [item for item in layout_categories if item["id"] in active_ids]
+    existing_by_id = {item["id"]: item for item in categories}
+
+    if mode == "merge":
+        ordered = [copy.deepcopy(item) for item in categories]
+        seen = {item["id"] for item in ordered}
+        for definition in active_categories:
+            if definition["id"] in seen:
+                continue
+            ordered.append({"id": definition["id"], "name": definition["name"]})
+            seen.add(definition["id"])
+    else:
+        # Restore the recommended categories first, but retain every custom or
+        # otherwise existing category after them rather than deleting it.
+        ordered = []
+        seen = set()
+        for definition in active_categories:
+            existing = existing_by_id.get(definition["id"])
+            category = copy.deepcopy(existing) if existing is not None else {}
+            category["id"] = definition["id"]
+            category.setdefault("name", definition["name"])
+            ordered.append(category)
+            seen.add(definition["id"])
+        for item in categories:
+            if item["id"] not in seen:
+                ordered.append(copy.deepcopy(item))
+                seen.add(item["id"])
+
+    category_ids = {item["id"] for item in ordered}
+    recommended_ids = set(layout_by_id)
+    custom_ids = category_ids - recommended_ids
+    stored_by_name = _case_index(stored)
+    default_visibility = layout.get("default_visibility", True)
+
+    for assignment in active_assignments:
+        name = assignment["name"]
+        item = stored_by_name.get(name.casefold())
+        if item is None:
+            item = {
+                "name": name,
+                "visible": assignment.get("visible", default_visibility),
+                "categoryId": assignment["category"],
+                "order": assignment["order"],
+            }
+            stored.append(item)
+            stored_by_name[name.casefold()] = item
+            continue
+
+        current_category = item.get("categoryId")
+        missing_category = current_category not in category_ids
+        if mode == "restore":
+            # Explicit restore resets managed assignments but never steals a
+            # macro that the user placed in a custom category.
+            if current_category in custom_ids:
+                continue
+            item["categoryId"] = assignment["category"]
+            item["order"] = assignment["order"]
+        elif missing_category or current_category is None:
+            item["categoryId"] = assignment["category"]
+            item.setdefault("order", assignment["order"])
+
+    state["categories"] = ordered
+    state["stored"] = stored
+    state.setdefault("expanded", [])
+    return state
+
+
+def merge_recommended_layout(current, layout, macro_names=(), mode="merge"):
+    """Merge or restore the distributed layout without deleting custom data."""
+    if not isinstance(layout, dict):
+        raise LayoutError("A loaded layout manifest is required")
+    return _recommended_state(current, layout, macro_names, mode)
+
+
+def backup_layout(current, path):
+    """Write an exact, re-postable backup of the Fluidd macro item."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": 1,
+        "namespace": "fluidd",
+        "key": "macros",
+        "value": copy.deepcopy(_dict(current)),
+    }
+    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return str(target)
+
+
+def read_layout_backup(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as error:
+        raise LayoutError("Layout backup is unavailable: %s" % error) from error
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LayoutError("Layout backup is invalid JSON: %s" % error) from error
+    if isinstance(data, dict) and isinstance(data.get("result"), dict):
+        data = data["result"]
+    if not isinstance(data, dict) or not isinstance(data.get("value"), dict):
+        raise LayoutError("Layout backup does not contain a Fluidd macros value")
+    return data["value"]
+
+
+def apply_recommended(client, layout, macro_names=None, mode="merge", backup_path=None):
+    """Apply the full recommended layout through the supported Moonraker item."""
+    if mode not in ("merge", "restore"):
+        raise LayoutError("Unknown recommended-layout mode: %s" % mode)
+    if macro_names is None:
+        macro_names = client.list_macro_names()
+    namespace = client.get_namespace("fluidd")
+    current = namespace.get("macros")
+    updated = merge_recommended_layout(current, layout, macro_names, mode)
+    if updated == _dict(current):
+        return "current", "Fluidd recommended layout is already current"
+    if mode == "restore" and not backup_path:
+        raise LayoutError("Restoring the recommended layout requires --backup")
+    if backup_path:
+        backup_layout(current, backup_path)
+    client.post_item("fluidd", "macros", updated)
+    return "updated", "Fluidd recommended layout " + (
+        "restored" if mode == "restore" else "merged"
+    )
+
+
+def restore_layout_backup(client, path):
+    """Post an exact saved macro item back to Fluidd."""
+    value = read_layout_backup(path)
+    client.post_item("fluidd", "macros", value)
+    return "updated", "Fluidd macro layout restored from backup"
 
 
 def _mainsail_macro_defaults(group, position, name):
@@ -458,7 +745,7 @@ def merge_mainsail_namespace(current, groups):
     return state, posts
 
 
-def apply_frontend(client, frontend, macro_names):
+def apply_frontend(client, frontend, macro_names, layout=None):
     groups = active_groups(macro_names)
     if not groups:
         return "pending", "no active multiACE macros are visible in Klipper yet"
@@ -470,10 +757,15 @@ def apply_frontend(client, frontend, macro_names):
 
     if frontend == "fluidd":
         current = namespace.get("macros")
-        updated = merge_fluidd_macros(current, groups, macro_names)
+        if layout is not None and is_fresh_layout(current):
+            updated = merge_recommended_layout(current, layout, macro_names, "merge")
+            detail = "Fluidd recommended macro layout applied"
+        else:
+            updated = merge_fluidd_macros(current, groups, macro_names)
+            detail = "Fluidd macro categories applied"
         if updated != _dict(current):
             client.post_item("fluidd", "macros", updated)
-            return "updated", "Fluidd macro categories applied"
+            return "updated", detail
         return "current", "Fluidd layout is already current"
 
     _, posts = merge_mainsail_namespace(namespace, groups)
@@ -492,7 +784,14 @@ def apply_frontend(client, frontend, macro_names):
     )
 
 
-def apply_layout_once(client):
+def apply_layout_once(client, layout=None):
+    if layout is None:
+        try:
+            layout = load_layout()
+        except LayoutError:
+            # A package without the manifest still gets the provider-only
+            # behavior from older releases.
+            layout = None
     try:
         macro_names = client.list_macro_names()
     except Exception as error:
@@ -502,7 +801,7 @@ def apply_layout_once(client):
     results = {}
     for frontend in ("fluidd", "mainsail"):
         try:
-            results[frontend] = apply_frontend(client, frontend, macro_names)
+            results[frontend] = apply_frontend(client, frontend, macro_names, layout)
         except Exception as error:
             results[frontend] = ("error", str(error))
     return results
@@ -514,6 +813,7 @@ def watch_layout(
     interval=POLL_INTERVAL_SECONDS,
     logger=None,
     stop_event=None,
+    layout=None,
 ):
     logger = logger or logging.getLogger("multiace.macro_layout")
     window = max(0.0, float(window))
@@ -523,10 +823,15 @@ def watch_layout(
     last_results = {}
     not_ready_counts = {frontend: 0 for frontend in pending}
     attempts = 0
+    if layout is None:
+        try:
+            layout = load_layout()
+        except LayoutError:
+            layout = None
 
     while pending and not (stop_event is not None and stop_event.is_set()):
         attempts += 1
-        results = apply_layout_once(client)
+        results = apply_layout_once(client, layout)
         for frontend, (status, detail) in results.items():
             last_results[frontend] = (status, detail)
             if status in ("updated", "current"):
@@ -666,22 +971,63 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Apply multiACE macro groups in Fluidd and Mainsail"
     )
-    parser.add_argument("command", choices=("apply", "watch"))
+    parser.add_argument(
+        "command",
+        choices=(
+            "apply",
+            "watch",
+            "apply-recommended",
+            "restore-recommended",
+            "restore-backup",
+        ),
+    )
     parser.add_argument("--url", default=DEFAULT_MOONRAKER_URL)
     parser.add_argument("--timeout", type=float, default=REQUEST_TIMEOUT)
     parser.add_argument("--watch-window", type=float, default=WATCH_WINDOW_SECONDS)
     parser.add_argument("--poll-interval", type=float, default=POLL_INTERVAL_SECONDS)
+    parser.add_argument("--layout", help="path to fluidd_macro_layout.json")
+    parser.add_argument("--backup", help="path for a macro-layout backup")
+    parser.add_argument("--platform", help="explicit platform applicability check")
     args = parser.parse_args(argv)
     client = MoonrakerClient(args.url, args.timeout)
     logger = logging.getLogger("multiace.macro_layout.cli")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+    if args.command == "restore-backup":
+        if not args.backup:
+            parser.error("restore-backup requires --backup")
+        status, detail = restore_layout_backup(client, args.backup)
+        print("Fluidd: %s (%s)" % (status, detail))
+        return 0
+
+    try:
+        layout = load_layout(args.layout)
+    except LayoutError:
+        if args.command in ("apply-recommended", "restore-recommended") or args.layout:
+            raise
+        layout = None
+    if layout is not None and not layout_supports_platform(layout, args.platform):
+        raise LayoutError("Layout does not support platform: %s" % args.platform)
+
+    if args.command in ("apply-recommended", "restore-recommended"):
+        mode = "restore" if args.command == "restore-recommended" else "merge"
+        if mode == "restore" and not args.backup:
+            parser.error("restore-recommended requires --backup")
+        status, detail = apply_recommended(
+            client,
+            layout,
+            mode=mode,
+            backup_path=args.backup,
+        )
+        print("Fluidd: %s (%s)" % (status, detail))
+        return 0 if status in ("updated", "current") else 1
+
     if args.command == "watch":
         code, results = watch_layout(
-            client, args.watch_window, args.poll_interval, logger
+            client, args.watch_window, args.poll_interval, logger, layout=layout
         )
     else:
-        results = apply_layout_once(client)
+        results = apply_layout_once(client, layout)
         code = 0 if any(status in ("updated", "current") for status, _ in results.values()) else 1
 
     for frontend in ("fluidd", "mainsail"):

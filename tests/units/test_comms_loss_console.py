@@ -46,13 +46,17 @@ def _const_args(call):
 def test_reconnect_entry_warns_once_on_the_console():
     tree = ast.parse(_src('ace'))
     fn = _func(tree, '_reconnect_or_pause')
+    # Two sites, one per outcome: at once while printing, otherwise only if
+    # the reconnect fails (a quick self-healing reconnect is no alert). Both
+    # use the same latch, so one loss warns at most once.
     warns = [c for c in _calls(fn, 'log_warn')]
-    assert len(warns) == 1
-    t = _calls(warns[0], '_t')
-    assert t and 'msg.ace_comms_lost_reconnecting' in _const_args(t[0])
+    assert 1 <= len(warns) <= 2
+    for w in warns:
+        t = _calls(w, '_t')
+        assert t and 'msg.ace_comms_lost_reconnecting' in _const_args(t[0])
     # latched per unit so a repeated entry for the same loss stays quiet
     src = ast.get_source_segment(_src('ace'), fn)
-    assert 'if idx not in self._comms_loss_warned' in src
+    assert 'idx not in self._comms_loss_warned' in src
     assert 'self._comms_loss_warned.add(idx)' in src
 
 

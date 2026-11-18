@@ -20,9 +20,81 @@ from .ace_drivers import (DRIVERS, KNOWN_PROTOCOLS, read_enabled_drivers,
                           describe as describe_drivers)
 from .ace_protocol import (GATE_UNKNOWN, GATE_EMPTY, GATE_AVAILABLE,
                            TELEMETRY_METHODS)
-from .ace_unit import caps_for, INSERT_MIDPRINT_MIN_FW
+from .ace_unit import (caps_for, INSERT_MIDPRINT_MIN_FW,
+                       gen1_recognition_observed)
 from .ace_swap import SwapMixin, RESUME_NOOP_WIPE_WINDOW
 from .ace_settings import SettingsMixin, _load_i18n_catalog
+# @MULTIACE_FLEXI_HOOK BEGIN: optional Flexi package; absent package stays fail-closed
+try:
+    from .ace_flexi_engine import FlexiMixin
+    FLEXI_AVAILABLE = True
+except ImportError:  # Flexi add-on not installed: MultiACE runs on its own
+    FLEXI_AVAILABLE = False
+
+    class FlexiMixin:
+        """No-op surface for the core when the Flexi package is absent.
+
+        Only what core code calls outside Flexi mode is provided. Anything
+        Flexi-specific raises, so a missing package can never execute half a
+        Flexi path: it fails closed instead of falling back silently.
+        """
+
+        def _flexi_init(self, config):
+            return None
+
+        def _flexi_require_execution(self):
+            if getattr(self, '_ace_mode', 'normal') == 'flexi':
+                raise self.printer.command_error(
+                    '[multiACE] Flexi mode is selected but the Flexi package '
+                    'is not installed')
+
+        def _flexi_block_background(self, operation):
+            return False
+
+        def _flexi_internal_display_update(self, name, gcmd):
+            return False
+
+        def _flexi_native_tool_allowed(self, name, gcmd):
+            return False
+
+        def _flexi_motor_request_allowed(self, idx, request, token):
+            return getattr(self, '_ace_mode', 'normal') != 'flexi'
+
+        def _flexi_register_command(self, name, handler, *args, **kwargs):
+            return self.gcode.register_command(name, handler, *args, **kwargs)
+
+        def _install_flexi_stock_load_guards(self):
+            return None
+
+        def _flexi_native_load_check(self, gcmd, head, ace, slot):
+            return None
+
+        def _flexi_native_feed_started(self, head, ace, slot):
+            return None
+
+        def _flexi_native_load_finished(self, head, ok):
+            return None
+
+        def _flexi_native_unload_finished(self, head, source, verified):
+            return None
+
+        def _flexi_stock_load_refusal(self, gcmd, name):
+            message = ('Flexi mode is selected but the Flexi package is not '
+                       'installed. No preheat or filament movement was started.')
+            error = getattr(gcmd, 'error', None)
+            if callable(error):
+                raise error(message)
+            raise self.printer.command_error(message)
+
+        def __getattr__(self, item):
+            if item.startswith('_flexi_'):
+                raise AttributeError(
+                    'Flexi component %r is not installed' % item)
+            raise AttributeError(item)
+# @MULTIACE_FLEXI_HOOK END: optional Flexi package; absent package stays fail-closed
+
+# @MULTIACE_FLEXI_SHARED runout failover policy shared by all modes (ace_failover.py)
+from .ace_failover import select_backup, parse_priority
 from .ace_display import DisplayMixin
 from .ace_spool import (SpoolMixin, SPOOLLINK_RESOLVE_METHOD,
                         SPOOLLINK_STARTUP_CHECK_DELAY)
@@ -59,7 +131,8 @@ BG_STAGED_STOP_WINDOW = 180.0
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "b424bbf0"
+# @MULTIACE_FLEXI_HOOK Flexi code below uses flexi-rc2-20261113
+MULTIACE_BUILD_TAG = "flexi-rc2-20261113"
 MULTIACE_BUNDLE_SHA1 = "d575769"
 # The klipper modules OUTSIDE the bundle sha (ace.py and its helpers), the
 # fixed order the banner's core= value hashes them in. Computed on disk at
@@ -67,13 +140,27 @@ MULTIACE_BUNDLE_SHA1 = "d575769"
 # not give for these files. The same list in the repo is
 # tests/units/tools/modules.py core_files(); module_lists.py keeps both equal.
 CORE_FILES = (
-    'ace.py', 'ace_bg_swap.py', 'ace_display.py', 'ace_drivers.py',
-    'ace_gen1_tunnel.py', 'ace_macro_layout.py',
-    'ace_protocol.py', 'ace_protocol_cfs.py', 'ace_protocol_v1.py',
-    'ace_protocol_v2.py',
-    'ace_rc522.py', 'ace_resistance.py', 'ace_settings.py', 'ace_spool.py',
-    'ace_swap.py',
-    'ace_tipform.py', 'ace_unit.py',
+    # Every shipped klipper/extras module except the bundle files, sorted:
+    # the same list as multiace/managed/manifest.json (tests/units/tools/modules.py).
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses ace_flexi*.py, flexi*.py
+    'ace.py', 'ace_bg_swap.py', 'ace_config_transaction.py', 'ace_display.py',
+    'ace_drivers.py', 'ace_failover.py', 'ace_flexi.py',
+    'ace_flexi_adapters.py', 'ace_flexi_authorization.py',
+    'ace_flexi_calibration.py', 'ace_flexi_controlled_test.py',
+    'ace_flexi_diagnostics.py', 'ace_flexi_discovery.py',
+    'ace_flexi_engine.py', 'ace_flexi_engineering.py',
+    'ace_flexi_evidence.py', 'ace_flexi_executor.py',
+    'ace_flexi_interlocks.py', 'ace_flexi_pathchek.py',
+    'ace_flexi_pathchek_native.py', 'ace_flexi_pathchek_policy.py',
+    'ace_flexi_pathchek_session.py', 'ace_flexi_paths.py',
+    'ace_flexi_production.py', 'ace_flexi_profiles.py',
+    'ace_flexi_service.py', 'ace_flexi_sources.py', 'ace_flexi_thermal.py',
+    'ace_flexi_transport.py', 'ace_gen1_tunnel.py', 'ace_macro_layout.py',
+    'ace_poll_gate.py', 'ace_protocol.py', 'ace_protocol_cfs.py',
+    'ace_protocol_v1.py', 'ace_protocol_v2.py', 'ace_rc522.py',
+    'ace_resistance.py', 'ace_settings.py', 'ace_spool.py', 'ace_swap.py',
+    'ace_tipform.py', 'ace_unit.py', 'flexi.py', 'flexi_h1_adapter.py',
+    'flexi_h2.py', 'flexi_h2_interceptor.py', 'flexi_web_policy.py',
 )
 # The former shipped value of [ace] update_url_base (static mirror);
 # read as unset so updates come from GitHub.
@@ -89,8 +176,13 @@ def compute_core_sha1(extras_dir=None):
     h = hashlib.sha1()
     for name in CORE_FILES:
         try:
-            with open(os.path.join(extras_dir, name), 'rb') as f:
-                h.update(f.read())
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_bundled_source
+            embedded = globals().get('_flexi_bundled_source')
+            data = embedded(name) if embedded is not None else None
+            if data is None:
+                with open(os.path.join(extras_dir, name), 'rb') as f:
+                    data = f.read()
+            h.update(data)
         except Exception:
             h.update(b'<missing:' + name.encode() + b'>')
     return h.hexdigest()[:7]
@@ -145,6 +237,9 @@ IDLE_RESCAN_S = 10.0
 # units. Enforced once, in the scan (startup) and the late-join; a fifth
 # unit stays unconnected with one log line per path (design, D10).
 MAX_ACE_UNITS = 4
+# Both supported ACE generations expose four lanes. The web reports the live
+# slot count from each unit's status rather than assuming this value.
+MAX_ACE_SLOTS = 4
 # D11: a place whose assigned unit is not connected keeps its index with
 # this pseudo path ('absent:<unit key>'); a place emptied by the user
 # below a higher occupied place holds 'free:'. Neither opens a port.
@@ -427,6 +522,9 @@ AUTO_DRY_INTERVAL = 60.0
 # this only bounds the case where we stop asking (restart, unplugged unit),
 # so the ACE cannot keep heating on its own forever.
 AUTO_DRY_MAX_MINUTES = 600
+# A cycle we booked that the device reports as not running for this long,
+# while the reading still asks for drying, is released (see _auto_dry_tick).
+AUTO_DRY_STALE_S = 300.
 # Soft start. Starting the ACE 2 dryer straight at a high
 # target can trip a ptc_error inside the ACE firmware; the heater then stays
 # blocked until the unit is power cycled. The threshold is unit-specific -
@@ -594,8 +692,9 @@ class _HeadSourceMap(dict):
                 pass
 
 
+# @MULTIACE_FLEXI_HOOK FlexiMixin is composed last; an upstream method always wins.
 class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
-               ResistanceMixin):
+               ResistanceMixin, FlexiMixin):
     # Canonical [ace] config file - the write-through target. Mirrors the
     # web backend's MULTIACE_CFG_PATH
     # default; a setup with [ace] elsewhere gets a loud refusal instead
@@ -675,6 +774,23 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 "line in ace.cfg (see the installation guide).")
 
         self.serial_id = config.get('serial', '')
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, flexi_, Flexi
+        # @MULTIACE_FLEXI_COMPAT BEGIN: consume flexi_* options without changing legacy config reads
+        # Web-authored Flexi state (production recipes, topology, routes) is
+        # delivered through live status/save_variables; the engine never needs
+        # it at load time. Consume every flexi_* option so Klipper's
+        # unused-option check stays clean.
+        self._flexi_config = {
+            key: config.get(key, '')
+            for key in config.get_prefix_options('flexi_')
+        }
+        try:
+            self._flexi_production_cfg = json.loads(
+                self._flexi_config.get('flexi_production') or '{}')
+        except (TypeError, ValueError):
+            self._flexi_production_cfg = {}
+            logging.warning('multiACE: ignoring unparsable flexi_production config')
+        # @MULTIACE_FLEXI_COMPAT END: consume flexi_* options without changing legacy config reads
         self._protocols = {}
         self._ace_path_protocol = {}
         self._ace_models = {}
@@ -707,7 +823,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._ace_startup_failed = False  
         self._ace_present = set()
 
-        self.ace_device_count = config.getint('ace_device_count', 1, minval=1, maxval=8)
+        self.ace_device_count = config.getint('ace_device_count', 1, minval=1, maxval=MAX_ACE_UNITS)
         self.startup_wait = config.getfloat('startup_wait', 20.0, minval=0.0)
 
         cfg_print_mode = config.get('print_mode', None)
@@ -739,8 +855,31 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # Lower it to reduce purge waste ("poop"). multiACE Pro can override
         # it per swap (e.g. per colour-pair) via ACE_SET_PURGE.
         self.swap_purge_length = config.getint('swap_purge_length', 0, minval=0, maxval=200)
+        # Purge policy applied to the RESOLVED length (the per-pair stamp,
+        # else swap_purge_length, else the stock 80) by get_purge_length:
+        # a percent scale, then an optional floor and cap in mm (0 = off).
+        # Write-through settings: ACE_SET_PURGE SCALE= / FLOOR= / CAP=
+        # edit the config line and apply live.
+        self.swap_purge_scale = config.getint('swap_purge_scale', 100, minval=25, maxval=200)
+        self.swap_purge_floor = config.getint('swap_purge_floor', 0, minval=0, maxval=200)
+        self.swap_purge_cap = config.getint('swap_purge_cap', 0, minval=0, maxval=200)
 
         self.seat_overshoot_length = config.getint('seat_overshoot_length', 0, minval=0, maxval=100)
+        # Name of a gcode macro that cuts the filament at the toolhead (a
+        # cutter mod). Set: every inline unload calls it instead of the tip
+        # forming, then retracts as usual; background unloads are refused
+        # (a parked head cannot reach the cutter). Empty = off.
+        self.unload_cut_macro = (config.get('unload_cut_macro', '') or '').strip()
+        # Heads that carry a cutter, in display numbering ("1,2"); empty =
+        # every head. Heads not listed keep the normal tip forming.
+        _cut_heads = config.get('unload_cut_heads', '') or ''
+        try:
+            self.unload_cut_heads = set(
+                int(x) for x in _cut_heads.replace(',', ' ').split())
+        except ValueError:
+            raise config.error(
+                "unload_cut_heads must be head numbers like '1,2', got %r"
+                % _cut_heads)
         self.swap_default_temp = config.getint('swap_default_temp', 250, minval=180, maxval=300)
 
         self.swap_retract_length = config.getint('swap_retract_length', 0, minval=0, maxval=2000)
@@ -983,6 +1122,34 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # not listed follow the formula ace = (n-4)//4, slot = (n-4)%4.
         self._tool_map = self._parse_tool_map(config.get('tool_map', ''))
         self._tool_map_cfg = dict(self._tool_map)
+        # @MULTIACE_FLEXI_HOOK BEGIN: initialise Flexi early so a runtime switch has routes ready
+        # Flexi initialises whenever the package is present, not only when
+        # the persisted mode is Flexi: get_status reports flexi in every
+        # mode, and a runtime switch to Flexi must find its routes ready.
+        # A malformed setup still fails the boot only in Flexi mode.
+        _early_mode = 'normal'
+        if self.save_variables is not None:
+            _early_mode = self.save_variables.allVariables.get(
+                'ace__mode', 'normal')
+        elif self.printer.lookup_object('save_variables', None) is not None:
+            _early_mode = self.printer.lookup_object(
+                'save_variables').allVariables.get('ace__mode', 'normal')
+        if FLEXI_AVAILABLE:
+            try:
+                self._flexi_init(config)
+            except Exception:
+                if _early_mode == 'flexi':
+                    raise
+                logging.error(
+                    '[multiACE] Flexi init failed; multi/head/normal remain '
+                    'available', exc_info=True)
+        elif _early_mode == 'flexi':
+            raise config.error(
+                '[multiACE] Flexi mode is selected (ace__mode=flexi) but '
+                'the Flexi package is not installed. Install the Flexi '
+                'add-on, or switch to multi/head mode before restarting '
+                'Klipper.')
+        # @MULTIACE_FLEXI_HOOK END: initialise Flexi early so a runtime switch has routes ready
         # Strict copies: a second spool counts only on an exact hex match
         # (else the matcher's colour-name tiers apply too). Copies only;
         # the colour->slot assignment keeps its own matching.
@@ -1183,6 +1350,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # backstop with no stop path left.
         self._auto_dry_follow_until = {}
         self._auto_dry_seen = {}
+        # idx -> reactor time since when an owned cycle reads as not running.
+        self._auto_dry_stale_since = {}
         # Pushed external humidity (ACE_SET_HUMIDITY): idx -> {'rh', 'temp',
         # 'ts', 'ttl'}. Monotonic ts, and the store deliberately dies with
         # the process - a reading that outlived a Klipper restart has no age
@@ -1646,6 +1815,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # the load phase a genuinely empty head fails as a LOAD error, not a
         # runout, so nothing real is masked. Read by filament_switch_sensor_ace.
         self._runout_suppress_heads = set()
+        # Heads whose arrival swap waits for a running background op
+        # (_wait_bg_op). The bg engine leaves the runout suppression in
+        # place for them: the arrival loads the head right after.
+        self._bg_arrival_waiting = set()
         # Whether the CURRENT print's gcode carries multiACE loads (preflight
         # auto-load block and/or ACE_SWAP_HEAD lines). Sniffed once at print
         # start. When True, a never-loaded ACE-driven head must not block a
@@ -1806,6 +1979,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # toggle wins over the config default (airprint pattern).
         self.quad_replenish = config.getboolean('quad_replenish', False)
         self._quad_replenish_cfg = self.quad_replenish
+        # @MULTIACE_FLEXI_SHARED failover priority / per-print colour permission, all modes
+        # Runout failover policy (ace_failover.select_backup), all modes:
+        # per-toolhead backup priority (persisted) and a per-print
+        # permission to accept a different colour (cleared at print end).
+        self._failover_priority = {}
+        self._failover_allow_color = set()
+        if self.save_variables:
+            try:
+                _fp = self.save_variables.allVariables.get('ace__failover_priority', None) or {}
+                self._failover_priority = {int(h): parse_priority(v) for h, v in dict(_fp).items()}
+            except Exception as _e:
+                logging.info('[multiACE] failover priority ignored: %s' % _e)
         if self.save_variables:
             _sv_qr = self.save_variables.allVariables.get(
                 'ace__quad_replenish', None)
@@ -2031,102 +2216,117 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.printer.register_event_handler(
             'homing:homing_move_end', self._on_homing_move_end)
 
-        self.gcode.register_command(
+        # @MULTIACE_FLEXI_HOOK BEGIN: register shared and Flexi commands through one fail-closed surface
+        self._flexi_register_command(
             'ACE_START_DRYING', self.cmd_ACE_START_DRYING,
             desc=self.cmd_ACE_START_DRYING_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_STOP_DRYING', self.cmd_ACE_STOP_DRYING,
             desc=self.cmd_ACE_STOP_DRYING_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_ENABLE_FEED_ASSIST', self.cmd_ACE_ENABLE_FEED_ASSIST,
             desc=self.cmd_ACE_ENABLE_FEED_ASSIST_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_HEAD_MANUAL', self.cmd_ACE_SET_HEAD_MANUAL,
             desc=self.cmd_ACE_SET_HEAD_MANUAL_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_HEAD_FEEDER', self.cmd_ACE_SET_HEAD_FEEDER,
             desc=self.cmd_ACE_SET_HEAD_FEEDER_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_HEAD_ACE', self.cmd_ACE_SET_HEAD_ACE,
             desc=self.cmd_ACE_SET_HEAD_ACE_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_PURGE', self.cmd_ACE_SET_PURGE,
             desc=self.cmd_ACE_SET_PURGE_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_DISABLE_FEED_ASSIST', self.cmd_ACE_DISABLE_FEED_ASSIST,
             desc=self.cmd_ACE_DISABLE_FEED_ASSIST_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_FEED', self.cmd_ACE_FEED,
             desc=self.cmd_ACE_FEED_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_RETRACT', self.cmd_ACE_RETRACT,
             desc=self.cmd_ACE_RETRACT_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_START', self.cmd_ACE_CALIBRATION_START,
             desc=self.cmd_ACE_CALIBRATION_START_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_FEED', self.cmd_ACE_CALIBRATION_FEED,
             desc=self.cmd_ACE_CALIBRATION_FEED_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_RETRACT', self.cmd_ACE_CALIBRATION_RETRACT,
             desc=self.cmd_ACE_CALIBRATION_RETRACT_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_FEED_JOG', self.cmd_ACE_CALIBRATION_FEED_JOG,
             desc=self.cmd_ACE_CALIBRATION_FEED_JOG_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_MARK', self.cmd_ACE_CALIBRATION_MARK,
             desc=self.cmd_ACE_CALIBRATION_MARK_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_RETURN', self.cmd_ACE_CALIBRATION_RETURN,
             desc=self.cmd_ACE_CALIBRATION_RETURN_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_VERIFY', self.cmd_ACE_CALIBRATION_VERIFY,
             desc=self.cmd_ACE_CALIBRATION_VERIFY_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_STOP', self.cmd_ACE_CALIBRATION_STOP,
             desc=self.cmd_ACE_CALIBRATION_STOP_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_RESUME', self.cmd_ACE_CALIBRATION_RESUME,
             desc=self.cmd_ACE_CALIBRATION_RESUME_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_HOME', self.cmd_ACE_CALIBRATION_HOME,
             desc=self.cmd_ACE_CALIBRATION_HOME_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_CANCEL', self.cmd_ACE_CALIBRATION_CANCEL,
             desc=self.cmd_ACE_CALIBRATION_CANCEL_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CALIBRATION_RESET', self.cmd_ACE_CALIBRATION_RESET,
             desc=self.cmd_ACE_CALIBRATION_RESET_help)
 
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SWITCH', self.cmd_ACE_SWITCH,
             desc=self.cmd_ACE_SWITCH_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_LIST', self.cmd_ACE_LIST,
             desc=self.cmd_ACE_LIST_help)
 
-        self.gcode.register_command(
+        self._flexi_register_command('ACE_SET_FLEXI_ROUTES', self.cmd_ACE_SET_FLEXI_ROUTES)
+        self._flexi_register_command('ACE_FLEXI_STATUS', self.cmd_ACE_FLEXI_STATUS)
+        if hasattr(self, 'cmd_ACE_FLEXI_PROFILE'):
+            self._flexi_register_command('ACE_FLEXI_PROFILE', self.cmd_ACE_FLEXI_PROFILE)
+        self._flexi_register_command('ACE_FLEXI_PATHCHEK', self.cmd_ACE_FLEXI_PATHCHEK)
+        if hasattr(self, 'cmd_ACE_FLEXI_DISCOVER'):
+            self._flexi_register_command('ACE_FLEXI_DISCOVER', self.cmd_ACE_FLEXI_DISCOVER)
+        self._flexi_register_command('ACE_FLEXI_SLOT_METADATA', self.cmd_ACE_FLEXI_SLOT_METADATA)
+        for _production_command in ('CONFIG','REQUEST','ARM','VALIDATE','CALIBRATION'):
+            _production_name='ACE_FLEXI_PRODUCTION_'+_production_command
+            self._flexi_register_command(_production_name,getattr(self,'cmd_'+_production_name))
+        for _test_command in ('PREPARE','CONFIRM_CLEAR','ARM','RUN','CANCEL','RECOVER'):
+            _test_name='ACE_FLEXI_TEST_'+_test_command
+            self._flexi_register_command(_test_name,getattr(self,'cmd_'+_test_name))
+        self._flexi_register_command(
             'ACE_RUN_MODE_SWITCH', self.cmd_ACE_RUN_MODE_SWITCH,
             desc=self.cmd_ACE_RUN_MODE_SWITCH_help)
 
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_UPDATE_CHECK', self.cmd_ACE_UPDATE_CHECK,
             desc='[multiACE] Check GitHub for a newer release (no install)')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_UPDATE_APPLY', self.cmd_ACE_UPDATE_APPLY,
             desc='[multiACE] Download + install the latest release. '
                  'Optional FORCE=1 reinstalls even if already on latest.')
 
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_LOAD_HEAD', self.cmd_ACE_LOAD_HEAD,
             desc=self.cmd_ACE_LOAD_HEAD_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_UNLOAD_HEAD', self.cmd_ACE_UNLOAD_HEAD,
             desc=self.cmd_ACE_UNLOAD_HEAD_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SWAP_HEAD', self.cmd_ACE_SWAP_HEAD,
             desc=self.cmd_ACE_SWAP_HEAD_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_TOOL', self.cmd_ACE_TOOL, desc=self.cmd_ACE_TOOL_help)
         # Virtual slicer tools: T<n> for n >= 4. Stock 1.5.1+ ships its own
         # T4..T31 macros (SWITCH_OF_EXTENDED_EXTRUDER, wrapped at ready), so
@@ -2134,7 +2334,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         _vt_taken = []
         for _vt in range(4, VIRTUAL_TOOL_MAX + 1):
             try:
-                self.gcode.register_command(
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+                self._flexi_register_command(
                     'T%d' % _vt, self.cmd_ACE_TOOL_virtual,
                     desc='[multiACE] virtual tool %d = MMU %d / Slot %d'
                          % ((_vt,) + tuple(
@@ -2145,156 +2346,163 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             logging.info('[multiACE] T%d..T%d already defined (stock macros), '
                          'routed via SWITCH_OF_EXTENDED_EXTRUDER'
                          % (_vt_taken[0], _vt_taken[-1]))
-        self.gcode.register_command(
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+        self._flexi_register_command(
             'ACE_HEAD_STATUS', self.cmd_ACE_HEAD_STATUS,
             desc=self.cmd_ACE_HEAD_STATUS_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_CLEAR_HEADS', self.cmd_ACE_CLEAR_HEADS,
             desc=self.cmd_ACE_CLEAR_HEADS_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
+            'ACE_FAILOVER_PRIORITY', self.cmd_ACE_FAILOVER_PRIORITY,
+            desc=self.cmd_ACE_FAILOVER_PRIORITY_help)
+        self._flexi_register_command(
+            'ACE_FAILOVER_ALLOW_COLOR', self.cmd_ACE_FAILOVER_ALLOW_COLOR,
+            desc=self.cmd_ACE_FAILOVER_ALLOW_COLOR_help)
+        self._flexi_register_command(
             'ACE_UNLOAD_ALL_HEADS', self.cmd_ACE_UNLOAD_ALL_HEADS,
             desc=self.cmd_ACE_UNLOAD_ALL_HEADS_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_UNLOAD_ALL_CANCEL', self.cmd_ACE_UNLOAD_ALL_CANCEL,
             desc='[multiACE] Cancel a running ACE_UNLOAD_ALL_HEADS after '
                  'the current toolhead')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_TEST', self.cmd_ACE_TEST,
             desc=self.cmd_ACE_TEST_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_DWELL_TEST', self.cmd_ACE_DWELL_TEST,
             desc=self.cmd_ACE_DWELL_TEST_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_MULTI_SLOT_TEST', self.cmd_ACE_MULTI_SLOT_TEST,
             desc=self.cmd_ACE_MULTI_SLOT_TEST_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_TEST_CANCEL', self.cmd_ACE_TEST_CANCEL,
             desc='[multiACE] Cancel a running ACE_TEST after current step')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_DRY', self.cmd_ACE_DRY,
             desc=self.cmd_ACE_DRY_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_USB_STATS', self.cmd_ACE_USB_STATS,
             desc=self.cmd_ACE_USB_STATS_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_DEBUG', self.cmd_ACE_DEBUG,
             desc=self.cmd_ACE_DEBUG_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_USB_DEBUG', self.cmd_ACE_USB_DEBUG,
             desc=self.cmd_ACE_USB_DEBUG_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SEQ', self.cmd_ACE_SEQ,
             desc=self.cmd_ACE_SEQ_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_PRELOAD', self.cmd_ACE_PRELOAD,
             desc=self.cmd_ACE_PRELOAD_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'MACE_LOG', self.cmd_MACE_LOG,
             desc=self.cmd_MACE_LOG_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_FA_TEST', self.cmd_ACE_FA_TEST,
             desc=self.cmd_ACE_FA_TEST_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'MULTIACE_REFRESH_OVERRIDES',
             self.cmd_MULTIACE_REFRESH_OVERRIDES,
             desc='[multiACE] Re-read slot_overrides.json and push to display')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'MULTIACE_SET_LANGUAGE',
             self.cmd_MULTIACE_SET_LANGUAGE,
             desc='[multiACE] Set message language (LANG=<code>), live reload + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_PICKUP_CLEANING',
             self.cmd_ACE_SET_PICKUP_CLEANING,
             desc='[multiACE] Toggle Pickup-Cleaning (ENABLE=0|1), live + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_TOOL', self.cmd_ACE_SET_TOOL,
             desc=self.cmd_ACE_SET_TOOL_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_UNIT_NAME', self.cmd_ACE_UNIT_NAME,
             desc=self.cmd_ACE_UNIT_NAME_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_UNIT_ASSIGN', self.cmd_ACE_UNIT_ASSIGN,
             desc=self.cmd_ACE_UNIT_ASSIGN_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_UNIT_FORGET', self.cmd_ACE_UNIT_FORGET,
             desc=self.cmd_ACE_UNIT_FORGET_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_DRIVER', self.cmd_ACE_SET_DRIVER,
             desc=self.cmd_ACE_SET_DRIVER_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_LOCATE', self.cmd_ACE_LOCATE,
             desc=self.cmd_ACE_LOCATE_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_PREFLIGHT_COPIES',
             self.cmd_ACE_SET_PREFLIGHT_COPIES,
             desc='[multiACE] Max targets per slicer colour for the preflight (MAX=1..4), live + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_AUTO_DRY',
             self.cmd_ACE_SET_AUTO_DRY,
             desc='[multiACE] Humidity-controlled drying per MMU (own sensor '
                  'or external ACE_SET_HUMIDITY), live + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_HUMIDITY',
             self.cmd_ACE_SET_HUMIDITY,
             desc=self.cmd_ACE_SET_HUMIDITY_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_PA_CALIBRATE',
             self.cmd_ACE_PA_CALIBRATE,
             desc=self.cmd_ACE_PA_CALIBRATE_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_SPOOLMAN',
             self.cmd_ACE_SET_SPOOLMAN,
             desc='[multiACE] Spoolman url / auto-sync (URL=, AUTO=0|1), live + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_CONFIRM_COMMANDS',
             self.cmd_ACE_SET_CONFIRM_COMMANDS,
             desc='[multiACE] Toggle web load/unload confirmation (ENABLE=0|1), live + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_PA_SYNC',
             self.cmd_ACE_SET_PA_SYNC,
             desc='[multiACE] Toggle PA capture+apply automatics (ENABLE=0|1), live + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_TAG_WRITE',
             self.cmd_ACE_SET_TAG_WRITE,
             desc='[multiACE] Tag write defaults (FORMAT=openspool|anycubic '
                  'UID_SKU=0|1), live + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_FW_RELEASE',
             self.cmd_ACE_FW_RELEASE,
             desc='[multiACE] Release one ACE 2 serial port for a firmware flash (ACE=n)')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_FW_RESUME',
             self.cmd_ACE_FW_RESUME,
             desc='[multiACE] Reconnect an MMU released with ACE_FW_RELEASE (ACE=n)')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_PICKUP_CLEAN',
             self.cmd_ACE_PICKUP_CLEAN,
             desc=self.cmd_ACE_PICKUP_CLEAN_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_AIRPRINT_DETECTION',
             self.cmd_ACE_SET_AIRPRINT_DETECTION,
             desc='[multiACE] Toggle Air-Print Detection (ENABLE=0|1), '
                  'live + persist')
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_QUAD_REPLENISH',
             self.cmd_ACE_SET_QUAD_REPLENISH,
             desc=self.cmd_ACE_SET_QUAD_REPLENISH_help)
         for _n in ('ADD', 'SET', 'PA', 'ASSIGN', 'DELETE', 'LIST', 'IMPORT'):
-            self.gcode.register_command(
+            self._flexi_register_command(
                 'ACE_SPOOL_%s' % _n,
                 getattr(self, 'cmd_ACE_SPOOL_%s' % _n),
                 desc=getattr(self, 'cmd_ACE_SPOOL_%s_help' % _n))
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_TAG_READ', self.cmd_ACE_TAG_READ,
             desc=self.cmd_ACE_TAG_READ_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_TAG_WRITE', self.cmd_ACE_TAG_WRITE,
             desc=self.cmd_ACE_TAG_WRITE_help)
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_SET_TAG_TUNNEL', self.cmd_ACE_SET_TAG_TUNNEL,
             desc=self.cmd_ACE_SET_TAG_TUNNEL_help)
 
-        self.gcode.register_command(
+        self._flexi_register_command(
             'ACE_RAW_PROBE',
             self.cmd_ACE_RAW_PROBE,
             desc=self.cmd_ACE_RAW_PROBE_help)
@@ -2304,10 +2512,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 'RFID', 'FEED', 'ROLLBACK',
                 'STOP', 'SPEED', 'DRY', 'DRYSTOP', 'DRYTEMP',
                 'FAN', 'VALVE', 'FEEDCHECK', 'RAW'):
-            self.gcode.register_command(
+            self._flexi_register_command(
                 'A_' + _name,
                 getattr(self, 'cmd_A_' + _name),
                 desc=getattr(self, 'cmd_A_' + _name + '_help', ''))
+        # @MULTIACE_FLEXI_HOOK END: register shared and Flexi commands through one fail-closed surface
 
     def _refresh_ace_devices(self, context):
 
@@ -2394,6 +2603,25 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         'the units are back'. Never fires while a print runs or is paused
         (a stock print can run without the ACEs - resetting the MCUs under
         it, or under its paused state, is not ours to decide)."""
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, _flexi_softfail_block_reason
+        # Session 2: an ACE Pro that Klipper is not talking to drops off USB
+        # every ~3.5 s, so a startup scan can miss both units. The stock
+        # self-heal (idle-only FIRMWARE_RESTART once they are back) also runs
+        # in Flexi, unless a DIFFERENT unit came back (saved routes would point
+        # at it), a Flexi load/unload was interrupted, or discovery runs.
+        if getattr(self, '_ace_mode', None) == 'flexi':
+            try:
+                reason = self._flexi_softfail_block_reason()
+            except Exception as e:
+                reason = 'unit check failed (%s)' % e
+            if reason:
+                if getattr(self, '_flexi_softfail_block_logged', None) != reason:
+                    self._flexi_softfail_block_logged = reason
+                    self.log_warn('[multiACE] The ACE units are back on USB, but Flexi will not '
+                                  'reconnect them by itself: %s. Check the units, then press '
+                                  'FIRMWARE RESTART.' % reason)
+                self._softfail_stable_ticks = 0
+                return eventtime + SOFTFAIL_RESCAN_S
         if getattr(self, '_softfail_restart_sent', False):
             return self.reactor.NEVER
         try:
@@ -2434,6 +2662,29 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     '[multiACE] softfail auto-restart failed: %s' % e)
         self.reactor.register_async_callback(_do_restart)
         return self.reactor.NEVER
+
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_paths, _flexi_discovery
+    def _flexi_softfail_block_reason(self):
+        """Why the Flexi startup self-heal must wait for the operator, or
+        None. Only a different unit, an interrupted Flexi load/unload or a
+        running route discovery block it; missing units just keep waiting."""
+        ledger = getattr(self, '_flexi_paths', None)
+        if ledger is not None:
+            busy = [h for h in range(4) if ledger.record(h).get('state') == 'in_progress']
+            if busy:
+                return 'a Flexi load/unload on %s was interrupted' % ', '.join('T%d' % h for h in busy)
+        discovery = getattr(self, '_flexi_discovery', None)
+        if discovery is not None and discovery.running:
+            return 'route discovery was running'
+        saved = {e.get('key') for e in (self._unit_places or []) if e and e.get('key')}
+        if not saved:
+            return None
+        scan = [p for p in self._scan_ace_devices('flexi_softfail_check')
+                if not self._is_unit_sentinel(p)]
+        foreign = sorted(k for k in (self._unit_key_for_path(p) for p in scan) if k and k not in saved)
+        if foreign:
+            return 'a different ACE unit is connected (%s)' % ', '.join(foreign)
+        return None
 
     def _is_ace_present(self, ace_index):
 
@@ -4343,6 +4594,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             except Exception:
                 pass
 
+    # @MULTIACE_FLEXI_SHARED reactor-stall logger (diagnostic, all modes)
     def _reactor_stall_watchdog(self, eventtime):
         # See the stall_watchdog toggle note. `eventtime` is the real fire time; if it
         # is later than what we scheduled by > threshold, the reactor was
@@ -4422,7 +4674,23 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         return req
 
     def _handle_ready(self):
+        # @MULTIACE_FLEXI_SHARED startup time for the USB-reset message (all modes)
+        self._klippy_ready_ts = self.reactor.monotonic()
         self.toolhead = self.printer.lookup_object('toolhead')
+        cut = getattr(self, 'unload_cut_macro', '')
+        if cut:
+            if self.printer.lookup_object('gcode_macro %s' % cut,
+                                          None) is None:
+                self.log_warn('[multiACE] unload_cut_macro %s is not '
+                              'defined - every unload will fail' % cut)
+                logging.warning('[multiACE] unload_cut_macro %s is not '
+                                'defined' % cut)
+            else:
+                logging.info('[multiACE] unloads cut via %s on head(s) %s '
+                             '(tip forming and background unloads off there)'
+                             % (cut, ', '.join(str(h) for h in
+                                               sorted(self.unload_cut_heads))
+                                or 'all'))
 
         # Settings write-through migration: fold the
         # legacy ace__* settings twins into their config lines, then
@@ -4542,8 +4810,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         except Exception as e:
             logging.info('[multiACE] failed to install filament_detect hook: %s' % e)
 
+        # @MULTIACE_FLEXI_HOOK BEGIN: preserve stock print hooks while Flexi owns its virtual-tool pins
         try:
-            self._orig_set_ptc = self.gcode.register_command(
+            self._orig_set_ptc = self._flexi_register_command(
                 'SET_PRINT_FILAMENT_CONFIG', None)
             if self._orig_set_ptc is not None:
                 # _orig_set_ptc is the EXTENDED-command lambda: register_command
@@ -4559,7 +4828,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 _ptc = self.printer.lookup_object('print_task_config', None)
                 self._raw_set_ptc = getattr(
                     _ptc, 'cmd_SET_PRINT_FILAMENT_CONFIG', None)
-                self.gcode.register_command(
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+                self._flexi_register_command(
                     'SET_PRINT_FILAMENT_CONFIG',
                     self._wrap_set_print_filament_config,
                     desc='[multiACE] wrap SET_PRINT_FILAMENT_CONFIG to '
@@ -4574,10 +4844,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # after every swap leaves the head pressurised). INDEX 0-3 passes
         # through to stock untouched.
         try:
-            self._orig_preextrude = self.gcode.register_command(
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+            self._orig_preextrude = self._flexi_register_command(
                 'SM_PRINT_PREEXTRUDE_FILAMENT', None)
             if self._orig_preextrude is not None:
-                self.gcode.register_command(
+                self._flexi_register_command(
                     'SM_PRINT_PREEXTRUDE_FILAMENT', self._wrap_preextrude,
                     desc='[multiACE] wrap SM_PRINT_PREEXTRUDE_FILAMENT for '
                          'virtual tools (INDEX >= 4)')
@@ -4592,10 +4863,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # extruder_map_table and never loads the slot. In multi/head mode
         # INDEX >= 4 runs our tool path (pick + ACE_SWAP_HEAD) instead.
         try:
-            self._orig_ext_switch = self.gcode.register_command(
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+            self._orig_ext_switch = self._flexi_register_command(
                 'SWITCH_OF_EXTENDED_EXTRUDER', None)
             if self._orig_ext_switch is not None:
-                self.gcode.register_command(
+                self._flexi_register_command(
                     'SWITCH_OF_EXTENDED_EXTRUDER', self._wrap_ext_switch,
                     desc='[multiACE] wrap SWITCH_OF_EXTENDED_EXTRUDER for '
                          'virtual tools (INDEX >= 4)')
@@ -4610,10 +4882,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # auto-load block, so an ACE head the block loads later would be
         # measured empty (runout). Deferred there, replayed after the load.
         try:
-            self._orig_sm_flow_calibrate = self.gcode.register_command(
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+            self._orig_sm_flow_calibrate = self._flexi_register_command(
                 'SM_PRINT_FLOW_CALIBRATE', None)
             if self._orig_sm_flow_calibrate is not None:
-                self.gcode.register_command(
+                self._flexi_register_command(
                     'SM_PRINT_FLOW_CALIBRATE', self._wrap_sm_flow_calibrate,
                     desc='[multiACE] wrap SM_PRINT_FLOW_CALIBRATE (deferred '
                          'for an empty MMU head the auto-load block loads)')
@@ -4626,17 +4899,19 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # pinned at print start; every other T0-T3 call runs stock.
         for _i in range(4):
             try:
-                _orig = self.gcode.register_command('T%d' % _i, None)
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+                _orig = self._flexi_register_command('T%d' % _i, None)
                 if _orig is None:
                     continue
                 self._orig_native_t[_i] = _orig
-                self.gcode.register_command(
+                self._flexi_register_command(
                     'T%d' % _i,
                     (lambda gcmd, _t=_i: self._wrap_native_tool(gcmd, _t)),
                     desc='[multiACE] T%d (pinned MMU slot in Orca '
                          'virtual-tool prints)' % _i)
             except Exception as e:
                 logging.info('[multiACE] failed to wrap T%d: %s' % (_i, e))
+        # @MULTIACE_FLEXI_HOOK END: preserve stock print hooks while Flexi owns its virtual-tool pins
 
         for log in (self._state_log, self._usb_log, self._telemetry_log, self._wiggle_log):
             for handler in log.handlers:
@@ -4707,7 +4982,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             logging.info('[multiACE] Normal mode - skipping MMU detection')
             return
 
-        if self._ace_mode in ('multi', 'head'):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+        # @MULTIACE_FLEXI_COMPAT Session 2: Flexi loads through the original
+        # loader, so its head_source and tool-change feed-assist handler are
+        # restored exactly as in multi/head mode.
+        if self._ace_mode in ('multi', 'head', 'flexi'):
             self._restore_head_source()
             self._restore_bg_staged()
             self._ensure_extruder_change_handler()
@@ -4715,9 +4994,21 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             logging.info('[multiACE] %s mode - no head_source tracking'
                          % self._ace_mode)
 
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, flexi, Flexi
+        # @MULTIACE_FLEXI_COMPAT A restart must not inherit the previous mode's slot preview.
+        if self._ace_mode == 'flexi':
+            # Stock print_task_config survives a restart. Flexi must not
+            # inherit the previous mode's slot preview or an old toolhead
+            # colour, so publish the empty identity once at ready.
+            try:
+                self._push_rfid_info()
+            except Exception as e:
+                logging.info('[multiACE][flexi] startup display clear failed: %s' % e)
+
         self._disable_stock_entangle_detect()
 
         self._wrap_resume_command()
+        self._install_flexi_stock_load_guards()
 
         self._startup_table_existed = bool(
             self._unit_places and any(e and e.get('key') for e in self._unit_places))
@@ -4962,6 +5253,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         not a print-blocking concern.
         """
         if any(self._head_source.get(h) is not None for h in range(4)):
+            return
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, Flexi
+        if getattr(self, '_ace_mode', 'normal') == 'flexi':
+            # Flexi never exposes a slot preview on an empty toolhead. This
+            # helper runs after unload/clear and would otherwise repopulate
+            # the stock identity from active-ACE slot==head.
+            for h in range(4):
+                self._clear_filament_display(h)
             return
         head_mode = getattr(self, '_ace_mode', 'multi') == 'head'
         active_idx = self._active_device_index
@@ -5208,6 +5507,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         Per-slot deduped: a re-insert while this runs must NOT spawn a
         second handler. `depth` from a queued insert whose abort already
         ran at insert time."""
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_block_background
+        if self._flexi_block_background('_insert_read_then_preload'):
+            return
         if not hasattr(self, '_insert_read_running'):
             self._insert_read_running = set()
         key = (idx, slot)
@@ -5230,6 +5532,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     def _insert_tag_read_safe(self, idx, slot, depth='auto'):
         """C flow on a NON-active ACE: same abort+read, no _pre_load (that
         is active-only - it feeds via the active device)."""
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_block_background
+        if self._flexi_block_background('_insert_tag_read_safe'):
+            return
         if not hasattr(self, '_insert_read_running'):
             self._insert_read_running = set()
         key = (idx, slot)
@@ -6122,6 +6427,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             logging.info('[multiACE] history write failed (ignored): %s' % e)
 
     def _on_print_start(self, *args):
+        # @MULTIACE_FLEXI_HOOK Flexi prints use the original print-start
+        # sequence: head_source drives feed assist per ACE; routing and the
+        # path ledger are enforced at load time and by the motor gate.
+        self._flexi_require_execution()
         self._job_note_start()
         self._calibration_abort('print started')
         occupied = self._calibration_route_occupied()
@@ -6429,7 +6738,16 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         return keep
 
     def _on_print_end(self, *args):
+        # @MULTIACE_FLEXI_HOOK Release only Flexi's workflow; legacy end-of-print handling still runs.
+        if getattr(self,'_ace_mode',None)=='flexi' and getattr(self,'_flexi_production',None) and self._flexi_production.workflow:
+            self._flexi_production.runtime_selection={};self._flexi_production.tool_replacements={}
+            self._flexi_production.pending_start=None
+            self._flexi_production.workflow.resume_pending=False
+            try:self._flexi_production.workflow.end_print()
+            except Exception:logging.exception('[multiACE][flexi] print-end stop unconfirmed; resource remains reserved')
         self._job_note_end()
+        # @MULTIACE_FLEXI_SHARED per-print colour permission cleared at print end, all modes
+        self._failover_allow_color.clear()
         self._auto_feed_enabled = False
         self._print_tool_pins = {}
         self._print_virtual_raw = False
@@ -6540,6 +6858,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         logging.warning(msg)
         self.gcode.respond_raw("// [warn] %s" % msg)
 
+    def log_ident(self, msg):
+        # Identification notices: a tag matched more than one spool entry,
+        # or a read is ambiguous.  Nothing failed, so this must not sit in
+        # the notification area like an error: the '[ident]' marker makes
+        # the web show it as plain information that dismisses itself (and
+        # coalesces repeats).  Diagnostics stay in klippy.log.
+        logging.info(msg)
+        self.gcode.respond_raw("// [ident] %s" % msg)
+
     def log_notice(self, msg, done=False):
         # Progress/success of a user-started operation the web should
         # show without the user watching the console.
@@ -6624,7 +6951,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # after pause_resume + the macros have registered.
         for name in ('RESUME', '_RESUME_BASE'):
             try:
-                prev = self.gcode.register_command(name, None)
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+                prev = self._flexi_register_command(name, None)
             except Exception as e:
                 logging.info('[multiACE] %s unregister failed: %s' % (name, e))
                 continue
@@ -6632,7 +6960,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 logging.info('[multiACE] %s not registered - skip wrap' % name)
                 continue
             try:
-                self.gcode.register_command(
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+                self._flexi_register_command(
                     name, self._make_resume_wrap(prev, name),
                     desc='multiACE: normalise machine_state, then resume')
                 logging.info('[multiACE] wrapped %s for machine_state restore'
@@ -6641,7 +6970,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 logging.info('[multiACE] %s re-register failed (%s) - restoring '
                              'stock handler' % (name, e))
                 try:
-                    self.gcode.register_command(name, prev)
+                    # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+                    self._flexi_register_command(name, prev)
                 except Exception:
                     pass
 
@@ -7195,6 +7525,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 return False
             self._serials[idx] = ser
             self._connected_per_ace[idx] = True
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_connection_generations, self._flexi_connection_generations, self._flexi_connection_generations.get
+            if hasattr(self, '_flexi_connection_generations'):
+                self._flexi_connection_generations[idx] = self._flexi_connection_generations.get(idx, 0) + 1
+                self._flexi_info_observed.pop(idx, None)
             _marked_connected = True
             self._connect_error_per_ace.pop(idx, None)
             self._serial_failed_per_ace[idx] = False
@@ -7581,7 +7915,29 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 callback = cb_map.pop(msg_id)
                 callback(self=self, response=ret)
 
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+    # @MULTIACE_FLEXI_COMPAT Reject unscoped motor requests in Flexi while legacy callers stay unchanged.
     def send_request_to(self, idx, request, callback):
+        if getattr(self, '_ace_mode', None) == 'flexi' and request.get('method') == 'drying':
+            request = dict(request, params=dict(request.get('params') or {}, auto_roll=0))
+        token=request.pop('_flexi_token',None)
+        # Keep equal to ace_flexi_engine.FLEXI_MOTION_METHODS (test-enforced).
+        motor_methods={'feed_filament','unwind_filament','start_feed_assist','stop_feed_assist','stop_feed_filament','stop_unwind_filament','update_feeding_speed','feed_or_rollback_raw','raw','drying_raw','rfid_test'}
+        if getattr(self,'_ace_mode',None)=='flexi' and request.get('method') in motor_methods:
+            try:allowed=self._flexi_motor_request_allowed(idx,request,token)
+            except (ValueError,TypeError,KeyError,IndexError):allowed=False
+            if not allowed:
+                logged=getattr(self,'_flexi_blocked_raw_requests',set());key=(idx,request.get('method'))
+                if key not in logged:
+                    logging.warning('[multiACE][flexi] blocked unscoped motor request %s on ACE %s',request.get('method'),idx)
+                    logged.add(key);self._flexi_blocked_raw_requests=logged
+                if callback is not None:
+                    try:callback(self=self,response={'code':1,'msg':'FLEXI_MOTION_LOCKED'})
+                    except Exception:
+                        if ('callback',)+key not in logged:
+                            logging.exception('[multiACE][flexi] rejected motor callback failed')
+                            logged.add(('callback',)+key)
+                return
         # callback signature: callback(self, response) - self is the ACE instance, not the callback
         if idx in self._held_units and request.get('method') != 'get_info':
             # Bootloader/shim-held unit: behaves like a device that does
@@ -7775,6 +8131,21 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             # this write. On give-up it has ALREADY PAUSEd (V1==V2), and it
             # re-arms FA on success (on_ready) - the old inline path did not.
             self._serial_failed_per_ace[idx] = True
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_no_replay
+            if request.pop('_flexi_no_replay', False):
+                # H1 compatibility: a write exception can mean the frame was
+                # already sent (or partially sent). Do not replay it. Keep the
+                # normal reconnect/pause recovery, but report the request as
+                # outcome-uncertain so the adapter/caller can reconcile.
+                try:
+                    self._reconnect_or_pause(idx, err_first)
+                except Exception as rexc:
+                    logging.info(
+                        '[multiACE] MMU %d recovery after uncertain write raised: %s'
+                        % (idx, rexc))
+                raise Exception(
+                    '[multiACE] serial[%d] write outcome uncertain; automatic '
+                    'replay suppressed' % idx)
             self._reconnect_or_pause(idx, err_first)
 
             if not self._serial_failed_per_ace.get(idx, False):
@@ -7787,8 +8158,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     try:
                         new_ser.write(data)
                         self._usb_stats['errno5_recovered'] += 1
-                        self.log_always(self._t('msg.serial_write_recovered',
-                            ace=self._disp(idx)))
+                        # @MULTIACE_FLEXI_SHARED the reconnect path already told
+                        # the user; the resent write is a log detail (all modes).
+                        logging.info('[multiACE] MMU %d failed write resent '
+                                     'after reconnect' % self._raw(idx))
                         try:
                             self._state_log.info(
                                 'SERIAL_WRITE_RECOVERED idx=%d', idx)
@@ -8083,6 +8456,28 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                      % (self._raw(idx), when))
         return None
 
+    # @MULTIACE_FLEXI_SHARED plain-language USB error text for alerts (all modes)
+    @staticmethod
+    def _usb_error_words(err):
+        text = str(err)
+        if 'Errno 5' in text or 'Input/output error' in text:
+            return 'the USB link dropped (input/output error)'
+        if 'Errno 2' in text or 'No such file' in text:
+            return 'the USB device disappeared'
+        if 'Errno 19' in text or 'No such device' in text:
+            return 'the USB device is gone'
+        if 'timeout' in text.lower() or 'silent' in text.lower():
+            return 'no reply from the unit'
+        return text
+
+    def _comms_printing(self):
+        try:
+            ps = self.printer.lookup_object('print_stats', None)
+            return bool(ps) and ps.get_status(
+                self.reactor.monotonic()).get('state') in ('printing', 'paused')
+        except Exception:
+            return True
+
     def _reconnect_or_pause(self, idx, err):
         """Protocol-agnostic recovery-first handler for a comms loss ([Errno 5]).
         The ONE recovery path for BOTH V1 and V2 (a freewheeling V1 is no
@@ -8108,10 +8503,16 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             # _handle_per_ace_failure never fires for them and the user saw
             # nothing until the pause. Once per loss; cleared when the unit
             # answers again (_open_ace).
-            if idx not in self._comms_loss_warned:
+            # @MULTIACE_FLEXI_SHARED clearer comms-loss alerts (all modes):
+            # while printing, warn at once; otherwise wait for the outcome so
+            # a quick self-healing reconnect (an ACE Pro resets its USB link
+            # when Klipper restarts) is one informational line, not an alert.
+            _t_lost = self.reactor.monotonic()
+            _warn_now = self._comms_printing()
+            if _warn_now and idx not in self._comms_loss_warned:
                 self._comms_loss_warned.add(idx)
                 self.log_warn(self._t('msg.ace_comms_lost_reconnecting',
-                    ace=self._disp(idx), error=err))
+                    ace=self._disp(idx), error=self._usb_error_words(err)))
             try:
                 self._state_log.warning('COMMS_LOST idx=%d error=%s', idx, err)
             except Exception:
@@ -8136,8 +8537,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             if reconnected:
                 self._serial_failed_per_ace[idx] = False
                 self._usb_stats['errno5_recovered'] += 1
-                self.log_always(self._t('msg.serial_write_recovered',
-                                        ace=self._disp(idx)))
+                _secs = '%.1f' % max(0.0, self.reactor.monotonic() - _t_lost)
+                _ready = getattr(self, '_klippy_ready_ts', None)
+                if (not _warn_now and _ready is not None
+                        and _t_lost - _ready < 120.0):
+                    self.log_always(self._t('msg.ace_usb_reset_at_startup',
+                                            ace=self._disp(idx), seconds=_secs))
+                else:
+                    self.log_always(self._t('msg.serial_write_recovered',
+                                            ace=self._disp(idx), seconds=_secs))
                 try:
                     self._audit_state('RECONNECTED', {'idx': idx})
                 except Exception:
@@ -8145,6 +8553,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 # FA re-arm is driven by _open_ace's on_ready (post-handshake).
             else:
                 self._usb_stats['errno5_unrecovered'] += 1
+                if not _warn_now and idx not in self._comms_loss_warned:
+                    self._comms_loss_warned.add(idx)
+                    self.log_warn(self._t('msg.ace_comms_lost_reconnecting',
+                        ace=self._disp(idx), error=self._usb_error_words(err)))
                 self._handle_per_ace_failure(idx, err)
         finally:
             self._reconnecting_per_ace[idx] = False
@@ -9096,11 +9508,21 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                          '(ignored): %s' % e)
 
     def _pair_tag_key(self, slot):
-        """What a firmware tag read identifies a spool by: its code (SKU or
-        card UID), else for an OpenSpool tag material plus colour. None
-        when the slot carries no usable identity."""
+        """What a firmware tag read identifies a spool by.
+
+        A UID identifies the physical card; a SKU identifies only the
+        product.  Two spools of the same filament are two cards with one
+        SKU, so the UID must win whenever the firmware exposes one - keying
+        the pair dedupe on SKU alone hid a real read on every identical
+        spool.  Without a UID the code/type fallback is kept, and the
+        caller treats an equal fallback as shared identity, never as the
+        same card.
+        """
         if not isinstance(slot, dict) or slot.get('rfid') != 2:
             return None
+        uid = str(slot.get('uid') or '').strip().lower()
+        if uid:
+            return ('uid', uid)
         sku = self._sku_canon(slot.get('sku') or '')
         if sku:
             return ('code', sku)
@@ -9150,10 +9572,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                   in self.GEN1_INSERT_STATES
                                   and partner.get('rfid') != 2))
                     if keys[j] is not None and keys[j] == keys[i]:
-                        verdict = 'same'
+                        # Same UID = one card seen twice (shared antenna):
+                        # hide the echo.  Same product code without a UID is
+                        # two cards that cannot be told apart - keep the
+                        # product and mark the identity as shared.
+                        verdict = 'same' if keys[i][0] == 'uid' else 'twin'
                     elif p_busy:
                         verdict = 'wait'
-                if verdict:
+                if verdict in ('same', 'wait'):
                     slot['rfid'] = 1
                     slot['type'] = ''
                     slot['color'] = [0, 0, 0]
@@ -9161,17 +9587,31 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     slot['sku'] = ''
                     slot['brand'] = ''
                     slot['tag_format'] = ''
+                elif verdict == 'twin':
+                    # Two physical spools of one product.  Blanking them
+                    # discarded a genuine read; keep the product data and
+                    # let the UI show that the code is shared.
+                    slot['identity_ambiguous'] = True
                 if said.get(i) != verdict:
                     said[i] = verdict
                     if verdict:
-                        logging.info(
-                            '[multiACE] MMU %d slot %d: firmware tag read '
-                            'hidden (%s)', self._raw(idx), self._raw(i),
-                            'same tag as the earlier inserted slot %d - '
-                            'the partner card' % self._raw(j)
-                            if verdict == 'same' else
-                            'slot %d is still being identified'
-                            % self._raw(j))
+                        if verdict == 'same':
+                            why = ('same tag as the earlier inserted slot %d '
+                                   '- the partner card' % self._raw(j))
+                        elif verdict == 'twin':
+                            logging.info(
+                                '[multiACE] MMU %d slot %d: firmware tag read '
+                                'kept, product shared with slot %d (no UID to '
+                                'tell the cards apart)',
+                                self._raw(idx), self._raw(i), self._raw(j))
+                            why = None
+                        else:
+                            why = ('slot %d is still being identified'
+                                   % self._raw(j))
+                        if why is not None:
+                            logging.info(
+                                '[multiACE] MMU %d slot %d: firmware tag read '
+                                'hidden (%s)', self._raw(idx), self._raw(i), why)
         except Exception as e:
             logging.info('[multiACE] pair tag dedupe failed (ignored): %s'
                          % e)
@@ -10450,7 +10890,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                             # from `elif is_active` to `else` so head mode heals a
                             # non-active wired ACE too; the helper returns None for
                             # a non-active ACE in multi -> byte-identical.
-                            fb_head = self._display_head_for_slot(idx, i, is_active)
+                            # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+                            # @MULTIACE_FLEXI_COMPAT Flexi never mirrors an unloaded slot onto a toolhead.
+                            # Flexi never mirrors an unloaded slot onto a
+                            # toolhead; its display is cleared by
+                            # _push_rfid_info. The route helper below remains
+                            # the legacy normal/head/multi fallback only.
+                            fb_head = None
+                            if getattr(self, '_ace_mode', 'normal') != 'flexi':
+                                fb_head = self._display_head_for_slot(idx, i, is_active)
                             source = (self._head_source.get(fb_head)
                                       if fb_head is not None else None)
                             # Don't mirror ACE idx / slot i onto fb_head if that
@@ -10538,6 +10986,38 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                             'slot went empty' if _gate_prev == GATE_AVAILABLE
                             else 'slot is empty')
                 self._info_per_ace[idx] = result
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_info_observed, self._flexi_info_observed, _flexi_production
+                if hasattr(self, '_flexi_info_observed'):
+                    self._flexi_info_observed[idx] = time.monotonic()
+                    service = getattr(self, '_flexi_production', None)
+                    # Only re-derive the Flexi inventory when this ACE's slot data
+                    # changed: an identical heartbeat cannot create a new
+                    # invalidation, and the rebuild ran on the reactor at every
+                    # status reply (session 2 reactor-stall investigation).
+                    _fp = repr([(c.get('status'), c.get('type'), c.get('color'),
+                                 c.get('sku'), c.get('rfid'), c.get('brand'))
+                                for c in (result.get('slots') or []) if isinstance(c, dict)])
+                    # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_sync_fp, flexi
+                    _fps = self.__dict__.setdefault('_flexi_sync_fp', {})
+                    if _fps.get(idx) == _fp:
+                        service = None
+                    if service is not None and getattr(self, '_ace_mode', None) == 'flexi':
+                        _t0 = time.monotonic()
+                        try:
+                            service.synchronize_inventory()
+                        except Exception as exc:
+                            service.lease = None
+                            message = str(exc)
+                            # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_invalidation_warning, Flexi, self._flexi_invalidation_warning
+                            if getattr(self, '_flexi_invalidation_warning', None) != message:
+                                logging.error('[multiACE Flexi] Calibration observation failed: %s', message)
+                                self._flexi_invalidation_warning = message
+                        else:
+                            self._flexi_invalidation_warning = None
+                            _fps[idx] = _fp
+                            _dt = time.monotonic() - _t0
+                            if _dt > 0.05:
+                                logging.info('[multiACE][flexi][perf] inventory sync %.0f ms (ACE %d)', _dt * 1000, idx)
 
                 # V1 FA-health monitor (parity with the V2 disarm/dropped-arm
                 # recovery, which lived in the V2-only velocity tick). Status was
@@ -10588,8 +11068,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                     # active-ACE slot==head). _display_head_for_slot
                                     # returns None for a non-active ACE in multi ->
                                     # byte-identical.
-                                    fb_head = self._display_head_for_slot(
-                                        idx, slot_idx, is_active)
+                                    fb_head = None
+                                    # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+                                    if getattr(self, '_ace_mode', 'normal') != 'flexi':
+                                        fb_head = self._display_head_for_slot(
+                                            idx, slot_idx, is_active)
                                     if (fb_head is not None
                                             and self.head_uses_ace(fb_head)
                                             and not self._head_source.get(fb_head)):
@@ -10627,11 +11110,29 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                     # head_source None) keep the live slot mirror.
                                     _cap = (self._head_source.get(head)
                                             if override is None else None)
+                                    # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, Flexi
+                                    if (getattr(self, '_ace_mode', None) == 'flexi'
+                                            and _cap and _cap.get('load_failed')):
+                                        # A failed Flexi ownership is not a
+                                        # loaded identity. Let _push_rfid_info
+                                        # clear it; never heal a slot colour
+                                        # onto this head.
+                                        continue
                                     if _cap and (_cap.get('type') or '').strip():
                                         push_type = _cap.get('type')
                                         push_color = _cap.get('color') or push_color
                                         push_vendor = _cap.get('brand') or push_vendor
                                         push_subtype = _cap.get('subtype', '') or ''
+                                    elif (_cap is not None
+                                            # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, Flexi
+                                            and getattr(self, '_ace_mode', None) == 'flexi'):
+                                        # Flexi requires a captured identity. A
+                                        # live slot read is not proof of what
+                                        # the toolhead holds.
+                                        push_type = ''
+                                        push_color = '000000FF'
+                                        push_vendor = ''
+                                        push_subtype = ''
                                     want_type = push_type or ''
                                     want_vendor = push_vendor or ''
                                     want_color = (push_color or '').upper()
@@ -10822,6 +11323,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._handle_per_ace_failure(self._active_device_index, err)
 
     def _pre_load(self, gate):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_block_background
+        if self._flexi_block_background('_pre_load'):
+            return
         feed_length = self.head_feed_length[gate]
 
         if feed_length <= 0:
@@ -11001,19 +11505,21 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # send_request targets the ACTIVE unit, so pin the index NOW - the
         # exhaust must follow the unit this command actually starts, not
         # whichever one is active 20 s later.
-        dry_idx = self._active_device_index
+        dry_idx = gcmd.get_int('ACE', self._active_device_index, minval=0, maxval=len(self._ace_devices)-1)
 
         def callback(self, response):
-            if response.get('code', 0) != 0:
-                self.log_error(self._t('msg.ace_error_generic', error=response.get('msg')))
+            if response is None or response.get('code', 0) != 0:
+                self.log_error(self._t('msg.ace_error_generic', error=(response or {}).get('msg', 'No dryer acknowledgment')))
                 return
 
             self._schedule_dry_exhaust_open(dry_idx, 'manual drying')
             self.gcode.respond_info(self._t('msg.dryer_started'))
 
-        self.wait_ace_ready()
-        self.send_request(
-            request={"method": "drying", "params": {"temp": temperature, "fan_speed": 7000, "duration": duration, "auto_roll": self.dry_auto_roll}},
+        self.wait_ace_ready_on(dry_idx)
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+        # @MULTIACE_FLEXI_COMPAT Flexi never auto-rolls a spool during drying.
+        self.send_request_to(
+            dry_idx, request={"method": "drying", "params": {"temp": temperature, "fan_speed": 7000, "duration": duration, "auto_roll": 0 if self._ace_mode == 'flexi' else self.dry_auto_roll}},
             callback=callback)
 
     cmd_ACE_STOP_DRYING_help = '[multiACE] Stop ACE Pro dryer. Usage: ACE_STOP_DRYING [ACE=N]'
@@ -11048,6 +11554,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self.send_request_to(ace_idx, {"method": "drying_stop"}, callback)
 
     def _enable_feed_assist(self, index):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_require_execution
+        self._flexi_require_execution()
 
         if self._feed_assist_index != -1 and self._feed_assist_index != index:
             self.wait_ace_ready()
@@ -11088,6 +11596,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._disable_feed_assist(index)
 
     def _feed(self, index, length, speed, how_wait=None, ace=None):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_require_execution
+        self._flexi_require_execution()
         def callback(self, response):
             if response.get('code', 0) != 0:
                 self.log_error(self._t('msg.ace_error_generic', error=response.get('msg')))
@@ -11146,6 +11656,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._feed(index, length, speed, ace=ace)
 
     def _retract(self, index, length, speed, head=None, ace=None):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_require_execution
+        self._flexi_require_execution()
         def callback(self, response):
             if response.get('code', 0) != 0:
                 self.log_error(self._t('msg.ace_error_generic', error=response.get('msg')))
@@ -11314,6 +11826,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._retract(index, length, speed, ace=ace)
 
     def _set_feeding_speed(self, index, speed):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_require_execution
+        self._flexi_require_execution()
         def callback(self, response):
             if response.get('code', 0) != 0:
                 self.log_error(self._t('msg.ace_error_generic', error=response.get('msg')))
@@ -14695,12 +15209,34 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     def _gen1_tunnel_status(self, idx):
         """The additive get_status block for one unit."""
         out = {'enabled': bool(getattr(self, 'gen1_tag_tunnel', False)),
-               'available': None, 'reads': {}}
+               'available': None, 'mode': None, 'tunnel': None,
+               'reads': {}}
         cli = getattr(self, '_gen1_tunnel_clients', {}).get(idx)
         if cli is not None:
             sup = cli.support_state()
             if sup is not None:
-                out['available'] = bool(sup[1])
+                out['tunnel'] = bool(sup[1])
+                # available means a host Read button can start a fresh
+                # firmware read: the RC522 tunnel, or (on a CV Gen-1 build
+                # without the stub) the stock recognition slot cycle.
+                fw = ''
+                try:
+                    fw = (self._ace_models.get(idx) or ('', ''))[1]
+                except Exception:
+                    pass
+                # Gen-1 stock and community builds both expose the ordinary
+                # filament_recognition command. ACE2 stock does not, so the
+                # stock fallback is gated on the actual protocol, not just
+                # the version prefix.
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+                # @MULTIACE_FLEXI_COMPAT Gen-1 stock/CV expose the stock cycle;
+                # ACE2 stock and unknown firmware do not.
+                stock = bool(self._is_v1(idx) and fw and not sup[1]
+                             and str(fw).strip().upper().startswith(
+                                 ('V', 'CV')))
+                out['mode'] = 'tunnel' if sup[1] else (
+                    'stock' if stock else None)
+                out['available'] = bool(sup[1] or stock)
         now = self.reactor.monotonic()
         for slot, ent in (getattr(self, '_gen1_tunnel_reads', {}).get(idx)
                           or {}).items():
@@ -14821,11 +15357,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if getattr(self, '_orig_flow_calibrate', None) is not None:
             return
         try:
-            orig = self.gcode.register_command('FLOW_CALIBRATE', None)
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_register_command
+            orig = self._flexi_register_command('FLOW_CALIBRATE', None)
             if orig is None:
                 return
             self._orig_flow_calibrate = orig
-            self.gcode.register_command(
+            self._flexi_register_command(
                 'FLOW_CALIBRATE', self._wrap_flow_calibrate,
                 desc='start calibrate the factor for pressure advance '
                      '(multiACE: skipped when the bound spool carries a '
@@ -15530,6 +16067,27 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                     else 'internal',
                                     drying, ours,
                                     cfg['rh_start'], cfg['rh_end']))
+                # A booked cycle the device is not running ended without us
+                # (ACE power cycle, firmware flash, device backstop). The
+                # booking survives restarts, and with it set neither branch
+                # below fires, so the unit never dries again. Once it has
+                # read as not running for AUTO_DRY_STALE_S while the reading
+                # still asks for drying, drop the booking: the start branch
+                # below then starts a fresh cycle in the same tick, so a
+                # misread dryer state only restarts the cycle, it never
+                # leaves one running without an owner.
+                if ours and not drying and rh >= float(cfg['rh_start']):
+                    since = self._auto_dry_stale_since.setdefault(
+                        idx, eventtime)
+                    if eventtime - since >= AUTO_DRY_STALE_S:
+                        self._auto_dry_stale_since.pop(idx, None)
+                        self._auto_dry_ramp.pop(idx, None)
+                        self._auto_dry_release(
+                            idx, 'device not drying for %.0f s'
+                                 % (eventtime - since))
+                        ours = False
+                else:
+                    self._auto_dry_stale_since.pop(idx, None)
                 # OUR OWN bookkeeping decides, not the device status. The
                 # reported dryer state falls back to 'stop' whenever the
                 # status frame carries no dryer block or an unmapped state
@@ -15670,7 +16228,114 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         'ACE_TAG_READ ACE=n SLOT=n [PAGE=n] prints the raw page bytes and '
         'the card UID; when no card answers and the lane may move (idle, '
         'slot feeds no head) it rotates the spool to find the tag and pulls '
-        'it back. PAGE defaults to 0.')
+        'it back. PAGE defaults to 0. On a community Gen-1 build without '
+        'the tunnel it starts the firmware\'s own recognition cycle for the '
+        'slot and reports the material/colour it reads (idle printer only; '
+        'no lane motion).')
+
+    GEN1_STOCK_RECOGNITION_TIMEOUT = 25.0
+
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT
+    # @MULTIACE_FLEXI_COMPAT Stock/CV RFID fallback: ordinary filament_recognition only,
+    # with a hard requirement that the status stream showed a fresh cycle.
+    def _gen1_stock_tag_read(self, idx, slot):
+        """Trigger the Gen-1 firmware's own recognition cycle, then read the
+        parsed slot record. This is the supported host route when the
+        firmware has no RC522 tunnel (stock V1.3.863 or CV1.3.863):
+        `filament_recognition` with an ordinary slot index kicks the stock
+        recognition task (observed live as `action=shifting`, then
+        `action=ready`). It is a fresh firmware read, not a cached host
+        value; the firmware exposes the material/colour, not a raw UID, so
+        it cannot feed the tunnel's UID binding store.
+
+        A read is successful only after the status stream showed actual
+        recognition work. A ready slot with a pre-existing record is not a
+        fresh read and is rejected explicitly.
+
+        Returns (ok, message). The caller already holds the per-unit tag-op
+        claim. A printing printer is refused: the stock cycle can move the
+        unit's selector even though it does not feed the lane."""
+        try:
+            ps = self.printer.lookup_object('print_stats', None)
+            if ps is not None and (getattr(ps, 'state', '') or '').lower() \
+                    in ('printing', 'paused'):
+                return False, ('the firmware RFID re-read needs an idle '
+                               'printer - finish or pause the print first')
+            fw = ''
+            try:
+                fw = str((self._ace_models.get(idx) or ('', ''))[1]
+                         or '').strip().upper()
+            except Exception:
+                pass
+            if not (self._is_v1(idx) and fw
+                    and (fw.startswith('V') or fw.startswith('CV'))):
+                return False, ('host-triggered RFID recognition is not '
+                               'supported on firmware %s'
+                               % (fw or 'unknown'))
+            resp = self._tipform_send(
+                idx, {'method': 'filament_recognition',
+                      'params': {'index': int(slot)}}, timeout=8.0)
+            if not isinstance(resp, dict):
+                return False, 'the firmware did not answer the RFID re-read'
+            if resp.get('code', -1) != 0 or str(
+                    resp.get('msg', '')).strip().upper() == 'FORBIDDEN':
+                return False, ('the firmware rejected the RFID re-read (%s)'
+                               % (resp.get('msg') or resp.get('code')))
+            deadline = (self.reactor.monotonic()
+                        + self.GEN1_STOCK_RECOGNITION_TIMEOUT)
+            status = None
+            seen_work = False
+            while self.reactor.monotonic() < deadline:
+                reply = self._tipform_send(idx, {'method': 'get_status'},
+                                           timeout=3.0)
+                if isinstance(reply, dict) and reply.get('code', -1) == 0:
+                    status = reply.get('result') or {}
+                    action = str(status.get('action', '') or '').lower()
+                    slots = status.get('slots') or []
+                    s = slots[slot] if slot < len(slots) else {}
+                    sstat = str((s or {}).get('status', '') or '').lower()
+                    if gen1_recognition_observed(action, sstat):
+                        seen_work = True
+                    if action == 'ready' and sstat in ('ready', 'idle', ''):
+                        break
+                self.reactor.pause(self.reactor.monotonic() + 0.25)
+            if not status:
+                return False, 'the firmware did not report the RFID re-read'
+            if not seen_work:
+                return False, ('the firmware did not report a fresh RFID '
+                               'recognition cycle; the existing slot '
+                               'record was not accepted as a new read')
+            slots = status.get('slots') or []
+            s = slots[slot] if slot < len(slots) else {}
+            try:
+                self._v1_tag_bind_from_status(idx, status)
+            except Exception as e:
+                logging.info('[multiACE] V1 stock tag bind failed '
+                             '(ignored): %s', e)
+            # Stock firmware uses rfid=1 for a recognised Anycubic tag;
+            # the community UID stub writes rfid=2. Both are fresh after
+            # the observed cycle; a cached record without one was refused
+            # above.
+            if not isinstance(s, dict) or s.get('rfid') not in (1, 2):
+                return False, ('the firmware RFID re-read found no tag '
+                               '(slot %d)' % slot)
+            sku = str(s.get('sku') or '')
+            typ = str(s.get('type') or '')
+            color = s.get('color') or []
+            if not (sku or typ or color):
+                return False, ('the firmware RFID re-read returned no '
+                               'identity for slot %d' % slot)
+            bits = [x for x in (sku, typ,
+                                ('#%02X%02X%02X' % tuple(color[:3])
+                                 if len(color) >= 3 else '')) if x]
+            msg = ('firmware RFID re-read slot %d: %s%s'
+                   % (slot, ' / '.join(bits), ' (recognition ran)'))
+            self.log_always('[multiACE] MMU %d slot %d: %s'
+                            % (self._disp(idx), self._disp(slot), msg))
+            return True, msg
+        except Exception as e:
+            logging.exception('[multiACE] Gen-1 stock RFID re-read failed')
+            return False, 'firmware RFID re-read failed: %s' % e
 
     def cmd_ACE_TAG_READ(self, gcmd):
         ace_idx = gcmd.get_int('ACE', self._active_device_index,
@@ -15833,15 +16498,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 self._gen1_session_begin(ace_idx)
                 if not cli.tunnel_available():
                     fw = (self._ace_models.get(ace_idx) or ('', '?'))[1]
-                    _out['ok'] = False
-                    _out['msg'] = ('no tag tunnel (firmware %s, needs the '
-                                   'community build CV1.3.87x)' % fw)
-                    self.log_always(
-                        '[multiACE] MMU %d: no tag tunnel - firmware %s '
-                        'does not answer tunnel ops (needs the community '
-                        'build %s); nothing read'
-                        % (self._disp(ace_idx), fw,
-                           'CV1.3.87x'))
+                    _out['ok'], _out['msg'] = self._gen1_stock_tag_read(
+                        ace_idx, slot)
+                    if not _out['ok']:
+                        self.log_always(
+                            '[multiACE] MMU %d slot %d: %s (firmware %s '
+                            'has no tunnel; the stock recognition cycle was '
+                            'used instead)'
+                            % (self._disp(ace_idx), self._disp(slot),
+                               _out['msg'] or 'no tag read', fw))
                     return
                 skip = self._gen1_partner_uids(ace_idx, slot ^ 1)
                 res = cli.read_slot(slot, page=page, skip_uids=skip)
@@ -16121,82 +16786,231 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         '[multiACE] Show the local spool table (remaining weight is an '
         'ESTIMATE from extruded length, not a scale).')
 
-    def _quad_replenish_candidate(self, head):
-        """First gate-AVAILABLE slot whose declared identity matches the
-        ran-out head's identity. Returns (ace, slot) or None. Identity
-        match: type equal (case-insensitive, required) + color equal when
-        BOTH sides declare one (an unknown color never blocks).
-
-        Every verdict logs ONE line - a silent None leaves nothing to
-        diagnose from. Indices in the
-        line are INTERNAL 0-based like every data field."""
-        src = self._head_source.get(head)
+    # @MULTIACE_FLEXI_SHARED runout backup choice via ace_failover.select_backup for all modes
+    # @MULTIACE_FLEXI_SHARED runout backup inputs shared by the real runout path and the dashboard preview, all modes
+    def _failover_inputs(self, head, assume=None):
+        """Everything select_backup needs for `head`, without side effects:
+        (want, ran_out_source, candidates, info, priority, allow_color, want_src)
+        or (None, reason) when the ran-out identity cannot be resolved.
+        `assume=(ace, slot)` previews a head as if loaded from that slot."""
+        if assume is not None:
+            src = {'ace_index': int(assume[0]), 'slot': int(assume[1])}
+        else:
+            src = self._head_source.get(head)
         if not src:
-            logging.info('[multiACE] [quad] head %d: no head_source - '
-                         'cannot resolve the ran-out identity', head)
-            return None
+            return None, 'no head_source'
         src_ace = src.get('ace_index')
         src_slot = src.get('slot')
-        # Ran-out identity: the load-time capture (incl. RFID heal),
-        # falling back to the source slot's declared identity.
         want_type = (src.get('type') or '').strip().lower()
-        # No sentinel test on either side: '' is the only "unknown", and
-        # a 000000 that reaches here is a DECLARED black (_device_color_hex
-        # settles that at the device boundary). Flattening it cost a real
-        # print - after one reload the capture read 000000, the flattening
-        # dropped the constraint, and the next runout matched any PLA.
         want_color = (src.get('color') or '').strip().lstrip('#').upper()[:6]
+        want_brand = (src.get('brand') or '').strip()
         want_src = 'capture'
         if not want_type:
             ident = self._slot_declared_identity(src_ace, src_slot)
             if ident is None:
-                logging.info('[multiACE] [quad] head %d: no identity - '
-                             'capture has no type and source ace%s/s%s '
-                             'declares none', head, src_ace, src_slot)
-                return None
+                return None, ('capture has no type and source ace%s/s%s declares none'
+                              % (src_ace, src_slot))
             want_type, want_color = ident
+            want_brand = self._slot_declared_brand(src_ace, src_slot)
             want_src = 'slot-declared'
-        # Candidate lanes per topology (head mode 1:1 / multi parallel wiring).
+        mode = getattr(self, '_ace_mode', 'multi')
         cands = []
-        if getattr(self, '_ace_mode', 'multi') == 'head':
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, _flexi_routes, _flexi_init_error
+        if mode == 'flexi':
+            routes = getattr(self, '_flexi_routes', None)
+            if routes is None or getattr(self, '_flexi_init_error', None):
+                return None, 'Flexi routing unavailable'
+            try:
+                cands = [tuple(c) for c in routes.sources(head)
+                         if routes.availability.get(c[0], c[1]) == 'assigned']
+            except Exception:
+                cands = []
+        elif mode == 'head':
             wired = self.head_ace_for(head)
             for s in range(4):
-                if not (wired == src_ace and s == src_slot):
-                    cands.append((wired, s))
+                cands.append((wired, s))
         else:
             for a in sorted(self._gate_status_per_ace.keys()):
                 if a != src_ace:
                     cands.append((a, head))
-        trace = []
-        for a, s in cands:
+
+        def info(a, s):
             gates = self._gate_status_per_ace.get(a)
-            if not gates or s >= len(gates) or gates[s] != GATE_AVAILABLE:
-                trace.append('ace%d/s%d gate-empty' % (a, s))
-                continue
             ident = self._slot_declared_identity(a, s)
-            if ident is None:
-                trace.append('ace%d/s%d no-identity' % (a, s))
+            return {'present': bool(gates and s < len(gates) and gates[s] == GATE_AVAILABLE),
+                    'type': ident[0] if ident else '',
+                    'color': ident[1] if ident else '',
+                    'brand': self._slot_declared_brand(a, s)}
+        allow_color = (head in self._failover_allow_color
+                       or -1 in self._failover_allow_color)
+        return ({'type': want_type, 'color': want_color, 'brand': want_brand},
+                (src_ace, src_slot), cands, info,
+                self._failover_priority.get(head), allow_color, want_src), None
+
+    def _quad_replenish_candidate(self, head):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+        """Backup source for a ran-out head, chosen by the common failover
+        policy (ace_failover.select_backup): physically reachable lanes only
+        (head mode: the wired ACE's slots; multi: the same lane on the other
+        ACEs; flexi: the saved routes of this head), exact type and brand,
+        exact colour unless allowed for this print, user priority first.
+        Returns (ace, slot) or None; every verdict logs ONE line."""
+        inputs, reason = self._failover_inputs(head)
+        if inputs is None:
+            logging.info('[multiACE] [quad] head %d: %s - cannot resolve the '
+                         'ran-out identity or candidates', head, reason)
+            return None
+        want, (src_ace, src_slot), cands, info, priority, allow_color, want_src = inputs
+        mode = getattr(self, '_ace_mode', 'multi')
+        choice, trace = select_backup(want, (src_ace, src_slot), cands, info,
+                                      priority=priority,
+                                      allow_other_color=allow_color)
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, _flexi_runout_release, Flexi
+        if choice is not None and mode == 'flexi':
+            release = getattr(self, '_flexi_runout_release', None)
+            if release is None or not release(head, (src_ace, src_slot)):
+                logging.info('[multiACE] [quad] head %d: Flexi path not '
+                             'released after runout - pausing instead', head)
+                return None
+        logging.info('[multiACE] [quad] head %d want %s/%s/%s (%s)%s: %s%s',
+                     head, want['type'], want['color'] or '-', want['brand'] or '-',
+                     want_src, ' any-colour' if allow_color else '',
+                     ('MATCH ace%d/s%d' % choice) if choice else 'NO candidate',
+                     (' | rejected: ' + ', '.join(trace)) if trace else '')
+        return choice
+
+    # @MULTIACE_FLEXI_SHARED read-only runout backup preview for the dashboard, all modes
+    def _failover_preview(self):
+        """For every loaded toolhead: the spares a runout would use, in the
+        order it would try them, and why other slots are not usable. Same
+        inputs and policy as _quad_replenish_candidate, no side effects."""
+        out = {}
+        for head in range(4):
+            row = {'enabled': bool(getattr(self, 'quad_replenish', False)),
+                   'loaded': None, 'want': None, 'spares': [], 'rejected': [],
+                   'reason': None, 'reachable': 0, 'if_loaded': []}
+            inputs, reason = self._failover_inputs(head)
+            if inputs is None:
+                row['reason'] = reason
+                # Not loaded: preview each slot that could feed this head.
+                for cand in self._failover_head_sources(head):
+                    alt, _r = self._failover_inputs(head, assume=cand)
+                    if alt is None:
+                        continue
+                    spares, rejected = self._failover_spares(alt)
+                    row['if_loaded'].append({'slot': list(cand), 'want': dict(alt[0]),
+                                             'spares': spares, 'rejected': rejected})
+                out[str(head)] = row
                 continue
-            c_type, c_color = ident
-            if c_type != want_type:
-                trace.append('ace%d/s%d type %s!=%s'
-                             % (a, s, c_type or '-', want_type))
-                continue
-            if want_color and c_color and c_color != want_color:
-                trace.append('ace%d/s%d color %s!=%s'
-                             % (a, s, c_color, want_color))
-                continue
-            logging.info('[multiACE] [quad] head %d want %s/%s (%s): MATCH '
-                         'ace%d/s%d%s', head, want_type, want_color or '-',
-                         want_src, a, s,
-                         (' | rejected before: ' + ', '.join(trace))
-                         if trace else '')
-            return (a, s)
-        logging.info('[multiACE] [quad] head %d want %s/%s (%s): NO '
-                     'candidate - %s', head, want_type, want_color or '-',
-                     want_src,
-                     ', '.join(trace) if trace else 'no lanes to try')
-        return None
+            want, src, cands, info, priority, allow_color, _ = inputs
+            row.update(loaded=list(src), want=dict(want), allow_color=bool(allow_color),
+                       reachable=len([c for c in cands if tuple(c) != tuple(src)]))
+            row['spares'], row['rejected'] = self._failover_spares(inputs)
+            out[str(head)] = row
+        return out
+
+    def _failover_spares(self, inputs):
+        """Every usable spare in the order a runout would try them, and why
+        the other reachable slots are not usable."""
+        want, src, cands, info, priority, allow_color, _ = inputs
+        remaining = [tuple(c) for c in cands]
+        spares = []
+        while True:
+            choice, trace = select_backup(want, src, remaining, info,
+                                          priority=priority,
+                                          allow_other_color=allow_color)
+            if choice is None:
+                # The last pass looked at every slot not chosen: its trace
+                # says why each one cannot be a spare.
+                return spares, list(trace or [])
+            spares.append(list(choice))
+            remaining = [c for c in remaining if c != tuple(choice)]
+
+    def _failover_head_sources(self, head):
+        """Slots that could load `head` and hold filament (preview only)."""
+        mode = getattr(self, '_ace_mode', 'multi')
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, _flexi_routes
+        if mode == 'flexi':
+            routes = getattr(self, '_flexi_routes', None)
+            if routes is None:
+                return []
+            try:
+                cands = [tuple(c) for c in routes.sources(head)
+                         if routes.availability.get(c[0], c[1]) == 'assigned']
+            except Exception:
+                return []
+        elif mode == 'head':
+            cands = [(self.head_ace_for(head), s) for s in range(4)]
+        else:
+            cands = [(a, head) for a in sorted(self._gate_status_per_ace.keys())]
+        out = []
+        for a, s in cands:
+            gates = self._gate_status_per_ace.get(a) or []
+            if s < len(gates) and gates[s] == GATE_AVAILABLE:
+                out.append((a, s))
+        return out
+
+    def _failover_preview_cached(self):
+        now = self.reactor.monotonic()
+        cached = getattr(self, '_failover_preview_cache', None)
+        if cached is not None and now - cached[0] < 2.0:
+            return cached[1]
+        try:
+            value = self._failover_preview()
+        except Exception as e:
+            logging.info('[multiACE] failover preview failed: %s' % e)
+            value = {}
+        self._failover_preview_cache = (now, value)
+        return value
+
+    def _slot_declared_brand(self, ace_idx, slot_idx):
+        try:
+            ov = self._slot_overrides.get('%d_%d' % (ace_idx, slot_idx)) or {}
+            if ov.get('brand'):
+                return str(ov['brand']).strip()
+            info = self._info_per_ace.get(ace_idx) or {}
+            slots = info.get('slots') or []
+            cell = slots[slot_idx] if slot_idx < len(slots) else {}
+            return str((cell or {}).get('brand') or '').strip()
+        except Exception:
+            return ''
+
+    cmd_ACE_FAILOVER_PRIORITY_help = (
+        '[multiACE] Backup order for a toolhead: ACE_FAILOVER_PRIORITY '
+        'HEAD=3 ORDER=1:1,1:2,1:3 (empty ORDER clears). Only physically '
+        'reachable sources are ever used; the order is persisted.')
+
+    # @MULTIACE_FLEXI_SHARED ACE_FAILOVER_PRIORITY / ACE_FAILOVER_ALLOW_COLOR commands, all modes
+    def cmd_ACE_FAILOVER_PRIORITY(self, gcmd):
+        head = gcmd.get_int('HEAD', minval=0, maxval=3)
+        try:
+            order = parse_priority(gcmd.get('ORDER', ''))
+        except (ValueError, TypeError) as exc:
+            raise gcmd.error('Invalid ORDER: %s' % exc)
+        if order:
+            self._failover_priority[head] = order
+        else:
+            self._failover_priority.pop(head, None)
+        doc = {str(h): ['%d:%d' % p for p in v]
+               for h, v in sorted(self._failover_priority.items())}
+        self.gcode.run_script_from_command(
+            'SAVE_VARIABLE VARIABLE=ace__failover_priority VALUE="%s"'
+            % json.dumps(doc).replace('"', "'"))
+        gcmd.respond_info('[multiACE] failover order T%d: %s'
+                          % (head, ', '.join('%d:%d' % p for p in order) or 'route order'))
+
+    cmd_ACE_FAILOVER_ALLOW_COLOR_help = (
+        '[multiACE] For the current print only: allow a backup spool of a '
+        'different colour. ACE_FAILOVER_ALLOW_COLOR HEAD=<0-3|-1 all> ENABLE=1')
+
+    def cmd_ACE_FAILOVER_ALLOW_COLOR(self, gcmd):
+        head = gcmd.get_int('HEAD', -1, minval=-1, maxval=3)
+        if gcmd.get_int('ENABLE', 1):
+            self._failover_allow_color.add(head)
+        else:
+            self._failover_allow_color.discard(head)
+        gcmd.respond_info('[multiACE] different-colour failover for this print: %s'
+                          % (sorted(self._failover_allow_color) or 'off'))
 
     def quad_replenish_after_runout(self, head):
         """Called by the runout handler AFTER stock declined its head-twin
@@ -16318,6 +17132,16 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     def cmd_ACE_SWITCH(self, gcmd):
         target = gcmd.get_int('TARGET')
         autoload = gcmd.get_int('AUTOLOAD', 0)
+
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, flexi
+        # Flexi routes every load through the coordinator. The legacy bulk
+        # AUTOLOAD path selects heads and runs FEED_AUTO directly, bypassing
+        # that reservation, so refuse it here even when a macro or the printer
+        # console calls ACE_SWITCH outside the reviewed web endpoints.
+        if autoload and self._ace_mode == 'flexi':
+            raise gcmd.error(
+                '[multiACE] Flexi does not support Load All; load one '
+                'configured route at a time from the Flexi dashboard')
 
         if self._swap_in_progress:
             self.log_always(self._t('msg.switch_in_progress'))
@@ -16503,6 +17327,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._audit_state('SWITCH', {'target': target, 'autoload': autoload})
 
     def _get_heads_for_ace_slot(self, ace_index, slot):
+        # @MULTIACE_FLEXI_PATCH Flexi routes, not slot==head, decide which head a source feeds.
+        if getattr(self, '_ace_mode', 'multi') == 'flexi':
+            try:
+                target = self._flexi_routes.destination(ace_index, slot)
+            except ValueError:
+                return []
+            source = self._head_source.get(target)
+            if (source and not source.get('load_failed')
+                    and source.get('ace_index') == ace_index
+                    and source.get('slot') == slot):
+                return [target]
+            return []
 
         heads = []
         for head, source in self._head_source.items():
@@ -16793,6 +17629,13 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                          '%s' % (ace_idx, slot, e))
 
     def head_is_manual(self, head):
+        # @MULTIACE_FLEXI_PATCH SourceSelect is the only manual/source authority in Flexi.
+        # The persisted Multi/Head manual flag is intentionally ignored in
+        # Flexi. Flexi has one authoritative source declaration per head
+        # (SourceSelect), and carrying a stale Multi flag into it used to hide
+        # the source control while disabling the head with no way to clear it.
+        if getattr(self, '_ace_mode', None) == 'flexi':
+            return False
         try:
             return bool(self.head_manual.get(int(head), False))
         except (TypeError, ValueError):
@@ -16816,6 +17659,20 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # feeders use stock side feeders). The feed path and the status/UI filter
         # gate on this. Any mode other than 'head' behaves as before (all
         # non-manual heads ACE).
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+        # @MULTIACE_FLEXI_COMPAT Flexi must fail closed when SourceSelect is unavailable.
+        if getattr(self, '_ace_mode', None) == 'flexi':
+            # SourceSelect is the ONLY source authority in Flexi. Fail closed
+            # when the policy is unavailable: an old manual/feeder flag must
+            # never make an ACE feed look allowed.
+            policy = getattr(getattr(self, '_flexi_production', None),
+                             'source_select', None)
+            if policy is None:
+                return False
+            try:
+                return policy.effective(head)['type'] == 'ace'
+            except (KeyError, TypeError, ValueError):
+                return False
         if self.head_is_manual(head):
             return False
         if getattr(self, '_ace_mode', 'multi') == 'head':
@@ -17166,6 +18023,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         '[multiACE] Set the swap/load flush length (mm) for the next '
         'flush(es). Usage: ACE_SET_PURGE LENGTH=<mm>  or  ACE_SET_PURGE '
         'RESET=1 to fall back to the swap_purge_length config value. '
+        'SCALE=<25-200> (percent), FLOOR=<mm> and CAP=<mm> (0 = off) '
+        'rescale and bound every resolved flush length; they write the '
+        'swap_purge_scale / swap_purge_floor / swap_purge_cap config '
+        'lines (write-through). '
         'MATRIX=0|1 ignores/honors the per-pair LENGTH stamps the '
         'preflight writes from the slicer flush matrix - MATRIX=0 = '
         'fixed swap_purge_length for every flush. Writes the purge_matrix '
@@ -17174,7 +18035,40 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         'Intended for multiACE Pro to set per-colour-pair purge from the '
         'slicer. LENGTH=0 = use the stock default (80mm).')
 
+    def _set_purge_policy(self, gcmd):
+        """SCALE= / FLOOR= / CAP= of ACE_SET_PURGE: apply in RAM, then
+        write the config line. A failed write is reported, the RAM value
+        stays applied for this session."""
+        # Ranges are checked by hand (see _gcode_num) and ALL values before
+        # any is applied, so a bad CAP cannot leave SCALE half set, and the
+        # error names the option instead of Klipper's bare "System error".
+        vals = [(attr, self._gcode_num(gcmd, arg, lo, hi, int))
+                for arg, attr, lo, hi in (
+                    ('SCALE', 'swap_purge_scale', 25, 200),
+                    ('FLOOR', 'swap_purge_floor', 0, 200),
+                    ('CAP', 'swap_purge_cap', 0, 200))]
+        for attr, val in vals:
+            if val is None:
+                continue
+            setattr(self, attr, val)
+            err = self._cfg_write_ace_option(attr, str(val))
+            msg = '[multiACE] %s set to %d' % (attr, val)
+            if err is not None:
+                msg += (' - WARNING: config write failed (%s), applied '
+                        'for this session only' % err)
+            self.log_always(msg)
+            logging.info(msg)
+        floor, cap = self.swap_purge_floor, self.swap_purge_cap
+        if floor and cap and floor > cap:
+            self.log_always('[multiACE] swap_purge_floor %d is above '
+                            'swap_purge_cap %d - the cap wins'
+                            % (floor, cap))
+
     def cmd_ACE_SET_PURGE(self, gcmd):
+        policy = [a for a in ('SCALE', 'FLOOR', 'CAP')
+                  if gcmd.get(a, None) is not None]
+        if policy:
+            self._set_purge_policy(gcmd)
         matrix = gcmd.get_int('MATRIX', None, minval=0, maxval=1)
         if matrix is not None:
             persist = gcmd.get_int('PERSIST', 1, minval=0, maxval=1)
@@ -17225,9 +18119,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return
         length = gcmd.get_int('LENGTH', None, minval=0, maxval=200)
         if length is None:
-            if matrix is None:
+            if matrix is None and not policy:
                 raise gcmd.error(
-                    'ACE_SET_PURGE needs LENGTH=<mm>, RESET=1 or MATRIX=0|1')
+                    'ACE_SET_PURGE needs LENGTH=<mm>, RESET=1, MATRIX=0|1 '
+                    'or SCALE=/FLOOR=/CAP=')
             return
         if not self.purge_matrix:
             # Stamped files carry one LENGTH per swap - QUIET ignore
@@ -17874,8 +18769,27 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             return True
         return str(resp.get('msg', '')).strip().upper() == 'FORBIDDEN'
 
+    def unload_cut_macro_for(self, head):
+        """The cut macro for this head, or '' when it has no cutter (no
+        macro set, or the head is not in unload_cut_heads)."""
+        cut = getattr(self, 'unload_cut_macro', '')
+        heads = getattr(self, 'unload_cut_heads', None)
+        if not cut or (heads and self._disp(head) not in heads):
+            return ''
+        return cut
+
     def _run_tipform(self, head, temp, soft, nozzle_diameter):
         self._check_calibration_unload_cancel()
+        cut = self.unload_cut_macro_for(head)
+        if cut:
+            # A cutter replaces the tip forming entirely; the macro owns
+            # its moves and temperatures, the retract loop follows as usual.
+            logging.info('[multiACE] head %d: unload cut via %s'
+                         % (self._disp(head), cut))
+            self.gcode.run_script_from_command(
+                '%s HEAD=%d\r\n' % (cut, head))
+            self._check_calibration_unload_cancel()
+            return
         # Inline tip form: the stock INNER_FILAMENT_UNLOAD macro, OR the
         # same FRAME with a per-material pull table replacing only the
         # CONTROL_RETRACT_ACTION move step ([ace_tipform] mode: custom).
@@ -18120,10 +19034,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # (no slot to retract) is obsolete from here on.
         if hasattr(self, '_unload_no_mapping'):
             self._unload_no_mapping.pop(head, None)
+        _ok = False
         try:
-            return self._cmd_ACE_LOAD_HEAD_body(gcmd)
+            result = self._cmd_ACE_LOAD_HEAD_body(gcmd)
+            _ok = bool(getattr(self, '_last_load_ok', True))
+            return result
         finally:
             self._loading_heads.discard(head)
+            # @MULTIACE_FLEXI_HOOK Flexi path ledger: no-op unless a routed feed started.
+            try:
+                self._flexi_native_load_finished(head, _ok)
+            except Exception:
+                logging.exception('[multiACE] Flexi load bookkeeping failed')
 
     def _cmd_ACE_LOAD_HEAD_body(self, gcmd):
 
@@ -18153,12 +19075,30 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # multi slot==head guess. Multi/normal: byte-identical defaults.
         _hm = (getattr(self, '_ace_mode', 'multi') == 'head'
                and self.head_uses_ace(head))
+        _ace_given = gcmd.get('ACE', None) is not None
+        _slot_given = gcmd.get('SLOT', None) is not None
         if _hm:
             ace_index = gcmd.get_int('ACE', self.head_ace_for(head))
             slot = gcmd.get_int('SLOT', self._ace_slot_for_head(head))
         else:
             ace_index = gcmd.get_int('ACE', self._active_device_index)
             slot = gcmd.get_int('SLOT', head)
+        # @MULTIACE_FLEXI_PATCH Saved Flexi routes resolve the physical tube map before any motor move.
+        # Saved Flexi routes ARE the physical tube map. With two MMUs the
+        # stock defaults above are wrong: slot==head and the globally active
+        # unit pair a source with a head its tube never reaches, so the feed
+        # runs, filament arrives at another toolhead, and this head reports
+        # NO TRANSPORT. Resolve the route first and refuse a contradictory
+        # ACE/SLOT before any motor or heater command. No routes configured
+        # -> legacy values unchanged.
+        if (self.head_uses_ace(head)
+                and getattr(self, '_flexi_routes', None) is not None):
+            try:
+                ace_index, slot = self._flexi_routes.resolve_load_source(
+                    head, ace_index, slot, _ace_given, _slot_given,
+                    self._head_source.get(head))
+            except ValueError as exc:
+                raise self._ace_error(gcmd, str(exc), code=209, head=head)
         # ACE and SLOT only matter for a head the ACE feeds; a head without
         # ACE must not fail (or silently return) because some ACE is absent.
         if self.head_uses_ace(head):
@@ -18169,6 +19109,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             if slot < 0 or slot > 3:
                 raise self._ace_error(gcmd, 'SLOT must be 0-3', code=200,
                                       head=head)
+            # @MULTIACE_FLEXI_HOOK Flexi: shared-path ownership and recovery
+            # check before any heater, tool or motor command (no-op otherwise).
+            self._flexi_native_load_check(gcmd, head, ace_index, slot)
         # 1:1 invariant (head mode): refuse an explicit ACE that contradicts
         # the head's wiring. A load from a foreign ACE is always a broken
         # caller (e.g. a mis-generated auto-load block); feeding it silently
@@ -18344,6 +19287,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
         wheel_before = self._read_wheel_counts(module, channel)
 
+        if self.head_uses_ace(head):
+            # @MULTIACE_FLEXI_HOOK Flexi path ledger: this source now occupies the tube.
+            self._flexi_native_feed_started(head, ace_index, slot)
         self._in_internal_load_head = True
         try:
             try:
@@ -18509,6 +19455,50 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         'Usage: ACE_UNLOAD_HEAD HEAD=0 [RETRACT_LENGTH=<mm>] '
         '[KEEP_HEAT=<temp>] [CALIBRATION_PREPARE=1 ACE=0 SLOT=0]')
     def cmd_ACE_UNLOAD_HEAD(self, gcmd):
+        # @MULTIACE_FLEXI_HOOK Wrapper: report a routed unload result to the
+        # Flexi path ledger. Original behaviour is the body below.
+        try:
+            head = int(gcmd.get('HEAD', '-1'))
+        except (TypeError, ValueError):
+            head = -1
+        src = self._head_source.get(head) if 0 <= head <= 3 else None
+        source = None
+        if src and self.head_uses_ace(head):
+            try:
+                source = (int(src.get('ace_index')), int(src.get('slot')))
+            except (TypeError, ValueError):
+                source = None
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_unload_verified, flexi, Flexi
+        self._flexi_unload_verified = None
+        if getattr(self, '_ace_mode', None) == 'flexi' and source is not None:
+            # Native scope read by the Flexi H2 tip-form check: an original
+            # MultiACE unload of this routed source is an authorized job.
+            self._flexi_native_unload = {
+                'token': 'native-unload-%d-%d' % (head, int(time.time() * 1000)),
+                'head': head, 'source': list(source), 'action': 'unload',
+                'operation': 'unload', 'phase': 'tipform'}
+        self._in_internal_unload_head = True
+        try:
+            result = self._cmd_ACE_UNLOAD_HEAD_body(gcmd)
+        except Exception:
+            try:
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_native_unload_finished, Flexi, self._flexi_native_unload
+                self._flexi_native_unload_finished(head, source, False)
+            except Exception:
+                logging.exception('[multiACE] Flexi unload bookkeeping failed')
+            raise
+        finally:
+            self._flexi_native_unload = None
+            self._in_internal_unload_head = False
+        if self._flexi_unload_verified is not None:
+            try:
+                self._flexi_native_unload_finished(
+                    head, source, bool(self._flexi_unload_verified))
+            except Exception:
+                logging.exception('[multiACE] Flexi unload bookkeeping failed')
+        return result
+
+    def _cmd_ACE_UNLOAD_HEAD_body(self, gcmd):
 
         head = gcmd.get_int('HEAD')
 
@@ -18814,6 +19804,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # the four other clear sites.
         unload_verified = (not still_detected
                            and getattr(self, '_last_unload_ok', True))
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_unload_verified
+        self._flexi_unload_verified = unload_verified
         if hasattr(self, '_unload_slot_hint'):
             self._unload_slot_hint.pop(head, None)
         if hasattr(self, '_unload_no_mapping'):
@@ -19167,11 +20159,18 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 return {'kind': 'ace', 'head': pin[0],
                         'ace': pin[1], 'slot': pin[2]}
             return {'kind': 'native', 'head': tool}
-        if mode not in ('multi', 'head'):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+        # @MULTIACE_FLEXI_COMPAT Virtual tools accept Flexi only because routes, not slot==head, resolve them.
+        if mode not in ('multi', 'head', 'flexi'):
             raise ValueError(('virtual tool T%d needs multi or head mode '
                               '(mode is %s)' % (tool, mode), 205))
         ace, slot = self._tool_map.get(tool, virtual_tool_slot(tool))
-        if mode == 'head':
+        if mode == 'flexi':
+            try:
+                head = self._flexi_routes.destination(ace, slot)
+            except ValueError as exc:
+                raise ValueError((str(exc), 207))
+        elif mode == 'head':
             head = self._head_for_ace(ace)
             if head is None:
                 raise ValueError((
@@ -19268,7 +20267,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         every print (set_new_print_info runs before print_stats:start), so
         this runs at every start/resume. Unresolvable tools keep stock's
         entry. Mirrored into reprint_info for a power-loss resume."""
-        if getattr(self, '_ace_mode', 'normal') not in ('multi', 'head'):
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+        if getattr(self, '_ace_mode', 'normal') not in ('multi', 'head','flexi'):
             return
         try:
             ptc = self.printer.lookup_object('print_task_config', None)
@@ -19326,7 +20326,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
     def _wrap_ext_switch(self, gcmd):
         index = gcmd.get_int('INDEX', None)
         if (index is None or index < 4
-                or getattr(self, '_ace_mode', 'normal') not in ('multi', 'head')):
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+                or getattr(self, '_ace_mode', 'normal') not in ('multi', 'head', 'flexi')):
             if self._orig_ext_switch is None:
                 raise gcmd.error('SWITCH_OF_EXTENDED_EXTRUDER unavailable')
             return self._orig_ext_switch(gcmd)
@@ -20439,6 +21440,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # non-manual head -> byte-identical; head mode: skips the feeders).
         if not self.head_uses_ace(head):
             return
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+        # @MULTIACE_FLEXI_COMPAT An unloaded Flexi head has no identity to mirror.
+        if getattr(self, '_ace_mode', 'normal') == 'flexi':
+            # An unloaded Flexi head has no identity to mirror. The clear in
+            # _push_rfid_info/_sync_ptc_to_active_ace owns the display.
+            return
         try:
             slots = self._info.get('slots', [{}] * 4)
             if head < 0 or head >= len(slots):
@@ -20503,6 +21510,22 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             sensor = self.printer.lookup_object(
                 'filament_motion_sensor e%d_filament' % head, None)
             if not sensor or not sensor.get_status(0)['filament_detected']:
+                continue
+
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, ACE_UNLOAD_HEAD
+            # Flexi: each head goes through the original ACE_UNLOAD_HEAD, which
+            # carries the tip-form permission, the per-slot pull-back length and
+            # the tube record. The raw FEED_AUTO below has none of them (its
+            # tip-form was refused: "denied ... missing-job-token").
+            if getattr(self, '_ace_mode', None) == 'flexi':
+                self.log_always(self._t('msg.unloading_head_only', head=self._disp(head)))
+                try:
+                    self.gcode.run_script_from_command('ACE_UNLOAD_HEAD HEAD=%d' % head)
+                except Exception as e:
+                    self.log_always(self._t('msg.unload_head_failed_warn',
+                        head=self._disp(head), error=str(e)))
+                if not sensor.get_status(0)['filament_detected']:
+                    unloaded_any = True
                 continue
 
             source = self._head_source.get(head)
@@ -20631,8 +21654,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         temp = gcmd.get_int('TEMP', self.ace_dryer_temp.get(ace_idx, self.dryer_temp))
         duration = gcmd.get_int('DURATION', self.ace_dryer_duration.get(ace_idx, self.dryer_duration))
         self._wait_homing_clear()
-        self.gcode.run_script_from_command('ACE_SWITCH TARGET=%d' % ace_idx)
-        self.gcode.run_script_from_command('ACE_START_DRYING TEMP=%d DURATION=%d' % (temp, duration))
+        # @MULTIACE_FLEXI_PATCH Flexi dries the addressed unit without an active-unit switch.
+        if self._ace_mode == 'flexi':
+            self.gcode.run_script_from_command('ACE_START_DRYING ACE=%d TEMP=%d DURATION=%d' % (ace_idx, temp, duration))
+        else:
+            self.gcode.run_script_from_command('ACE_SWITCH TARGET=%d' % ace_idx)
+            self.gcode.run_script_from_command('ACE_START_DRYING TEMP=%d DURATION=%d' % (temp, duration))
         self.log_always(self._t('msg.drying_ace_at',
             ace=self._disp(ace_idx), temp=temp, duration=duration))
 
@@ -20703,13 +21730,57 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             % (self.VARS_ACE_HEADS_MANUAL_CONV,
                json.dumps(sorted(self._heads_manual_conv))))
 
+    def _switch_ace_mode_files(self, gcmd, mode):
+        """Swap the Klipper module set and persist a mode crossing the
+        stock/ACE boundary.  The running process cannot import the copied
+        modules, so every caller must require a restart after this returns.
+        Persist the target only after the copy succeeds.
+        """
+        save_vars = self.printer.lookup_object('save_variables')
+        vars_path = save_vars.filename
+        script_dir = os.path.dirname(os.path.abspath(vars_path))
+        script = os.path.join(script_dir, 'ace_mode_switch.sh')
+        if not os.path.exists(script):
+            raise gcmd.error('[multiACE] Mode switch script not found: %s' % script)
+
+        file_mode = 'normal' if mode == 'normal' else 'ace'
+
+        self.log_always(self._t('msg.running_mode_switch', mode=mode.upper()))
+
+        # Swap the files first and persist the mode only when that worked:
+        # a persisted mode over unswapped files would boot stock modules
+        # under an ace config (S58 re-applies the swap on PAXX, an SSH
+        # install has no such boot hook).
+        import subprocess
+        try:
+            result = subprocess.run(['bash', script, file_mode],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=30)
+        except subprocess.TimeoutExpired:
+            raise gcmd.error('[multiACE] Mode switch script timed out after 30s')
+        except Exception as e:
+            raise gcmd.error('[multiACE] Failed to run mode switch script: %s' % str(e))
+        if result.returncode != 0:
+            raise gcmd.error(
+                '[multiACE] Mode switch script failed (rc=%d): %s' % (
+                    result.returncode, result.stderr.decode('utf-8', 'replace')))
+
+        self.gcode.run_script_from_command(
+            "SAVE_VARIABLE VARIABLE=ace__mode VALUE=\"'%s'\"" % mode)
+
     def cmd_ACE_RUN_MODE_SWITCH(self, gcmd):
         mode = gcmd.get('MODE', '').lower()
-        if mode not in ('normal', 'single', 'multi', 'head'):
-            raise gcmd.error('[multiACE] Invalid mode: %s. Use normal, multi, or head.' % mode)
+        # @MULTIACE_FLEXI_HOOK Flexi is accepted as the fourth mode, never as a legacy-mode fallback.
+        if mode not in ('normal', 'single', 'multi', 'head', 'flexi'):
+            raise gcmd.error('[multiACE] Invalid mode: %s. Use normal, multi, head, or flexi.' % mode)
         # 'single' is the retired legacy name (1 ACE device) -> treat as multi.
         if mode == 'single':
             mode = 'multi'
+
+        if mode == 'flexi' and not FLEXI_AVAILABLE:
+            raise gcmd.error(
+                '[multiACE] Flexi is not installed on this printer. Install '
+                'the Flexi add-on package, then select flexi again.')
 
         # In 'head' mode each head is individually ACE or a stock feeder
         # (head_feeder flags). The legacy HEAD=n param (optional, for backward
@@ -20718,6 +21789,43 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                        if mode == 'head' else None)
 
         current = self._ace_mode
+        # @MULTIACE_FLEXI_HOOK Normal->Flexi stages the same file swap as multi/head and requires a reboot.
+        if mode == 'flexi':
+            if current == 'normal':
+                if self._managed_by_host:
+                    raise gcmd.error(
+                        '[multiACE] Normal mode is controlled by the host platform. '
+                        'Disable the managed multiACE integration and reboot.')
+                ps = self.printer.lookup_object('print_stats', None)
+                if (ps is None or ps.get_status(self.reactor.monotonic()).get('state')
+                        not in ('standby', 'complete', 'cancelled')):
+                    raise gcmd.error('[multiACE] Flexi mode switch requires an idle printer')
+                bg = self.printer.lookup_object('ace_bg_swap', None)
+                if (getattr(self, '_swap_in_progress', False)
+                        or getattr(self, '_unload_all_active', False)
+                        or getattr(self, '_bg_staged', {})
+                        or (bg is not None and getattr(bg, '_busy', None))
+                        or getattr(self, '_calibration', {}).get('state') != 'idle'):
+                    raise gcmd.error(
+                        '[multiACE] Finish filament and calibration operations '
+                        # @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, _flexi_enter, flexi
+                        'before switching to Flexi')
+                # Normal runs the stock Klipper modules.  Flexi needs the ACE
+                # module set at import time, so stage the same file swap used
+                # by normal<->multi/head and require one restart.  Do not call
+                # _flexi_enter here: this process has not imported Flexi.
+                self._switch_ace_mode_files(gcmd, 'flexi')
+                self.gcode.run_script_from_command(
+                    'RAISE_EXCEPTION ID=6666 INDEX=6 CODE=6 MESSAGE="[multiACE] Switched to FLEXI mode. Please reboot!" ONESHOT=0 LEVEL=2')
+                raise gcmd.error(
+                    '[multiACE] Switched to FLEXI mode. Please reboot the printer to activate!')
+            return self._flexi_enter(gcmd)
+        if current == 'flexi':
+            isolated=gcmd.get('CONFIRM','')=='ALL_FLEXI_PATHS_STOPPED_AND_PHYSICALLY_ISOLATED'
+            if getattr(self,'_flexi_init_error',None) and not isolated:
+                raise gcmd.error('Confirm physical isolation of all Flexi paths before leaving a damaged journal')
+            self._flexi_assert_idle(gcmd,isolated_exit=isolated)
+            self._flexi_revoke_session()
 
         # multi<->head stay on the SAME ace files -> pure runtime flip, no file
         # swap / reboot. Only transitions involving 'normal' (stock files) run
@@ -20728,7 +21836,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 'Disable the managed multiACE integration and reboot.')
 
         if mode in ('multi', 'head') and (
-                current in ('multi', 'head') or self._managed_by_host):
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+                current in ('multi', 'head', 'flexi') or self._managed_by_host):
             self.gcode.run_script_from_command(
                 "SAVE_VARIABLE VARIABLE=ace__mode VALUE=\"'%s'\"" % mode)
             self._ace_mode = mode
@@ -20775,37 +21884,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 '[multiACE] This mode change is not supported by the managed '
                 'runtime; the host platform controls file activation.')
 
-        save_vars = self.printer.lookup_object('save_variables')
-        vars_path = save_vars.filename
-        script_dir = os.path.dirname(os.path.abspath(vars_path))
-        script = os.path.join(script_dir, 'ace_mode_switch.sh')
-        if not os.path.exists(script):
-            raise gcmd.error('[multiACE] Mode switch script not found: %s' % script)
-
-        file_mode = 'normal' if mode == 'normal' else 'ace'
-
-        self.log_always(self._t('msg.running_mode_switch', mode=mode.upper()))
-
-        # Swap the files first and persist the mode only when that worked:
-        # a persisted mode over unswapped files would boot stock modules
-        # under an ace config (S58 re-applies the swap on PAXX, an SSH
-        # install has no such boot hook).
-        import subprocess
-        try:
-            result = subprocess.run(['bash', script, file_mode],
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    timeout=30)
-        except subprocess.TimeoutExpired:
-            raise gcmd.error('[multiACE] Mode switch script timed out after 30s')
-        except Exception as e:
-            raise gcmd.error('[multiACE] Failed to run mode switch script: %s' % str(e))
-        if result.returncode != 0:
-            raise gcmd.error(
-                '[multiACE] Mode switch script failed (rc=%d): %s' % (
-                    result.returncode, result.stderr.decode('utf-8', 'replace')))
-
-        self.gcode.run_script_from_command(
-            "SAVE_VARIABLE VARIABLE=ace__mode VALUE=\"'%s'\"" % mode)
+        self._switch_ace_mode_files(gcmd, mode)
         if mode == 'head' and legacy_head is not None:
             self._ace_head = legacy_head
             for h in range(4):
@@ -20863,6 +21942,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._run_update_script(gcmd, ['check'], timeout=30)
 
     def cmd_ACE_UPDATE_APPLY(self, gcmd):
+        # @MULTIACE_FLEXI_HOOK Flexi build: the stock updater would replace
+        # Flexi with the upstream release (same rule as the web /api/update/apply).
+        raise gcmd.error(
+            'This is a MultiACE Flexi build. The stock multiACE updater would '
+            'replace it; update with the Flexi release package (check.sh / '
+            'install.sh) instead. ACE_UPDATE_CHECK still works.')
         force = gcmd.get_int('FORCE', 0)
         sub = ['apply']
         if force:
@@ -21527,6 +22612,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             _ext = self._external_rh_status(i)
             aces.append({
                 'idx':          i,
+                'configured':   bool(self._unit_places and i < len(self._unit_places)
+                                     and (self._unit_places[i] or {}).get('key')),
+                'slot_count':   len(slots_out),
+                'slot_count_source': 'reported' if slots_out else 'unknown',
                 'connected':    self._connected_per_ace.get(i, False),
                 'connect_error': (getattr(self, '_connect_error_per_ace', {})
                                   .get(i, '')),
@@ -21598,6 +22687,11 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                             if self._connected_per_ace.get(i, False)
                             and (self._cap(i, 'has_humidity')
                                  or i in getattr(self, '_external_rh', {}))]
+        unit_devices = self._unit_devices_status()
+        configured_count = min(max(int(getattr(self, 'ace_device_count', 1) or 1), 1),
+                               MAX_ACE_UNITS)
+        detected_count = sum(1 for d in unit_devices if d.get('present'))
+        connected_count = sum(1 for d in unit_devices if d.get('connected'))
         return {
             'api_version': ACE_API_VERSION,
             'auto_dry_masters': auto_dry_masters,
@@ -21614,6 +22708,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'gate_status': self.gate_status,
             'active_device': self._active_device_index,
             'device_count': len(self._ace_devices),
+            # Scalability contract: configured is the operator's expected
+            # count, detected is what the bus scan found, connected is what
+            # completed the handshake. They are deliberately separate.
+            'configured_device_count': configured_count,
+            'detected_device_count': detected_count,
+            'connected_device_count': connected_count,
+            'max_ace_units': MAX_ACE_UNITS,
+            'max_ace_slots': MAX_ACE_SLOTS,
             # ace_head: legacy single-ACE-head value. When head mode currently
             # has exactly one ACE head, report that live head so the single-head
             # preflight stays correct; otherwise fall back to the stored value.
@@ -21621,6 +22723,10 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                          else getattr(self, '_ace_head', 3)),
             'ace_heads': ace_heads_now,
             'mode': getattr(self, '_ace_mode', 'normal'),
+            # @MULTIACE_FLEXI_HOOK Flexi state is projected beside, not inside, legacy mode state.
+            'flexi': self._flexi_status_cached(),
+            'flexi_discovery': (self._flexi_discovery_status()
+                                if hasattr(self, '_flexi_discovery_status') else {'available': False}),
             'pickup_cleaning': getattr(self, '_pickup_cleaning', False),
             'preflight_max_copies': int(getattr(self, 'preflight_max_copies', 1) or 1),
             'preflight_copies_strict': bool(getattr(self, 'preflight_copies_strict', False)),
@@ -21634,6 +22740,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                                                False)),
             'quad_replenish': bool(getattr(self, 'quad_replenish', False)),
             'purge_matrix': bool(getattr(self, 'purge_matrix', True)),
+            'purge_scale': int(getattr(self, 'swap_purge_scale', 100)),
+            'purge_floor': int(getattr(self, 'swap_purge_floor', 0)),
+            'purge_cap': int(getattr(self, 'swap_purge_cap', 0)),
             'pa_sync': bool(getattr(self, 'pa_sync', True)),
             # RC522 tag read/write available on at least one unit (ACE2-Open
             # firmware); gates the web tag settings.
@@ -21662,7 +22771,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             # read None -> empty list. bg's 'heads' lives in the bg
             # module and is not tracked here.
             # D11 Devices list + "table edited, restart to apply".
-            'devices': self._unit_devices_status(),
+            'devices': unit_devices,
             'units_restart_needed': bool(getattr(self, '_unit_table_dirty', False)),
             'driver_switches': self._driver_switches_status(),
             'locate_busy': bool(getattr(self, '_locate_busy', False)),
@@ -21718,12 +22827,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'spoollink': bool(self._spoollink_active()),
             'spoollink_agent': bool(self._spoollink_agent_present()),
             'quad_first': bool(getattr(self, 'quad_first', False)),
+            # @MULTIACE_FLEXI_SHARED failover settings in get_status, all modes
+            'failover_priority': {str(h): ['%d:%d' % p for p in v] for h, v in sorted(getattr(self, '_failover_priority', {}).items())},
+            'failover_preview': self._failover_preview_cached(),
+            'failover_allow_color': sorted(getattr(self, '_failover_allow_color', ())),
             'swap_phase': self._swap_phase,
             'last_swap_result': self._last_swap_result,
             'event_seq': self._event_seq,
             # str keys: 1.4's status encoder rejects non-str dict keys
             # ("Dict key must be str"). The web backend reads both forms.
-            'head_source': {str(k): v for k, v in self._head_source.items()},
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_runtime_source, flexi
+            'head_source': ({str(h):self._flexi_runtime_source(h) for h in range(4)} if getattr(self,'_ace_mode',None)=='flexi' else {str(k):v for k,v in self._head_source.items()}),
             'head_manual': {str(h): bool(self.head_manual.get(h, False))
                             for h in range(4)},
             'head_feeder': {str(h): bool(self.head_feeder.get(h, False))
@@ -21757,6 +22871,32 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 getattr(self, '_calibration_unload', None) or {}),
             'aces': aces,
         }
+
+# @MULTIACE_FLEXI_HOOK Startup guard: upstream methods win if a Flexi mixin name collides.
+def _flexi_report_collisions():
+    """Name overlaps between the Flexi mixin and core mixins.
+
+    FlexiMixin is composed LAST so an upstream method always wins. This makes
+    such an overlap visible at startup instead of silently disabling part of
+    Flexi or shadowing an upstream feature.
+    """
+    if not FLEXI_AVAILABLE:
+        return
+    own = set(FlexiMixin.__dict__)
+    core = set()
+    for base in MultiAce.__mro__[1:]:
+        if base is FlexiMixin:
+            continue
+        core |= set(base.__dict__)
+    clash = sorted(n for n in own & core if not n.startswith('__'))
+    if clash:
+        logging.warning(
+            '[multiACE] Flexi method collision (core wins): %s',
+            ', '.join(clash))
+
+
+_flexi_report_collisions()
+
 
 def load_config(config):
     return MultiAce(config)

@@ -28,8 +28,9 @@ def test_config_write_is_readable_and_owned_like_its_directory(
     calls = _record_access(monkeypatch, euid=0)
     main._write_cfg_atomic(cfg, '[ace]\nfoo: 1\n')
     assert cfg.read_text(encoding='utf-8') == '[ace]\nfoo: 1\n'
-    tmp = str(cfg.with_suffix('.cfg.tmp'))
-    assert calls['chmod'] and calls['chmod'][-1][0] == tmp
+    # Written through a unique temp file next to ace.cfg, then renamed.
+    tmp = calls['chmod'][-1][0] if calls['chmod'] else ''
+    assert os.path.dirname(tmp) == str(tmp_path) and tmp.endswith('.tmp')
     assert calls['chmod'][-1][1] & 0o444 == 0o444
     owner = tmp_path.stat()
     assert calls['chown'] == [(tmp, owner.st_uid, owner.st_gid)]

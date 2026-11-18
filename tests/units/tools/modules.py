@@ -47,6 +47,7 @@ MIXIN_GROUPS = {
     'SpoolMixin': 'MultiAce',
     'SwapMixin': 'MultiAce',
     'SettingsMixin': 'MultiAce',
+    'FlexiMixin': 'MultiAce',
 }
 
 

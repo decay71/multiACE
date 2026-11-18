@@ -1,3 +1,4 @@
+# @MULTIACE_FLEXI_HOOK Flexi code below uses Flexi, flexi, Flexi-only
 """Touchscreen filament identity (mixin of MultiAce).
 
 Everything that writes a head's filament identity into stock
@@ -9,7 +10,14 @@ display-side slot helpers. State lives on the MultiAce instance
 Second module of the R1 split (UNIT_DRIVER_DESIGN.md §11): every method
 here is byte-identical to its former place in ace.py, proven by
 tests/units/tools/move_check.py.
+
+Flexi is a FOURTH operating mode. Its display policy is deliberately
+implemented only while ``_ace_mode == 'flexi'``; normal/head/multi keep
+the upstream MultiACE preview and heal behaviour unchanged. Do not move a
+Flexi-only rule into a shared branch: the legacy modes are not test beds
+for Flexi.
 """
+# @MULTIACE_FLEXI_COMPAT Flexi display policy is gated per method; legacy preview/heal stays byte-identical.
 import logging
 
 # How often we may FORCE a head that keeps coming back as 'official' before
@@ -29,11 +37,87 @@ class DisplayMixin:
         the active device, slot==head. Head mode: the head's own ACE
         (head_ace_for) and its first loaded slot - head_ace_for returns the
         head index in multi, so it must not be used there."""
+        # @MULTIACE_FLEXI_HOOK Flexi has its own display source resolver.
+        if getattr(self, '_ace_mode', 'multi') == 'flexi':
+            return self._flexi_display_source(head)
         if getattr(self, '_ace_mode', 'multi') == 'head':
             ace = self.head_ace_for(head)
             slot = self._first_loaded_slot_for_ace(ace)
             return ace, (head if slot is None else slot)
         return self._active_device_index, head
+
+    def _flexi_head_sensor_present(self, head):
+        """Toolhead truth for a Flexi display push.
+
+        A missing sensor is left to the Flexi evidence/source checks; a
+        present sensor that reads clear means the head is empty and must not
+        keep an ACE or override identity on the touchscreen.
+        """
+        try:
+            sensor = self.printer.lookup_object(
+                'filament_motion_sensor e%d_filament' % int(head), None)
+            if sensor is None:
+                return True
+            return bool(sensor.get_status(0).get('filament_detected'))
+        except Exception:
+            return True
+
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_clear_display, Flexi, flexi
+    def _flexi_clear_display(self, head, lines, reason):
+        """Queue one empty identity for a Flexi head (no colour preview)."""
+        logging.info(
+            '[multiACE][flexi] _push_rfid_info: head %d - %s; clearing '
+            'display' % (head, reason))
+        self._expect_ptc_push(head, '', '000000FF', '', '')
+        lines.append(
+            'SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=%d '
+            'FILAMENT_TYPE="" FILAMENT_COLOR_RGBA=000000FF '
+            'VENDOR="" FILAMENT_SUBTYPE=""' % head)
+
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses _flexi_preview_display, self._flexi_clear_display
+    def _flexi_preview_display(self, head, lines, display_source):
+        """Show a DEDICATED route's known spool identity while the head is
+        empty. This is metadata only: it neither creates an owner nor claims
+        filament at the toolhead. Shared heads pass None and stay dark."""
+        if display_source is None:
+            self._flexi_clear_display(head, lines, 'no dedicated route identity')
+            return
+        ace, slot = display_source
+        info = self._info_per_ace.get(ace, {}) or {}
+        slots = info.get('slots', []) or []
+        cell = slots[slot] if slot < len(slots) else {}
+        override = self._override_for(ace, slot)
+        if override is not None:
+            ftype = override.get('material') or ''
+            color = self._override_color_to_rgba(override.get('color', ''))
+            brand = override.get('brand') or ''
+            subtype = override.get('subtype') or ''
+        elif cell.get('rfid') == 2:
+            ftype = cell.get('type') or ''
+            color = self.rgb2hex(*cell.get('color', (0, 0, 0)))
+            brand = cell.get('brand') or 'Generic'
+            subtype = cell.get('subtype') or ''
+        else:
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses self._flexi_clear_display, flexi
+            self._flexi_clear_display(
+                head, lines, 'dedicated route has no verified identity')
+            return
+        if not ftype:
+            self._flexi_clear_display(
+                head, lines, 'dedicated route identity is incomplete')
+            return
+        logging.info(
+            '[multiACE][flexi] _push_rfid_info: head %d - unloaded dedicated '
+            'route MMU %d / slot %d, previewing %s' % (head, ace, slot, ftype))
+        self._expect_ptc_push(head, ftype, color, brand, subtype)
+        lines.append(
+            'SET_PRINT_FILAMENT_CONFIG '
+            'CONFIG_EXTRUDER=%d '
+            'FILAMENT_TYPE="%s" '
+            'FILAMENT_COLOR_RGBA=%s '
+            'VENDOR="%s" '
+            'FILAMENT_SUBTYPE="%s"' % (
+                head, ftype, color, brand, subtype))
 
     def _ptc_color_to_override_hex(self, c):
         """SET_PRINT_FILAMENT_CONFIG arg comes in as RRGGBB or RRGGBBAA
@@ -448,6 +532,11 @@ class DisplayMixin:
           window are ace.py's own internal work and the (ace, slot)
           mapping isn't user intent yet.
         """
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+        # @MULTIACE_FLEXI_COMPAT A Flexi route never invents an active-slot head override.
+        if getattr(self, '_ace_mode', 'multi') == 'flexi':
+            # Shared routes have no implicit active-device/slot==head override.
+            return
         if self._swap_in_progress:
 
             return
@@ -654,6 +743,17 @@ class DisplayMixin:
                     % head)
                 continue
             source = self._head_source.get(head)
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses is_flexi, flexi, Flexi
+            is_flexi = getattr(self, '_ace_mode', 'normal') == 'flexi'
+            if is_flexi and source:
+                # Flexi owns its display truth. A failed/stale owner, a lost
+                # route, or a clear toolhead sensor is not a loaded filament;
+                # never fall through to the legacy slot preview below.
+                if (not self._flexi_head_sensor_present(head)
+                        or self._flexi_display_source(head) is None):
+                    self._flexi_clear_display(
+                        head, lines, 'loaded state is not verified')
+                    continue
             if source:
 
                 src_ace = int(source.get('ace_index', 0))
@@ -662,8 +762,19 @@ class DisplayMixin:
                 slots = ace_info.get('slots', []) or []
                 slot = slots[src_slot] if src_slot < len(slots) else {}
                 override = self._override_for(src_ace, src_slot)
-                fallback_type = source.get('type') or slot.get('type', 'PLA')
-                fallback_color = source.get('color') or self.rgb2hex(*slot.get('color', (0, 0, 0)))
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses is_flexi, Flexi
+                if is_flexi:
+                    # A loaded Flexi head may only show an identity captured at
+                    # its load (or a live RFID read). Never substitute the
+                    # legacy 'PLA' default or a black colour for missing truth.
+                    fallback_type = source.get('type') or (
+                        slot.get('type', '') if slot.get('rfid') == 2 else '')
+                    fallback_color = source.get('color') or (
+                        self.rgb2hex(*slot.get('color', (0, 0, 0)))
+                        if slot.get('rfid') == 2 else '000000FF')
+                else:
+                    fallback_type = source.get('type') or slot.get('type', 'PLA')
+                    fallback_color = source.get('color') or self.rgb2hex(*slot.get('color', (0, 0, 0)))
                 fallback_brand = source.get('brand') or slot.get('brand', 'Generic')
                 fallback_subtype = source.get('subtype', '') or slot.get('subtype', '')
                 logging.info(
@@ -722,7 +833,27 @@ class DisplayMixin:
                         backup_heads.append(head)
             else:
 
-                disp_ace, disp_slot = self._unloaded_display_slot(head)
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses is_flexi, self._flexi_routes.sources, self._flexi_display_source
+                if is_flexi:
+                    # A dedicated route (exactly one source) may show its
+                    # spool identity while the toolhead is empty. Shared heads
+                    # stay dark: more than one branch cannot truthfully be
+                    # assigned to this head on the touchscreen.
+                    sources = self._flexi_routes.sources(head)
+                    display_source = (self._flexi_display_source(head)
+                                      if len(sources) == 1 else None)
+                    self._flexi_preview_display(head, lines, display_source)
+                    continue
+                display_source = self._unloaded_display_slot(head)
+                if display_source is None:
+                    # Ambiguous or unknown routed preview: clear stale identity.
+                    self._expect_ptc_push(head, '', '000000FF', '', '')
+                    lines.append(
+                        'SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=%d '
+                        'FILAMENT_TYPE="" FILAMENT_COLOR_RGBA=000000FF '
+                        'VENDOR="" FILAMENT_SUBTYPE=""' % head)
+                    continue
+                disp_ace, disp_slot = display_source
 
                 empty_override = self._override_for(disp_ace, disp_slot)
                 if empty_override is not None:
@@ -833,6 +964,16 @@ class DisplayMixin:
         # head mirrors ITS OWN ACE, not whichever unit is globally active (the
         # "shows right fila, overwritten by active slot==head" bug). None = no
         # head should mirror this slot.
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, self._flexi_routes.destination, self._flexi_display_source
+        if getattr(self, '_ace_mode', 'multi') == 'flexi':
+            try:
+                head = self._flexi_routes.destination(ace_idx, slot_idx)
+            except ValueError:
+                return None
+            if (self.head_uses_ace(head)
+                    and self._flexi_display_source(head) == (ace_idx, slot_idx)):
+                return head
+            return None
         if getattr(self, '_ace_mode', 'multi') == 'head':
             h = self._head_for_ace(ace_idx)
             if h is None or not self.head_uses_ace(h):

@@ -67,6 +67,18 @@
  ],
  [
   "ace.py",
+  "MultiAce._gen1_stock_tag_read",
+  "predicate_call",
+  "self._is_v1(idx)"
+ ],
+ [
+  "ace.py",
+  "MultiAce._gen1_tunnel_status",
+  "predicate_call",
+  "self._is_v1(idx)"
+ ],
+ [
+  "ace.py",
   "MultiAce._is_open_fw_idx",
   "fw_suffix_O",
   "fw.strip().upper().endswith('O')"

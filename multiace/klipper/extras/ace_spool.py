@@ -49,7 +49,32 @@ SPOOLLINK_RESEND_S = 5.0
 SPOOLLINK_SEND_MAX = 3
 
 
+# @MULTIACE_FLEXI_COMPAT Spool booking stays owned by the original SpoolMixin; Flexi only overrides its source.
 class SpoolMixin:
+
+    def _spool_source_for_head(self,head):
+        # @MULTIACE_FLEXI_COMPAT Flexi sources are resolved through the route runtime.
+        if getattr(self,'_ace_mode',None)=='flexi':
+            override=getattr(self,'_flexi_spool_booking_source',None)
+            if override is not None:return override.get(head)
+            source=getattr(self,'_flexi_runtime_source',None)
+            return source(head) if source else None
+        return self._head_source.get(head)
+
+    # @MULTIACE_FLEXI_HOOK Flexi route changes book the previous source without device commands.
+    def _flexi_spool_boundary(self,head):
+        # Flush the previous source before changing phase/source. No device
+        # commands, tag writes, or disk flushes; existing booking stays in RAM.
+        ext=self.printer.lookup_object('extruder' if head==0 else 'extruder%d'%head,None)
+        pos=getattr(ext,'last_position',None)
+        if pos is None:return
+        contexts=getattr(self,'_flexi_spool_context',{});previous=contexts.get(head)
+        before=self._spool_epos.get(head);self._spool_epos[head]=pos
+        if previous and before is not None and 0<abs(pos-before)<=SPOOL_SAMPLE_MAX_MM:
+            self._flexi_spool_booking_source={head:previous}
+            try:self.book_spool_use(head,pos-before,'flexi-route')
+            finally:self._flexi_spool_booking_source=None
+        contexts[head]=self._flexi_runtime_source(head);self._flexi_spool_context=contexts
 
     def _resolve_tag_binds(self, idx, items):
         """Decide the tag bindings of ONE unit, with every slot's fresh code
@@ -125,12 +150,13 @@ class SpoolMixin:
         the SL world would count feeder consumption NOWHERE (our booking is
         off in SL, and SpoolLink never learns the spool)."""
         try:
-            src = self._head_source.get(head)
+            src = self._spool_source_for_head(head)
             if src:
                 sid = self._spool_binding.get(
                     self._spool_key(src['ace_index'], src['slot']))
             else:
-                sid = self._spool_binding.get(self._spool_head_key(head))
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+                sid = None if getattr(self,'_ace_mode',None)=='flexi' else self._spool_binding.get(self._spool_head_key(head))
             sp = self._spools.get(str(sid)) if sid else None
             smid = str((sp or {}).get('spoolman_id') or '').strip()
             return int(smid) if smid.isdigit() else 0
@@ -317,7 +343,7 @@ class SpoolMixin:
             own_t = (ident.get('type') or '').strip()
             if own_t and own_t.upper() != 'NONE':
                 return ident
-            prev = self._head_source.get(head)
+            prev = self._spool_source_for_head(head)
             if not prev:
                 return ident
             if (prev.get('ace_index') != ace_index
@@ -1082,20 +1108,35 @@ class SpoolMixin:
                 if _cur is not None and self._sku_base(
                         sku) in self._sku_bases(_cur.get('sku')):
                     return _cur
-                # Once a code exists MORE THAN ONCE in the table, the user
-                # has declared "I own two of these" - and a tag cannot tell
-                # them apart. Auto-binding for that code stops: booking
-                # nothing is honest, booking it onto the twin (whose slot is
-                # empty, so the guard below never fires) silently drains the
-                # wrong spool's weight. Assign by hand; that assignment then
-                # sticks via the branch above.
-                if len(self._spools_with_base(sku)) > 1:
-                    if self._spool_conflict_said.get(key) != sid:
-                        self._spool_conflict_said[key] = sid
-                        self.log_warn(self._t('msg.spool_tag_ambiguous',
-                            sku=(sku or '').strip(),
-                            ace=self._disp(ace_idx), slot=self._disp(slot)))
-                    return None
+                # @MULTIACE_FLEXI_SHARED identical tag codes bind to a free twin entry instead of an ambiguity alert, all modes
+                _same_code = self._spools_with_base(sku)
+                if len(_same_code) > 1:
+                    # Several entries share this code: identical spools,
+                    # typically kept as runout backups. Session 2: bind this
+                    # slot to a twin entry no other OCCUPIED slot is using
+                    # (an unbound one first) instead of refusing and raising
+                    # a notice. The twins are interchangeable by definition;
+                    # each physical spool gets its own entry so consumption
+                    # is booked per spool. Only when every twin is in use
+                    # elsewhere is nothing bound (quiet log, no alert).
+                    _free = []
+                    for _tid in _same_code:
+                        _h = self._spool_slot_of(_tid, exclude=key)
+                        if _h is None:
+                            _free.insert(0, _tid)
+                        elif not self._slot_is_occupied(*_h):
+                            _free.append(_tid)
+                    if not _free:
+                        logging.info(
+                            '[multiACE] [spool] tag %r on MMU %d slot %d: all '
+                            '%d entries with this code are in use elsewhere - '
+                            'not bound', (sku or '').strip(), self._raw(ace_idx),
+                            self._raw(slot), len(_same_code))
+                        return None
+                    sid = _free[0]
+                    spool = self._spools.get(sid)
+                    if spool is None:
+                        return None
                 # Same rule as ACE_SPOOL_ASSIGN, for the automatic path: a
                 # spool sitting in an OCCUPIED slot is not moved here. Two
                 # physical spools reading the same tag (factory SKUs are a
@@ -1395,12 +1436,13 @@ class SpoolMixin:
         book_spool_use: ACE head via head_source -> slot binding, feeder/
         manual via the h<n> head binding. (None, None) when unbound."""
         try:
-            src = self._head_source.get(head)
+            src = self._spool_source_for_head(head)
             if src:
                 sid = self._spool_binding.get(
                     self._spool_key(src['ace_index'], src['slot']))
-            elif not self.head_uses_ace(head):
-                sid = self._spool_binding.get(self._spool_head_key(head))
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+            elif getattr(self,'_ace_mode',None)!='flexi' and not self.head_uses_ace(head):
+                sid = None if getattr(self,'_ace_mode',None)=='flexi' else self._spool_binding.get(self._spool_head_key(head))
             else:
                 return None, None
             sp = self._spools.get(sid) if sid else None
@@ -1486,11 +1528,12 @@ class SpoolMixin:
                 # (delta stays 0), so this one gate switches the whole
                 # counting side.
                 return
-            src = self._head_source.get(head)
+            src = self._spool_source_for_head(head)
             if src:
                 sid = self._spool_binding.get(
                     self._spool_key(src['ace_index'], src['slot']))
-            elif not self.head_uses_ace(head):
+            # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+            elif getattr(self,'_ace_mode',None)!='flexi' and not self.head_uses_ace(head):
                 # Feeder/manual head: no head_source by design, its
                 # spool is bound to the HEAD instead (key 'h<n>', set via
                 # ACE_SPOOL_ASSIGN HEAD=). The 1Hz sampler books every head
@@ -1500,7 +1543,8 @@ class SpoolMixin:
                 # itself, always - a SpoolLink spool_id stamp is taken BACK
                 # by the heartbeat (see the stamp-clear there), never obeyed
                 # The spoollink world is fully gated above.
-                sid = self._spool_binding.get(self._spool_head_key(head))
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi
+                sid = None if getattr(self,'_ace_mode',None)=='flexi' else self._spool_binding.get(self._spool_head_key(head))
             else:
                 return
             spool = self._spools.get(sid) if sid else None
@@ -1557,6 +1601,9 @@ class SpoolMixin:
         (SPOOL_SAMPLE_MAX_MM)."""
         try:
             for head in range(4):
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, self._flexi_spool_boundary
+                if getattr(self,'_ace_mode',None)=='flexi':
+                    self._flexi_spool_boundary(head);continue
                 ext = self.printer.lookup_object(
                     'extruder' if head == 0 else 'extruder%d' % head, None)
                 if ext is None:

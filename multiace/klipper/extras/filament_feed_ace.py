@@ -697,7 +697,7 @@ class FilamentFeed:
                                               FEED_STA_LOAD_FLUSHING):
                     return
                 self.reactor.register_async_callback(
-                    (lambda et, c=self._do_feed, ch=ch, action=FEED_ACT_FILAMENT_RUNOUT: c(ch, action)))
+                    (lambda et, c=self._do_feed_background, ch=ch, action=FEED_ACT_FILAMENT_RUNOUT: c(ch, action)))
                 break
 
     def _check_init_state_timer_handler(self, eventtime):
@@ -796,12 +796,12 @@ class FilamentFeed:
             else:
                 self._set_channel_state(channel, FEED_STA_PRELOAD_PREPARE)
                 self.reactor.register_async_callback(
-                    (lambda et, c=self._do_feed, ch=channel, action=FEED_ACT_PRELOAD: c(ch, action)))
+                    (lambda et, c=self._do_feed_background, ch=channel, action=FEED_ACT_PRELOAD: c(ch, action)))
         else:
             if self.channel_active != channel:
                 self._set_light_state(channel, FEED_STA_WAIT_INSERT)
             self.reactor.register_async_callback(
-                (lambda et, c=self._do_feed, ch=channel, action=FEED_ACT_REMOVE_FILAMENT: c(ch, action)))
+                (lambda et, c=self._do_feed_background, ch=channel, action=FEED_ACT_REMOVE_FILAMENT: c(ch, action)))
 
     def _check_homing_xy(self):
         curtime = self.reactor.monotonic()
@@ -1111,7 +1111,32 @@ class FilamentFeed:
             logging.info('[multiACE] FA re-arm after in-print load failed: %s'
                          % e)
 
+    def _do_feed_background(self, ch, action=None, stage=None, auto_mode=None):
+        # Command entrypoints still use _do_feed and its throwing lock.
+        # Reactor callbacks must refuse locked work without killing Klipper.
+        # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, Flexi, flexi
+        # @MULTIACE_FLEXI_COMPAT Flexi blocks automatic background feed while execution is locked.
+        if (getattr(self, 'ace', None) is not None
+                and getattr(self.ace, '_ace_mode', '') == 'flexi'):
+            blocked = getattr(self, '_flexi_blocked_background', None)
+            if blocked is None:
+                blocked = self._flexi_blocked_background = set()
+            key = (ch, action)
+            if key not in blocked:
+                blocked.add(key)
+                logging.warning(
+                    '[feed][flexi] skipped stock side-feeder automation '
+                    'operation=%s channel=%s: Flexi heads load through routed '
+                    'ACE_LOAD_HEAD (repeats suppressed)',
+                    action, ch)
+            return
+        self._flexi_blocked_background = set()
+        return self._do_feed(ch, action, stage, auto_mode)
+
     def _do_feed(self, ch, action=None, stage=None, auto_mode=None):
+        # @MULTIACE_FLEXI_COMPAT Every Flexi feed path must hold a live execution authorization.
+        if getattr(self, "ace", None) is not None and getattr(self.ace, "_ace_mode", "") == "flexi":
+            self.ace._flexi_require_execution()
         if ch < 0 or ch >= FEED_CHANNEL_NUMS or action == None:
             logging.error("[feed] parameter error!")
             return
@@ -4037,6 +4062,41 @@ class FilamentFeed:
         return True
 
     def cmd_FEED_AUTO(self, gcmd):
+        # @MULTIACE_FLEXI_HOOK Touchscreen unload (AUTO_FEEDING ... UNLOAD=1
+        # STAGE=doing) in Flexi: report the result to the shared-path ledger.
+        # ACE_UNLOAD_HEAD reports its own (internal calls are flagged).
+        ace = getattr(self, 'ace', None)
+        track = None
+        try:
+            if (ace is not None and getattr(ace, '_ace_mode', '') == 'flexi'
+                    and gcmd.get_int('UNLOAD', 0) and str(gcmd.get('STAGE', '') or '').lower() == 'doing'
+                    and not getattr(ace, '_in_internal_unload_head', False)):
+                ch = gcmd.get_int('CHANNEL')
+                head = self.filament_ch[ch]
+                src = (getattr(ace, '_head_source', {}) or {}).get(head)
+                if ace.head_uses_ace(head) and isinstance(src, dict):
+                    track = (head, (int(src['ace_index']), int(src['slot'])))
+        except Exception:
+            track = None
+        try:
+            return self._cmd_FEED_AUTO_body(gcmd)
+        finally:
+            if track is not None:
+                try:
+                    sensor = self.printer.lookup_object('filament_motion_sensor e%d_filament' % track[0], None)
+                    clear = bool(sensor is not None and sensor.get_status(0).get('filament_detected') is False)
+                    # @MULTIACE_FLEXI_HOOK Flexi code below uses ace._flexi_native_unload_finished, Flexi, flexi
+                    ace._flexi_native_unload_finished(track[0], track[1], clear)
+                except Exception:
+                    logging.exception('[feed] Flexi touchscreen-unload bookkeeping failed')
+
+    def _cmd_FEED_AUTO_body(self, gcmd):
+        if (getattr(self, 'ace', None) is not None
+                and getattr(self.ace, '_ace_mode', '') == 'flexi'):
+            refusal = getattr(self.ace, '_flexi_stock_load_refusal', None)
+            if refusal is not None:
+                refusal(gcmd, 'FEED_AUTO')
+            self.ace._flexi_require_execution()
         channel = gcmd.get_int('CHANNEL')
         if channel < 0 or channel >= FEED_CHANNEL_NUMS:
             raise gcmd.error('[feed] channel[%d] is out of range[0,%d]\n' % (channel, FEED_CHANNEL_NUMS - 1))
@@ -4059,6 +4119,23 @@ class FilamentFeed:
         msg = None
 
         logging.info("[feed] FEED_AUTO %s", gcmd.get_raw_command_parameters())
+        # @MULTIACE_FLEXI_HOOK A display/start-gcode load in Flexi resolves its
+        # source through the saved routes: run the original ACE_LOAD_HEAD
+        # (route + shared-path checks, then this same FEED_AUTO internally).
+        if (need_to_load and auto_mode is None
+                and getattr(self, 'ace', None) is not None
+                and getattr(self.ace, '_ace_mode', '') == 'flexi'
+                and not getattr(self.ace, '_in_internal_load_head', False)
+                and not (is_printing == 1 and getattr(self.ace, '_print_has_gcode_loads', False))
+                and self.ace.head_uses_ace(self.filament_ch[channel])):
+            head = self.filament_ch[channel]
+            target = self.ace._flexi_display_load_target(head)
+            if target is None:
+                raise gcmd.error('[multiACE] T%d has no routed ACE slot with filament; no load was started.' % head)
+            logging.info('[feed] FEED_AUTO LOAD (Flexi): T%d <- ACE %d slot %d via ACE_LOAD_HEAD', head, target[0], target[1])
+            self.gcode.run_script_from_command(
+                'ACE_LOAD_HEAD HEAD=%d ACE=%d SLOT=%d' % (head, target[0], target[1]))
+            return
         machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
         if machine_state_manager is not None:
             machine_sta = machine_state_manager.get_status()
@@ -4327,6 +4404,13 @@ class FilamentFeed:
             return
 
     def cmd_FEED_MANUAL(self, gcmd):
+        if (getattr(self, 'ace', None) is not None
+                # @MULTIACE_FLEXI_HOOK Flexi code below uses flexi, _flexi_stock_load_refusal, self.ace._flexi_require_execution
+                and getattr(self.ace, '_ace_mode', '') == 'flexi'):
+            refusal = getattr(self.ace, '_flexi_stock_load_refusal', None)
+            if refusal is not None:
+                refusal(gcmd, 'FEED_MANUAL')
+            self.ace._flexi_require_execution()
         channel = gcmd.get_int('CHANNEL')
         if channel < 0 or channel >= FEED_CHANNEL_NUMS:
             raise gcmd.error('[feed][manual_load] channel[%d] is out of range[0,%d]\n' % (channel, FEED_CHANNEL_NUMS - 1))

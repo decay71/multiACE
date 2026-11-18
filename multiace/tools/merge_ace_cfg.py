@@ -24,6 +24,7 @@ Exit codes:
 from __future__ import annotations
 
 import re
+import os
 import sys
 
 # [ace] / [ace N] scalars are merged in place; [ace_bg_swap] (background
@@ -78,10 +79,12 @@ def parse_user_values(path: str) -> dict[str, dict[str, str]]:
 def _flush_preserved(current, user_values, written, out_lines, notes):
     """Emit user keys of a PRESERVE_ALL_KEYS_SECTIONS section that the new
     default does not carry, before the section ends."""
-    if current not in PRESERVE_ALL_KEYS_SECTIONS or current not in user_values:
+    if (current not in PRESERVE_ALL_KEYS_SECTIONS and current != 'ace') or current not in user_values:
         return
+    # @MULTIACE_FLEXI_HOOK Flexi code below uses MULTIACE_FLEXI_COMPAT, flexi_
+    # @MULTIACE_FLEXI_COMPAT Preserve user-authored flexi_* keys on an ace.cfg refresh.
     extra = [k for k in sorted(user_values[current].keys())
-             if (current, k) not in written]
+             if (current, k) not in written and (current != 'ace' or k.startswith('flexi_'))]
     if not extra:
         return
     insert_at = len(out_lines)
@@ -175,6 +178,7 @@ def merge(old_path: str, new_path: str, out_path: str) -> tuple[list[str], list[
 
     with open(out_path, 'w', encoding='utf-8') as f:
         f.writelines(out_lines)
+        f.flush();os.fsync(f.fileno())
 
     return notes, orphans
 

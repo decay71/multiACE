@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- @MULTIACE_FLEXI_HOOK Flexi-owned fragment for the optional fourth
+     operating mode. Original MultiACE modes do not depend on it. -->
+
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Flexi — Integrated Mode</title>
+  <style>
+    body{background:#0c1b2a;color:#e5f3fa;font:16px system-ui,sans-serif;margin:0}
+    main{max-width:820px;margin:8vh auto;padding:26px}
+    h1{color:#36d2d4}
+    .panel{padding:26px;border:1px solid #34536b;border-radius:12px}
+    a.button{display:inline-block;background:#2459c9;color:#fff;padding:12px 16px;border-radius:8px;text-decoration:none;margin:10px 10px 0 0}
+    p{line-height:1.6}
+    .note{color:#f6bd60}
+    code{color:#9fe8ea}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Flexi — Integrated Mode</h1>
+    <div class="panel">
+      <h2>Flexi is the fourth MultiACE operating mode</h2>
+      <p>The legacy standalone manager that listened on <code>127.0.0.1:8767</code> has been retired and quarantined. It is not part of the active Flexi implementation.</p>
+      <p>The active implementation runs inside the MultiACE web application and the Klipper <code>[flexi]</code> plugin. Use the operating-mode selector in <strong>Config → Initial setup</strong> and select <strong>flexi</strong>. Normal, head and multi remain the original MultiACE modes.</p>
+      <a class="button" href="/multiace/">Open MultiACE</a>
+      <p class="note">Flexi route editing is available without authorizing filament movement. Any physical load, unload or shared-path test still requires an explicit operator approval.</p>
+    </div>
+  </main>
+</body>
+</html>

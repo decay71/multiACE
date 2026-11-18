@@ -12,6 +12,7 @@
 # Section keys:
 #   mode: stock | custom     'stock' (default) = the unchanged INNER macro.
 #   default: <table>         fallback table for every material
+# @MULTIACE_FLEXI_HOOK Flexi code below uses flexible
 #   soft: <table>            fallback for soft/flexible filament (SOFT=1)
 #   <material>: <table>      per-material, key = filament type lowercased
 #                            (pla, petg, abs, ...; free-form, e.g. petg_basf
