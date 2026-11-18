@@ -9,7 +9,7 @@ try:
 except ImportError:
  from ace_flexi import Routes
  from ace_flexi_production import FullProfiles,ProductionError
-RC_RELEASE='multiace-1.30b-flexi-s2.36-20261118'
+RC_RELEASE='multiace-1.30b-flexi-s2.37-20261118'
 ATTEST_CONFIRMATION='ALL PATHS CLEAR'
 ACTIONS={'load','unload','switch','failover','print','recover','assist'}
 def source(value,routes):

@@ -5716,6 +5716,32 @@ def _klipper_readable(path) -> None:
         except OSError:
             pass
 
+# @MULTIACE_FLEXI_SHARED config folders stay readable by Moonraker/Klipper, all modes
+def _config_mkdir(path) -> None:
+    """mkdir -p for folders under printer_data/config. The service runs as
+    root and may inherit umask 0077 from the SSH shell that restarted it: a
+    folder created then was root-only 0700, and Moonraker (printer user)
+    warned 'Failed to scan inotify root node config' (live 2026-11-18).
+    New folders get mode 0755 and their parent's owner."""
+    p = Path(path)
+    missing = []
+    while not p.exists():
+        missing.append(p)
+        p = p.parent
+    geteuid = getattr(os, "geteuid", None)
+    for d in reversed(missing):
+        d.mkdir(exist_ok=True)
+        try:
+            os.chmod(str(d), 0o755)
+        except OSError:
+            pass
+        if geteuid is not None and geteuid() == 0:
+            try:
+                owner = d.parent.stat()
+                os.chown(str(d), owner.st_uid, owner.st_gid)
+            except OSError:
+                pass
+
 @app.get("/api/config")
 async def get_config() -> dict:
     p = Path(_resolve_cfg_path())
@@ -5910,7 +5936,7 @@ def _capture_snapshot(now_status: dict, mode: str | None = None) -> dict:
 @app.get("/api/snapshots")
 async def list_snapshots(mode: str | None = None) -> dict:
     d = _snap_dir(mode)
-    d.mkdir(parents=True, exist_ok=True)
+    _config_mkdir(d)
     items = []
     for p in sorted(d.glob("*.json")):
         try:
@@ -5928,7 +5954,7 @@ async def list_snapshots(mode: str | None = None) -> dict:
 @app.post("/api/snapshots")
 async def save_snapshot(req: SnapshotSave) -> dict:
     p = _snap_path(req.name, req.mode)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    _config_mkdir(p.parent)
     try:
         status = await _query_state_gated()
     except httpx.HTTPError as e:
@@ -6162,7 +6188,7 @@ def _save_overrides_to_disk() -> None:
     see a half-written file."""
     global _overrides_mtime
     p = Path(OVERRIDE_FILE)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    _config_mkdir(p.parent)
     try:
         tmp = p.with_suffix(p.suffix + ".tmp")
         tmp.write_text(json.dumps(_slot_overrides, indent=2), encoding="utf-8")
