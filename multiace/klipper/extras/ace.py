@@ -21471,8 +21471,23 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             if not pinned:
                 if orig is None:
                     raise gcmd.error('T%d unavailable' % tool)
-                return orig(gcmd)
+                ret = orig(gcmd)
+                self._wait_bg_standby_reheat(tool)
+                return ret
             self._run_virtual_tool(gcmd, tool)
+
+    def _wait_bg_standby_reheat(self, head):
+        bg = self.printer.lookup_object('ace_bg_swap', None)
+        if bg is None:
+            return
+        fn = getattr(bg, 'wait_standby_reheat', None)
+        if fn is None:
+            return
+        try:
+            fn(head)
+        except Exception as e:
+            logging.info('[multiACE] head %d: standby reheat wait failed: %s'
+                         % (self._disp(head), e))
 
     def _notify_bg_pick(self, head):
         # The stock T macro parks the old head, lifts this one out of the

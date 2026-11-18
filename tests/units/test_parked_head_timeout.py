@@ -56,6 +56,7 @@ def _rig(parked_timeout=300.0, standby_temp=0.0):
         _get_active_head = BG.AceBgSwap._get_active_head
         _parked_timeout_tick = BG.AceBgSwap._parked_timeout_tick
         on_head_active = BG.AceBgSwap.on_head_active
+        wait_standby_reheat = BG.AceBgSwap.wait_standby_reheat
         on_print_end = BG.AceBgSwap.on_print_end
         _set_heat = BG.AceBgSwap._set_heat
         _print_active = BG.AceBgSwap._print_active
@@ -67,6 +68,7 @@ def _rig(parked_timeout=300.0, standby_temp=0.0):
             self.parked_standby_temp = standby_temp
             self._parked_since = {}
             self._saved_parked_target = {}
+            self._reheat_wait_target = {}
             self._busy = set()
             self.said = []
 
@@ -175,3 +177,46 @@ def test_print_end_clears_saved_targets_but_pause_preserves():
     heaters[1].target_temp = 0.0
     bg.on_head_active(1)
     assert heaters[1].target_temp == 0.0
+
+
+def test_wait_standby_reheat_waits_only_when_reheat_fired():
+    bg, heaters, toolhead, extruders, reactor, ps = _rig(
+        parked_timeout=300.0, standby_temp=0.0)
+    pheaters = bg.printer.lookup_object('heaters')
+
+    # Normal activation without timeout does not trigger a blocking wait
+    bg.on_head_active(1)
+    assert bg.wait_standby_reheat(1) is False
+    assert pheaters.calls == []
+
+    # Timeout drop followed by activation sets target non-blocking, then waits
+    bg._parked_timeout_tick(reactor.now)
+    reactor.now += 350.0
+    bg._parked_timeout_tick(reactor.now)
+    pheaters.calls.clear()
+
+    bg.on_head_active(1)
+    assert pheaters.calls == [('extruder1', 200.0, False)]
+    assert bg.wait_standby_reheat(1) is True
+    assert pheaters.calls == [
+        ('extruder1', 200.0, False),
+        ('extruder1', 200.0, True),
+    ]
+    # One-shot: a second wait is a no-op
+    assert bg.wait_standby_reheat(1) is False
+
+
+def test_wait_standby_reheat_skips_wait_if_slicer_changed_target():
+    bg, heaters, toolhead, extruders, reactor, ps = _rig(
+        parked_timeout=300.0, standby_temp=0.0)
+    pheaters = bg.printer.lookup_object('heaters')
+    bg._parked_timeout_tick(reactor.now)
+    reactor.now += 350.0
+    bg._parked_timeout_tick(reactor.now)
+    bg.on_head_active(1)
+    pheaters.calls.clear()
+
+    # Slicer overrides target before toolchange finishes
+    heaters[1].target_temp = 225.0
+    assert bg.wait_standby_reheat(1) is False
+    assert pheaters.calls == []

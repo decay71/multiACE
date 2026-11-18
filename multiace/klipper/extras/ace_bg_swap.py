@@ -347,6 +347,7 @@ class AceBgSwap:
         self._parked_since = {}
         # Saved pre-timeout target temp per head to restore on reheat
         self._saved_parked_target = {}
+        self._reheat_wait_target = {}
         self._parked_timer = None
         # Arrival holds (ACE_BG_WAIT, stamped by the preflight before a
         # toolchange to a head with a running background op). False turns
@@ -612,7 +613,9 @@ class AceBgSwap:
         path. Returns True when the caller may wait for the handover
         (a phase that polls _check_docked), False when nothing runs on
         this head or the phase never aborts (bulk retract)."""
-        self.on_head_active(head)
+        _ha = getattr(self, 'on_head_active', None)
+        if _ha is not None:
+            _ha(head)
         _drop = getattr(self, '_drop_deferred', None)
         if _drop is not None and _drop(head):
             # A held swap for the head that is about to be picked: it would
@@ -902,6 +905,9 @@ class AceBgSwap:
         stale targets never carry over to a subsequent print."""
         self._parked_since.clear()
         self._saved_parked_target.clear()
+        _rw = getattr(self, '_reheat_wait_target', None)
+        if _rw is not None:
+            _rw.clear()
 
     def on_head_active(self, head):
         """Called when a head becomes active or is picked to print.
@@ -920,12 +926,37 @@ class AceBgSwap:
                     standby = float(self.parked_standby_temp)
                     if abs(cur_tgt - standby) < 0.5 and cur_tgt < saved:
                         self._set_heat(ace, pheaters, heater, saved)
+                        _rw = getattr(self, '_reheat_wait_target', None)
+                        if _rw is not None:
+                            _rw[head] = float(saved)
                         self._say('head %d: reheating from standby '
                                   '(%.0fC -> %.0fC)'
                                   % (self._dh(head), cur_tgt, saved))
             except Exception as e:
                 logging.info('[multiACE] [parked-timer] head %d restore heat '
                              'failed: %s' % (head, e))
+
+    def wait_standby_reheat(self, head):
+        """Wait for a standby-triggered reheat to reach target before extrusion
+        resumes on a plain toolchange without a slicer M109 or ACE_SWAP_HEAD."""
+        _rw = getattr(self, '_reheat_wait_target', None)
+        target = _rw.pop(head, None) if _rw is not None else None
+        if target is None or target <= 0:
+            return False
+        try:
+            ext = self.printer.lookup_object(self._ext_name(head), None)
+            pheaters = self.printer.lookup_object('heaters', None)
+            if ext is None or pheaters is None:
+                return False
+            heater = ext.get_heater()
+            cur_tgt = float(getattr(heater, 'target_temp', 0.) or 0.)
+            if abs(cur_tgt - target) < 0.5:
+                pheaters.set_temperature(heater, target, True)
+                return True
+        except Exception as e:
+            logging.info('[multiACE] [parked-timer] head %d wait reheat '
+                         'failed: %s' % (head, e))
+        return False
 
     def _parked_timeout_tick(self, eventtime):
         if self.parked_head_timeout <= 0:
@@ -944,6 +975,9 @@ class AceBgSwap:
                         ps_state = ''
                 if ps_state != 'paused':
                     self._saved_parked_target.clear()
+                    _rw = getattr(self, '_reheat_wait_target', None)
+                    if _rw is not None:
+                        _rw.clear()
                 return eventtime + BG_PARKED_CHECK_INTERVAL
 
             active_h = self._get_active_head()
@@ -2413,7 +2447,9 @@ class AceBgSwap:
         # Clear any residual abort request from previous cycles
         self._abort_requested.discard(head)
         # Notify parked timer that head is actively arriving/being waited for
-        self.on_head_active(head)
+        _ha = getattr(self, 'on_head_active', None)
+        if _ha is not None:
+            _ha(head)
         # Defaults to [ace_bg_swap] debug config (False by default = quiet console)
         debug = gcmd.get_int('DEBUG', 1 if self.debug else 0)
         # RESTORE_POS: 0 = leave at discard chute for direct arrival dock; 1 = restore coordinates
