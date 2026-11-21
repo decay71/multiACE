@@ -334,6 +334,24 @@ class SettingsMixin:
         self.log_always('[multiACE] Pickup-Cleaning %s%s'
                         % ('ON' if enable else 'OFF', sfx))
 
+    cmd_ACE_SET_STOCK_PULL_help = (
+        '[multiACE] Stock pull as a table (TABLE=0|1): the unload runs the '
+        'firmware CONTROL_RETRACT_ACTION sequence move by move with the MMU '
+        'coordinated per pull. Live + write-through (stock_pull_table; '
+        'PERSIST=0 = until restart).')
+
+    def cmd_ACE_SET_STOCK_PULL(self, gcmd):
+        enable = bool(gcmd.get_int('TABLE', 1, minval=0, maxval=1))
+        self.stock_pull_table = enable
+        sfx = self._wt_persist(gcmd, 'stock_pull_table',
+                               _wt_fmt_bool(enable), None,
+                               shadow_attr='_stock_pull_table_cfg',
+                               shadow_val=enable)
+        line = ('[multiACE] stock pull as a table %s%s'
+                % ('ON' if enable else 'OFF', sfx))
+        self.log_always(line)
+        logging.info(line)
+
     cmd_ACE_SET_PREFLIGHT_COPIES_help = (
         '[multiACE] Multifilament-Optimierung: max targets per slicer colour '
         'in the preflight (MAX=1..4; 1 = one slot per colour) and/or '

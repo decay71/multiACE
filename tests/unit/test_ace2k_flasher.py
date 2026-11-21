@@ -26,7 +26,7 @@ sys.path.insert(0, str(BACKEND))
 import ace2k_flasher as F  # noqa: E402
 
 
-def _ace2k_image(version="0.14.0"):
+def _ace2k_image(version="0.15.0"):
     """A minimal ace2k image: vector table, a compressed Klipper
     dictionary, the crc32 of the body and the bootloader trailer."""
     head = struct.pack("<II", 0x20002000, 0x08008101)
@@ -44,9 +44,9 @@ def _factory_image():
 
 def test_classify_ace2k_factory_and_other(tmp_path):
     a = tmp_path / "a.bin"
-    a.write_bytes(_ace2k_image("0.14.0"))
+    a.write_bytes(_ace2k_image("0.15.0"))
     got = F.classify_image(str(a))
-    assert got["kind"] == "ace2k" and got["version"] == "0.14.0"
+    assert got["kind"] == "ace2k" and got["version"] == "0.15.0"
     assert got["md5"] == hashlib.md5(a.read_bytes()).hexdigest()
     f = tmp_path / "f.bin"
     f.write_bytes(_factory_image())
@@ -66,35 +66,35 @@ def test_classify_ace2k_without_version(tmp_path):
 
 
 def test_check_known(monkeypatch):
-    monkeypatch.setitem(F.KNOWN_ACE2K, "0.14.0",
+    monkeypatch.setitem(F.KNOWN_ACE2K, "0.15.0",
                         {"md5": "", "tested": ""})
-    F.check_known({"version": "0.14.0", "md5": "x"})
+    F.check_known({"version": "0.15.0", "md5": "x"})
     with pytest.raises(F.FlasherError):
         F.check_known({"version": "0.9.0", "md5": "x"})
-    monkeypatch.setitem(F.KNOWN_ACE2K, "0.14.0",
+    monkeypatch.setitem(F.KNOWN_ACE2K, "0.15.0",
                         {"md5": "abc", "tested": ""})
     with pytest.raises(F.FlasherError):
-        F.check_known({"version": "0.14.0", "md5": "x"})
-    F.check_known({"version": "0.14.0", "md5": "abc"})
+        F.check_known({"version": "0.15.0", "md5": "x"})
+    F.check_known({"version": "0.15.0", "md5": "abc"})
 
 
 def test_listed_releases_are_pinned():
     for ver, e in F.KNOWN_ACE2K.items():
         assert len(e["md5"]) == 32 and len(e["sha256"]) == 64, ver
         assert F.downloadable(ver)
-    assert F.release_url("0.14.0") == ("https://github.com/tobecwb/ace2k/"
-                                       "releases/download/v0.14.0/"
-                                       "ace2k-0.14.0.bin")
+    assert F.release_url("0.15.0") == ("https://github.com/tobecwb/ace2k/"
+                                       "releases/download/v0.15.0/"
+                                       "ace2k-0.15.0.bin")
 
 
 def test_check_download(monkeypatch):
     data = b"image bytes"
-    monkeypatch.setitem(F.KNOWN_ACE2K, "0.14.0", {
+    monkeypatch.setitem(F.KNOWN_ACE2K, "0.15.0", {
         "md5": "", "tested": "",
         "sha256": hashlib.sha256(data).hexdigest()})
-    F.check_download("0.14.0", data)
-    with pytest.raises(F.FlasherError, match="not the ace2k 0.14.0"):
-        F.check_download("0.14.0", data + b"x")
+    F.check_download("0.15.0", data)
+    with pytest.raises(F.FlasherError, match="not the ace2k 0.15.0"):
+        F.check_download("0.15.0", data + b"x")
     with pytest.raises(F.FlasherError, match="not offered"):
         F.check_download("0.9.0", data)
     monkeypatch.setitem(F.KNOWN_ACE2K, "0.13.0", {"md5": "", "tested": ""})
@@ -134,10 +134,10 @@ def test_command_lines():
 
 
 def test_verdicts():
-    ok = F.verdict(F.EXIT_OK, ["Klipper reports ace2k 0.14.0: done."])
+    ok = F.verdict(F.EXIT_OK, ["Klipper reports ace2k 0.15.0: done."])
     assert ok["verified"] and ok["proven"]
     un = F.verdict(F.EXIT_UNVERIFIED,
-                   ["ace2k 0.14.0 answers and stored its proof: it stays.",
+                   ["ace2k 0.15.0 answers and stored its proof: it stays.",
                     "The bootloader let go of the unit; ..."])
     assert un["verified"] is False and un["proven"] is True
     for code in (F.EXIT_FAILED, F.EXIT_UNCHANGED, F.EXIT_NO_ANSWER, 7):
@@ -151,7 +151,7 @@ def test_verdicts():
 
 def test_run_reads_progress_and_status(tmp_path):
     script = ("import sys\n"
-              "print('Writing ace2k 0.14.0 ...')\n"
+              "print('Writing ace2k 0.15.0 ...')\n"
               "print('  64/128 chunks')\n"
               "print('  128/128 chunks', flush=True)\n"
               "sys.exit(2)\n")
@@ -190,7 +190,7 @@ def rig(monkeypatch, tmp_path):
         scripts = []
         posts = []
         code = 2
-        lines = ["ace2k 0.14.0 answers and stored its proof: it stays."]
+        lines = ["ace2k 0.15.0 answers and stored its proof: it stays."]
         cmds = []
     R.main = main
 
@@ -224,7 +224,7 @@ def rig(monkeypatch, tmp_path):
         yield R
 
 
-def _upload(R, data, name="ace2k-0.14.0.bin"):
+def _upload(R, data, name="ace2k-0.15.0.bin"):
     r = R.client.post("/api/acefw/upload", files={"file": (name, data)})
     assert r.status_code == 200, r.text
     return r.json()
@@ -240,10 +240,10 @@ def _wait_done(R):
 
 
 def test_upload_reports_the_ace2k_image(rig):
-    body = _upload(rig, _ace2k_image("0.14.0"))
+    body = _upload(rig, _ace2k_image("0.15.0"))
     assert body["ace2k_image"] == {
-        "version": "0.14.0", "known": True,
-        "tested": F.KNOWN_ACE2K["0.14.0"]["tested"], "error": ""}
+        "version": "0.15.0", "known": True,
+        "tested": F.KNOWN_ACE2K["0.15.0"]["tested"], "error": ""}
     assert _upload(rig, _factory_image(), "stock.bin")["ace2k_image"] is None
 
 
@@ -251,11 +251,11 @@ def test_versions_lists_ace2k(rig):
     v = rig.client.get("/api/acefw/versions").json()
     assert v["ace2k_flasher"]["version"] == F.FLASHER_VERSION
     assert v["ace2k_flasher"]["available"] is True
-    assert {e["version"] for e in v["ace2k_versions"]} >= {"0.14.0"}
+    assert {e["version"] for e in v["ace2k_versions"]} >= {"0.15.0"}
 
 
 def test_stock_unit_to_ace2k_sets_driver_and_restarts(rig):
-    _upload(rig, _ace2k_image("0.14.0"))
+    _upload(rig, _ace2k_image("0.15.0"))
     r = rig.client.post("/api/acefw/flash", json={"ace": 0})
     assert r.status_code == 200, r.text
     assert r.json()["target"] == "ace2k"
@@ -275,8 +275,8 @@ def test_stock_unit_to_ace2k_sets_driver_and_restarts(rig):
 def test_ace2k_unit_update_resumes(rig):
     rig.engine = "ace2k"
     rig.code = 0
-    rig.lines = ["Klipper reports ace2k 0.14.0: done."]
-    _upload(rig, _ace2k_image("0.14.0"))
+    rig.lines = ["Klipper reports ace2k 0.15.0: done."]
+    _upload(rig, _ace2k_image("0.15.0"))
     assert rig.client.post("/api/acefw/flash",
                            json={"ace": 0}).status_code == 200
     st = _wait_done(rig)
@@ -288,7 +288,7 @@ def test_ace2k_unit_update_resumes(rig):
 def test_failed_flash_resumes_and_reports(rig):
     rig.code = 3
     rig.lines = ["A print is running or paused; nothing changed"]
-    _upload(rig, _ace2k_image("0.14.0"))
+    _upload(rig, _ace2k_image("0.15.0"))
     rig.client.post("/api/acefw/flash", json={"ace": 0})
     st = _wait_done(rig)
     assert st["state"] == "error"
@@ -300,7 +300,7 @@ def test_dry_run_identifies(rig):
     rig.code = 0
     rig.lines = ["The unit on /dev/x blinks its four LEDs (ace2k 0.13.0)."]
     rig.engine = "ace2k"
-    _upload(rig, _ace2k_image("0.14.0"))
+    _upload(rig, _ace2k_image("0.15.0"))
     rig.client.post("/api/acefw/flash", json={"ace": 0, "dry_run": True})
     st = _wait_done(rig)
     assert st["result"]["dry_run"] and st["result"]["connected"]
@@ -371,18 +371,18 @@ def _fake_github(monkeypatch, main, content, urls):
 
 
 def test_download_stages_the_release(rig, monkeypatch):
-    img = _ace2k_image("0.14.0")
-    monkeypatch.setitem(F.KNOWN_ACE2K, "0.14.0", {
+    img = _ace2k_image("0.15.0")
+    monkeypatch.setitem(F.KNOWN_ACE2K, "0.15.0", {
         "md5": "", "tested": "t", "sha256": hashlib.sha256(img).hexdigest()})
     urls = []
     _fake_github(monkeypatch, rig.main, img, urls)
     r = rig.client.post("/api/acefw/download_ace2k",
-                        json={"version": "0.14.0"})
+                        json={"version": "0.15.0"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert urls == [F.release_url("0.14.0")]
-    assert body["name"] == "ace2k-0.14.0.bin" and body["downloaded"]
-    assert body["ace2k_image"]["version"] == "0.14.0"
+    assert urls == [F.release_url("0.15.0")]
+    assert body["name"] == "ace2k-0.15.0.bin" and body["downloaded"]
+    assert body["ace2k_image"]["version"] == "0.15.0"
     assert body["ace2k_image"]["known"]
     assert (rig.main._ACEFW_DIR / "upload.bin").read_bytes() == img
     # The staged download flashes like an upload.
@@ -398,7 +398,7 @@ def test_download_refusals(rig, monkeypatch):
                         json={"version": "0.9.0"})
     assert r.status_code == 400 and urls == []
     r = rig.client.post("/api/acefw/download_ace2k",
-                        json={"version": "0.14.0"})
+                        json={"version": "0.15.0"})
     assert r.status_code == 502 and "sha256" in r.json()["detail"]
     assert not (rig.main._ACEFW_DIR / "upload.bin").exists()
 
@@ -426,11 +426,11 @@ def test_calibration_routes(rig):
 def test_flash_reports_the_saved_calibration(rig):
     name = "ace-calibration-8F3B521807B091083131334A-20261109-061557.txt"
     rig.lines = ["Calibration saved: /x/" + name,
-                 "ace2k 0.14.0 answers and stored its proof: it stays."]
-    _upload(rig, _ace2k_image("0.14.0"))
+                 "ace2k 0.15.0 answers and stored its proof: it stays."]
+    _upload(rig, _ace2k_image("0.15.0"))
     rig.client.post("/api/acefw/flash", json={"ace": 0})
     st = _wait_done(rig)
     assert st["state"] == "done" and st["calibration"] == name
     # A new staging clears it.
-    _upload(rig, _ace2k_image("0.14.0"))
+    _upload(rig, _ace2k_image("0.15.0"))
     assert rig.client.get("/api/acefw/status").json()["calibration"] == ""

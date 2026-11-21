@@ -5,6 +5,9 @@
     "AceBgSwap.cmd_ACE_BG_SWAP",
     "AceBgSwap.cmd_ACE_BG_UNLOAD"
    ],
+   "_bg_hold": [
+    "AceBgSwap.cmd_ACE_BG_WAIT"
+   ],
    "_bg_left_empty": [
     "AceBgSwap._clear_staged",
     "AceBgSwap._mark_staged"
@@ -239,6 +242,9 @@
    ],
    "seat_overshoot_length": [
     "AceBgSwap._load_core"
+   ],
+   "stock_pull_sequence": [
+    "AceBgSwap._unload_core"
    ],
    "swap_anti_ooze_retract": [
     "AceBgSwap.cmd_ACE_BG_SWAP"

@@ -317,8 +317,9 @@ def test_recorded_swaps_calibrate_the_estimate(ace, tmp_path):
 
 
 @pytest.mark.parametrize('source,bg,args,kind', [
-    # nothing loaded yet, a different ACE, or the same ACE on another slot
-    (None, False, dict(HEAD=0, ACE=0, SLOT=1), 'cross_ace_inline'),
+    # an empty head runs only the load: not timed
+    (None, False, dict(HEAD=0, ACE=0, SLOT=1), None),
+    # a different ACE, or the same ACE on another slot
     (_src(1, 0, 'FF0000'), False, dict(HEAD=0, ACE=0, SLOT=1),
      'cross_ace_inline'),
     (_src(0, 2, 'FF0000'), False, dict(HEAD=0, ACE=0, SLOT=1), 'same_ace'),
@@ -360,12 +361,10 @@ def test_a_staged_arrival_is_not_an_inline_swap(ace):
     ace._bg_staged = {0: (1, 2)}
     assert ace._swap_kind_before(
         _Gcmd(HEAD=0, ACE=1, SLOT=2)) == 'cross_ace_staged'
-    # staged for another slot: the swap really is a full one
-    assert ace._swap_kind_before(
-        _Gcmd(HEAD=0, ACE=1, SLOT=3)) == 'cross_ace_inline'
-    # staged on another head does not count
-    assert ace._swap_kind_before(
-        _Gcmd(HEAD=1, ACE=1, SLOT=2)) == 'cross_ace_inline'
+    # staged for another slot, or staged on another head: still an empty
+    # head, so only a load would run - not timed
+    assert ace._swap_kind_before(_Gcmd(HEAD=0, ACE=1, SLOT=3)) is None
+    assert ace._swap_kind_before(_Gcmd(HEAD=1, ACE=1, SLOT=2)) is None
 
 
 def test_the_arrival_hold_is_taken_once_and_only_for_its_head(ace):

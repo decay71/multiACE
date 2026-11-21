@@ -25,6 +25,10 @@ def _rig():
         _manual_move_wait = M._manual_move_wait
         _tipform_send = M._tipform_send
         _retract_send_wait = M._retract_send_wait
+        _move_report = M._move_report
+        _move_report_seq = M._move_report_seq
+        _unit_reports_moves = M._unit_reports_moves
+        _await_retract_end = M._await_retract_end
 
         def _retract_pending_mark(self, idx, slot, length, head=None):
             return None
@@ -161,3 +165,46 @@ def test_no_reply_is_taken_as_accepted():
     ace._retract(1, 150, 80, ace=1)
     assert len([c for c in ace.calls if c[0] == 'send']) == 1
     assert ace.calls[-1] == ('dwell', 1.98)
+
+
+def _report_unit(ends_after, kind='retract'):
+    """A unit with a per-lane move report: the retract it is sent starts a
+    new move (seq 2) and reports it ended after `ends_after` seconds."""
+    ace = _rig()()
+    ace._info_per_ace = {0: {'slots': [{'motion': {
+        'seq': 1, 'kind': 'feed', 'mm': 0.0, 'running': False}}]}}
+    t_send = []
+    orig_send = ace.send_request_to
+
+    def send(idx, request, callback):
+        if request['method'] == 'unwind_filament':
+            t_send.append(ace.reactor.now)
+        orig_send(idx, request, callback)
+    ace.send_request_to = send
+
+    orig_pause = ace.reactor.pause
+
+    def pause(until):
+        orig_pause(until)
+        if t_send:
+            lane = ace._info_per_ace[0]['slots'][0]
+            done = ace.reactor.now - t_send[0] >= ends_after
+            lane['motion'] = {'seq': 2, 'kind': kind, 'mm': 40.0,
+                              'running': not done}
+    ace.reactor.pause = pause
+    return ace
+
+
+def test_reported_retract_ends_with_the_unit():
+    ace = _report_unit(ends_after=3.0)
+    t0 = ace.reactor.now
+    ace._retract(0, 500, 25, wait=True)          # pacing would be 20.1 s
+    assert ace.reactor.now - t0 < 4.0
+    assert not [c for c in ace.calls if c[0] == 'dwell']
+
+
+def test_reported_retract_running_long_is_waited_for():
+    ace = _report_unit(ends_after=30.0)
+    t0 = ace.reactor.now
+    ace._retract(0, 500, 25, wait=True)
+    assert 30.0 <= ace.reactor.now - t0 < 31.0

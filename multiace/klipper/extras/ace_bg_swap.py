@@ -2760,9 +2760,20 @@ class AceBgSwap:
                 self._say('head %d: custom tip-form table (%d tokens)'
                           % (self._dh(head), len(seq)))
             else:
-                seq = [('move', d, f) for d, f in
-                       (COLD_PULL_SOFT if soft else COLD_PULL_NORMAL)]
+                pairs, _src = None, None
+                _sps = getattr(ace, 'stock_pull_sequence', None)
+                if _sps is not None:
+                    try:
+                        pairs, _src = _sps(head, soft)
+                    except Exception:
+                        pairs = None
+                if not pairs:
+                    pairs = COLD_PULL_SOFT if soft else COLD_PULL_NORMAL
+                    _src = '1.5 sequence'
+                seq = [('move', float(d), float(f)) for d, f in pairs]
                 seq = push_shortened(seq, getattr(self, 'pull_push', 0.))
+                logging.info('[ace_bg_swap] head %d: cold-pull from %s'
+                             % (self._dh(head), _src))
             if _pp:
                 # Pre-purge push (forward-assisted like every table push),
                 # then the passive cool-down to the unload temp, then the

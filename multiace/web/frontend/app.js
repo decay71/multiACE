@@ -6273,7 +6273,6 @@ createApp({
       const lines = content.split('\n');
       const numStr = (v) => (v === '' || v == null) ? '' : String(v);
       const mainRepl = {
-        ace_device_count:   numStr(configForm.ace_device_count),
         feed_speed:         numStr(configForm.feed_speed),
         retract_speed:      numStr(configForm.retract_speed),
         load_length:        numStr(configForm.load_length),
@@ -6283,7 +6282,6 @@ createApp({
         dryer_temp:         numStr(configForm.dryer_temp),
         dryer_duration:     numStr(configForm.dryer_duration),
         display_index_base: numStr(configForm.display_index_base),
-        v2_order:           configForm.v2_order === 'last' ? 'last' : 'first',
         load_retry:         numStr(configForm.load_retry),
         extrusion_retry:    numStr(configForm.extrusion_retry),
         unload_retry:       numStr(configForm.unload_retry),

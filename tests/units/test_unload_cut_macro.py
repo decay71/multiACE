@@ -34,15 +34,15 @@ def test_cut_macro_replaces_the_tip_form():
 
 
 def test_heads_without_a_cutter_keep_the_tip_form():
-    run, sent = _ace('CUT', heads={1, 2})
+    run, sent = _ace('CUT', heads={0, 1})
     try:
-        run(3, 215, 0, 0.4)          # display head 4, not listed
+        run(3, 215, 0, 0.4)          # head 3 (display 4), not listed
     except AssertionError:
         pass                          # reached the tip forming: expected
     else:
         raise AssertionError('tip forming did not run on head 4')
     assert sent == []
-    run(1, 215, 0, 0.4)              # display head 2, listed
+    run(1, 215, 0, 0.4)              # head 1 (display 2), listed
     assert sent == ['CUT HEAD=1\r\n']
 
 

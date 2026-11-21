@@ -22,6 +22,10 @@ from .ace_drivers import (DRIVERS, KNOWN_PROTOCOLS, read_enabled_drivers,
 from .ace_protocol import (GATE_UNKNOWN, GATE_EMPTY, GATE_AVAILABLE,
                            TELEMETRY_METHODS)
 from .ace_unit import caps_for, INSERT_MIDPRINT_MIN_FW
+
+# One move line of the rendered stock CONTROL_RETRACT_ACTION.
+_STOCK_PULL_MOVE_RE = re.compile(
+    r'^G1\s+E(-?\d+(?:\.\d+)?)\s+F(\d+(?:\.\d+)?)$')
 from .ace_swap import (SwapMixin, RESUME_NOOP_WIPE_WINDOW,
                        PURGE_DOCK_EXTRA_DEFAULT)
 from .ace_settings import SettingsMixin, _load_i18n_catalog
@@ -30,7 +34,7 @@ from .ace_spool import (SpoolMixin, SPOOLLINK_RESOLVE_METHOD,
                         SPOOLLINK_STARTUP_CHECK_DELAY)
 from .ace_resistance import ResistanceMixin, RESISTANCE_STRIKE_CLEAR_READS
 
-MULTIACE_VERSION = "1.50-pre"
+MULTIACE_VERSION = "1.90"
 # Virtual slicer tools: T4..T31 (stock LOGICAL_EXTRUDER_NUM is 32). T0-T3
 # are the heads as loaded; tool n >= 4 = ACE (n-4)//4, slot (n-4)%4 (the
 # same numbering BMCU-Klipper uses on the U1).
@@ -71,7 +75,7 @@ BG_STAGED_STOP_WINDOW = 180.0
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "48b47e39"
+MULTIACE_BUILD_TAG = "18f2e42e"
 MULTIACE_BUNDLE_SHA1 = "8816725"
 # The klipper modules OUTSIDE the bundle sha (ace.py and its helpers), the
 # fixed order the banner's core= value hashes them in. Computed on disk at
@@ -255,6 +259,11 @@ RETRACT_PENDING_PRE_MM = 150
 RETRACT_PENDING_MIN_REDO_MM = 50
 RETRACT_RETRY_PAUSE = 1.0
 RETRACT_REPLY_TIMEOUT = 1.5
+# A unit that reports its moves ends a retract by itself (done, runout,
+# stuck): the wait follows its end report, polled at RETRACT_END_POLL,
+# and gives up RETRACT_END_GRACE seconds past the open-loop pacing.
+RETRACT_END_POLL = 0.2
+RETRACT_END_GRACE = 15.0
 
 V2_FA_RUNNING_STATES = (
     'assisting', 'rollback_assisting', 'feeding', 'rollback', 'preloading')
@@ -840,15 +849,19 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # forming, then retracts as usual; background unloads are refused
         # (a parked head cannot reach the cutter). Empty = off.
         self.unload_cut_macro = (config.get('unload_cut_macro', '') or '').strip()
-        # Heads that carry a cutter, in display numbering ("1,2"); empty =
-        # every head. Heads not listed keep the normal tip forming.
+        # Heads that carry a cutter, internal numbering 0-3 like every head
+        # list in the config ("0,1"); empty = every head. Heads not listed
+        # keep the normal tip forming.
         _cut_heads = config.get('unload_cut_heads', '') or ''
         try:
             self.unload_cut_heads = set(
                 int(x) for x in _cut_heads.replace(',', ' ').split())
         except ValueError:
+            self.unload_cut_heads = None
+        if (self.unload_cut_heads is None
+                or any(h < 0 or h > 3 for h in self.unload_cut_heads)):
             raise config.error(
-                "unload_cut_heads must be head numbers like '1,2', got %r"
+                "unload_cut_heads must be head numbers 0-3 like '0,1', got %r"
                 % _cut_heads)
         self.swap_default_temp = config.getint('swap_default_temp', 250, minval=180, maxval=300)
 
@@ -1065,6 +1078,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # (each clean costs a discard excursion). Persisted ace__pickup_cleaning
         # wins over the config default (like ace__language). Read unconditionally
         # (config-halt trap).
+        # Stock pull as a table: the unload's tip form runs the installed
+        # firmware's CONTROL_RETRACT_ACTION sequence move by move with the
+        # MMU coordinated per pull (also on an ACE 2), and the background
+        # cold-pull and the ace2k table take the same sequence. False =
+        # ACE 2 keeps the stock macro under the velocity tracker, the
+        # tables keep the 1.5 sequence. Live switch ACE_SET_STOCK_PULL.
+        self.stock_pull_table = config.getboolean('stock_pull_table', True)
+        self._stock_pull_table_cfg = self.stock_pull_table
         _cfg_pickup_clean = config.getboolean('pickup_cleaning', False)
         self._pickup_cleaning = _cfg_pickup_clean
         # Write-through shadows (_X_cfg = what the config LINE holds; see
@@ -1305,6 +1326,13 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._auto_dry_seen = {}
         # idx -> reactor time since when an owned cycle reads as not running.
         self._auto_dry_stale_since = {}
+        # idx -> fault name the unit's dryer reported. While set, auto-dry
+        # starts nothing on that unit: a restart would only clear the fault
+        # and run into it again every few minutes. Lifted by a manual start,
+        # by ACE_SET_AUTO_DRY for the unit, or by a Klipper restart.
+        self._auto_dry_fault = {}
+        # Units whose busy refusal of an auto-dry start was already shown.
+        self._auto_dry_busy_warned = set()
         # Pushed external humidity (ACE_SET_HUMIDITY): idx -> {'rh', 'temp',
         # 'ts', 'ttl'}. Monotonic ts, and the store deliberately dies with
         # the process - a reading that outlived a Klipper restart has no age
@@ -2081,6 +2109,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # Airlog chew detector (AIRLOG_CHEW_* const note)
         self._retract_pending = {}      # 'ace_slot' -> interrupted bulk retract
         self._airlog_chew_run = {}      # head -> consecutive chew windows
+        self._airlog_chew_seen = {}     # head -> time of its last window
         self._airlog_chew_latched = set()  # heads warned/paused this print
         self._airlog_air_run = {}       # head -> air windows in a row
         self._airlog_air_seen = {}      # head -> time of its last window
@@ -2375,6 +2404,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             'ACE_SET_PICKUP_CLEANING',
             self.cmd_ACE_SET_PICKUP_CLEANING,
             desc='[multiACE] Toggle Pickup-Cleaning (ENABLE=0|1), live + persist')
+        self.gcode.register_command(
+            'ACE_SET_STOCK_PULL', self.cmd_ACE_SET_STOCK_PULL,
+            desc=self.cmd_ACE_SET_STOCK_PULL_help)
         self.gcode.register_command(
             'ACE_SET_TOOL', self.cmd_ACE_SET_TOOL,
             desc=self.cmd_ACE_SET_TOOL_help)
@@ -11847,7 +11879,13 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 return
 
             self._schedule_dry_exhaust_open(dry_idx, 'manual drying')
-            self.gcode.respond_info(self._t('msg.dryer_started'))
+            self._auto_dry_fault.pop(dry_idx, None)
+            # One start line for every path (ACE_START_DRYING, ACE_DRY, the
+            # web), sent only once the unit accepted, naming the unit.
+            text = self._t('msg.drying_ace_at', ace=self._disp(dry_idx),
+                           temp=temperature, duration=duration)
+            # respond_info lands in klippy.log by itself.
+            self.gcode.respond_info(text)
 
         self.wait_ace_ready()
         self.send_request(
@@ -12076,6 +12114,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # sent again instead of waiting out a retract that never ran. No
         # reply at all is taken as accepted, as before.
         resp = None
+        seq0 = self._move_report_seq(idx, index)
         for attempt in range(RETRACT_SEND_RETRIES + 1):
             resp = self._tipform_send(idx, request, RETRACT_REPLY_TIMEOUT)
             if resp is None or not self._tipform_rejected(resp):
@@ -12098,8 +12137,71 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     pass
             self.reactor.pause(self.reactor.monotonic()
                                + RETRACT_RETRY_PAUSE)
-        self.dwell(delay=(length / speed) + 0.1)
+        self._await_retract_end(idx, index, seq0, length, speed)
         return True
+
+    def _move_report(self, idx, slot):
+        """The unit's report of the newest move of this slot: the per-lane
+        report (ace2k), else the unit report when it names this slot (CFS
+        Nano, one motor), else None (units without one)."""
+        try:
+            info = (getattr(self, '_info_per_ace', None) or {}).get(idx) or {}
+            slots = info.get('slots') or []
+            if 0 <= slot < len(slots) and isinstance(slots[slot], dict):
+                m = slots[slot].get('motion')
+                if isinstance(m, dict):
+                    return m
+            m = info.get('motion')
+            if isinstance(m, dict) and int(m.get('slot', -1)) == int(slot):
+                return m
+        except Exception:
+            pass
+        return None
+
+    def _unit_reports_moves(self, idx):
+        """True for a unit whose status carries move reports."""
+        try:
+            info = (getattr(self, '_info_per_ace', None) or {}).get(idx) or {}
+            if isinstance(info.get('motion'), dict):
+                return True
+            return any(isinstance(sl, dict) and isinstance(sl.get('motion'),
+                                                           dict)
+                       for sl in (info.get('slots') or []))
+        except Exception:
+            return False
+
+    def _move_report_seq(self, idx, slot):
+        m = self._move_report(idx, slot)
+        try:
+            return int(m.get('seq', 0)) if m else 0
+        except Exception:
+            return 0
+
+    def _await_retract_end(self, idx, slot, seq0, length, speed):
+        """Wait out a sent retract. A unit that reports its moves (ace2k,
+        CFS Nano) is waited for until its end report: early when it ends
+        early, up to RETRACT_END_GRACE past the pacing when it runs long.
+        Without a report this is the open-loop pacing as before."""
+        pace = length / float(max(speed, 1)) + 0.1
+        if not self._unit_reports_moves(idx):
+            self.dwell(delay=pace)
+            return None
+        t0 = self.reactor.monotonic()
+        while True:
+            m = self._move_report(idx, slot)
+            try:
+                ours = (m is not None and m.get('kind') == 'retract'
+                        and int(m.get('seq', 0)) > int(seq0))
+            except Exception:
+                ours = False
+            if ours and not m.get('running'):
+                return m
+            now = self.reactor.monotonic()
+            if not ours and now - t0 >= pace:
+                return None
+            if now - t0 >= pace + RETRACT_END_GRACE:
+                return None
+            self.reactor.pause(now + RETRACT_END_POLL)
 
     def _first_loaded_slot_for_ace(self, ace_idx):
         # Lowest slot index of `ace_idx` that currently holds a spool (gate
@@ -14766,6 +14868,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         # was unanswerable from a log.
         logging.info('[multiACE] auto-dry MMU %d: %s'
                      % (self._raw(idx), eff))
+        self._auto_dry_fault.pop(idx, None)
         # One message per role: the parameter sets are disjoint, so a single
         # line would always print half of it as noise. NOTE master is an
         # INDEX - `if eff['master']` would read -1 (= none) as truthy. A Pro
@@ -16312,6 +16415,16 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         except Exception:
             return {}
 
+    def _ace_dryer_fault(self, idx):
+        """Fault name the unit's dryer reports, '' without one. Only
+        units whose status carries it (ace2k) can report a fault."""
+        ds = ((self._info_per_ace.get(idx) or {}).get('dryer_status')
+              or {})
+        f = ds.get('fault') or ''
+        if not f and ds.get('state') == 'fault':
+            f = 'fault'
+        return str(f)
+
     def _ace_is_drying(self, idx):
         st = ((self._info_per_ace.get(idx) or {})
               .get('dryer_status') or {}).get('status', 'stop')
@@ -16466,8 +16579,17 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 # and a booked phantom cycle survives restarts and shows as
                 # auto_dry_running. Undo the booking; the next tick retries.
                 if response.get('code', 0) != 0:
-                    self.log_error(self._t('msg.ace_error_generic',
-                                           error=response.get('msg')))
+                    if str(response.get('msg', '')).lower() == 'busy':
+                        # The unit is still busy (a cycle cooling down);
+                        # the next tick retries. Amber, once per unit
+                        # until a start goes through.
+                        if idx not in self._auto_dry_busy_warned:
+                            self._auto_dry_busy_warned.add(idx)
+                            self.log_warn(self._t('msg.auto_dry_busy',
+                                                  ace=self._disp(idx)))
+                    else:
+                        self.log_error(self._t('msg.ace_error_generic',
+                                               error=response.get('msg')))
                 logging.info('[multiACE] auto-dry START on MMU %d refused '
                              '(code=%s msg=%s), booking undone'
                              % (self._raw(idx), response.get('code'),
@@ -16479,6 +16601,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     self._auto_dry_persist_ext()
                 self._auto_dry_persist()
                 return
+            self._auto_dry_busy_warned.discard(idx)
             self._schedule_dry_exhaust_open(idx, 'auto-dry')
         try:
             target = int(temp)
@@ -16686,6 +16809,19 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     continue
                 drying = self._ace_is_drying(idx)
                 ours = idx in self._auto_dry_started
+                fault = self._ace_dryer_fault(idx)
+                if fault and idx not in self._auto_dry_fault:
+                    self._auto_dry_fault[idx] = fault
+                    if ours:
+                        self._auto_dry_stale_since.pop(idx, None)
+                        self._auto_dry_ramp.pop(idx, None)
+                        self._auto_dry_release(idx, 'dryer fault %s' % fault)
+                    text = self._t('msg.auto_dry_fault',
+                                   ace=self._disp(idx), fault=fault)
+                    self.log_warn(text)
+                    logging.warning(text)
+                if idx in self._auto_dry_fault:
+                    continue
                 # Transitions only, never the steady state: enough to
                 # reconstruct afterwards WHY a tick did nothing, without
                 # writing a line every minute for hours.
@@ -19567,12 +19703,63 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self.reactor.pause(self.reactor.monotonic() + 1.0)
         return False
 
+    def _stock_pull_moves(self, head, soft):
+        """The pull of the installed firmware's CONTROL_RETRACT_ACTION for
+        this head as (mm, feedrate) pairs. The macro is rendered with the
+        head's nozzle and filament, not run. (None, reason) when it is
+        missing or holds anything but plain E moves."""
+        macro = self.printer.lookup_object(
+            'gcode_macro CONTROL_RETRACT_ACTION', None)
+        tmpl = getattr(macro, 'template', None)
+        if tmpl is None:
+            return None, 'no CONTROL_RETRACT_ACTION macro'
+        soft_i = 1 if soft else 0
+        try:
+            ctx = dict(getattr(macro, 'variables', None) or {})
+            ctx.update(tmpl.create_template_context())
+            ctx['params'] = {'SOFT': str(soft_i), 'EXTRUDER': str(int(head))}
+            ctx['rawparams'] = 'SOFT=%d EXTRUDER=%d' % (soft_i, int(head))
+            text = tmpl.render(ctx)
+        except Exception as e:
+            return None, 'render failed: %s' % e
+        moves = []
+        for raw in str(text).splitlines():
+            line = re.split(r'[;#]', raw, maxsplit=1)[0].strip().upper()
+            if not line or line == 'M83':
+                continue
+            m = _STOCK_PULL_MOVE_RE.match(line)
+            if not m:
+                return None, 'unexpected line %r' % line[:40]
+            moves.append((float(m.group(1)), float(m.group(2))))
+        if not moves or sum(d for d, _f in moves) >= 0.:
+            return None, 'no net pull'
+        return moves, None
+
+    def stock_pull_sequence(self, head, soft):
+        """The cold-pull the built-in table and the background engine run:
+        with stock_pull_table on, the firmware's own sequence for this
+        head; otherwise, or when it cannot be read, the 1.5 sequence.
+        Returns ((mm, feedrate) pairs, source text)."""
+        from . import ace_bg_swap as _bg
+        base = list(_bg.COLD_PULL_SOFT if soft else _bg.COLD_PULL_NORMAL)
+        if not getattr(self, 'stock_pull_table', False):
+            return base, '1.5 sequence'
+        moves, why = self._stock_pull_moves(head, soft)
+        if moves is None:
+            logging.info('[multiACE] head %d: stock pull sequence not read '
+                         '(%s) - using the 1.5 sequence'
+                         % (self._raw(head), why))
+            return base, '1.5 sequence (%s)' % why
+        return moves, 'CONTROL_RETRACT_ACTION, %d moves' % len(moves)
+
     def _tipform_builtin_table(self, head, soft):
-        """The stock pull as a move table, for a unit that cannot
-        freewheel and has no rollback assist of its own: the stock macro
-        would pull against a standing MMU. Run as a table, every pull gets
-        its MMU take-up (the background engine's sequence). None for every
-        other unit and for a head without a known slot."""
+        """The stock pull as a move table for a unit that cannot freewheel:
+        every pull gets its MMU take-up (the background engine's
+        sequence). A unit without rollback assist always takes it (the
+        stock macro would pull against a standing MMU); a unit with one
+        (ACE 2) only with stock_pull_table on, otherwise its velocity
+        tracker follows the stock macro. None for every other unit and for
+        a head without a known slot."""
         try:
             src = self._head_source.get(head) or {}
             idx = src.get('ace_index')
@@ -19583,20 +19770,22 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                 return None
             if not self.head_uses_ace(head):
                 return None
-            if (not self._cap(idx, 'no_freewheel')
-                    or self._cap(idx, 'has_rollback_assist')):
+            if not self._cap(idx, 'no_freewheel'):
+                return None
+            if (self._cap(idx, 'has_rollback_assist')
+                    and not getattr(self, 'stock_pull_table', False)):
                 return None
             from . import ace_bg_swap as _bg
-            seq = [('move', float(d), float(f)) for d, f in
-                   (_bg.COLD_PULL_SOFT if soft else _bg.COLD_PULL_NORMAL)]
+            pairs, src_desc = self.stock_pull_sequence(head, soft)
+            seq = [('move', float(d), float(f)) for d, f in pairs]
             bg = self.printer.lookup_object('ace_bg_swap', None)
             seq = _bg.push_shortened(seq, getattr(bg, 'pull_push', 0.))
         except Exception:
             logging.exception('[multiACE] built-in tip-form table failed')
             return None
         logging.info('[multiACE] head %d: stock pull as a table with MMU '
-                     'take-up (MMU %d has no rollback assist)'
-                     % (self._raw(head), idx))
+                     'take-up (MMU %d, %s)'
+                     % (self._raw(head), idx, src_desc))
         return seq
 
     def _tipform_pre_prime(self, head, prime, temp, soft):
@@ -19702,7 +19891,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         macro set, or the head is not in unload_cut_heads)."""
         cut = getattr(self, 'unload_cut_macro', '')
         heads = getattr(self, 'unload_cut_heads', None)
-        if not cut or (heads and self._disp(head) not in heads):
+        if not cut or (heads and head not in heads):
             return ''
         return cut
 
@@ -22596,8 +22785,6 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._wait_homing_clear()
         self.gcode.run_script_from_command('ACE_SWITCH TARGET=%d' % ace_idx)
         self.gcode.run_script_from_command('ACE_START_DRYING TEMP=%d DURATION=%d' % (temp, duration))
-        self.log_always(self._t('msg.drying_ace_at',
-            ace=self._disp(ace_idx), temp=temp, duration=duration))
 
     cmd_ACE_RUN_MODE_SWITCH_help = '[multiACE] Switch mode: normal (stock), single (one MMU), multi (multi-MMU)'
     def _convert_manual_to_feeder(self):
@@ -23648,6 +23835,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                  getattr(self, '_purge_matrix_cfg', None)),
                 ('pickup_cleaning', getattr(self, '_pickup_cleaning', None),
                  getattr(self, '_pickup_cleaning_cfg', None)),
+                ('stock_pull_table', getattr(self, 'stock_pull_table', None),
+                 getattr(self, '_stock_pull_table_cfg', None)),
                 ('preflight_max_copies',
                  getattr(self, 'preflight_max_copies', None),
                  getattr(self, '_preflight_max_copies_cfg', None)),
