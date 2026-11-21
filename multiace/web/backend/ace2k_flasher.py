@@ -43,16 +43,7 @@ KNOWN_ACE2K = {
     "0.15.0": {"md5": "086a678bc079efe8d610557aa35e6d64",
                "sha256": "366c050a78aa09327ce4be5d134ebe237ef94bcd1d2ad5113e"
                          "c3303358654d1b",
-               "tested": ""},
-    "0.14.0": {"md5": "f96c3099afc9a0b17b1d2d3e87bfe320",
-               "sha256": "1e696ae3f4879d1ed99e333cd43217785f93d3bd8bddc8ce"
-                         "372ef9fabb27e9fa",
-               "tested": "2026-11-09 flashed from the web "
-                         "(V1.1.60O and ace2k 0.13.0)"},
-    "0.13.0": {"md5": "e7fceaec8e04e50e1ba4ec6d7a841b71",
-               "sha256": "a939cda137b24f11f2486e891ca205c893a9bfed85536e26"
-                         "ae5823d259d2c78d",
-               "tested": "2026-11-08 ace2k driver on hardware"},
+               "tested": "2026-11-14 ace2k driver on hardware (two units)"},
 }
 
 # The release assets of tobecwb's repository: one image per version under

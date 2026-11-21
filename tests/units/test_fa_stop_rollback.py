@@ -116,7 +116,7 @@ def test_slot_change_rolls_back_only_with_the_cap():
 
 def test_every_codec_declares_the_cap():
     H.load_ace()
-    want = {'ace_protocol_v1': True, 'ace_protocol_cfs': True,
+    want = {'ace_protocol_v1': True, 'ace_protocol_cfs': False,
             'ace_protocol_v2': False, 'ace_protocol_ace2k': False}
     for mod, val in want.items():
         m = importlib.import_module(H.PKG + '.' + mod)

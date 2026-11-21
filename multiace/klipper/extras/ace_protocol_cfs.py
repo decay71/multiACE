@@ -31,7 +31,11 @@
 #   stop_feed_filament  10 <mask> 02, the box is locked afterwards
 #   unwind_filament  11 <mask> <mm> in pieces of at most 255 mm
 #   start_feed_assist   04 <mask> 00, print mode: clutch free, the
-#                    extruder pulls the spool (there is no feed assist)
+#                    extruder pulls the spool (there is no feed assist).
+#                    One command frees ONE lane (of a mask with several
+#                    bits only the lowest); sent while the box already
+#                    stands in print mode it frees that lane as well, the
+#                    lanes freed before stay free. 04 00 01 closes all.
 #   locate_unlock    04 00 01 alone (ACE_LOCATE: the cam clacks)
 # 04 00 01 unlocks the box (feed mode) before every motion.
 #
@@ -98,6 +102,9 @@ DOSED_SPEED = 3.7
 # feed_filament up to this length runs as a dosed feed (seat press,
 # nudges); longer ones as the self-stopping init feed.
 DOSED_MAX = 100
+# A dosed feed against a held strand ends only when the box gives up, after
+# about 15 s, with status 0A (box idle afterwards, not locked).
+DOSED_BOX_TIMEOUT_S = 15.0
 RETRACT_CHUNK_MAX = 255
 RETRACT_CHUNK_MIN = 5
 # Each retract piece is measured on the wheel (before/after): a piece
@@ -131,6 +138,9 @@ FEED_START_GRACE_S = 5.0
 # of a spool inserted meanwhile; one motor). A motion waits for it and
 # get_status reports busy, for at most this long.
 BOX_BUSY_MAX_S = 60.0
+# A rejection this long after the previous one starts a new run (a waiting
+# job retries every step, about once a second).
+REJECT_GAP_S = 10.0
 
 UNSUPPORTED = -2
 FAILED = -1
@@ -236,10 +246,12 @@ class CfsLink(object):
         self._mask = None           # last presence mask
         self._event = None          # insert event read by a motion step
         self._print_mask = None     # print mode wanted once the job ends
+        self._free_lanes = 0        # lanes freed since the last unlock
         self._motion_seq = 0
         self._last_motion = None    # status 'motion' after a job ended
         self._last_unlock = None    # 'ok' | 'rejected' | 'unanswered'
         self._reject_since = None   # first rejection of a run of them
+        self._reject_last = 0.0     # latest rejection
         self._reject_logged = None
         self._last_start = None
         self._fresh_box = None      # 0x0A reply read during this write
@@ -416,6 +428,8 @@ class CfsLink(object):
             self._event = fr
             return None, fr
         self._box_state = bytearray(fr['data'])[-1]
+        if self._box_state != BOX_PRINT:
+            self._free_lanes = 0
         return self._box_state, fr
 
     def _read_wheel(self, slot):
@@ -434,6 +448,12 @@ class CfsLink(object):
         if not force:
             st, _fr = self._read_box()
             if st == BOX_IDLE:
+                # the box settled by itself: a rejection run ends here too,
+                # else the next one starts with an expired wait window
+                self._reject_since = None
+                self._reject_logged = None
+                if self._last_unlock == 'rejected':
+                    self._last_unlock = 'ok'
                 return True
         fr = self._transact(self.addr, STATUS_HOST, F_MODE, b'\x00\x01',
                             timeout=MODE_TIMEOUT)
@@ -443,8 +463,7 @@ class CfsLink(object):
             return False
         if fr['status'] == REPLY_REJECTED:
             self._last_unlock = 'rejected'
-            if self._reject_since is None:
-                self._reject_since = self._now()
+            self._mark_reject()
             st = bytearray(fr['data'])[0] if fr['data'] else None
             if st != self._reject_logged:
                 # one line per box state, not per retry
@@ -460,8 +479,21 @@ class CfsLink(object):
         self._reject_since = None
         self._reject_logged = None
         self._box_state = BOX_IDLE
+        self._free_lanes = 0
         self._fresh_box = None
         return True
+
+    def _mark_reject(self):
+        """Stamp a rejection. A run of them starts at its first one; a
+        rejection after a longer quiet gap starts a new run, so a run that
+        ended without an accepted unlock cannot leave an expired stamp
+        behind for the next one."""
+        now = self._now()
+        if (self._reject_since is None
+                or now - self._reject_last > REJECT_GAP_S):
+            self._reject_since = now
+            self._reject_logged = None
+        self._reject_last = now
 
     def _box_busy(self):
         """True while unlocks are being rejected, at most BOX_BUSY_MAX_S."""
@@ -472,8 +504,7 @@ class CfsLink(object):
     def _note_reject(self, what, fr):
         """Log a rejected command once per box state (its data byte)."""
         st = bytearray(fr['data'])[0] if fr['data'] else None
-        if self._reject_since is None:
-            self._reject_since = self._now()
+        self._mark_reject()
         if st != self._reject_logged:
             self._reject_logged = st
             logging.info('[multiACE] CFS Nano: %s rejected, box state %s - '
@@ -497,8 +528,11 @@ class CfsLink(object):
             return True
         if job['kind'] == 'dosed':
             n = int(job['target'])
+            job['w0'] = self._read_wheel(job['slot'])
+            now = self._now()
             job['t0'] = now
-            job['deadline'] = now + n / DOSED_SPEED + 4.0
+            job['deadline'] = now + max(n / DOSED_SPEED + 4.0,
+                                        DOSED_BOX_TIMEOUT_S + 3.0)
             self._fire(F_EXTRUDE, bytes(bytearray([job['mask'], STAGE_DOSED,
                                                    n])))
             return True
@@ -513,10 +547,21 @@ class CfsLink(object):
             logging.info('[multiACE] CFS Nano: print mode (04 %02x 00) %s'
                          % (mask, 'unanswered' if fr is None else 'rejected'))
             return False
+        if self._box_state == BOX_PRINT:
+            self._free_lanes |= mask
+        else:
+            self._free_lanes = mask
+        logging.info('[multiACE] CFS Nano: print mode (04 %02x 00), free '
+                     'lanes %s' % (mask, self._lanes_text(self._free_lanes)))
         self._box_state = BOX_PRINT
         self._print_mask = None
         self._fresh_box = None
         return True
+
+    @staticmethod
+    def _lanes_text(lanes):
+        return ','.join(str(i + 1) for i in range(4) if lanes & (1 << i)) \
+            or '-'
 
     def _start_segment(self, job):
         """One self-stopping init feed. The second stage 10 <mask> 05 is
@@ -547,6 +592,7 @@ class CfsLink(object):
                             timeout=MOTION_REPLY_TIMEOUT)
         if fr is not None:
             self._box_state = 0x03      # a stop leaves the box locked
+            self._free_lanes = 0
         return fr is not None
 
     def _fire_chunk(self, job):
@@ -598,6 +644,30 @@ class CfsLink(object):
             return miss
         return 0.0
 
+    def _abort_job(self):
+        """End a job whose step raised: stop a running feed and end it
+        through _end_job, so the end is logged and reported and a wanted
+        print mode comes back. Each part is guarded on its own."""
+        job = self._job
+        if job is None:
+            return
+        if job['kind'] in ('feed', 'dosed') and job.get('wait_unlock') is None:
+            try:
+                self._stop_feed(job)
+            except (IOError, OSError):
+                raise
+            except Exception:
+                logging.exception('[multiACE] CFS Nano: stop after a failed '
+                                  'step failed')
+        try:
+            self._end_job('error')
+        except (IOError, OSError):
+            raise
+        except Exception:
+            logging.exception('[multiACE] CFS Nano: ending the failed job '
+                              'failed')
+            self._job = None
+
     def _end_job(self, why):
         job = self._job
         self._job = None
@@ -624,6 +694,17 @@ class CfsLink(object):
             if not running:
                 out['short'] = round(CfsLink._retract_short(job), 1)
         return out
+
+    def _dosed_moved(self, job):
+        """Distance a dosed feed really moved, from the wheel read before
+        it started; None when either reading is missing."""
+        w0 = job.get('w0')
+        if w0 is None:
+            return None
+        w1 = self._read_wheel(job['slot'])
+        if w1 is None:
+            return None
+        return max(0.0, w1 - w0)
 
     def _segment_progress(self, job):
         """Progress of the running init segment in mm, and the wheel
@@ -739,8 +820,18 @@ class CfsLink(object):
             if fr is not None or now >= job['deadline']:
                 self._late.pop(F_EXTRUDE, None)
                 self._box_state = BOX_IDLE
-                job['done'] = job['target']
-                self._end_job('done')
+                moved = self._dosed_moved(job)
+                if fr is not None and fr['status'] == 0:
+                    job['done'] = job['target'] if moved is None else moved
+                    self._end_job('done')
+                elif fr is not None:
+                    # the box gave up (a held strand: status 0A after ~15 s)
+                    job['done'] = 0.0 if moved is None else moved
+                    job['stop'] = 'slip'
+                    self._end_job('box gave up, status %02x' % fr['status'])
+                else:
+                    job['done'] = job['target'] if moved is None else moved
+                    self._end_job('timeout')
         else:
             # The piece ends before the next step: stay on the bus for its
             # reply and send the next piece at once instead of a step later.
@@ -793,9 +884,12 @@ class CfsLink(object):
             if job['kind'] == 'feed':
                 job['done'] = job['acc'] + self._segment_progress(job)[0]
             elif job['kind'] == 'dosed':
-                # no wheel reply for a dosed feed: estimate at its pace
-                job['done'] = min(job['target'],
-                                  (self._now() - job['t0']) * DOSED_SPEED)
+                moved = self._dosed_moved(job)
+                if moved is None:
+                    # wheel unreadable after the stop: estimate at its pace
+                    moved = min(job['target'],
+                                (self._now() - job['t0']) * DOSED_SPEED)
+                job['done'] = moved
             self._end_job('stopped by the host')
             return reply(0)
         if method in ('stop_feed_assist', 'update_feeding_speed',
@@ -816,7 +910,8 @@ class CfsLink(object):
             if self._job is not None:
                 self._print_mask = mask
                 return reply(0)
-            if self._box_state == BOX_PRINT and self._print_mask is None:
+            self._print_mask = None
+            if self._box_state == BOX_PRINT and self._free_lanes & mask:
                 return reply(0)
             if not self._print_mode(mask):
                 return reply(FAILED, 'print mode unanswered')
@@ -886,7 +981,7 @@ class CfsLink(object):
                 raise
             except Exception:
                 logging.exception('[multiACE] CFS Nano: job step failed')
-                self._job = None
+                self._abort_job()
         if method == 'get_info':
             fr = self._transact(self.addr, STATUS_HOST, F_VERSION)
             fw = ''
@@ -1007,7 +1102,9 @@ class AceProtocolCfs(AceProtocol):
         'calibration_feed': 'single',
         'host_tag_session': False,
         'buffer_relax': False,
-        'fa_stop_rollback': True,
+        # No feed assist to end: stop_feed_assist sends nothing, and the
+        # 5 mm rollback would unlock the box and move a loaded strand.
+        'fa_stop_rollback': False,
         'self_stops_on_resistance': True,
         'has_decoder': False,
         'v1_fa_health_log': False,

@@ -10,10 +10,13 @@ Models what the wire test measured (CLAUDE.md section 80):
   box stops by itself (max distance -> state 04 status 0A, resistance ->
   state 04 status 09); while it runs the wheel answers empty until a
   second 10 <m> 05 (rejected 03/03); 10 <m> 02 stops it at once (state
-  03); 10 <m> 05 <mm> dosed feed ~3.7 mm/s; 11 <m> <mm> retract ~44 mm/s;
+  03); 10 <m> 05 <mm> dosed feed ~3.7 mm/s (against block_at: wheel
+  stands, reply status 0A after ~15 s, box idle); 11 <m> <mm> retract ~44 mm/s;
   the last two reply only when the motion ends (sent with the next
   answer); 04 00 01 unlocks (state 00, ~2.3 mm back from state 03),
-  04 <m> 00 print mode (state 02, wheel answers empty);
+  04 <m> 00 print mode (state 02, wheel answers empty), frees the lowest
+  lane of m, and adds it to the lanes freed before while the box already
+  stands in print mode (HW 2026-11-17); 04 00 01 closes them all;
 - 0x0E 01 = wheel per slot, four big-endian floats;
 - every other function goes unanswered (the Nano is silent on 0x02,
   0x03, 0x05, 0xF0);
@@ -45,6 +48,7 @@ class FakeCFS:
 
     FEED_SPEED = 44.0
     DOSED_SPEED = 3.7
+    DOSED_GIVE_UP_S = 15.0
 
     def __init__(self, clock, label, slots=(), latency=0.01, uid=UID,
                  mute_until=None, init_limit=1200.0, block_at=None,
@@ -58,6 +62,7 @@ class FakeCFS:
         for s in slots:
             self.mask |= 1 << int(s)
         self.state = 0x00
+        self.free = 0               # lanes freed in print mode (bit mask)
         self.event = None
         self.mute_until = mute_until
         self._buf = bytearray()
@@ -86,6 +91,9 @@ class FakeCFS:
         self.motion = None
         self.stop_status = 0x00
         self._late = []
+
+    def lane_free(self, slot):
+        return self.state == 0x02 and bool(self.free & (1 << int(slot)))
 
     def insert(self, slot):
         if self.pull_in_s > 0:
@@ -160,6 +168,18 @@ class FakeCFS:
                 self.state = 0x04
                 self.stop_status = status
             return
+        if mo['kind'] == 'dosed':
+            block = self.block_at.get(slot)
+            if block is not None and mo['w0'] + dist >= block >= mo['w0']:
+                # held strand: the wheel stands, the box gives up after
+                # ~15 s with status 0A and stays idle (wire test 2026-11-19)
+                self.wheel[slot] = block
+                if self.clock.now - mo['t0'] >= self.DOSED_GIVE_UP_S:
+                    self.motion = None
+                    self.state = 0x00
+                    self._late.append(C.build_frame(ADDR, 0x0A, C.F_EXTRUDE,
+                                                    b''))
+                return
         sign = -1.0 if mo['kind'] == 'retract' else 1.0
         floor = (self.retract_floor.get(slot)
                  if mo['kind'] == 'retract' else None)
@@ -241,7 +261,10 @@ class FakeCFS:
                     self.wheel = [w - 2.3 if self.mask & (1 << i) else w
                                   for i, w in enumerate(self.wheel)]
                 self.state = 0x00
+                self.free = 0
             else:
+                low = d[0] & -d[0]
+                self.free = (self.free | low) if self.state == 0x02 else low
                 self.state = 0x02
             return C.build_frame(ADDR, 0x00, func, b'')
         if func == C.F_EXTRUDE and len(d) >= 2:

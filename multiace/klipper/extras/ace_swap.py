@@ -1420,6 +1420,10 @@ class SwapMixin:
                 if (staged is not None and int(staged[0]) == ace_index
                         and int(staged[1]) == slot):
                     return 'cross_ace_staged'
+                # Any other empty head (background unload only, a swap
+                # replayed after a pause) also runs just the load: not
+                # recorded, it would pull the inline median down.
+                return None
             if source:
                 if (source['ace_index'] == ace_index
                         and source['slot'] == slot

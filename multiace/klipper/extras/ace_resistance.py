@@ -47,6 +47,16 @@ AIRLOG_AIR_DELTA = 500.
 AIRLOG_AIR_WINDOWS = 3
 AIRLOG_AIR_MIN_MOVING = 5
 AIRLOG_AIR_MIN_VEL = 2.0
+# Level gate: a low delta alone also fits a long even path (constant
+# back-pressure, little swing). Air only counts when the window's coil_min
+# also sits near the head's rest level: rest = highest coil_max of this
+# head over the last AIRLOG_REST_S, seen for at least AIRLOG_REST_MIN_S
+# (cleared when the head was away), dip = rest - coil_min. Replay over the
+# airlog data 11-10..11-19: the even PETG path read dip 5900, every other
+# air window 750-3100; 3500-5000 separated the same way.
+AIRLOG_AIR_DIP = 4000.
+AIRLOG_REST_S = 180.
+AIRLOG_REST_MIN_S = 30.
 # --- Resistance watch -------------------------------------------------------
 # The coil measures the binding lever = BACK-PRESSURE, so a load-time delta
 # far ABOVE a lane's own baseline is not "excellent flow" but the extruder
@@ -155,9 +165,10 @@ class ResistanceMixin:
                     ('%.0f' % st['cmin']) if st['cmin'] is not None else '-',
                     ('%.0f' % st['cmax']) if st['cmax'] is not None else '-',
                     ('%.0f' % delta) if delta is not None else '-')
-                self._airlog_chew_eval(head, delta, st['nmove'])
+                self._airlog_chew_eval(head, delta, st['nmove'], eventtime)
                 self._airlog_air_eval(head, delta, st['nmove'],
-                                      st['vsum'] / st['n'], eventtime)
+                                      st['vsum'] / st['n'], eventtime,
+                                      st['cmin'], st['cmax'])
                 self._airlog_state = None
         except Exception:
             logging.exception('[multiACE] airlog tick failed')
@@ -175,7 +186,7 @@ class ResistanceMixin:
         except Exception:
             return False
 
-    def _airlog_chew_eval(self, head, delta, nmove):
+    def _airlog_chew_eval(self, head, delta, nmove, eventtime=None):
         """CHEW detector on a closed airlog window (AIRLOG_CHEW_* const
         note). >= AIRLOG_CHEW_WINDOWS consecutive windows with a delta >=
         AIRLOG_CHEW_DELTA while the head genuinely extrudes = the lever
@@ -186,6 +197,19 @@ class ResistanceMixin:
             if self._airlog_not_printing(head):
                 self._airlog_chew_run.pop(head, None)
                 return
+            if eventtime is not None:
+                # Only back-to-back windows form a run. A head that was
+                # parked in between starts over: its first windows after
+                # a pick carry the pick-up travel (HW 2026-11-19, head 0
+                # read ~30k on every visit and two visits 4.5 min apart
+                # paused the print).
+                seen = getattr(self, '_airlog_chew_seen', None)
+                if seen is None:
+                    seen = self._airlog_chew_seen = {}
+                prev = seen.get(head)
+                seen[head] = eventtime
+                if prev is None or eventtime - prev > 2.5 * AIRLOG_EMIT_S:
+                    self._airlog_chew_run.pop(head, None)
             if (self._swap_in_progress or self._pickcheck_active
                     or getattr(self, '_swap_phase', 'idle')
                     not in ('idle', 'done')):
@@ -227,7 +251,24 @@ class ResistanceMixin:
         except Exception:
             logging.exception('[multiACE] airlog chew eval failed')
 
-    def _airlog_air_eval(self, head, delta, nmove, vel_mean, eventtime):
+    def _airlog_rest_dip(self, head, cmin, cmax, eventtime, fresh):
+        """Track the head's rest level and return rest - cmin, or None
+        while the rest is not known yet (head just arrived)."""
+        rest = getattr(self, '_airlog_rest', None)
+        if rest is None:
+            rest = self._airlog_rest = {}
+        hist = [] if fresh else rest.get(head, [])
+        if cmax is not None:
+            hist.append((eventtime, cmax))
+        hist = [x for x in hist if eventtime - x[0] <= AIRLOG_REST_S]
+        rest[head] = hist
+        if (cmin is None or not hist
+                or hist[-1][0] - hist[0][0] < AIRLOG_REST_MIN_S):
+            return None
+        return max(c for _, c in hist) - cmin
+
+    def _airlog_air_eval(self, head, delta, nmove, vel_mean, eventtime,
+                         cmin=None, cmax=None):
         """AIR detector on a closed airlog window (AIRLOG_AIR_* const note).
         WARN always; resumable PAUSE only with [ace] resistance_pause on.
         Never raises."""
@@ -239,6 +280,9 @@ class ResistanceMixin:
                 return
             prev = self._airlog_air_seen.get(head)
             self._airlog_air_seen[head] = eventtime
+            dip = self._airlog_rest_dip(
+                head, cmin, cmax, eventtime,
+                prev is None or eventtime - prev > 2.5 * AIRLOG_EMIT_S)
             if (prev is None
                     or eventtime - prev > 2.5 * AIRLOG_EMIT_S
                     or self._swap_in_progress or self._pickcheck_active
@@ -256,12 +300,17 @@ class ResistanceMixin:
             if delta >= AIRLOG_AIR_DELTA:
                 runs.pop(head, None)
                 return
+            if dip is None:
+                return
+            if dip >= AIRLOG_AIR_DIP:
+                runs.pop(head, None)
+                return
             run = runs.get(head, 0) + 1
             runs[head] = run
             logging.warning(
-                '[multiACE] [airlog] AIR window head=%d delta=%.0f '
+                '[multiACE] [airlog] AIR window head=%d delta=%.0f dip=%.0f '
                 'vel=%.1f run=%d/%d'
-                % (head, delta, vel_mean, run, AIRLOG_AIR_WINDOWS))
+                % (head, delta, dip, vel_mean, run, AIRLOG_AIR_WINDOWS))
             if run < AIRLOG_AIR_WINDOWS or head in self._airlog_air_latched:
                 return
             self._airlog_air_latched.add(head)
@@ -273,9 +322,13 @@ class ResistanceMixin:
                     'delta=%.0f (Air-Print Detection off - log only)'
                     % (head, delta))
                 return
-            self._airlog_pause(head, self._t(
-                'msg.airlog_air_pause', head=self._disp(head),
-                delta=int(delta)), 'airlog-air')
+            # klippy.log only, no pause and no web notice: on even paths the
+            # coil reads the same for flow and air (HW 2026-11-20, head 3
+            # paused at dip 3000-3200 while coil_min matched the flowing
+            # windows). The detector is still being measured.
+            logging.warning(self._t('msg.airlog_air_warn',
+                                    head=self._disp(head),
+                                    delta=int(delta)))
         except Exception:
             logging.exception('[multiACE] airlog air eval failed')
 
