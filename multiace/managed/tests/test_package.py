@@ -77,7 +77,9 @@ class PackageTests(unittest.TestCase):
             self.assertNotIn("[gcode_macro ACEH__Update_Apply]", config_text)
             self.assertNotIn("[save_variables]", config_text)
             self.assertIn("[ace]", config_text)
-            self.assertRegex(config_text, r"(?m)^ace_device_count:\s*1$")
+            # No unit count in the shipped config any more: units get their
+            # places in the Devices tab.
+            self.assertNotRegex(config_text, r"(?m)^ace_device_count:")
             # ACE 2 support stays enabled in the shipped config, while
             # generic probing remains an explicit opt-in. Both code fallbacks
             # are false.
@@ -90,25 +92,26 @@ class PackageTests(unittest.TestCase):
                 and node.func.attr == 'getboolean'
                 and len(node.args) == 2
                 and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value in (
-                    'enable_ace_v2', 'v2_probe_generic_usb')
+                and node.args[0].value == 'v2_probe_generic_usb'
             }
-            for option in ('enable_ace_v2', 'v2_probe_generic_usb'):
-                call = default_calls[option]
-                self.assertIsInstance(call.args[1], ast.Constant)
-                self.assertIs(call.args[1].value, False)
+            call = default_calls['v2_probe_generic_usb']
+            self.assertIsInstance(call.args[1], ast.Constant)
+            self.assertIs(call.args[1].value, False)
+            # Driver switches are read from the registry; the ACE 2
+            # driver's code default stays off.
+            drivers_src = (build_package.ROOT /
+                           "klipper/extras/ace_drivers.py").read_text()
+            self.assertRegex(
+                drivers_src,
+                r"Driver\('ace_v2', AceProtocolV2, 'enable_ace_v2', False")
             self.assertRegex(config_text, r'(?m)^enable_ace_v2:\s*true$')
             self.assertNotRegex(config_text, r'(?m)^v2_probe_generic_usb:')
             self.assertRegex(config_text,
                              r'(?m)^#v2_probe_generic_usb:\s*true$')
-            self.assertIn(
-                '# Generic adapter discovery sends identity queries only when the opt-in below',
-                config_text)
             source_config = (build_package.ROOT / "config/extended/ace.cfg").read_text()
             self.assertIn("[gcode_macro ACEH__Update_Check]", source_config)
             self.assertIn("[gcode_macro ACEH__Update_Apply]", source_config)
             self.assertIn("[save_variables]", source_config)
-            self.assertRegex(source_config, r"(?m)^ace_device_count\s*:")
 
     def test_package_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory(prefix="multiace-managed-deterministic-") as tmp:
