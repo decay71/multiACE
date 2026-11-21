@@ -136,8 +136,12 @@ def check():
     cmp('post-commit TRACKED_FILES', hook_tracked())
     cmp('release.yml py_compile', release_compile_list(),
         want=[p for p in canon if p not in M.BUNDLE_FILES], subset=True)
-    cmp('build_paxx_overlay.sh required list', bake_required())
-    globs = bake_globs()
+    # The public repo ships no bake script (it builds in the PAXX tree
+    # only), so its checks run where the script exists.
+    has_bake = os.path.exists(BAKE)
+    if has_bake:
+        cmp('build_paxx_overlay.sh required list', bake_required())
+    globs = bake_globs() if has_bake else ['*']
     for p in canon:
         if not any(fnmatch.fnmatch(p, g) for g in globs):
             problems.append('build_paxx_overlay.sh: %s matches no cp glob %s'
@@ -147,7 +151,7 @@ def check():
         if p in canon:
             continue
         if os.path.basename(p) in M.UNSHIPPED:
-            if any(fnmatch.fnmatch(p, g) for g in globs):
+            if has_bake and any(fnmatch.fnmatch(p, g) for g in globs):
                 problems.append('build_paxx_overlay.sh would ship unshipped %s' % p)
             continue
         problems.append('%s is on disk but in no list (add to manifest.json '
