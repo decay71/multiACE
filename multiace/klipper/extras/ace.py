@@ -7189,6 +7189,12 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
     def _on_print_end(self, *args):
         self._job_note_end()
+        try:
+            _bg = self.printer.lookup_object('ace_bg_swap', None)
+            if _bg is not None and hasattr(_bg, 'on_print_end'):
+                _bg.on_print_end()
+        except Exception:
+            pass
         self._auto_feed_enabled = False
         self._print_tool_pins = {}
         self._print_virtual_raw = False
@@ -19327,6 +19333,14 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             })
             return
 
+        # Parked head idle timeout reset: notify ace_bg_swap that head_index is active
+        try:
+            _bg = self.printer.lookup_object('ace_bg_swap', None)
+            if _bg is not None and hasattr(_bg, 'on_head_active'):
+                _bg.on_head_active(head_index)
+        except Exception:
+            pass
+
         # Per-spool pressure advance: the toolchange is the one moment that
         # covers load, swap AND resume, so the bound spool's stored value
         # for the head's current nozzle is applied here (cached - one
@@ -21646,8 +21660,23 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             if not pinned:
                 if orig is None:
                     raise gcmd.error('T%d unavailable' % tool)
-                return orig(gcmd)
+                ret = orig(gcmd)
+                self._wait_bg_standby_reheat(tool)
+                return ret
             self._run_virtual_tool(gcmd, tool)
+
+    def _wait_bg_standby_reheat(self, head):
+        bg = self.printer.lookup_object('ace_bg_swap', None)
+        if bg is None:
+            return
+        fn = getattr(bg, 'wait_standby_reheat', None)
+        if fn is None:
+            return
+        try:
+            fn(head)
+        except Exception as e:
+            logging.info('[multiACE] head %d: standby reheat wait failed: %s'
+                         % (self._disp(head), e))
 
     def _notify_bg_pick(self, head):
         # The stock T macro parks the old head, lifts this one out of the
