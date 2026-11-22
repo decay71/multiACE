@@ -34,7 +34,7 @@ from .ace_spool import (SpoolMixin, SPOOLLINK_RESOLVE_METHOD,
                         SPOOLLINK_STARTUP_CHECK_DELAY)
 from .ace_resistance import ResistanceMixin, RESISTANCE_STRIKE_CLEAR_READS
 
-MULTIACE_VERSION = "1.90"
+MULTIACE_VERSION = "1.90.1"
 # Virtual slicer tools: T4..T31 (stock LOGICAL_EXTRUDER_NUM is 32). T0-T3
 # are the heads as loaded; tool n >= 4 = ACE (n-4)//4, slot (n-4)%4 (the
 # same numbering BMCU-Klipper uses on the U1).
@@ -54,6 +54,14 @@ VIRTUAL_PRELOAD_SCAN_MAX = 16 * 1024 * 1024
 STAGED_PRINT_GRACE_S = 4.0
 STAGED_PRINT_WATCH_S = 120.0
 STAGED_PRINT_MIN_VEL = 0.3
+# Feed assist outside a print: a unit that does not freewheel (ACE 2, ace2k)
+# holds the filament while its assist is off, so an extruder that pulls on an
+# ACE head outside a print (a PA calibration from the console or the display,
+# a manual extrude) drags the strand through the stopped unit. The poll arms
+# the assist while that head extrudes and drops it after the grace period.
+IDLE_FA_POLL_S = 0.5
+IDLE_FA_MIN_VEL = 0.3
+IDLE_FA_GRACE_S = 5.0
 # Toolchange notice to the bg engine (T0-T3 wrapper, _notify_bg_pick):
 # how long the T waits for the engine to hand the head over after the
 # announcement. The engine stops at its next move boundary - a prime
@@ -75,7 +83,7 @@ BG_STAGED_STOP_WINDOW = 180.0
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "18f2e42e"
+MULTIACE_BUILD_TAG = "ced04976"
 MULTIACE_BUNDLE_SHA1 = "8816725"
 # The klipper modules OUTSIDE the bundle sha (ace.py and its helpers), the
 # fixed order the banner's core= value hashes them in. Computed on disk at
@@ -1795,6 +1803,8 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         self._test_cancel = False
         self._auto_feed_enabled = False
         self._fa_context = 'idle'
+        # Assist armed by the idle extrude poll: {head, idx, slot, last}.
+        self._idle_fa = None
 
         # Homing/probe in-progress tracking (set from homing:* events).
         # Used to defer V1 FA dispatches out of probe windows.
@@ -4878,6 +4888,9 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         if getattr(self, '_spool_timer', None) is None:
             self._spool_timer = self.reactor.register_timer(
                 self._spool_sample_tick, self.reactor.NOW)
+        if getattr(self, '_idle_fa_timer', None) is None:
+            self._idle_fa_timer = self.reactor.register_timer(
+                self._idle_fa_tick, self.reactor.NOW + IDLE_FA_POLL_S)
         # Humidity control. Always armed - the tick returns immediately when
         # no unit has it enabled, and arming it on demand would mean a
         # restart after every settings change.
@@ -19269,6 +19282,108 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             self.reactor.register_timer(_check, t0 + 1.0)
         except Exception:
             pass
+
+    def _idle_fa_tick(self, eventtime):
+        try:
+            self._idle_fa_step(eventtime)
+        except Exception:
+            logging.exception('[multiACE] idle extrude feed assist failed')
+        return eventtime + IDLE_FA_POLL_S
+
+    def _idle_fa_step(self, eventtime):
+        """Arm the feed assist while an ACE head extrudes outside a print.
+
+        Only on units that do not freewheel and only while no print, swap,
+        load, unload or background op owns the gate. Every other path that
+        opens the gate (print start, load, swap) takes it over; the poll then
+        forgets its own arm and leaves the gate to that path."""
+        held = self._idle_fa
+        if held is not None and (self._fa_context != 'extrude'
+                                 or not self._auto_feed_enabled):
+            self._idle_fa = None
+            return
+        if held is None and self._auto_feed_enabled:
+            if self._fa_context == 'extrude':
+                # A swap restored our context after it had taken the gate.
+                self._idle_fa_release('handed back by another operation')
+            return
+        ps = self.printer.lookup_object('print_stats', None)
+        if ps is not None and getattr(ps, 'state', '') in ('printing',
+                                                            'paused'):
+            if held is not None:
+                self._idle_fa_release('print running')
+            return
+        try:
+            ext = self.toolhead.get_extruder()
+            head = getattr(ext, 'extruder_index',
+                           getattr(ext, 'extruder_num', None))
+        except Exception:
+            head = None
+        vel = 0.0
+        mr = self.printer.lookup_object('motion_report', None)
+        if mr is not None:
+            try:
+                vel = float(mr.get_status(eventtime).get(
+                    'live_extruder_velocity', 0.0) or 0.0)
+            except Exception:
+                vel = 0.0
+        if held is not None:
+            src = self._head_source.get(held['head']) or {}
+            if (head != held['head'] or src.get('ace_index') != held['idx']
+                    or src.get('slot') != held['slot']):
+                self._idle_fa_release('head or slot changed')
+            elif vel >= IDLE_FA_MIN_VEL:
+                held['last'] = eventtime
+            elif eventtime - held['last'] > IDLE_FA_GRACE_S:
+                self._idle_fa_release('extruder idle')
+            return
+        if head is None or vel < IDLE_FA_MIN_VEL:
+            return
+        if self._swap_in_progress or head in self._loading_heads:
+            return
+        if self._feed_op_running(head):
+            return
+        bg = self.printer.lookup_object('ace_bg_swap', None)
+        try:
+            if bg is not None and bg.is_busy(head):
+                return
+        except Exception:
+            return
+        if not self.head_uses_ace(head):
+            return
+        src = self._head_source.get(head)
+        if not src or src.get('load_failed') or src.get('gate_empty'):
+            return
+        idx, slot = src.get('ace_index'), src.get('slot')
+        if idx is None or slot is None:
+            return
+        if not self._connected_per_ace.get(idx, False):
+            return
+        if not self._cap(idx, 'no_freewheel'):
+            return
+        self._auto_feed_enabled = True
+        self._fa_context = 'extrude'
+        self._idle_fa = {'head': head, 'idx': idx, 'slot': slot,
+                         'last': eventtime}
+        logging.info('[multiACE] head %d extrudes outside a print - feed '
+                     'assist on (MMU %d slot %d)' % (head, idx, slot))
+        self._arm_fa_for(idx, slot)
+
+    def _idle_fa_release(self, why):
+        """Drop the assist the idle extrude poll armed and close the gate."""
+        held = self._idle_fa
+        self._idle_fa = None
+        self._auto_feed_enabled = False
+        self._fa_context = 'idle'
+        idxs = ([held['idx']] if held is not None else
+                [i for i, sl in self._feed_assist_per_ace.items() if sl != -1])
+        for idx in idxs:
+            try:
+                self._disarm_fa_for(idx)
+            except Exception as e:
+                logging.info('[multiACE] idle extrude feed assist off on '
+                             'MMU %d failed: %s' % (idx, e))
+        logging.info('[multiACE] feed assist outside a print off (%s)' % why)
 
     def _staged_head_pause(self, head, staged):
         """Resumable pause for a head that prints on staged filament."""
