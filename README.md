@@ -14,6 +14,9 @@
 
 multiACE won Tier 1 in the Hardware Mod category of the Snapmaker Innovation Fund. Thank you to everyone who voted, tested, reported bugs, sent logs, bought a cable or a coffee, and helped other users in the forum and on GitHub. Thank you also to **Snapmaker** for the Innovation Fund and for an open printer that makes a project like this possible. This release is the first one built after the win, and a lot of it comes from you.
 
+> [!NOTE]
+> Because there were still some issues with the release, I have set 1.90 back to pre-release until they are fixed by hotfixes.
+
 ## What makes it multiACE+
 
 multiACE was built for exactly one device, the ACE Pro, and later the ACE 2.  multiACE+ puts a driver layer between the engine and the hardware: every changer is a driver that tells the engine what it can do (sensors, feed assist, drying, tag reading, moving lanes on their own), and loading, unloading, swaps, recovery, the preflight and the web UI work the same on top of it.
