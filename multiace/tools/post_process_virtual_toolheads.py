@@ -1679,7 +1679,9 @@ BG_INITIAL_LOAD = True
 # 10: a cooldown of the printing head is dropped when the next toolchange
 # stays on that head (scan_cooling_standbys).
 # 11: the start tool's prime in the auto-load block carries TEMP=.
-PP_FORMAT_VERSION = 11
+# 12: the same-head cooldown rule runs in the print body only; the start
+# G-code keeps its cooldowns before cleaning, homing and probing.
+PP_FORMAT_VERSION = 12
 
 # Written by both rewrites right after the pre-body tool select. A one-colour
 # export has no tool change in the body (Orca writes no change_filament_gcode
@@ -1711,7 +1713,7 @@ def detect_processed(text):
 # target under it on the head that is about to PRINT is never legitimate.
 STANDBY_MIN_EXTRUDE_C = 170
 
-def scan_cooling_standbys(in_path, head_of_tool):
+def scan_cooling_standbys(in_path, head_of_tool, reasons=None):
     """Line numbers of M104/M109 lines that PROVABLY leave the printing head
     below min_extrude_temp - the ones the rewrite has to drop.
 
@@ -1743,6 +1745,13 @@ def scan_cooling_standbys(in_path, head_of_tool):
     parks there, so the cooldown only costs a re-heat wait after the swap.
     A standby for a head that is not printing is never touched by this
     rule: that head sits in its dock and the cooldown is its ooze guard.
+    The rule runs in the print body only. The start G-code cools the head
+    on purpose before cleaning, Z homing and bed probing and picks the same
+    head again afterwards; those cooldowns stay.
+
+    `reasons`, when given a dict, receives line number -> 'cold' (the head
+    would extrude below the limit) or 'swap' (cooldown before a swap on the
+    same head), so the rewriter can say why it dropped the line.
 
     Only lines that match one of the two cases get dropped, so a file
     without them comes out byte-identical.
@@ -1768,8 +1777,13 @@ def scan_cooling_standbys(in_path, head_of_tool):
                 if h is not None:
                     t_heads.append((no, h))
     t_pos = 0
+    body_start = _body_start_re(in_path)
+    in_body = False
+    swap_drops = set()
     with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
         for no, line in enumerate(fin):
+            if not in_body and body_start.match(line.strip()):
+                in_body = True
             code = line.split(';')[0].strip()
             if not code:
                 continue
@@ -1792,7 +1806,7 @@ def scan_cooling_standbys(in_path, head_of_tool):
                 # toolchange stays on it: drop it and keep the target the
                 # head had, so the replay below sees what the head will
                 # really hold.
-                if h == active and val > 0:
+                if in_body and h == active and val > 0:
                     prev = target.get(h)
                     cooling = ('cooldown' in line.lower()
                                or (prev is not None and val < prev))
@@ -1803,6 +1817,7 @@ def scan_cooling_standbys(in_path, head_of_tool):
                         if (t_pos < len(t_heads)
                                 and t_heads[t_pos][1] == h):
                             danger.add(no)
+                            swap_drops.add(no)
                             continue
                 target[h] = val
                 if 0 < val < STANDBY_MIN_EXTRUDE_C:
@@ -1825,7 +1840,19 @@ def scan_cooling_standbys(in_path, head_of_tool):
                 # S=0 is a shutdown, not a standby - never blamed.
                 if tg is not None and 0 < tg < STANDBY_MIN_EXTRUDE_C:
                     danger.update(cold_setters.get(active, ()))
+    if reasons is not None:
+        for no in danger:
+            reasons[no] = 'swap' if no in swap_drops else 'cold'
     return danger
+
+
+def _dropped_standby_comment(stripped, reason):
+    """Comment line that replaces a dropped M104/M109."""
+    if reason == 'swap':
+        return ('; multiACE dropped: %s  ; cooldown before a swap on the '
+                'same head\n' % stripped.strip())
+    return ('; multiACE dropped: %s  ; would cool the printing head below '
+            '%d C\n' % (stripped.strip(), STANDBY_MIN_EXTRUDE_C))
 
 PURGE_MATRIX_ENABLE = True
 FILAMENT_MM3_PER_MM = 2.405
@@ -2127,7 +2154,9 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
     body_start = _body_start_re(in_path)
     # Head mode collapses every ACE colour onto ONE head, so it is if
     # anything more exposed to the standby collision than multi.
-    cooling_standbys = scan_cooling_standbys(in_path, head_of)
+    standby_reasons = {}
+    cooling_standbys = scan_cooling_standbys(in_path, head_of,
+                                             standby_reasons)
     cur = {}        # {ace_head: (ace, slot)} currently loaded per ACE head
     cur_tool = {}   # {ace_head: slicer tool} for the per-pair purge stamp
     active = 0
@@ -2209,9 +2238,8 @@ def rewrite_head_mode_to_file(in_path, out_path, assignment, ace_head=None,
 
             if m104_re.match(stripped):
                 if line_no in cooling_standbys:
-                    fout.write('; multiACE dropped: %s  ; would cool the '
-                               'printing head below %d C\n'
-                               % (stripped.strip(), STANDBY_MIN_EXTRUDE_C))
+                    fout.write(_dropped_standby_comment(
+                        stripped, standby_reasons.get(line_no)))
                 else:
                     fout.write(fix_m104(line))
                 last_pr = _emit_progress(progress, seen, total, last_pr)
@@ -3960,7 +3988,9 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
     # Standby lines that provably leave the printing head below
     # min_extrude_temp (see scan_cooling_standbys). Empty for every file
     # without the collision, which then comes out byte-identical.
-    cooling_standbys = scan_cooling_standbys(in_path, lambda n: n % 4)
+    standby_reasons = {}
+    cooling_standbys = scan_cooling_standbys(in_path, lambda n: n % 4,
+                                             standby_reasons)
     # Heads that already got their ONE forced prime (first use), as in the
     # head-mode preextrude scheme: per-swap FORCE primes are REDUNDANT (every
     # real swap already flushes 80mm + wipes via INNER_FLUSH) and HARMFUL -
@@ -4086,9 +4116,8 @@ def rewrite_to_file(in_path, out_path, progress=None, pickup_cleaning=False):
                 if pending_head is not None:
                     flush_pending_unmatched(fout)
                 if _raw_no in cooling_standbys:
-                    fout.write('; multiACE dropped: %s  ; would cool the '
-                               'printing head below %d C\n'
-                               % (stripped.strip(), STANDBY_MIN_EXTRUDE_C))
+                    fout.write(_dropped_standby_comment(
+                        stripped, standby_reasons.get(_raw_no)))
                 else:
                     fout.write(fix_m104(line))
                 last_pr = _emit_progress(progress, seen, total, last_pr)

@@ -110,10 +110,20 @@ def test_head_mode_single_colour_loads_the_assigned_slot(pp, tmp_path):
     assert 'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=2 FORCE=1 TEMP=240' in block
 
 
-def _scan(pp, tmp_path, gcode, head_of):
+def _scan(pp, tmp_path, gcode, head_of, body=True, reasons=None):
+    # The same-head rule runs in the print body only; a layer marker in
+    # front puts these samples there. Line numbers stay those of `gcode`.
     src = tmp_path / 'cool.gcode'
     src.write_text(gcode)
-    return pp.scan_cooling_standbys(str(src), head_of)
+    if body:
+        src.write_text('; LAYER_CHANGE\n' + gcode)
+        got = pp.scan_cooling_standbys(str(src), head_of, reasons)
+        if reasons is not None:
+            moved = {k - 1: v for k, v in reasons.items()}
+            reasons.clear()
+            reasons.update(moved)
+        return {n - 1 for n in got}
+    return pp.scan_cooling_standbys(str(src), head_of, reasons)
 
 
 def test_cooldown_dropped_when_next_toolchange_stays_on_the_head(pp, tmp_path):
@@ -156,6 +166,46 @@ def test_dropped_cooldown_does_not_count_as_the_head_target(pp, tmp_path):
     gcode = ("T0\nM104 S220 T0\nG1 X10 Y10 E1\nM104 S90 T0 ;cooldown\n"
              "T1\nG1 X20 Y20 E1\n")
     assert _scan(pp, tmp_path, gcode, lambda t: 0) == {3}
+
+
+# Snapmaker Orca start G-code: cooldowns before cleaning, Z homing and bed
+# probing, then the same head is picked again. Issue #254: the same-head
+# rule dropped them and the head homed and probed at print temperature.
+START_COOLDOWNS = """T1
+M109 T1 S220
+M104 T1 S130
+T1
+M109 T1 S130
+G28 Z
+BED_MESH_CALIBRATE
+T1
+M109 T1 S220
+G1 X10 E1
+"""
+
+
+def test_start_gcode_cooldowns_are_kept(pp, tmp_path):
+    assert _scan(pp, tmp_path, START_COOLDOWNS, lambda t: t,
+                 body=False) == set()
+
+
+def test_start_cooldowns_kept_but_body_rule_still_works(pp, tmp_path):
+    gcode = START_COOLDOWNS + (
+        "; LAYER_CHANGE\nT1\nM104 S220 T1\nG1 X10 Y10 E1\n"
+        "M104 S200 T1 ;cooldown\nT2\nM109 S220 T2\nG1 X20 Y20 E1\n")
+    lines = gcode.splitlines()
+    reasons = {}
+    got = _scan(pp, tmp_path, gcode, lambda t: 1, body=False,
+                reasons=reasons)
+    assert got == {lines.index("M104 S200 T1 ;cooldown")}
+    assert set(reasons.values()) == {'swap'}
+
+
+def test_dropped_lines_say_why(pp):
+    swap = pp._dropped_standby_comment('M104 S200 T1', 'swap')
+    cold = pp._dropped_standby_comment('M104 S90 T1', 'cold')
+    assert 'cooldown before a swap on the same head' in swap
+    assert 'below 170 C' in cold
 
 
 def _prime(pp, tmp_path, gcode):
