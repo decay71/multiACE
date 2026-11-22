@@ -239,3 +239,30 @@ def test_block_prime_falls_back_to_220_without_a_target(pp, tmp_path):
              "T0\nACE_SWAP_HEAD HEAD=0 ACE=0 SLOT=0\nG1 X10 Y10 E1\n")
     assert _prime(pp, tmp_path, gcode) == [
         'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=0 FORCE=1 TEMP=220']
+
+
+# Multi mode, start G-code with its own pre-extrude ahead of the auto-load
+# block (field report 2026-11-22, Orca plugin, empty start head 4): stock
+# primed the still empty head and the runout check stopped the print before
+# the block loaded it. The prime now runs behind the loads.
+def test_multi_start_preextrude_moves_behind_the_loads(pp, tmp_path):
+    out = _run(pp, tmp_path, MULTI, {0: 4, 1: 1})
+    lines = out.splitlines()
+    block = _block(out)
+    first = lines.index(block[0])
+    pre = [l for l in lines[:first]
+           if l.startswith('SM_PRINT_PREEXTRUDE_FILAMENT')]
+    assert pre == []
+    assert any(l.startswith('; multiACE moved into the auto-load block: '
+                            'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=0')
+               for l in lines[:first])
+    swaps = [i for i, l in enumerate(block) if l.startswith('ACE_SWAP_HEAD')]
+    prime = [i for i, l in enumerate(block)
+             if l == 'SM_PRINT_PREEXTRUDE_FILAMENT INDEX=0 FORCE=1 TEMP=220']
+    assert prime and prime[0] > max(swaps)
+
+
+def test_multi_without_start_preextrude_gets_no_extra_prime(pp, tmp_path):
+    text = MULTI.replace('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=0\n', '')
+    block = _block(_run(pp, tmp_path, text, {0: 4, 1: 1}))
+    assert not any(l.startswith('SM_PRINT_PREEXTRUDE') for l in block)
