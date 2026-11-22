@@ -1681,7 +1681,9 @@ BG_INITIAL_LOAD = True
 # 11: the start tool's prime in the auto-load block carries TEMP=.
 # 12: the same-head cooldown rule runs in the print body only; the start
 # G-code keeps its cooldowns before cleaning, homing and probing.
-PP_FORMAT_VERSION = 12
+# 13: multi: a start G-code pre-extrude ahead of the auto-load block moves
+# behind the loads (it primed a head the block had not loaded yet).
+PP_FORMAT_VERSION = 13
 
 # Written by both rewrites right after the pre-body tool select. A one-colour
 # export has no tool change in the body (Orca writes no change_filament_gcode
@@ -4387,6 +4389,10 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     first_seen_head: int | None = None  # first tool used after the anchor
     # Start tool selected before the anchor (START_TOOL_MARK), LAST per head.
     start_sel: dict[int, tuple[int, int]] = {}
+    # Pre-extrude lines ahead of the anchor: {line_no: head}. In multi mode
+    # they would prime a head the block below has not loaded yet.
+    pre_preextr: dict[int, int] = {}
+    pre_idx_re = re.compile(r'^SM_PRINT_PREEXTRUDE_FILAMENT\b.*?\bINDEX=(\d+)')
 
     if anchor_line_no is not None:
         # Pre-anchor start-selection scan (head mode): a MODIFIED start
@@ -4427,6 +4433,9 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
                 if m_st:
                     start_sel[int(m_st.group(1))] = (int(m_st.group(2)),
                                                      int(m_st.group(3)))
+                m_px = pre_idx_re.match(line.strip())
+                if m_px:
+                    pre_preextr[line_no] = int(m_px.group(1)) % 4
         with open(in_path, 'r', encoding='utf-8', errors='replace') as fin:
             for line_no, line in enumerate(fin):
                 if line_no < anchor_line_no:
@@ -4523,6 +4532,15 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
     # the multi behaviour (all used heads).
     if only_heads is not None:
         initial = {h: v for h, v in initial.items() if h in only_heads}
+    # Multi mode: a start G-code pre-extrude ahead of the block primes a
+    # head the block has not loaded yet; on an empty head the stock runout
+    # check stops the print before the block runs. Move it behind the loads,
+    # like head mode does with its start-tool prime. Head mode already drops
+    # these lines in its rewrite, so only multi is touched.
+    moved_preextr: dict[int, int] = {}
+    if only_heads is None:
+        moved_preextr = {ln: h for ln, h in pre_preextr.items()
+                         if h in initial and ln not in in_block_set}
 
     inject_block: list[str] = []
     if initial:
@@ -4582,6 +4600,15 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
         # block markers so a re-process strips + re-adds it (idempotent).
         # only_heads gate keeps multi byte-identical (multi keeps the slicer's
         # own start-gcode preextrude line instead).
+        def _block_prime_temp(h):
+            t = pre_temp.get(h, pre_temp.get(None))
+            if t is None or t < BLOCK_PRIME_MIN_TEMP:
+                t = print_temp.get(h, print_temp.get(None,
+                                                     BLOCK_PRIME_DEFAULT_TEMP))
+            return int(round(t))
+        for h in sorted(set(moved_preextr.values())):
+            inject_block.append('SM_PRINT_PREEXTRUDE_FILAMENT INDEX=%d '
+                                'FORCE=1 TEMP=%d\n' % (h, _block_prime_temp(h)))
         if (only_heads is not None and first_seen_head is not None
                 and first_seen_head in initial):
             # TEMP= makes stock heat before it extrudes. Without it stock
@@ -4605,6 +4632,11 @@ def inject_auto_load_to_file(in_path, out_path, progress=None, only_heads=None,
         for line_no, line in enumerate(fin):
             seen += len(line.encode('utf-8', errors='ignore'))
             if line_no in in_block_set:
+                last_pr = _emit_progress(progress, seen, total, last_pr)
+                continue
+            if line_no in moved_preextr and injected is False:
+                fout.write('; multiACE moved into the auto-load block: %s\n'
+                           % line.strip())
                 last_pr = _emit_progress(progress, seen, total, last_pr)
                 continue
             if (not injected and anchor_line_no is not None
