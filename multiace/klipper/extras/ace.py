@@ -34,7 +34,7 @@ from .ace_spool import (SpoolMixin, SPOOLLINK_RESOLVE_METHOD,
                         SPOOLLINK_STARTUP_CHECK_DELAY)
 from .ace_resistance import ResistanceMixin, RESISTANCE_STRIKE_CLEAR_READS
 
-MULTIACE_VERSION = "1.90.1"
+MULTIACE_VERSION = "1.90.2"
 # Virtual slicer tools: T4..T31 (stock LOGICAL_EXTRUDER_NUM is 32). T0-T3
 # are the heads as loaded; tool n >= 4 = ACE (n-4)//4, slot (n-4)%4 (the
 # same numbering BMCU-Klipper uses on the U1).
@@ -76,6 +76,10 @@ BG_PICK_NOTICE_WAIT_GRIP = 20.0
 # After a restart with a STAGED head, how long to wait for its unit to
 # connect before the stop of a possibly still running feed is given up.
 BG_STAGED_STOP_WINDOW = 180.0
+# Longest wait for a unit's old reader/writer thread when its port is
+# closed. This wait runs on the reactor: the threads are told to stop and
+# woken first and end by themselves, so it only has to cover the usual case.
+THREAD_JOIN_TIMEOUT = 0.05
 
 # Engine API contract version (see docs/ENGINE_API.md). Distinct from
 # MULTIACE_VERSION (the product version): this only bumps on a breaking
@@ -83,7 +87,7 @@ BG_STAGED_STOP_WINDOW = 180.0
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "ced04976"
+MULTIACE_BUILD_TAG = "e23884d0"
 MULTIACE_BUNDLE_SHA1 = "8816725"
 # The klipper modules OUTSIDE the bundle sha (ace.py and its helpers), the
 # fixed order the banner's core= value hashes them in. Computed on disk at
@@ -7798,14 +7802,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     old_ser.close()
             except Exception:
                 pass
+        self._wake_writer(idx)
         for thread_dict in (self._reader_threads, self._writer_threads):
             old_t = thread_dict.pop(idx, None)
             if old_t is not None:
                 try:
-                    old_t.join(timeout=0.5)
+                    old_t.join(timeout=THREAD_JOIN_TIMEOUT)
                 except Exception:
                     pass
-        self._writer_queues.pop(idx, None)
+        self._drop_writer_queue(idx)
         self._cb_locks.pop(idx, None)
         self._drop_device_tag_reads(idx)
         self._held_units.pop(idx, None)
@@ -8148,14 +8153,15 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                     ser.close()
             except Exception:
                 pass
+        self._wake_writer(idx)
         for thread_dict in (self._reader_threads, self._writer_threads):
             t = thread_dict.pop(idx, None)
             if t is not None:
                 try:
-                    t.join(timeout=0.5)
+                    t.join(timeout=THREAD_JOIN_TIMEOUT)
                 except Exception:
                     pass
-        self._writer_queues.pop(idx, None)
+        self._drop_writer_queue(idx)
         self._cb_locks.pop(idx, None)
         self._drop_device_tag_reads(idx)
         self._held_units.pop(idx, None)
@@ -8236,6 +8242,34 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                             'MMU %d: %s' % (idx, str(re)))
                         self._handle_per_ace_failure(idx, 'v1 reader comms lost')
         return _reader
+
+    def _wake_writer(self, idx):
+        """Wake a unit's writer thread so it sees its stop flag at once.
+        It waits on its queue for up to 0.5 s; joining it without the wake
+        held the reactor for that long, and a reconnect during a tool change
+        then ended in an MCU 'Timer too close' shutdown.
+        """
+        q = self._writer_queues.get(idx)
+        t = self._writer_threads.get(idx)
+        if q is None or t is None or not t.is_alive():
+            return
+        try:
+            q.put_nowait(None)
+        except Exception:
+            pass
+
+    def _drop_writer_queue(self, idx):
+        """Forget a unit's writer queue; a wake its thread never took (it
+        had already ended) is taken out, the requests stay as they were."""
+        q = self._writer_queues.pop(idx, None)
+        if q is None:
+            return
+        try:
+            with q.mutex:
+                while None in q.queue:
+                    q.queue.remove(None)
+        except Exception:
+            pass
 
     def _make_v2_writer_thread_for(self, idx, ser, protocol):
 

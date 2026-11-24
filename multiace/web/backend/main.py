@@ -1556,6 +1556,57 @@ _print_prefs_line = preflight_core.print_prefs_line
 _flow_cal_block = preflight_core.flow_cal_block
 _prepend_print_prefs = preflight_core.prepend_print_prefs
 
+
+async def _send_print_prefs(line: str) -> None:
+    """Send a SET_PRINT_PREFERENCES command to Klipper. Called while the
+    printer is idle, right before a print is started: stock refuses the
+    command once the print runs."""
+    try:
+        await _mr_post("/printer/gcode/script", {"script": line},
+                       timeout=30.0)
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError("print preferences not accepted: %s"
+                           % (e.response.text or "").strip()[:300])
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"moonraker: {e}")
+    _trace.info("print preferences sent: %s", line)
+
+
+async def _file_print_prefs(path: str):
+    """The preference command the marker of a gcode file asks for (path
+    relative to the gcodes root), or None. Reads only the file's head."""
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            async with client.stream(
+                    "GET", f"{MOONRAKER_URL}/server/files/gcodes/"
+                    + urllib.parse.quote(path),
+                    headers={"Range": "bytes=0-2047"}) as r:
+                if r.status_code >= 400:
+                    return None
+                head = b""
+                async for chunk in r.aiter_bytes():
+                    head += chunk
+                    if len(head) >= 2048:
+                        break
+    except Exception as e:
+        # Reading the marker must never keep a file from starting.
+        _trace.info("print preferences marker of %s not read: %s", path, e)
+        return None
+    return preflight_core.read_print_prefs(
+        head[:2048].decode("utf-8", "replace"))
+
+
+async def _start_print_file(path: str) -> None:
+    """Start a file that is already on the printer; a preflight marker in
+    it gets its print preferences sent first."""
+    line = await _file_print_prefs(path)
+    if line:
+        try:
+            await _send_print_prefs(line)
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+    await _mr_post("/printer/print/start", {"filename": path})
+
 def _prune_old_jobs() -> None:
     now = time.time()
     dead = [j for j, s in _PREFLIGHT_JOBS.items()
@@ -1600,8 +1651,12 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
 
         live_slots = await _live_slots_async()
         if mode == "head":
+            # 'head' names the assignment pipeline. In multi mode it runs
+            # on the multi topology (slot N feeds head N), so the printer's
+            # own mode stays in the context.
             head_ctx = await _head_mode_context()
-            head_ctx["mode"] = "head"
+            if head_ctx.get("mode") != "multi":
+                head_ctx["mode"] = "head"
         else:
             head_ctx = {"mode": "multi"}
         # Pickup-Cleaning is a global setting (both modes): the rewrite stamps
@@ -1644,9 +1699,16 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                 flow_cal)
             cur, nxt = nxt, cur
 
+        prefs_line = (_print_prefs_line(bed_mesh, camera, flow_cal)
+                      if (bed_mesh or camera or flow_cal) else None)
+
         _set_stage(state, "upload", 85.0)
         upload_name = safe_name
         payload = {"root": "gcodes", "print": "true"}
+        if prefs_line and not queue:
+            # Before the upload starts the print; a queued file gets them
+            # from its marker when it is started.
+            await _send_print_prefs(prefs_line)
         if queue:
             # Staged, not started: parked under its own folder with a unique
             # name, so two preparations of the same file never overwrite
@@ -3031,6 +3093,26 @@ async def restart(request: Request, req: RestartRequest) -> dict:
     except httpx.HTTPError as e:
         raise HTTPException(502, f"moonraker: {e}")
     return {"ok": True, "behavior": behavior, "via": via}
+
+class _PrintPrefs(BaseModel):
+    bed_mesh: bool = False
+    camera:   bool = False
+    flow_cal: bool = False
+
+
+@app.post("/api/preflight/prefs")
+async def preflight_prefs(req: _PrintPrefs) -> dict:
+    """Send the preflight's print preferences to Klipper. The browser
+    preflight calls this right before it uploads and starts its file."""
+    if not (req.bed_mesh or req.camera or req.flow_cal):
+        return {"ok": True, "sent": False}
+    try:
+        await _send_print_prefs(
+            _print_prefs_line(req.bed_mesh, req.camera, req.flow_cal))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"ok": True, "sent": True}
+
 
 @app.post("/api/upload-and-print")
 async def upload_and_print(file: UploadFile = File(...)) -> dict:
@@ -7115,7 +7197,7 @@ async def history_reprint(request: Request, req: _ReprintRequest) -> dict:
     if _mock_enabled(request):
         return {"ok": True, "filename": filename, "mock": True}
     try:
-        await _mr_post("/printer/print/start", {"filename": filename})
+        await _start_print_file(filename)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code,
                             detail=f"moonraker: {e.response.text}")
@@ -7563,7 +7645,7 @@ async def queue_launch(request: Request, queue_id: str) -> dict:
         if ps.get("state") in ("printing", "paused"):
             raise HTTPException(status_code=409, detail={
                 "message": "a print is already running", "changes": []})
-        await _mr_post("/printer/print/start", {"filename": entry["path"]})
+        await _start_print_file(entry["path"])
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code,
                             detail=f"moonraker: {e.response.text}")
