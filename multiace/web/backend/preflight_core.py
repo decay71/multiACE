@@ -2073,32 +2073,60 @@ FLOW_CAL_LINE_RE = re.compile(r"^\s*SM_PRINT_FLOW_CALIBRATE\b", re.IGNORECASE)
 AUTO_LOAD_END_RE = re.compile(r"^\s*;\s*multiACE auto-load: end\b")
 BARE_T_RE = re.compile(r"^\s*T(\d+)\s*(?:;.*)?$")
 
+# Marker line a preflight writes at the top of a file whose print
+# preferences were chosen in the preflight. The preferences themselves are
+# sent to Klipper BEFORE the print starts (see print_prefs_line); the marker
+# lets a later start of the same file (queue, reprint) send them again.
+PRINT_PREFS_MARK = "; multiACE preflight prefs: "
+_PRINT_PREFS_KEYS = ("BED_LEVEL", "FLOW_CALIBRATE", "TIME_LAPSE_CAMERA")
+
+
+def print_prefs_args(bed_mesh: bool, camera: bool,
+                     flow_cal: bool = False) -> str:
+    return ("BED_LEVEL=%d FLOW_CALIBRATE=%d TIME_LAPSE_CAMERA=%d"
+            % (1 if bed_mesh else 0, 1 if flow_cal else 0,
+               1 if camera else 0))
+
+
 def print_prefs_line(bed_mesh: bool, camera: bool,
                       flow_cal: bool = False) -> str:
-    """Build the SET_PRINT_PREFERENCES line for the chosen preflight toggles.
-    FORCE=1 is required: the line is the first line of the uploaded file, which
-    already runs with print_stats.state == 'printing', and stock rejects a
-    non-forced preference change there (error 531). FORCE=1 bypasses that gate
-    (print_task_config.cmd_SET_PRINT_PREFERENCES); it still runs before the
-    start/bed-leveling steps so the flags are set in time.
+    """The SET_PRINT_PREFERENCES command for the chosen preflight toggles.
+    It is sent while the printer is idle, before the print starts: stock
+    refuses a preference change once print_stats is printing, so a line
+    inside the file cancels the print there (error 531). FORCE=1 gets past
+    that only on the paxx Extended firmware, which patches it in; official
+    firmware never took it. Stock keeps the preferences until the print
+    ends.
 
     FLOW_CALIBRATE: stock's "flow calibration" is the per-head pressure-
     advance measurement (flow_calibrator.FLOW_CALIBRATE). With the flag on,
     stock also IGNORES every SET_PRESSURE_ADVANCE from the slicer while
     printing (kinematics/extruder.py); with it off, the slicer's own line
-    (Snapmaker Orca ships ADVANCE=0.02 as a placeholder) is what prints.
-    The touchscreen start dialog is the only stock place that turns it on,
-    and a web-started print never sees that dialog - so a preflight print
-    ran at PA 0.02 whatever the user had calibrated (issue #115: rough
-    top surfaces, "overextrusion"). The start gcode's own
-    SM_PRINT_FLOW_CALIBRATE lines sit BEFORE our auto-load block (heads
-    still empty -> runout pause 523), which is why the flag used to be
-    forced off; prepend_print_prefs moves the calibration behind the
-    block instead when the toggle is on."""
-    return ("SET_PRINT_PREFERENCES BED_LEVEL=%d FLOW_CALIBRATE=%d "
-            "TIME_LAPSE_CAMERA=%d FORCE=1"
-            % (1 if bed_mesh else 0, 1 if flow_cal else 0,
-               1 if camera else 0))
+    is what prints. The start gcode's own SM_PRINT_FLOW_CALIBRATE lines sit
+    BEFORE our auto-load block (heads still empty), so prepend_print_prefs
+    moves the calibration behind the block when the toggle is on."""
+    return "SET_PRINT_PREFERENCES " + print_prefs_args(bed_mesh, camera,
+                                                        flow_cal)
+
+
+def read_print_prefs(head_text: str):
+    """The SET_PRINT_PREFERENCES command a file's marker line asks for, or
+    None. head_text is the start of the file; only its first lines are
+    looked at."""
+    for line in (head_text or "").splitlines()[:8]:
+        line = line.strip()
+        if not line.startswith(PRINT_PREFS_MARK.strip()):
+            continue
+        vals = {}
+        for tok in line[len(PRINT_PREFS_MARK.strip()):].split():
+            key, sep, val = tok.partition("=")
+            if sep and key in _PRINT_PREFS_KEYS and val in ("0", "1"):
+                vals[key] = val
+        if len(vals) != len(_PRINT_PREFS_KEYS):
+            return None
+        return "SET_PRINT_PREFERENCES " + " ".join(
+            "%s=%s" % (k, vals[k]) for k in _PRINT_PREFS_KEYS)
+    return None
 
 def flow_cal_block(lines) -> tuple:
     """(insert_index, block_lines) for the relocated flow calibration, or
@@ -2150,10 +2178,11 @@ def flow_cal_block(lines) -> tuple:
 def prepend_print_prefs(in_path: str, out_path: str,
                          bed_mesh: bool = False, camera: bool = False,
                          flow_cal: bool = False) -> None:
-    """Stream-copy in_path to out_path with the print-preference line
-    prepended at the very top (before the start gcode's calibration).
-    Any SET_PRINT_PREFERENCES the slicer already emits is commented out
-    so it can't override ours from further down the file. With flow_cal
+    """Stream-copy in_path to out_path with the print-preference marker
+    at the very top. The preferences are not set from inside the file (a
+    running print may not change them); whoever starts the file sends
+    print_prefs_line first. Any SET_PRINT_PREFERENCES the slicer already
+    emits is commented out for the same reason. With flow_cal
     the slicer's SM_PRINT_FLOW_CALIBRATE lines are commented out and the
     calibration is re-emitted behind the auto-load block (see
     flow_cal_block); the file is read twice for that (anchor + heads),
@@ -2164,7 +2193,8 @@ def prepend_print_prefs(in_path: str, out_path: str,
             ins_idx, block = flow_cal_block(src)
     with open(out_path, "w", encoding="utf-8", errors="replace") as out:
         out.write("; multiACE preflight: print preferences\n")
-        out.write(print_prefs_line(bed_mesh, camera, flow_cal) + "\n")
+        out.write(PRINT_PREFS_MARK
+                  + print_prefs_args(bed_mesh, camera, flow_cal) + "\n")
         with open(in_path, "r", encoding="utf-8", errors="replace") as src:
             i = -1
             for i, line in enumerate(src):

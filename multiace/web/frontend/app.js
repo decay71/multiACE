@@ -8885,7 +8885,7 @@ createApp({
         const live = await loadLiveSlotsForPreflight();
         payload.liveSlots = live.live_slots;
         payload.headCtx   = live.head_ctx;
-        // The worker writes the print-preference line (and moves the flow
+        // The worker writes the print-preference marker (and moves the flow
         // calibration) with the same preflight_core pass the printer uses.
         payload.printPrefs = {bedMesh: !!preflight.bedMesh,
                               camera: !!preflight.camera,
@@ -8902,6 +8902,22 @@ createApp({
         const stagedName = queue
           ? Math.random().toString(16).slice(2, 14).padEnd(12, "0") + "_" + baseName
           : baseName;
+        if (!queue && (preflight.bedMesh || preflight.camera || preflight.flowCal)) {
+          // The print preferences go to the printer before the upload
+          // starts the print: stock refuses them once a print runs. A
+          // queued file carries a marker and gets them when it is started.
+          const pr = await fetch(`${API}/preflight/prefs`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({bed_mesh: !!preflight.bedMesh,
+                                  camera: !!preflight.camera,
+                                  flow_cal: !!preflight.flowCal})});
+          if (!pr.ok) {
+            const pb = await pr.json().catch(() => ({}));
+            throw new Error(typeof pb.detail === "string" ? pb.detail
+                            : `${pr.status} ${pr.statusText}`);
+          }
+        }
         fd.append("root", "gcodes");
         if (queue) fd.append("path", QUEUE_DIR);
         fd.append("print", queue ? "false" : "true");
