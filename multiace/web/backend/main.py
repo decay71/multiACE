@@ -4089,9 +4089,7 @@ def _acefw_running() -> bool:
 
 @app.post("/api/acefw/upload")
 async def acefw_upload(file: UploadFile = File(...)) -> dict:
-    """Stage the firmware file (.bin or .swu). One staging slot - a second
-    upload replaces the first; extraction/validation happens at flash
-    time so the .swu password does not need to travel twice."""
+    """Stage a firmware file (.bin or .swu) for inspection and flashing."""
     if _acefw_running():
         raise HTTPException(409, "a firmware update is running")
     data = await file.read()
@@ -4103,10 +4101,13 @@ async def acefw_upload(file: UploadFile = File(...)) -> dict:
 def _acefw_stage(filename: str, data: bytes) -> dict:
     """Put a firmware file into the one staging slot (upload or download)
     and answer what the card needs to show it."""
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is running")
+    upload_id = hashlib.sha256(data).hexdigest()
     _ACEFW_DIR.mkdir(parents=True, exist_ok=True)
     dest = _ACEFW_DIR / "upload.bin"
     dest.write_bytes(data)
-    _acefw.update({"file": filename,
+    _acefw.update({"file": filename, "upload_id": upload_id,
                    "size": len(data), "state": "idle", "calibration": "",
                    "msg": "", "error": "", "result": None, "pct": None})
     # Guess the version from the upload NAME (no password needed - the
@@ -4144,7 +4145,40 @@ def _acefw_stage(filename: str, data: bytes) -> dict:
     return {"ok": True, "name": _acefw["file"], "size": len(data),
             "version_guess": guess,
             "md5": hashlib.md5(data).hexdigest(),
-            "ace2k_image": ace2k_image}
+            "upload_id": upload_id, "ace2k_image": ace2k_image}
+
+
+@app.post("/api/acefw/inspect")
+async def acefw_inspect(payload: dict) -> dict:
+    """Identify a staged Gen 2 image without releasing the MMU port."""
+    upload_id = payload.get("upload_id")
+    if not upload_id or upload_id != _acefw.get("upload_id"):
+        raise HTTPException(409, "Choose the firmware file again")
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is running")
+
+    import ace2_ota
+
+    path = str(_ACEFW_DIR / "upload.bin")
+    try:
+        fw = await asyncio.to_thread(
+            ace2_ota.load_image, path, "", payload.get("md5"),
+            payload.get("password") or None)
+    except ace2_ota.FlashError as e:
+        detail = str(e)
+        if detail.startswith("cannot decrypt .swu:"):
+            return {"password_required": True, "error": detail}
+        raise HTTPException(400, detail) from e
+    if upload_id != _acefw.get("upload_id"):
+        raise HTTPException(409, "Choose the firmware file again")
+
+    for version, entry in ace2_ota.KNOWN_FIRMWARE.items():
+        if version in ace2_ota.PATCH_SPECS:
+            continue
+        if (entry.get("md5"), entry["size"], entry["crc"]) == (
+                fw.image_md5, len(fw.data), fw.image_crc):
+            return {"version": version}
+    return {"version": ""}
 
 
 class _Ace2kDownload(BaseModel):
@@ -4297,9 +4331,13 @@ async def _acefw_run(ace: int, port: str, version: str,
                     _acefw["state"], _acefw["result"], _acefw["error"])
 
 
-async def _acefw_release_confirmed(ace: int) -> None:
+async def _acefw_release_confirmed(ace: int, upload_id=None) -> None:
     """ACE_FW_RELEASE, then flash only against a CONFIRMED hold: if the
     state does not show it, hand the port back and stop."""
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is already running")
+    if upload_id and upload_id != _acefw.get("upload_id"):
+        raise HTTPException(409, "Choose the firmware file again")
     _acefw.update({"state": "releasing", "ace": ace, "pct": None,
                    "msg": "releasing serial port", "error": "",
                    "result": None, "calibration": ""})
@@ -4500,7 +4538,7 @@ async def _acefw_flash_ace2k(ace: int, p: dict, dry_run: bool):
             raise HTTPException(
                 400, "the unit runs ace2k: only the factory firmware %s "
                      "can be flashed back" % ace2k_flasher.FACTORY_VERSION)
-    await _acefw_release_confirmed(ace)
+    await _acefw_release_confirmed(ace, p.get("upload_id"))
     asyncio.create_task(_acefw_run_ace2k(
         ace, port, target, version, p.get("password") or None,
         p.get("md5") or None, dry_run, engine == "ace2k"))
@@ -4621,7 +4659,7 @@ async def acefw_flash(payload: dict | None = None) -> dict:
         if not version and not dry_run:
             raise HTTPException(400, "a Gen-1 image id is required")
     # Paranoia gate inside: flash only against a CONFIRMED hold.
-    await _acefw_release_confirmed(ace)
+    await _acefw_release_confirmed(ace, p.get("upload_id"))
     asyncio.create_task(_acefw_run(
         ace, port, version, p.get("password") or None,
         p.get("md5") or None, dry_run, bool(p.get("force")),

@@ -3120,7 +3120,8 @@ createApp({
     // upload, two buttons and a poll. The flash button goes through the
     // BIG RED own-risk dialog. ---
     const acefw = reactive({ace: "", version: "", password: "",
-                            fileName: "", fileSize: 0, fileMd5: "",
+                            fileName: "", fileSize: 0, fileMd5: "", uploadId: "",
+                            inspecting: false, needsPassword: false,
                             busy: false,
                             status: null, uiError: "", force: false,
                             patchToOpen: false, patchTarget: "",
@@ -3183,16 +3184,16 @@ createApp({
     const acefwDownloads = computed(() =>
       (acefwAce2k.value.versions || []).filter(v => v.download));
     async function acefwDownload() {
-      if (!acefwDl.version || acefwDl.busy || acefw.busy) return;
+      if (!acefwDl.version || acefwDl.busy || acefw.busy || acefw.inspecting) return;
       acefwDl.busy = true;
-      acefw.uiError = "";
+      acefwClearFile();
       try {
         const r = await fetch(`${API}/acefw/download_ace2k`, {
           method: "POST", headers: {"Content-Type": "application/json"},
           body: JSON.stringify({version: acefwDl.version})});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
-        _acefwStaged(body);
+        await _acefwStaged(body);
       } catch (e) {
         acefw.uiError = `${t("ui.config.acefw_dl_failed")}: ${e.message || e}`;
       } finally { acefwDl.busy = false; }
@@ -3269,64 +3270,87 @@ createApp({
       const img = acefw.ace2kImage;
       return !!(img && /^\d{4}-\d{2}-\d{2}/.test(img.tested || ""));
     });
-    // The version dropdown is an allowlist switchboard: Gen-2 entries are
-    // version keys, Gen-1 entries are image ids (the same 1.3.863 can be
-    // two different images). Options carry an `id` in both lists.
     const acefwVersionOptions = computed(() =>
       acefwIsV1.value ? acefwGen1Versions.value
         : acefwMode.value === "ace2k_back"
           ? acefwVersions.value.filter(v => v.version ===
               ((acefwAce2k.value.flasher || {}).factory || "1.1.31"))
           : acefwVersions.value);
-    // Switching the selected ACE switches allowlists - drop a pick the new
-    // list does not know (a Gen-2 version is not a Gen-1 image id).
-    watch(() => acefw.ace, () => {
-      if (!acefwVersionOptions.value.some(
-            v => (v.id || v.version) === acefw.version))
-        acefw.version = "";
-      acefwPreselect();
-    });
+    function acefwClearFile() {
+      acefw.version = "";
+      acefw.fileName = "";
+      acefw.fileSize = 0;
+      acefw.fileMd5 = "";
+      acefw.uploadId = "";
+      acefw.password = "";
+      acefw.needsPassword = false;
+      acefw.patchToOpen = false;
+      acefw.patchTarget = acefwPatchTarget.value;
+      acefw.force = false;
+      acefw.ace2kImage = null;
+      acefw.uiError = "";
+      acefw.status = null;
+      if (acefwInput.value) acefwInput.value.value = "";
+    }
+    watch(() => acefw.ace, acefwClearFile);
     function acefwPickFile() { acefwInput.value && acefwInput.value.click(); }
     async function acefwUpload(files) {
       const f = files && files[0];
-      if (!f) return;
+      if (!f || acefw.inspecting || acefwDl.busy || acefw.busy) return;
+      acefwClearFile();
+      acefw.inspecting = true;
       const fd = new FormData();
       fd.append("file", f);
       try {
         const r = await fetch(`${API}/acefw/upload`, {method: "POST", body: fd});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
-        _acefwStaged(body);
+        await _acefwStaged(body);
       } catch (e) { acefw.uiError = `Upload: ${e.message || e}`; }
+      finally { acefw.inspecting = false; }
     }
-    // A staged file (upload or download) as the card shows it.
-    function _acefwStaged(body) {
+    async function _acefwStaged(body) {
       acefw.fileName = body.name;
       acefw.fileSize = body.size;
       acefw.fileMd5 = body.md5 || "";
-      acefw.versionGuess = body.version_guess || "";
+      acefw.uploadId = body.upload_id || "";
       acefw.ace2kImage = body.ace2k_image || null;
-      acefw.uiError = "";
-      acefwPreselect();
-    }
-    // Gen 1: the image is identified by its md5 (names lie - the tunnel
-    // build is called ACE_V1.3.863_*), so an md5 match always sets the
-    // entry and no match clears it. Gen 2: guess from the file name, only
-    // when it is a tested, unambiguous version and nothing is picked yet.
-    const acefwGen1Match = computed(() => !acefw.fileMd5 ? null :
-      acefwGen1Versions.value.find(v => v.md5 === acefw.fileMd5) || null);
-    const acefwGen1Unknown = computed(() =>
-      acefwIsV1.value && !!acefw.fileMd5 && !acefwGen1Match.value);
-    function acefwPreselect() {
       if (acefwIsV1.value) {
-        if (!acefw.fileMd5) return;
-        acefw.version = acefwGen1Match.value ? acefwGen1Match.value.id : "";
-        return;
+        const match = acefwGen1Versions.value.find(v => v.md5 === acefw.fileMd5);
+        acefw.version = match ? match.id : "";
+        if (!match) acefw.uiError = t("ui.config.acefw_gen1_unknown");
+      } else if (!acefw.ace2kImage) {
+        await _acefwInspect();
       }
-      const matches = acefwVersionOptions.value.filter(
-        v => v.version === acefw.versionGuess);
-      if (!acefw.version.trim() && matches.length === 1)
-        acefw.version = matches[0].id || matches[0].version;
+    }
+    async function _acefwInspect() {
+      acefw.version = "";
+      acefw.force = false;
+      acefw.patchToOpen = false;
+      acefw.uiError = "";
+      try {
+        const r = await fetch(`${API}/acefw/inspect`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({upload_id: acefw.uploadId, md5: acefw.fileMd5,
+                                password: acefw.password || null}),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+        acefw.needsPassword = !!body.password_required;
+        if (acefw.needsPassword) {
+          if (acefw.password) acefw.uiError = body.error || "";
+          return;
+        }
+        const match = acefwVersionOptions.value.find(v => v.version === body.version);
+        acefw.version = match ? match.version : "";
+        if (!match) acefw.uiError = t("ui.config.acefw_unknown_image");
+      } catch (e) { acefw.uiError = `${e.message || e}`; }
+    }
+    async function acefwInspectPassword() {
+      if (acefw.inspecting || acefw.busy || !acefw.password) return;
+      acefw.inspecting = true;
+      try { await _acefwInspect(); }
+      finally { acefw.inspecting = false; }
     }
     let _acefwTimer = null;
     async function _acefwPoll() {
@@ -3352,6 +3376,7 @@ createApp({
           method: "POST", headers: {"Content-Type": "application/json"},
           body: JSON.stringify({ace: Number(acefw.ace),
                                 version: acefw.version.trim(),
+                                upload_id: acefw.uploadId,
                                 password: acefw.password || null,
                                 dry_run: !!dry,
                                 // Force skips only the "already on this
@@ -3388,12 +3413,13 @@ createApp({
     // additionally needs the target version. Splitting the two is what
     // keeps the version field from silently disabling the dry run.
     function acefwCanTest() {
-      return acefw.ace !== "" && !!acefw.fileName && !acefw.busy;
+      return acefw.ace !== "" && !!acefw.uploadId && !acefw.busy
+        && !acefw.inspecting && !acefwDl.busy;
     }
     function acefwReady() {
-      if (acefwMode.value === "ace2k") {
+      if (acefw.ace2kImage) {
         const img = acefw.ace2kImage;
-        return acefwCanTest() && !!img && img.known && !img.error;
+        return acefwCanTest() && acefwMode.value === "ace2k" && img.known && !img.error;
       }
       return acefwCanTest() && !!acefw.version.trim();
     }
@@ -3408,12 +3434,12 @@ createApp({
       return (v && (v.label || v.version)) || acefw.version.trim();
     }
     function acefwFlash() {
+      if (!acefwReady()) return;
       const patching = acefwCanPatch.value && !!acefw.patchToOpen;
       const tgt = patching
         ? (acefw.patchTarget || acefwPatchTarget.value)
         : acefwSelectedLabel();
-      // Patching adds a SECOND warning: it flashes a community-modified,
-      // NOT byte-tested image.
+      // Name the community firmware before confirming the write.
       const extra = (patching
         ? `<div class="acefw-danger">${tHtml("ui.config.acefw_patch_warn",
             {target: tgt})}</div>` : "")
@@ -10209,8 +10235,9 @@ createApp({
       acefwCanTest, acefwReady, acefwTest, acefwFlash, acefwStatusText,
       acefwStatusBad,
       acefwPatchTarget, acefwPatchTargets, acefwTargetLabel, acefwCanPatch,
+      acefwSelectedLabel, acefwInspectPassword,
       acefwVersions, acefwGen1Versions, acefwIsV1, acefwVersionOptions,
-      acefwGen1Unknown, acefwMode, acefwIsAce2kUnit, acefwAce2k,
+      acefwMode, acefwIsAce2kUnit, acefwAce2k,
       acefwAce2kTested,
       spoolCreateFromPicker,
       spoolExport, spoolImport, triggerSpoolImport,

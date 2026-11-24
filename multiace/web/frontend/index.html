@@ -3044,7 +3044,7 @@ reboot</pre>
         <div class="config-form">
           <div class="config-row">
             <label>{{ t('ui.config.acefw_ace') }}</label>
-            <select v-model="acefw.ace">
+            <select v-model="acefw.ace" :disabled="acefw.inspecting || acefwDl.busy || acefw.busy">
               <option value="" disabled>{{ t('ui.common.select') }}</option>
               <option v-for="o in acefwCandidates" :key="'fw'+o.value"
                       :value="o.value">{{ o.label }}</option>
@@ -3053,9 +3053,9 @@ reboot</pre>
           <div class="config-row">
             <label>{{ t('ui.config.acefw_file_label') }}</label>
             <span>
-              <button class="acefw-file-btn" @click="acefwPickFile()">{{
+              <button class="acefw-file-btn" :disabled="acefw.ace === '' || acefw.inspecting || acefwDl.busy || acefw.busy" @click="acefwPickFile()">{{
                 acefw.fileName || t('ui.config.acefw_file') }}</button>
-              <input ref="acefwInput" type="file" accept=".bin,.swu"
+              <input ref="acefwInput" type="file" :accept="acefwIsV1 ? '.bin' : '.bin,.swu'"
                      style="display:none"
                      @change="acefwUpload($event.target.files)">
             </span>
@@ -3063,91 +3063,58 @@ reboot</pre>
           <!-- ace2k images from tobecwb's GitHub releases, for every ACE 2
                (stock, ACE2-Open or ace2k): the listed versions only, the
                backend checks the release sha256. -->
-          <div class="config-row" v-if="!acefwIsV1 && acefwDownloads.length">
+          <div class="config-row" v-if="acefw.ace !== '' && !acefwIsV1 && acefwDownloads.length">
             <label>{{ t('ui.config.acefw_dl_label') }}</label>
             <span class="acefw-dl">
-              <select v-model="acefwDl.version" :disabled="acefwDl.busy || acefw.busy">
+              <select v-model="acefwDl.version" :disabled="acefw.inspecting || acefwDl.busy || acefw.busy">
                 <option v-for="v in acefwDownloads" :key="'dl'+v.version"
                         :value="v.version">ace2k {{ v.version }}</option>
               </select>
-              <button :disabled="!acefwDl.version || acefwDl.busy || acefw.busy"
+              <button :disabled="!acefwDl.version || acefw.inspecting || acefwDl.busy || acefw.busy"
                       @click="acefwDownload()">{{ acefwDl.busy
                         ? t('ui.config.acefw_dl_busy')
                         : t('ui.config.acefw_dl_btn') }}</button>
             </span>
           </div>
-          <!-- Only TESTED images are offered (one allowlist per generation)
-               - the byte gate in the matching backend (ace2_ota.py for the
-               ACE 2, ace1_flash.py for the Gen 1) refuses anything that
-               does not match the exact tested bytes. Releasing a new
-               version = dry run with the new package, read size/CRC/MD5
-               off the result, add the entry to the matching
-               KNOWN_FIRMWARE. -->
-          <!-- ace2k image: the file carries its version, so the row shows
-               it instead of a dropdown. -->
-          <div class="config-row" v-if="acefwMode === 'ace2k'">
-            <label>{{ t('ui.config.acefw_version_label') }}</label>
-            <span>ace2k {{ acefw.ace2kImage.version || '?' }}
-              <span v-if="acefw.ace2kImage.error" class="warn">{{ acefw.ace2kImage.error }}</span>
-              <span v-else-if="!acefw.ace2kImage.known" class="warn">{{ t('ui.config.acefw_ace2k_unknown') }}</span>
+          <div class="config-row" v-if="acefw.needsPassword">
+            <label for="acefw-password">{{ t('ui.config.acefw_pw_label') }}</label>
+            <span>
+              <input id="acefw-password" v-model="acefw.password" class="acefw-pw"
+                     type="password" autocomplete="off"
+                     :disabled="acefw.inspecting || acefw.busy"
+                     @keydown.enter.prevent="acefwInspectPassword()">
+              <button :disabled="!acefw.password || acefw.inspecting || acefw.busy"
+                      @click="acefwInspectPassword()">{{ t('ui.config.acefw_check_file') }}</button>
             </span>
           </div>
-          <div class="config-row" v-else>
-            <label>{{ t('ui.config.acefw_version_label') }}</label>
-            <select v-model="acefw.version" class="acefw-version">
-              <option value="" disabled>{{ t('ui.common.select') }}</option>
-              <option v-for="v in acefwVersionOptions"
-                      :key="'fwv'+(v.id || v.version)"
-                      :value="v.id || v.version">{{ v.label || v.version
-                      }}{{ v.swu ? ' (' + v.swu + ')' : ''
-                      }}{{ v.file ? ' (' + v.file + ')' : '' }}</option>
-            </select>
-          </div>
-          <div class="config-row" v-if="acefwGen1Unknown">
-            <label></label>
-            <span class="warn">{{ t('ui.config.acefw_gen1_unknown') }}</span>
-          </div>
-          <!-- Patch stock 1.1.31 -> ACE2-Open (Simon-CR UID passthrough):
-               only shown when 1.1.31 is selected and the backend has the
-               patch. The base upload stays the stock 1.1.31 package. -->
           <div class="config-row" v-if="acefwCanPatch">
-            <label>{{ t('ui.config.acefw_patch_label_any') }}</label>
-            <label class="acefw-force-row">
-              <input type="checkbox" v-model="acefw.patchToOpen">
-              <select v-model="acefw.patchTarget" :disabled="!acefw.patchToOpen">
+            <label for="acefw-install">{{ t('ui.config.acefw_version_label') }}</label>
+            <span>
+              <select id="acefw-install" v-model="acefw.patchToOpen" :disabled="acefw.busy">
+                <option :value="false">Anycubic 1.1.31</option>
+                <option :value="true">ACE2-Open {{ acefwPatchTargets.length === 1 ? acefwPatchTarget : '' }}</option>
+              </select>
+              <select v-if="acefw.patchToOpen && acefwPatchTargets.length > 1"
+                      v-model="acefw.patchTarget" :disabled="acefw.busy"
+                      :aria-label="t('ui.config.acefw_patch_label_any')">
                 <option v-for="tg in acefwPatchTargets" :key="tg.version"
                         :value="tg.version">{{ acefwTargetLabel(tg) }}</option>
               </select>
-              <span class="muted small">{{ t('ui.config.acefw_patch_hint') }}</span>
-            </label>
+            </span>
           </div>
           <p v-if="acefwCanPatch && acefw.patchToOpen"
              class="muted small acefw-danger">{{ t('ui.config.acefw_patch_warn2') }}</p>
-          <!-- Gen 1 has no .swu packaging: raw .bin only, so the password
-               field is a Gen-2 thing. -->
+          <div class="config-row" v-if="!acefwCanPatch && (acefw.version || acefwMode === 'ace2k')">
+            <label>{{ t('ui.config.acefw_version_label') }}</label>
+            <span>{{ acefwSelectedLabel() }}
+              <span v-if="acefwMode === 'ace2k' && acefw.ace2kImage.error" class="warn">{{ acefw.ace2kImage.error }}</span>
+              <span v-else-if="acefwMode === 'ace2k' && !acefw.ace2kImage.known" class="warn">{{ t('ui.config.acefw_ace2k_unknown') }}</span>
+            </span>
+          </div>
           <p v-if="acefwMode === 'ace2k_back'" class="muted small">{{ t('ui.config.acefw_ace2k_back') }}</p>
-          <div class="config-row" v-if="!acefwIsV1 && acefwMode !== 'ace2k'">
-            <label>{{ t('ui.config.acefw_pw_label') }}</label>
-            <input v-model="acefw.password" class="acefw-pw"
-                   :placeholder="t('ui.config.acefw_pw_ph')">
-          </div>
-          <!-- Force = re-flash although the unit already reports the
-               target version (test/repair). Only the same-version skip is
-               bypassed - the allowlist byte gate always applies. Gen 1 has
-               no same-version skip at all (a version string does not
-               identify a Gen-1 image), so the field is Gen-2 only. -->
-          <div class="config-row" v-if="!acefwIsV1 && !acefwMode">
-            <label>{{ t('ui.config.acefw_force') }}</label>
-            <label class="acefw-force-row">
-              <input type="checkbox" v-model="acefw.force">
-              <span class="muted small">{{ t('ui.config.acefw_force_hint') }}</span>
-            </label>
-          </div>
           <p v-if="acefwIsV1" class="muted small">{{ t('ui.config.acefw_gen1_note') }}</p>
         </div>
         <div class="acefw-actions">
-          <button :disabled="!acefwCanTest()" @click="acefwTest()">{{
-            t('ui.config.acefw_test') }}</button>
           <button class="danger" :disabled="!acefwReady()"
                   @click="acefwFlash()">{{ t('ui.config.acefw_flash') }}</button>
           <span class="small" :class="acefwStatusBad ? 'acefw-err' : 'muted'"
@@ -3156,6 +3123,14 @@ reboot</pre>
              :href="acefwCalibUrl(acefw.status.calibration)"
              :download="acefw.status.calibration">{{ t('ui.config.acefw_calib_get') }}</a>
         </div>
+        <details class="muted small">
+          <summary>{{ t('ui.config.acefw_advanced') }}</summary>
+          <button :disabled="!acefwCanTest()" @click="acefwTest()">{{ t('ui.config.acefw_test') }}</button>
+          <label v-if="!acefwIsV1 && !acefwMode && acefw.version" class="acefw-force-row">
+            <input type="checkbox" v-model="acefw.force" :disabled="acefw.busy">
+            {{ t('ui.config.acefw_force_hint') }}
+          </label>
+        </details>
       </div>
       <p v-if="!acefwCandidates.length" class="muted small">{{ t('ui.config.acefw_none') }}</p>
       <!-- Factory calibrations the ace2k flasher saved before writing. -->
