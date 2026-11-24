@@ -2953,6 +2953,13 @@ reboot</pre>
     <section v-show="tab==='devices'" class="nt-config-tab nt-devices-tab">
       <div class="nt-devices">
         <h3>{{ t('ui.config.devices') }}</h3>
+        <section v-if="acefw.status" class="update-card" aria-labelledby="acefw-progress-title">
+          <strong id="acefw-progress-title">{{ t('ui.config.acefw_title') }} &middot; MMU {{ dispIdx(acefw.ace) }}</strong>
+          <p role="status" class="small" :class="acefwStatusBad ? 'acefw-err' : 'muted'">{{ acefwStatusText }}</p>
+          <a v-if="acefw.status.calibration" class="small"
+             :href="acefwCalibUrl(acefw.status.calibration)"
+             :download="acefw.status.calibration">{{ t('ui.config.acefw_calib_get') }}</a>
+        </section>
         <div v-if="deviceRows.length" class="device-cards">
           <article v-for="{dev, candidate} in deviceRows" :key="dev ? dev.key : candidate.value" class="device-card">
             <div class="device-overview">
@@ -2962,14 +2969,14 @@ reboot</pre>
                   <template v-if="candidate?.firmware"> &middot; {{ candidate.firmware }}</template>
                 </small>
               </div>
-              <span v-if="dev" class="device-state small" :class="{'is-connected': dev.connected}">{{ deviceStatus(dev) }}</span>
+              <span v-if="dev" class="device-state small" :class="{'is-connected': candidate?.connected || dev.connected}">{{ candidate?.connected ? t('ui.config.dev_connected') : deviceStatus(dev) }}</span>
               <div class="device-tools">
                 <button v-if="dev?.present && dev.connected && dev.place != null" class="small"
-                        :disabled="isPrinting || firmwareWorking || state.locate_busy" @click="locateUnit(dev)">{{ t('ui.config.dev_locate') }}</button>
+                        :disabled="isPrinting || firmwareWorking || state.units_restart_needed || state.locate_busy" @click="locateUnit(dev)">{{ t('ui.config.dev_locate') }}</button>
                 <button v-if="candidate" class="device-update"
-                        :aria-expanded="acefw.ace === candidate.value"
+                        :aria-expanded="acefwActiveCandidate === candidate"
                         :disabled="firmwareWorking"
-                        @click="toggleDeviceFirmware(candidate.value)">{{ t(acefw.ace === candidate.value
+                        @click="toggleDeviceFirmware(candidate)">{{ t(acefwActiveCandidate === candidate
                           ? 'ui.config.dev_close_fw' : 'ui.config.dev_update_fw') }}</button>
               </div>
             </div>
@@ -2984,18 +2991,18 @@ reboot</pre>
                     <option v-for="n in [0,1,2,3]" :key="n" :value="n">MMU {{ dispIdx(n) }}</option>
                   </select>
                 </label>
-                <label v-if="dev.place != null && dev.present">{{ t('ui.config.dev_name') }}
+                <label v-if="dev.place != null && dev.present && !state.units_restart_needed">{{ t('ui.config.dev_name') }}
                   <input class="dev-name" type="text" maxlength="32"
                          :value="devNameValue(dev)" :disabled="isPrinting || acefw.ace !== ''"
                          :placeholder="t('ui.config.dev_name_placeholder')"
                          @input="devNameInput(dev, $event)" @change="devNameCommit(dev, $event)">
                 </label>
                 <small class="muted">{{ dev.key }}<template v-if="dev.path"> · {{ dev.path }}</template></small>
-                <button v-if="!dev.present" class="small danger" :disabled="isPrinting || acefw.ace !== ''"
+                <button v-if="!dev.present && !candidate?.connected" class="small danger" :disabled="isPrinting || acefw.ace !== ''"
                         @click="forgetUnit(dev)">{{ t('ui.config.dev_forget') }}</button>
               </div>
             </details>
-            <div v-if="candidate && acefw.ace === candidate.value" class="acefw-card acefw-inline">
+            <div v-if="candidate && acefwActiveCandidate === candidate" class="acefw-card acefw-inline">
               <div class="acefw-body">
                 <fieldset v-if="acefwProjects.length" class="acefw-choices acefw-source-picker" :disabled="firmwareWorking">
                   <legend>{{ t('ui.config.acefw_source_label') }}</legend>
@@ -3009,6 +3016,8 @@ reboot</pre>
                     {{ project.name }}
                   </label>
                 </fieldset>
+                <a v-if="!acefwIsV1" class="small" href="https://github.com/decay71/multiACE/blob/main/multiace/docs/ACE2_FLASH.md"
+                   target="_blank" rel="noopener">{{ t('ui.config.acefw_guide') }}</a>
                 <div class="acefw-source-content">
                   <section v-if="!acefwProject" class="acefw-option">
                     <small class="muted">{{ acefwIsV1 ? '.bin' : '.bin / .swu' }}</small>
@@ -3018,6 +3027,8 @@ reboot</pre>
                       <summary>{{ t('ui.config.acefw_supported_files') }}</summary>
                       <ul><li v-for="name in acefwSupportedFiles" :key="name"><code>{{ name }}</code></li></ul>
                     </details>
+                    <a v-if="acefwIsV1" class="small" href="https://github.com/decay71/multiACE/blob/main/multiace/docs/GEN1_FLASH.md"
+                       target="_blank" rel="noopener">{{ t('ui.config.acefw_guide') }}</a>
                   </section>
                   <section v-else :key="acefwProject.id" class="acefw-option">
                     <label :for="'acefw-release-' + acefwProject.id" class="muted small">{{ t('ui.config.acefw_github_release') }}</label>
@@ -3067,21 +3078,17 @@ reboot</pre>
                   <strong v-else-if="acefw.patchToOpen">ACE2-Open {{ acefw.patchTarget || acefwPatchTarget }}</strong>
                   <strong v-else-if="acefw.version || acefwMode === 'ace2k'">{{ acefwSelectedLabel() }}</strong>
                   <span class="small" :class="{muted: acefw.openRelease || acefw.version || acefwMode === 'ace2k'}">{{ t('ui.config.acefw_result_file', {name: acefw.fileName}) }}</span>
-                  <span v-if="acefw.openRelease" class="muted small">{{ t('ui.config.acefw_open_download_pending') }}</span>
-                  <span v-else-if="acefwMode === 'ace2k' && !acefw.ace2kImage.known" class="warn small">
+                  <span v-if="acefwMode === 'ace2k' && !acefw.ace2kImage.known" class="warn small">
                     {{ acefw.ace2kImage.error || t('ui.config.acefw_ace2k_unknown') }}
                   </span>
                   <span v-else-if="acefwMode === 'ace2k' && acefw.ace2kImage.error" class="warn small">{{ acefw.ace2kImage.error }}</span>
                 </div>
-                <div v-if="!acefw.openRelease && !acefw.needsPassword" class="acefw-actions">
+                <div v-if="!acefw.needsPassword" class="acefw-actions">
                   <button :disabled="!acefwCanTest()" @click="acefwTest()">{{ t('ui.config.acefw_test') }}</button>
                   <button class="danger" :disabled="!acefwReady()" @click="acefwFlash()">{{ t('ui.config.acefw_flash') }}</button>
                 </div>
               </div>
-              <p v-if="acefwStatusText" role="status" class="small" :class="acefwStatusBad ? 'acefw-err' : 'muted'">{{ acefwStatusText }}</p>
-              <a v-if="acefw.status && acefw.status.calibration" class="small"
-                 :href="acefwCalibUrl(acefw.status.calibration)"
-                 :download="acefw.status.calibration">{{ t('ui.config.acefw_calib_get') }}</a>
+              <p v-if="!acefw.status && acefwStatusText" role="status" class="small" :class="acefwStatusBad ? 'acefw-err' : 'muted'">{{ acefwStatusText }}</p>
               <details v-if="!acefwIsV1 && !acefwMode && acefw.version" class="muted small">
                 <summary>{{ t('ui.config.acefw_advanced') }}</summary>
                 <label class="acefw-force-row">

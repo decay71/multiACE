@@ -227,7 +227,7 @@
       "acefw_github_release": "GitHub-Version",
       "acefw_select_release": "Version auswählen",
       "acefw_open_patch_help": "Zum Erstellen von ACE2-Open die originale Anycubic-Datei 1.1.31 auswählen.",
-      "acefw_open_download_pending": "Download geprüft. Das direkte Flashen wartet noch auf Hardwaretests.",
+      "acefw_guide": "Flash-Anleitung",
       "acefw_advanced": "Erweitert",
       "acefw_unknown_image": "Diese Datei entspricht keinem unterstützten Firmware-Image. Für ACE2-Open die Original-Firmware von Anycubic in Version 1.1.31 wählen.",
       "acefw_file_label": "Firmware",

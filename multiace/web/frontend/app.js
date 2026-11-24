@@ -3119,7 +3119,7 @@ createApp({
     // release/hold, both generations) + backend (flash thread); this is
     // upload, two buttons and a poll. The flash button goes through the
     // BIG RED own-risk dialog. ---
-    const acefw = reactive({ace: "", source: "stock", version: "", password: "",
+    const acefw = reactive({ace: "", unitKey: "", source: "stock", version: "", password: "",
                             fileName: "", fileSize: 0, fileMd5: "", uploadId: "",
                             inspecting: false, needsPassword: false,
                             busy: false,
@@ -3261,7 +3261,7 @@ createApp({
         .map(a => {
           const eng = aceFlashEngine(a);
           const v1 = eng === "iap_v1";
-          return {value: a.idx, model: a.model, firmware: a.firmware !== "Unknown" ? a.firmware : "", v1: v1, ace2k: eng === "ace2k",
+          return {value: a.idx, key: a.unit_key, connected: a.connected, model: a.model, firmware: a.firmware !== "Unknown" ? a.firmware : "", v1: v1, ace2k: eng === "ace2k",
                   label: "MMU " + dispIdx(a.idx)
                          + " · " + t(v1 ? "ui.config.acefw_gen1"
                                         : eng === "ace2k"
@@ -3273,7 +3273,8 @@ createApp({
         }));
     const deviceRows = computed(() => {
       const rows = (state.devices || []).filter(dev => dev.key).map(dev => ({
-        dev, candidate: acefwCandidates.value.find(c => c.value === dev.place)
+        dev, candidate: acefwCandidates.value.find(c =>
+          c.key ? c.key === dev.key : !state.units_restart_needed && c.value === dev.place)
       }));
       // Older engines can report flashable units without a device registry.
       for (const candidate of acefwCandidates.value) {
@@ -3283,18 +3284,24 @@ createApp({
       return rows;
     });
     const freeSlots = computed(() => (state.devices || [])
-      .filter(dev => !dev.key && dev.place != null)
+      .filter(dev => !dev.key && dev.place != null
+        && !state.aces.some(ace => ace.idx === dev.place))
       .map(dev => "MMU " + dispIdx(dev.place)).join(", "));
     const firmwareWorking = computed(() => acefw.inspecting || !!acefwDl.busy || acefw.busy);
-    function toggleDeviceFirmware(idx) {
-      if (!firmwareWorking.value) acefw.ace = acefw.ace === idx ? "" : idx;
+    const acefwActiveCandidate = computed(() => acefwCandidates.value.find(candidate =>
+      candidate.value === acefw.ace && (candidate.key || "") === acefw.unitKey));
+    function toggleDeviceFirmware(candidate) {
+      if (firmwareWorking.value) return;
+      const closing = acefwActiveCandidate.value === candidate;
+      acefw.ace = closing ? "" : candidate.value;
+      acefw.unitKey = closing ? "" : candidate.key || "";
     }
     const acefwIsV1 = computed(() => {
-      const c = acefwCandidates.value.find(o => o.value === acefw.ace);
+      const c = acefwActiveCandidate.value;
       return !!(c && c.v1);
     });
     const acefwIsAce2kUnit = computed(() => {
-      const c = acefwCandidates.value.find(o => o.value === acefw.ace);
+      const c = acefwActiveCandidate.value;
       return !!(c && c.ace2k);
     });
     // The ace2k flasher takes over: 'ace2k' = an ace2k image for an ACE 2
@@ -3340,7 +3347,7 @@ createApp({
       acefw.status = null;
       if (acefwInput.value) acefwInput.value.value = "";
     }
-    watch(() => acefw.ace, () => {
+    watch(() => [acefw.ace, acefw.unitKey], () => {
       acefwProjectId.value = "";
       acefw.source = "stock";
       acefwRelease.value = "";
@@ -3371,7 +3378,6 @@ createApp({
       acefw.uploadId = body.upload_id || "";
       acefw.ace2kImage = body.ace2k_image || null;
       acefw.openRelease = body.open_release || "";
-      if (acefw.openRelease) return;
       if (acefwIsV1.value) {
         const match = acefwGen1Versions.value.find(v => v.md5 === acefw.fileMd5);
         acefw.version = match ? match.id : "";
@@ -3402,8 +3408,7 @@ createApp({
         }
         const match = acefwVersionOptions.value.find(v => v.version === body.version);
         acefw.version = match ? match.version : "";
-        acefw.patchToOpen = acefw.source === "open" && acefwCanPatch.value;
-        if (!match || (acefw.source === "open" && !acefw.patchToOpen))
+        if (!match)
           acefw.uiError = t("ui.config.acefw_unknown_image");
       } catch (e) { acefw.uiError = `${e.message || e}`; }
     }
@@ -3417,7 +3422,7 @@ createApp({
     async function _acefwPoll() {
       try {
         const r = await fetch(`${API}/acefw/status`);
-        acefw.status = await r.json();
+        if (r.ok) acefw.status = await r.json();
       } catch (e) { /* next poll */ }
       const st = acefw.status && acefw.status.state;
       if (st === "done" || st === "error" || st === "idle") {
@@ -3474,11 +3479,10 @@ createApp({
     // additionally needs the target version. Splitting the two is what
     // keeps the version field from silently disabling the dry run.
     function acefwCanTest() {
-      return acefw.ace !== "" && !!acefw.uploadId && !acefw.openRelease && !acefw.busy
+      return !!acefwActiveCandidate.value && !!acefw.uploadId && !acefw.busy
         && !acefw.inspecting && !acefwDl.busy;
     }
     function acefwReady() {
-      if (acefw.source === "open" && !acefw.patchToOpen) return false;
       if ((acefw.source === "ace2k") !== !!acefw.ace2kImage) return false;
       if (acefw.ace2kImage) {
         const img = acefw.ace2kImage;
@@ -3486,7 +3490,7 @@ createApp({
       }
       return acefwCanTest() && !!acefw.version.trim();
     }
-    function acefwTest() { _acefwStart(true); }
+    function acefwTest() { if (acefwCanTest()) _acefwStart(true); }
     // What the confirm dialog names: the entry's label, not the raw key
     // (a Gen-1 key is an image id like '1.3.871-tunnel').
     function acefwSelectedLabel() {
@@ -3514,7 +3518,7 @@ createApp({
                   {ace: dispIdx(Number(acefw.ace)),
                    version: tgt})}</div>${extra}`,
         okLabel: t("ui.config.acefw_confirm_ok"),
-        onOk: () => _acefwStart(false),
+        onOk: () => { if (acefwReady()) _acefwStart(false); },
       });
     }
     // Red, not grey: an error, or a flash whose unit came up mute.
@@ -10292,7 +10296,7 @@ createApp({
       paCalibrate, paCanCalibrate, paCalibrating, paLoading, paSpoolHead, paSpoolLoadPlan,
       paSave, paDirty, paKeyValid, paValueValid, paKeyOptions, pickerPaDialog,
       spoolCreating, spoolNewForm,
-      acefw, acefwInput, deviceRows, freeSlots, firmwareWorking, toggleDeviceFirmware, acefwPickFile, acefwUpload,
+      acefw, acefwInput, deviceRows, freeSlots, firmwareWorking, acefwActiveCandidate, toggleDeviceFirmware, acefwPickFile, acefwUpload,
       acefwDl, acefwProjects, acefwProjectId, acefwProject, acefwChooseSource, acefwDownload, acefwRelease, acefwCalibs, acefwCalibUrl,
       acefwCalibUnit, acefwCalibStamp,
       acefwCanTest, acefwReady, acefwTest, acefwFlash, acefwStatusText,

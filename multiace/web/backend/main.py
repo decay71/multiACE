@@ -4185,8 +4185,7 @@ class _Ace2kDownload(BaseModel):
     version: str
 
 
-# Published releases reviewed for download. Direct flashing stays gated
-# until the corresponding image has been validated on hardware.
+# Published release assets pinned by size and SHA-256.
 _ACEFW_OPEN_RELEASES = {
     "v1.1.61O-baseline": (
         "ACE2-Open-V1.1.61O-baseline.bin",
@@ -4591,8 +4590,6 @@ async def acefw_flash(payload: dict | None = None) -> dict:
     open, version query, firmware parse) without writing anything - the
     'Testlauf'."""
     p = payload or {}
-    if any(_acefw.get("upload_id") == release[2] for release in _ACEFW_OPEN_RELEASES.values()):
-        raise HTTPException(400, "Direct flashing of this ACE2-Open release is pending hardware validation")
     if _acefw_running():
         raise HTTPException(409, "a firmware update is already running")
     try:
