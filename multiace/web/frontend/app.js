@@ -3119,13 +3119,13 @@ createApp({
     // release/hold, both generations) + backend (flash thread); this is
     // upload, two buttons and a poll. The flash button goes through the
     // BIG RED own-risk dialog. ---
-    const acefw = reactive({ace: "", version: "", password: "",
+    const acefw = reactive({ace: "", source: "stock", version: "", password: "",
                             fileName: "", fileSize: 0, fileMd5: "", uploadId: "",
                             inspecting: false, needsPassword: false,
                             busy: false,
                             status: null, uiError: "", force: false,
                             patchToOpen: false, patchTarget: "",
-                            ace2kImage: null});
+                            ace2kImage: null, openRelease: ""});
     // The patch target the backend PRESELECTS, and the whole ladder it can
     // build. They are offered as a checkbox plus a picker on the matching
     // stock upload, instead of as direct dropdown targets: the base upload
@@ -3141,10 +3141,9 @@ createApp({
       return /^\d{4}-\d{2}-\d{2}/.test(e.tested || "")
         ? base : `${base} - ${t("ui.config.acefw_patch_untested")}`;
     }
-    // The checkbox is shown only when stock 1.1.31 is the selected target
-    // and the backend has the patch. Its base version is fixed at 1.1.31.
+    // ACE2-Open is built from the exact stock 1.1.31 image.
     const acefwCanPatch = computed(() =>
-      !!acefwPatchTarget.value && acefw.version.trim() === "1.1.31"
+      !!acefwPatchTarget.value && acefw.version === "1.1.31"
       && !acefwMode.value);
     // Tested-versions allowlist - the
     // version SELECT offers exactly these, the byte gate lives in the
@@ -3160,12 +3159,14 @@ createApp({
     // ace2k (tobecwb): released images and the shipped flasher. The image
     // is picked by the uploaded file, which carries its version.
     const acefwAce2k = ref({versions: [], flasher: null});
+    const acefwOpenReleases = ref([]);
     async function acefwLoadVersions() {
       try {
         const r = await fetch(`${API}/acefw/versions`);
         const b = await r.json().catch(() => ({}));
         acefwVersions.value = b.versions || [];
         acefwGen1Versions.value = b.gen1_versions || [];
+        acefwOpenReleases.value = b.open_releases || [];
         acefwAce2k.value = {versions: b.ace2k_versions || [],
                             flasher: b.ace2k_flasher || null};
         acefwPatchTarget.value = b.patch_target || "";
@@ -3173,30 +3174,51 @@ createApp({
         // Preselect the backend's default, but never overwrite a choice the
         // user already made in this session.
         if (!acefw.patchTarget) acefw.patchTarget = acefwPatchTarget.value;
-        if (!acefwDl.version && acefwDownloads.value.length)
-          acefwDl.version = acefwDownloads.value[0].version;
       } catch (e) { /* leave empty */ }
       acefwLoadCalibs();
     }
     // ace2k images straight from tobecwb's GitHub releases: only the
     // listed versions, the backend checks the release sha256.
-    const acefwDl = reactive({version: "", busy: false});
+    const acefwDl = reactive({busy: ""});
+    const acefwRelease = ref("");
     const acefwDownloads = computed(() =>
       (acefwAce2k.value.versions || []).filter(v => v.download));
-    async function acefwDownload() {
-      if (!acefwDl.version || acefwDl.busy || acefw.busy || acefw.inspecting) return;
-      acefwDl.busy = true;
+    const acefwProjects = computed(() => {
+      if (acefwIsV1.value) return [];
+      const projects = [];
+      if (!acefwIsAce2kUnit.value)
+        projects.push({id: "open", name: "ACE2-Open", releases: acefwOpenReleases.value});
+      projects.push({id: "ace2k", name: "ace2k", releases: acefwDownloads.value});
+      return projects;
+    });
+    const acefwProjectId = ref("");
+    const acefwProject = computed(() =>
+      acefwProjects.value.find(project => project.id === acefwProjectId.value));
+    function acefwChooseSource(projectId) {
+      if (firmwareWorking.value || acefwProjectId.value === projectId) return;
+      acefwProjectId.value = projectId;
+      acefw.source = "stock";
+      acefwRelease.value = "";
+      acefwClearFile();
+    }
+    async function acefwDownload(source, version) {
+      if (!version || acefwDl.busy || acefw.busy || acefw.inspecting) return;
+      acefw.source = source;
+      acefwRelease.value = version;
+      const endpoint = acefw.source === "open" ? "download_open" : "download_ace2k";
+      acefwDl.busy = version;
       acefwClearFile();
       try {
-        const r = await fetch(`${API}/acefw/download_ace2k`, {
+        const r = await fetch(`${API}/acefw/${endpoint}`, {
           method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({version: acefwDl.version})});
+          body: JSON.stringify({version})});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
         await _acefwStaged(body);
       } catch (e) {
+        acefwRelease.value = "";
         acefw.uiError = `${t("ui.config.acefw_dl_failed")}: ${e.message || e}`;
-      } finally { acefwDl.busy = false; }
+      } finally { acefwDl.busy = ""; }
     }
     // Factory calibrations the ace2k flasher saved (one file per flash
     // that started from the factory firmware), downloadable.
@@ -3239,7 +3261,7 @@ createApp({
         .map(a => {
           const eng = aceFlashEngine(a);
           const v1 = eng === "iap_v1";
-          return {value: a.idx, v1: v1, ace2k: eng === "ace2k",
+          return {value: a.idx, model: a.model, firmware: a.firmware !== "Unknown" ? a.firmware : "", v1: v1, ace2k: eng === "ace2k",
                   label: "MMU " + dispIdx(a.idx)
                          + " · " + t(v1 ? "ui.config.acefw_gen1"
                                         : eng === "ace2k"
@@ -3249,6 +3271,24 @@ createApp({
                             ? " · " + a.firmware : "")
                          + (a.connected ? "" : " " + t("ui.acefw.offline"))};
         }));
+    const deviceRows = computed(() => {
+      const rows = (state.devices || []).filter(dev => dev.key).map(dev => ({
+        dev, candidate: acefwCandidates.value.find(c => c.value === dev.place)
+      }));
+      // Older engines can report flashable units without a device registry.
+      for (const candidate of acefwCandidates.value) {
+        if (!rows.some(row => row.candidate === candidate))
+          rows.push({dev: null, candidate});
+      }
+      return rows;
+    });
+    const freeSlots = computed(() => (state.devices || [])
+      .filter(dev => !dev.key && dev.place != null)
+      .map(dev => "MMU " + dispIdx(dev.place)).join(", "));
+    const firmwareWorking = computed(() => acefw.inspecting || !!acefwDl.busy || acefw.busy);
+    function toggleDeviceFirmware(idx) {
+      if (!firmwareWorking.value) acefw.ace = acefw.ace === idx ? "" : idx;
+    }
     const acefwIsV1 = computed(() => {
       const c = acefwCandidates.value.find(o => o.value === acefw.ace);
       return !!(c && c.v1);
@@ -3276,6 +3316,13 @@ createApp({
           ? acefwVersions.value.filter(v => v.version ===
               ((acefwAce2k.value.flasher || {}).factory || "1.1.31"))
           : acefwVersions.value);
+    const acefwSupportedFiles = computed(() => {
+      const versions = acefwIsAce2kUnit.value
+        ? acefwVersions.value.filter(v => v.version === acefwAce2k.value.flasher?.factory)
+        : acefwVersionOptions.value;
+      return [...new Set(versions.flatMap(v => acefwIsV1.value ? [v.file] : [v.swu, v.source])
+        .filter(name => /\.(bin|swu)$/i.test(name || "")))];
+    });
     function acefwClearFile() {
       acefw.version = "";
       acefw.fileName = "";
@@ -3288,15 +3335,22 @@ createApp({
       acefw.patchTarget = acefwPatchTarget.value;
       acefw.force = false;
       acefw.ace2kImage = null;
+      acefw.openRelease = "";
       acefw.uiError = "";
       acefw.status = null;
       if (acefwInput.value) acefwInput.value.value = "";
     }
-    watch(() => acefw.ace, acefwClearFile);
+    watch(() => acefw.ace, () => {
+      acefwProjectId.value = "";
+      acefw.source = "stock";
+      acefwRelease.value = "";
+      acefwClearFile();
+    });
     function acefwPickFile() { acefwInput.value && acefwInput.value.click(); }
     async function acefwUpload(files) {
       const f = files && files[0];
       if (!f || acefw.inspecting || acefwDl.busy || acefw.busy) return;
+      acefwRelease.value = "";
       acefwClearFile();
       acefw.inspecting = true;
       const fd = new FormData();
@@ -3305,6 +3359,7 @@ createApp({
         const r = await fetch(`${API}/acefw/upload`, {method: "POST", body: fd});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+        acefw.source = body.ace2k_image ? "ace2k" : "stock";
         await _acefwStaged(body);
       } catch (e) { acefw.uiError = `Upload: ${e.message || e}`; }
       finally { acefw.inspecting = false; }
@@ -3315,10 +3370,14 @@ createApp({
       acefw.fileMd5 = body.md5 || "";
       acefw.uploadId = body.upload_id || "";
       acefw.ace2kImage = body.ace2k_image || null;
+      acefw.openRelease = body.open_release || "";
+      if (acefw.openRelease) return;
       if (acefwIsV1.value) {
         const match = acefwGen1Versions.value.find(v => v.md5 === acefw.fileMd5);
         acefw.version = match ? match.id : "";
         if (!match) acefw.uiError = t("ui.config.acefw_gen1_unknown");
+      } else if ((acefw.source === "ace2k") !== !!acefw.ace2kImage) {
+        acefw.uiError = t("ui.config.acefw_source_mismatch");
       } else if (!acefw.ace2kImage) {
         await _acefwInspect();
       }
@@ -3343,7 +3402,9 @@ createApp({
         }
         const match = acefwVersionOptions.value.find(v => v.version === body.version);
         acefw.version = match ? match.version : "";
-        if (!match) acefw.uiError = t("ui.config.acefw_unknown_image");
+        acefw.patchToOpen = acefw.source === "open" && acefwCanPatch.value;
+        if (!match || (acefw.source === "open" && !acefw.patchToOpen))
+          acefw.uiError = t("ui.config.acefw_unknown_image");
       } catch (e) { acefw.uiError = `${e.message || e}`; }
     }
     async function acefwInspectPassword() {
@@ -3413,10 +3474,12 @@ createApp({
     // additionally needs the target version. Splitting the two is what
     // keeps the version field from silently disabling the dry run.
     function acefwCanTest() {
-      return acefw.ace !== "" && !!acefw.uploadId && !acefw.busy
+      return acefw.ace !== "" && !!acefw.uploadId && !acefw.openRelease && !acefw.busy
         && !acefw.inspecting && !acefwDl.busy;
     }
     function acefwReady() {
+      if (acefw.source === "open" && !acefw.patchToOpen) return false;
+      if ((acefw.source === "ace2k") !== !!acefw.ace2kImage) return false;
       if (acefw.ace2kImage) {
         const img = acefw.ace2kImage;
         return acefwCanTest() && acefwMode.value === "ace2k" && img.known && !img.error;
@@ -10229,13 +10292,13 @@ createApp({
       paCalibrate, paCanCalibrate, paCalibrating, paLoading, paSpoolHead, paSpoolLoadPlan,
       paSave, paDirty, paKeyValid, paValueValid, paKeyOptions, pickerPaDialog,
       spoolCreating, spoolNewForm,
-      acefw, acefwInput, acefwCandidates, acefwPickFile, acefwUpload,
-      acefwDl, acefwDownloads, acefwDownload, acefwCalibs, acefwCalibUrl,
+      acefw, acefwInput, deviceRows, freeSlots, firmwareWorking, toggleDeviceFirmware, acefwPickFile, acefwUpload,
+      acefwDl, acefwProjects, acefwProjectId, acefwProject, acefwChooseSource, acefwDownload, acefwRelease, acefwCalibs, acefwCalibUrl,
       acefwCalibUnit, acefwCalibStamp,
       acefwCanTest, acefwReady, acefwTest, acefwFlash, acefwStatusText,
       acefwStatusBad,
       acefwPatchTarget, acefwPatchTargets, acefwTargetLabel, acefwCanPatch,
-      acefwSelectedLabel, acefwInspectPassword,
+      acefwSelectedLabel, acefwInspectPassword, acefwSupportedFiles,
       acefwVersions, acefwGen1Versions, acefwIsV1, acefwVersionOptions,
       acefwMode, acefwIsAce2kUnit, acefwAce2k,
       acefwAce2kTested,

@@ -4185,6 +4185,44 @@ class _Ace2kDownload(BaseModel):
     version: str
 
 
+# Published releases reviewed for download. Direct flashing stays gated
+# until the corresponding image has been validated on hardware.
+_ACEFW_OPEN_RELEASES = {
+    "v1.1.61O-baseline": (
+        "ACE2-Open-V1.1.61O-baseline.bin",
+        79660,
+        "5286e6fe40a26815a48287d90c5626c192db280501bea9ab0b862e6898eb6c93",
+    ),
+}
+
+
+@app.post("/api/acefw/download_open")
+async def acefw_download_open(req: _Ace2kDownload) -> dict:
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is running")
+    release = _ACEFW_OPEN_RELEASES.get(req.version)
+    if release is None:
+        raise HTTPException(400, "This ACE2-Open release is not offered for download")
+    filename, size, digest = release
+    url = ("https://github.com/Simon-CR/ace2-pro-firmware-research/"
+           f"releases/download/{req.version}/{filename}")
+    data = bytearray()
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    data.extend(chunk)
+                    if len(data) > size:
+                        raise HTTPException(502, "Unexpected ACE2-Open release size")
+    except httpx.HTTPError as exc:
+        _trace.warning("acefw: ACE2-Open download failed: %s", exc)
+        raise HTTPException(502, "ACE2-Open download from GitHub failed") from exc
+    if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+        raise HTTPException(502, "ACE2-Open release integrity check failed")
+    return {**_acefw_stage(filename, bytes(data)), "open_release": req.version}
+
+
 @app.post("/api/acefw/download_ace2k")
 async def acefw_download_ace2k(req: _Ace2kDownload) -> dict:
     """Fetch a listed ace2k release image from tobecwb's GitHub releases
@@ -4553,6 +4591,8 @@ async def acefw_flash(payload: dict | None = None) -> dict:
     open, version query, firmware parse) without writing anything - the
     'Testlauf'."""
     p = payload or {}
+    if any(_acefw.get("upload_id") == release[2] for release in _ACEFW_OPEN_RELEASES.values()):
+        raise HTTPException(400, "Direct flashing of this ACE2-Open release is pending hardware validation")
     if _acefw_running():
         raise HTTPException(409, "a firmware update is already running")
     try:
@@ -4737,7 +4777,7 @@ async def acefw_versions() -> dict:
     try:
         import ace2k_flasher
         out["ace2k_versions"] = [
-            {"version": v, "tested": e.get("tested", ""),
+            {"version": v, "tag": f"v{v}", "tested": e.get("tested", ""),
              "md5": e.get("md5", ""),
              "download": ace2k_flasher.downloadable(v)}
             for v, e in sorted(ace2k_flasher.KNOWN_ACE2K.items(),
@@ -4749,6 +4789,7 @@ async def acefw_versions() -> dict:
     except Exception as e:
         out["ace2k_versions"] = []
         out["ace2k_error"] = str(e)
+    out["open_releases"] = [{"version": tag, "tag": tag} for tag in _ACEFW_OPEN_RELEASES]
     return out
 
 # What this process last knew Spoolman's PA field to hold, per smid - the
