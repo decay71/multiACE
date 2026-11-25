@@ -15,9 +15,8 @@
 multiACE won Tier 1 in the Hardware Mod category of the Snapmaker Innovation Fund. Thank you to everyone who voted, tested, reported bugs, sent logs, bought a cable or a coffee, and helped other users in the forum and on GitHub. Thank you also to **Snapmaker** for the Innovation Fund and for an open printer that makes a project like this possible. This release is the first one built after the win, and a lot of it comes from you.
 
 > [!NOTE]
-> Because there were still some issues with the release, I have set 1.90 back to pre-release until they are fixed by hotfixes.
 > To get the hotfixes through the update button, add `update_prerelease: true` under `[ace]` in ace.cfg and restart Klipper.
-> Or just flash the new firmware files on my homepage https://postapocalyptic-diy.com/mult1ace-multi-ace-pro-software-for-snapmaker-u1/
+
 
 ## What makes it multiACE+
 
