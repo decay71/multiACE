@@ -2953,8 +2953,20 @@ reboot</pre>
     <section v-show="tab==='devices'" class="nt-config-tab nt-devices-tab">
       <div class="nt-devices">
         <h3>{{ t('ui.config.devices') }}</h3>
-        <section v-if="acefw.status" class="update-card" aria-labelledby="acefw-progress-title">
-          <strong id="acefw-progress-title">{{ t('ui.config.acefw_title') }} &middot; MMU {{ dispIdx(acefw.ace) }}</strong>
+        <section v-if="acefwStatusVisible && !acefwProgressRow" class="acefw-progress acefw-progress-fallback"
+                 :class="{'acefw-progress-complete': acefwStatusComplete, 'acefw-progress-error': acefwStatusBad}"
+                 aria-labelledby="acefw-progress-title">
+          <div class="acefw-progress-header">
+            <span v-if="acefwStatusComplete" class="acefw-progress-check" aria-hidden="true">&#10003;</span>
+            <strong id="acefw-progress-title">{{ acefwStatusHeading }}</strong>
+            <span v-if="!acefwProgressRow" class="small muted">MMU {{ dispIdx(acefw.ace) }}</span>
+            <span v-if="acefwStatusActive && acefwProgressPercent !== null" class="acefw-progress-percent">{{ acefwProgressPercent }}%</span>
+          </div>
+          <p v-if="acefwStatusActive && acefw.flashTarget" class="small muted acefw-progress-target">
+            {{ t('ui.config.acefw_status_target', {target: acefw.flashTarget}) }}
+          </p>
+          <progress v-if="acefwStatusActive" max="100" :value="acefwProgressPercent"
+                    aria-labelledby="acefw-progress-title"></progress>
           <p role="status" class="small" :class="acefwStatusBad ? 'acefw-err' : 'muted'">{{ acefwStatusText }}</p>
           <a v-if="acefw.status.calibration" class="small"
              :href="acefwCalibUrl(acefw.status.calibration)"
@@ -2964,22 +2976,46 @@ reboot</pre>
           <article v-for="{dev, candidate} in deviceRows" :key="dev ? dev.key : candidate.value" class="device-card">
             <div class="device-overview">
               <div class="device-identity">
-                <h4>{{ dev?.name || candidate?.model || (dev && deviceDriver(dev)) || candidate?.label }}</h4>
+                <div class="device-name-row">
+                  <h4>{{ dev?.name || candidate?.model || (dev && deviceDriver(dev)) || candidate?.label }}</h4>
+                  <button v-if="dev && !dev.present" class="small danger"
+                          :disabled="isPrinting || firmwareWorking"
+                          @click="forgetUnit(dev)">{{ t('ui.config.dev_forget') }}</button>
+                </div>
                 <small v-if="dev" class="muted">{{ dev.place == null ? t('ui.config.dev_unassigned') : 'MMU ' + dispIdx(dev.place) }}
                   <template v-if="candidate?.firmware"> &middot; {{ candidate.firmware }}</template>
                 </small>
               </div>
-              <span v-if="dev" class="device-state small" :class="{'is-connected': candidate?.connected || dev.connected}">{{ candidate?.connected ? t('ui.config.dev_connected') : deviceStatus(dev) }}</span>
+              <span v-if="dev" class="device-state small" :class="{'is-connected': dev.connected}">{{ deviceStatus(dev) }}</span>
               <div class="device-tools">
                 <button v-if="dev?.present && dev.connected && dev.place != null" class="small"
                         :disabled="isPrinting || firmwareWorking || state.units_restart_needed || state.locate_busy" @click="locateUnit(dev)">{{ t('ui.config.dev_locate') }}</button>
-                <button v-if="candidate" class="device-update"
+                <button v-if="candidate && (!dev || dev.present || acefwActiveCandidate === candidate)" class="device-update"
                         :aria-expanded="acefwActiveCandidate === candidate"
                         :disabled="firmwareWorking"
                         @click="toggleDeviceFirmware(candidate)">{{ t(acefwActiveCandidate === candidate
                           ? 'ui.config.dev_close_fw' : 'ui.config.dev_update_fw') }}</button>
               </div>
             </div>
+            <section v-if="acefwProgressRow && acefwProgressRow.dev === dev && acefwProgressRow.candidate === candidate" class="acefw-progress"
+                     :class="{'acefw-progress-complete': acefwStatusComplete, 'acefw-progress-error': acefwStatusBad}"
+                     aria-labelledby="acefw-progress-title">
+              <div class="acefw-progress-header">
+                <span v-if="acefwStatusComplete" class="acefw-progress-check" aria-hidden="true">&#10003;</span>
+                <strong id="acefw-progress-title">{{ acefwStatusHeading }}</strong>
+                <span v-if="!acefwProgressRow" class="small muted">MMU {{ dispIdx(acefw.ace) }}</span>
+                <span v-if="acefwStatusActive && acefwProgressPercent !== null" class="acefw-progress-percent">{{ acefwProgressPercent }}%</span>
+              </div>
+              <p v-if="acefwStatusActive && acefw.flashTarget" class="small muted acefw-progress-target">
+                {{ t('ui.config.acefw_status_target', {target: acefw.flashTarget}) }}
+              </p>
+              <progress v-if="acefwStatusActive" max="100" :value="acefwProgressPercent"
+                        aria-labelledby="acefw-progress-title"></progress>
+              <p role="status" class="small" :class="acefwStatusBad ? 'acefw-err' : 'muted'">{{ acefwStatusText }}</p>
+              <a v-if="acefw.status.calibration" class="small"
+                 :href="acefwCalibUrl(acefw.status.calibration)"
+                 :download="acefw.status.calibration">{{ t('ui.config.acefw_calib_get') }}</a>
+            </section>
             <details v-if="dev">
               <summary>{{ t('ui.config.dev_details') }}</summary>
               <p class="muted small">{{ t('ui.config.devices_hint') }}</p>
@@ -2998,8 +3034,6 @@ reboot</pre>
                          @input="devNameInput(dev, $event)" @change="devNameCommit(dev, $event)">
                 </label>
                 <small class="muted">{{ dev.key }}<template v-if="dev.path"> · {{ dev.path }}</template></small>
-                <button v-if="!dev.present && !candidate?.connected" class="small danger" :disabled="isPrinting || acefw.ace !== ''"
-                        @click="forgetUnit(dev)">{{ t('ui.config.dev_forget') }}</button>
               </div>
             </details>
             <div v-if="candidate && acefwActiveCandidate === candidate" class="acefw-card acefw-inline">

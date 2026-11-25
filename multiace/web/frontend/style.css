@@ -1612,7 +1612,30 @@ body.panel-embedded .sm-right { font-size: .68rem; }
 .device-card + .device-card { border-top: 1px solid var(--border); }
 .device-overview { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem 1rem; }
 .device-identity { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
-.device-identity h4 { margin: 0 0 .2rem; }
+.device-identity h4 { margin: 0; }
+.device-name-row { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem .65rem; margin-bottom: .2rem; }
+.acefw-progress {
+  --acefw-status-color: var(--accent);
+  display: grid; gap: .45rem;
+  margin: .75rem 0; padding: .7rem .9rem;
+  background: var(--card); border: 1px solid var(--border); border-radius: .6rem;
+}
+.acefw-progress-complete { --acefw-status-color: #278758; }
+.acefw-progress-error { --acefw-status-color: var(--error); }
+.acefw-progress-header { display: flex; align-items: center; gap: .45rem; }
+.acefw-progress-check { display: grid; place-items: center; flex: 0 0 1.2rem; height: 1.2rem;
+  border-radius: 50%; background: var(--acefw-status-color); color: white; font-size: .75rem; }
+.acefw-progress-percent { margin-inline-start: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+.acefw-progress progress { display: block; width: 100%; height: .45rem; border: 0;
+  border-radius: 1rem; overflow: hidden; accent-color: var(--acefw-status-color); }
+.acefw-progress progress::-webkit-progress-bar { background: var(--border); border-radius: 1rem; }
+.acefw-progress progress::-webkit-progress-value { background: var(--acefw-status-color); border-radius: 1rem; }
+.acefw-progress progress::-moz-progress-bar { background: var(--acefw-status-color); border-radius: 1rem; }
+.acefw-progress p { margin: 0; }
+.acefw-progress-target { overflow-wrap: anywhere; }
+.acefw-source-picker:disabled { opacity: .55; }
+.acefw-source-picker:disabled label { cursor: default; }
+.acefw-source-content :is(button, select):disabled { opacity: .55; cursor: default; }
 .device-state { color: var(--muted); }
 .device-state.is-connected::before { content: ""; display: inline-block; width: .5rem; height: .5rem;
   margin-right: .35rem; border-radius: 50%; background: var(--ok); }

@@ -3123,7 +3123,7 @@ createApp({
                             fileName: "", fileSize: 0, fileMd5: "", uploadId: "",
                             inspecting: false, needsPassword: false,
                             busy: false,
-                            status: null, uiError: "", force: false,
+                            status: null, flashTarget: "", uiError: "", force: false,
                             patchToOpen: false, patchTarget: "",
                             ace2kImage: null, openRelease: ""});
     // The patch target the backend PRESELECTS, and the whole ladder it can
@@ -3290,6 +3290,17 @@ createApp({
     const firmwareWorking = computed(() => acefw.inspecting || !!acefwDl.busy || acefw.busy);
     const acefwActiveCandidate = computed(() => acefwCandidates.value.find(candidate =>
       candidate.value === acefw.ace && (candidate.key || "") === acefw.unitKey));
+    const acefwStatusVisible = computed(() => !!acefw.status && acefw.status.state !== "idle");
+    const acefwProgressRow = computed(() => {
+      if (!acefwStatusVisible.value) return;
+      return deviceRows.value.find(({dev, candidate}) => acefw.unitKey
+        ? (dev?.key || candidate?.key) === acefw.unitKey
+        : candidate === acefwActiveCandidate.value && !!candidate);
+    });
+    watch([acefwStatusVisible, () => !!acefwProgressRow.value], ([visible]) => {
+      if (visible) nextTick(() => document.getElementById("acefw-progress-title")
+        ?.scrollIntoView({block: "nearest"}));
+    });
     function toggleDeviceFirmware(candidate) {
       if (firmwareWorking.value) return;
       const closing = acefwActiveCandidate.value === candidate;
@@ -3345,6 +3356,7 @@ createApp({
       acefw.openRelease = "";
       acefw.uiError = "";
       acefw.status = null;
+      acefw.flashTarget = "";
       if (acefwInput.value) acefwInput.value.value = "";
     }
     watch(() => [acefw.ace, acefw.unitKey], () => {
@@ -3434,6 +3446,9 @@ createApp({
     }
     async function _acefwStart(dry) {
       acefw.busy = true;
+      acefw.flashTarget = acefw.openRelease ? "ACE2-Open " + acefw.openRelease
+        : acefwCanPatch.value && acefw.patchToOpen ? "ACE2-Open " + (acefw.patchTarget || acefwPatchTarget.value)
+        : acefwSelectedLabel() || acefw.fileName;
       acefw.uiError = "";
       acefw.status = {state: dry ? t("ui.acefw.dry_run") : t("ui.acefw.starting"),
                       pct: null, msg: t("ui.acefw.sending")};
@@ -3530,6 +3545,24 @@ createApp({
       return !!(s.state === "done" && s.result &&
                 s.result.app_alive === false);
     });
+    const acefwStatusActive = computed(() => acefwStatusVisible.value
+      && !["done", "error"].includes(acefw.status.state));
+    const acefwStatusComplete = computed(() => {
+      const result = acefw.status?.result;
+      return acefw.status?.state === "done" && !!result
+        && !result.dry_run && !result.skipped && result.app_alive !== false
+        && (result.verified !== false || !!result.proven);
+    });
+    const acefwProgressPercent = computed(() => {
+      const percent = acefw.status?.pct;
+      return Number.isFinite(percent) ? Math.round(Math.min(100, Math.max(0, percent))) : null;
+    });
+    const acefwStatusHeading = computed(() => {
+      if (acefw.status?.state === "error") return t("ui.config.acefw_status_failed");
+      if (acefwStatusComplete.value) return t("ui.config.acefw_status_complete");
+      if (acefwStatusActive.value) return t("ui.config.acefw_status_active");
+      return t("ui.config.acefw_status_result");
+    });
     const acefwStatusText = computed(() => {
       if (acefw.uiError) return `${t("ui.common.error")}: ${acefw.uiError}`;
       const s = acefw.status;
@@ -3569,9 +3602,7 @@ createApp({
         return t("ui.config.acefw_done",
                  {v: res.new || res.target || "?"});
       }
-      const pct = (s.pct === null || s.pct === undefined)
-        ? "" : ` ${Math.round(s.pct)}%`;
-      return `${s.state}${pct} - ${s.msg || ""}`;
+      return s.msg || s.state;
     });
     async function spoolmanSync(pull, push) {
       if (spoolmanBusy.value) return;
@@ -10296,7 +10327,8 @@ createApp({
       paCalibrate, paCanCalibrate, paCalibrating, paLoading, paSpoolHead, paSpoolLoadPlan,
       paSave, paDirty, paKeyValid, paValueValid, paKeyOptions, pickerPaDialog,
       spoolCreating, spoolNewForm,
-      acefw, acefwInput, deviceRows, freeSlots, firmwareWorking, acefwActiveCandidate, toggleDeviceFirmware, acefwPickFile, acefwUpload,
+      acefw, acefwInput, deviceRows, freeSlots, firmwareWorking, acefwActiveCandidate, acefwProgressRow, acefwStatusVisible, acefwStatusActive, acefwStatusComplete,
+      acefwStatusHeading, acefwProgressPercent, toggleDeviceFirmware, acefwPickFile, acefwUpload,
       acefwDl, acefwProjects, acefwProjectId, acefwProject, acefwChooseSource, acefwDownload, acefwRelease, acefwCalibs, acefwCalibUrl,
       acefwCalibUnit, acefwCalibStamp,
       acefwCanTest, acefwReady, acefwTest, acefwFlash, acefwStatusText,
