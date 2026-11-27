@@ -31,7 +31,7 @@ multiACE was built for exactly one device, the ACE Pro, and later the ACE 2.  mu
 - **Creality CFS Nano** (opt-in). A cheap four-slot unit that connects through a USB adapter. It knows which slots hold filament, loads and unloads, and lets the filament run freely while printing. No feed assist and no tag reading.
 - **ace2k** (opt-in). [tobecwb's ace2k firmware](https://github.com/tobecwb/ace2k) turns an ACE 2 Pro into a Klipper-style controller. multiACE drives it with its own driver: feed assist that follows the extruder, tag reading when a spool is inserted, the dryer, and every lane can move on its own. That makes **background swaps in multi mode** possible for the first time: a parked head unloads and reloads while another head prints. Flash it from the Devices tab, with tobecwb's permission.
 
-## What's new in multiACE+ 1.90 
+## What's new in multiACE+ 1.91 
 
 This release would look very different without the people who joined in. **[stefanodangelo](https://github.com/stefanodangelo)** built a whole new part of the web UI, the Print Hub, almost on his own, and brought tests and CI with it. **[docx-tech](https://github.com/docx-tech)** pushed background swaps further than anyone, with ideas, code and  long test prints. **[tobecwb](https://github.com/tobecwb/ace2k)** wrote ace2k, the firmware that makes background swaps in multi mode possible, and let us ship his flasher. **[physicsG](https://github.com/physicsG)** built the Bowden path calibration, and **[Tareku99](https://github.com/Tareku99)** brought multiACE into the paxx Extended Firmware as a ready-made package, organised its macros in Fluidd and Mainsail and opened it up for generic USB adapters. Thank you, all of you. Every contribution is named below, right where it appears.
 
