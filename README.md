@@ -22,7 +22,7 @@ multiACE won Tier 1 in the Hardware Mod category of the Snapmaker Innovation Fun
 
 multiACE was built for exactly one device, the ACE Pro, and later the ACE 2. multiACE+ puts a driver layer between the engine and the hardware: every changer is a driver that tells the engine what it can do (sensors, feed assist, drying, tag reading, moving lanes on their own), and loading, unloading, swaps, recovery, the preflight and the web UI work the same on top of it.
 
-### multiACE+ plugin for OrcaSlicer [multiACE+ im Orca Hub](https://cloud.orcaslicer.com/app/plugins/plugin-hub/3a9455df-8d2c-45a1-b95b-e3fa7e2d85f8)
+### multiACE+ plugin for OrcaSlicer [multiACE+ in Orca Hub](https://cloud.orcaslicer.com/app/plugins/plugin-hub/3a9455df-8d2c-45a1-b95b-e3fa7e2d85f8)
 Send a sliced file from OrcaSlicer straight to the printer and assign it in the same window: the plugin runs the preflight itself, shows what is loaded on the printer, and offers the plans (as loaded, optimize, layer, color) in multi and head mode, either reordering the loaded spools only or using all slots with a load proposal. The preview takes the colours of the chosen spools, the plan shows its background swaps, and a weight check warns before a spool runs short. Install it from the OrcaSlicer plugin hub or from the Config tab.
 
 - **One driver per changer.** Each one can be switched on or off. Want to bring another filament changer to multiACE+? The [driver guide](multiace/docs/DRIVER_GUIDE.md) shows how, using the CFS Nano as the example. New drivers are very welcome as pull requests.
