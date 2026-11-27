@@ -31,7 +31,7 @@ def _link(answers=None, cmds=ALL, state=None, now=100.0):
     answers = dict(answers or {})
     s = types.SimpleNamespace(
         dictionary=Dict(cmds), _lp='', _dryer_minutes=0, _dryer_ack=None,
-        _dryer_ack_due=False,
+        _dryer_ack_due=False, _gain_due=None, _gain_seen=None,
         _dryer=(now, state) if state is not None else None)
     s._now = lambda: now
     s._fresh = lambda e: K.Ace2kLink._fresh(s, e)
@@ -109,6 +109,29 @@ def test_events_are_acknowledged_once():
     s._dryer_tick()
     s._dryer_tick()
     assert sent == [('ace2k_dryer_event_ack', {'seq': 4})]
+
+
+def test_heater_rate_is_asked_when_due_and_logged_on_change(caplog):
+    s, calls, _ = _link({'ace2k_dryer_gain_query': {'gain': 61, 'source': 2}})
+    s._dryer_tick()
+    assert calls == []                      # nothing due
+    s._gain_due = 50.0
+    with caplog.at_level('INFO'):
+        s._dryer_tick()
+        s._gain_due = 50.0
+        s._dryer_tick()                     # same answer: no second line
+    assert [c[0] for c in calls] == ['ace2k_dryer_gain_query'] * 2
+    lines = [r.getMessage() for r in caplog.records
+             if 'heater rate' in r.getMessage()]
+    assert lines == ['dryer heater rate: learned (gain 61)']
+    assert s._gain_due is None
+
+
+def test_heater_rate_is_silent_on_an_older_image():
+    s, calls, _ = _link()                   # no answer = no such command
+    s._gain_due = 50.0
+    s._dryer_tick()
+    assert s._gain_due is None and s._gain_seen is None
 
 
 def test_identify_blinks_and_off_needs_no_command():

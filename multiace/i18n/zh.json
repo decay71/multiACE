@@ -528,6 +528,7 @@
     "print_start_fa_enabled": "[multiACE] 打印开始: 已在 MMU {ace} Slot {slot} (喷头 {head}) 启用进料辅助",
     "ace_connected": "{{2}}MMU {ace}: 已连接到 {model} {{0}} \n 固件版本: {{3}}{firmware}{{0}}",
     "ace_error_generic": "MMU 错误: {error}",
+    "dryer_start_busy": "[multiACE] MMU {ace}: 烘干器仍在冷却 - 请稍后重新启动。",
     "fa_lost_pause": "MMU {ace} slot {slot}: feed assist stopped ({why}) while head {head} prints - paused. Check spool and path of this slot, then RESUME.",
     "fa_lost_tail_out": "MMU {ace} slot {slot}: the filament end has left the MMU (spool empty or strand broken). The rest in the tube is still printed; the print pauses when the end reaches the head",
     "fa_lost_buffer_full": "MMU {ace} 槽 {slot}：该通道的缓冲柱塞一直停在满位。已停止送料辅助，否则 MMU 会持续把耗材从打印头中拉回。请检查柱塞是否活动自如；下次装载或换头会重新启用辅助",

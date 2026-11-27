@@ -6,6 +6,14 @@ const API = BASE + "/api";
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://")
              + location.host + BASE + "/ws";
 const SCREEN = "/screen";
+// Browser storage that never throws. Embedded in another page (the
+// OrcaSlicer plugin page, a sandboxed frame) the browser can refuse
+// storage outright; the UI then runs without remembered choices.
+const safeStore = {
+  getItem(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
+  setItem(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} },
+  removeItem(k) { try { window.localStorage.removeItem(k); } catch (e) {} },
+};
 createApp({
   setup() {
     // Bowden-path calibration tab (physicsG, #168).
@@ -14,7 +22,7 @@ createApp({
     const ORCA_SECTION = true;
     const _validTabs = new Set(["dashboard", "control", "history", "queue", "favorites", "spools", "config", "devices"]);
     if (CALIBRATION_TAB) _validTabs.add("calibration");
-    const _storedTab = localStorage.getItem("multiace.tab");
+    const _storedTab = safeStore.getItem("multiace.tab");
     const _isPluginTab = (s) => typeof s === "string" && s.startsWith("plugin:");
     const tab = ref(
       (_validTabs.has(_storedTab) || _isPluginTab(_storedTab))
@@ -31,7 +39,7 @@ createApp({
       fetch(`${API}/spoolman/push`, {method: "POST"}).catch(() => {});
     }
     watch(tab, (v) => {
-      localStorage.setItem("multiace.tab", v);
+      safeStore.setItem("multiace.tab", v);
       if (v === "spools") spoolmanIdlePush();
     });
     const plugins = reactive({items: [], loaded: false});
@@ -93,7 +101,7 @@ createApp({
     ];
     const groupLast = reactive({});
     for (const g of NAV_GROUPS) {
-      try { groupLast[g.key] = localStorage.getItem("multiace.tabGroup." + g.key) || ""; }
+      try { groupLast[g.key] = safeStore.getItem("multiace.tabGroup." + g.key) || ""; }
       catch (e) { groupLast[g.key] = ""; }
     }
     const groupOf = (key) => {
@@ -106,7 +114,7 @@ createApp({
       const g = groupOf(v);
       if (!g) return;
       groupLast[g] = v;
-      try { localStorage.setItem("multiace.tabGroup." + g, v); } catch (e) {}
+      try { safeStore.setItem("multiace.tabGroup." + g, v); } catch (e) {}
     });
     const topItems = computed(() => {
       const out = [];
@@ -137,7 +145,7 @@ createApp({
       const u = (p && p.ui_url) || "/";
       return `/plugin/${p.name}${u.startsWith("/") ? u : "/" + u}`;
     }
-    const language = ref(localStorage.getItem("multiace.lang") || "en");
+    const language = ref(safeStore.getItem("multiace.lang") || "en");
     const languages = ref([{code: "en", name: "English"}]);
     const catalog = reactive({});
     const indexBase = ref(0);
@@ -223,7 +231,7 @@ createApp({
     }
     async function setLanguage(lang) {
       language.value = lang;
-      localStorage.setItem("multiace.lang", lang);
+      safeStore.setItem("multiace.lang", lang);
       await loadCatalog(lang);
       // Drive the Klipper-side _t() catalog too (pause/error messages) and
       // persist as ace__language, so display popup + Fluidd follow the UI
@@ -363,7 +371,7 @@ createApp({
     const _pageLoadMs = Date.now();
     const BROWSER_NOTIFY_KEY = "multiace.browserNotify";
     function _readBrowserNotify() {
-      try { return localStorage.getItem(BROWSER_NOTIFY_KEY) === "1"; }
+      try { return safeStore.getItem(BROWSER_NOTIFY_KEY) === "1"; }
       catch (_) { return false; }
     }
     const browserNotify = ref(_readBrowserNotify());
@@ -390,7 +398,7 @@ createApp({
         }
       }
       browserNotify.value = !!on;
-      try { localStorage.setItem(BROWSER_NOTIFY_KEY, on ? "1" : "0"); } catch (_) {}
+      try { safeStore.setItem(BROWSER_NOTIFY_KEY, on ? "1" : "0"); } catch (_) {}
     }
     function _browserNotify(n) {
       if (!browserNotify.value || !browserNotifySupported.value) return;
@@ -2076,9 +2084,14 @@ createApp({
     // under data-shade="light", and the few extra elements the new design
     // needs (spool gauges) render in both of its shades. uiTheme is the
     // LAYOUT ("new" for dark and light alike), uiThemeChoice the button.
+    // ?theme=dark|light: the page that embeds this one (the OrcaSlicer
+    // plugin window) names the shade, so both look alike. Not stored.
     const uiThemeChoice = ref((() => {
+      const forced = _q.get("theme");
+      if (forced === "dark") return "new";
+      if (forced === "light") return "light";
       try {
-        const v = localStorage.getItem("multiace.uiTheme");
+        const v = safeStore.getItem("multiace.uiTheme");
         return v === "classic" || v === "light" ? v : "new";
       } catch (e) { return "new"; }
     })());
@@ -2086,7 +2099,7 @@ createApp({
     const uiLight = computed(() => uiThemeChoice.value === "light");
     function setUiTheme(v) {
       uiThemeChoice.value = v === "classic" || v === "light" ? v : "new";
-      try { localStorage.setItem("multiace.uiTheme", uiThemeChoice.value); } catch (e) {}
+      try { safeStore.setItem("multiace.uiTheme", uiThemeChoice.value); } catch (e) {}
     }
     watch(() => uiThemeChoice.value, scheduleWiringRecompute);
     watch(uiThemeChoice, v => {
@@ -2173,6 +2186,9 @@ createApp({
         // when we ARE embedded, so treat it as such.
         document.body.classList.add("panel-embedded");
       }
+      // A page that names the shade (?theme=, the OrcaSlicer plugin
+      // window) is no Fluidd tile: a transparent page shows white there.
+      if (_q.get("theme")) document.body.classList.add("panel-opaque");
     }
     // Which unit the panel SHOWS. Never ACE_SWITCH - that changes the
     // printer's ACTIVE unit, and looking at another card must not do that.
@@ -2180,7 +2196,7 @@ createApp({
     const _panelAcePinned = ref((() => {
       const p = parseInt(_q.get("ace"), 10);
       if (!isNaN(p)) return p;                       // ?ace=2 pins it
-      const s = localStorage.getItem("multiace.panelAce");
+      const s = safeStore.getItem("multiace.panelAce");
       return s === null ? null : parseInt(s, 10);
     })());
     const panelAceIdx = computed(() => {
@@ -2227,7 +2243,7 @@ createApp({
       // Remembered per browser on purpose: which card you are looking at is
       // a VIEW preference, unlike confirm_commands (a safety setting, which
       // lives on the printer so phone and desktop cannot disagree).
-      try { localStorage.setItem("multiace.panelAce", String(id)); } catch (e) {}
+      try { safeStore.setItem("multiace.panelAce", String(id)); } catch (e) {}
     }
     // Unload is per HEAD. Multi wires slot N to head N; in head mode only
     // the ACE head unloads, and only its own slots offer it.
@@ -2651,6 +2667,7 @@ createApp({
     const smQuery = ref("");
     const smRows = ref([]);
     const smBusy = ref(false);
+    const smError = ref("");
     const smOpen = ref(false);
     let _smTimer = null;
     function smSearchDebounced() {
@@ -2666,8 +2683,10 @@ createApp({
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.detail || r.status);
         smRows.value = j.rows || [];
+        smError.value = "";
       } catch (e) {
         smRows.value = [];
+        smError.value = String(e.message || e);
         setMacroLog(`Spoolman: ${e.message || e}`);
       } finally {
         smBusy.value = false;
@@ -2968,6 +2987,7 @@ createApp({
           paDlg.value.sp = sp;
           paDlg.value.orig = {...m};
           paDlg.value.rows = Object.keys(m).sort().map(k => ({key: k, value: String(m[k])}));
+          paDlg.value.calibrated = true;
           paSeedKey();
         }
       } finally {
@@ -3119,12 +3139,13 @@ createApp({
     // release/hold, both generations) + backend (flash thread); this is
     // upload, two buttons and a poll. The flash button goes through the
     // BIG RED own-risk dialog. ---
-    const acefw = reactive({ace: "", version: "", password: "",
-                            fileName: "", fileSize: 0, fileMd5: "",
+    const acefw = reactive({ace: "", unitKey: "", source: "stock", version: "", password: "",
+                            fileName: "", fileSize: 0, fileMd5: "", uploadId: "",
+                            inspecting: false, needsPassword: false,
                             busy: false,
-                            status: null, uiError: "", force: false,
+                            status: null, flashTarget: "", uiError: "", force: false,
                             patchToOpen: false, patchTarget: "",
-                            ace2kImage: null});
+                            ace2kImage: null, openRelease: ""});
     // The patch target the backend PRESELECTS, and the whole ladder it can
     // build. They are offered as a checkbox plus a picker on the matching
     // stock upload, instead of as direct dropdown targets: the base upload
@@ -3140,10 +3161,9 @@ createApp({
       return /^\d{4}-\d{2}-\d{2}/.test(e.tested || "")
         ? base : `${base} - ${t("ui.config.acefw_patch_untested")}`;
     }
-    // The checkbox is shown only when stock 1.1.31 is the selected target
-    // and the backend has the patch. Its base version is fixed at 1.1.31.
+    // ACE2-Open is built from the exact stock 1.1.31 image.
     const acefwCanPatch = computed(() =>
-      !!acefwPatchTarget.value && acefw.version.trim() === "1.1.31"
+      !!acefwPatchTarget.value && acefw.version === "1.1.31"
       && !acefwMode.value);
     // Tested-versions allowlist - the
     // version SELECT offers exactly these, the byte gate lives in the
@@ -3159,12 +3179,14 @@ createApp({
     // ace2k (tobecwb): released images and the shipped flasher. The image
     // is picked by the uploaded file, which carries its version.
     const acefwAce2k = ref({versions: [], flasher: null});
+    const acefwOpenReleases = ref([]);
     async function acefwLoadVersions() {
       try {
         const r = await fetch(`${API}/acefw/versions`);
         const b = await r.json().catch(() => ({}));
         acefwVersions.value = b.versions || [];
         acefwGen1Versions.value = b.gen1_versions || [];
+        acefwOpenReleases.value = b.open_releases || [];
         acefwAce2k.value = {versions: b.ace2k_versions || [],
                             flasher: b.ace2k_flasher || null};
         acefwPatchTarget.value = b.patch_target || "";
@@ -3172,30 +3194,51 @@ createApp({
         // Preselect the backend's default, but never overwrite a choice the
         // user already made in this session.
         if (!acefw.patchTarget) acefw.patchTarget = acefwPatchTarget.value;
-        if (!acefwDl.version && acefwDownloads.value.length)
-          acefwDl.version = acefwDownloads.value[0].version;
       } catch (e) { /* leave empty */ }
       acefwLoadCalibs();
     }
     // ace2k images straight from tobecwb's GitHub releases: only the
     // listed versions, the backend checks the release sha256.
-    const acefwDl = reactive({version: "", busy: false});
+    const acefwDl = reactive({busy: ""});
+    const acefwRelease = ref("");
     const acefwDownloads = computed(() =>
       (acefwAce2k.value.versions || []).filter(v => v.download));
-    async function acefwDownload() {
-      if (!acefwDl.version || acefwDl.busy || acefw.busy) return;
-      acefwDl.busy = true;
-      acefw.uiError = "";
+    const acefwProjects = computed(() => {
+      if (acefwIsV1.value) return [];
+      const projects = [];
+      if (!acefwIsAce2kUnit.value)
+        projects.push({id: "open", name: "ACE2-Open", releases: acefwOpenReleases.value});
+      projects.push({id: "ace2k", name: "ace2k", releases: acefwDownloads.value});
+      return projects;
+    });
+    const acefwProjectId = ref("");
+    const acefwProject = computed(() =>
+      acefwProjects.value.find(project => project.id === acefwProjectId.value));
+    function acefwChooseSource(projectId) {
+      if (firmwareWorking.value || acefwProjectId.value === projectId) return;
+      acefwProjectId.value = projectId;
+      acefw.source = "stock";
+      acefwRelease.value = "";
+      acefwClearFile();
+    }
+    async function acefwDownload(source, version) {
+      if (!version || acefwDl.busy || acefw.busy || acefw.inspecting) return;
+      acefw.source = source;
+      acefwRelease.value = version;
+      const endpoint = acefw.source === "open" ? "download_open" : "download_ace2k";
+      acefwDl.busy = version;
+      acefwClearFile();
       try {
-        const r = await fetch(`${API}/acefw/download_ace2k`, {
+        const r = await fetch(`${API}/acefw/${endpoint}`, {
           method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({version: acefwDl.version})});
+          body: JSON.stringify({version})});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
-        _acefwStaged(body);
+        await _acefwStaged(body);
       } catch (e) {
+        acefwRelease.value = "";
         acefw.uiError = `${t("ui.config.acefw_dl_failed")}: ${e.message || e}`;
-      } finally { acefwDl.busy = false; }
+      } finally { acefwDl.busy = ""; }
     }
     // Factory calibrations the ace2k flasher saved (one file per flash
     // that started from the factory firmware), downloadable.
@@ -3238,7 +3281,7 @@ createApp({
         .map(a => {
           const eng = aceFlashEngine(a);
           const v1 = eng === "iap_v1";
-          return {value: a.idx, v1: v1, ace2k: eng === "ace2k",
+          return {value: a.idx, key: a.unit_key, connected: a.connected, model: a.model, firmware: a.firmware !== "Unknown" ? a.firmware : "", v1: v1, ace2k: eng === "ace2k",
                   label: "MMU " + dispIdx(a.idx)
                          + " · " + t(v1 ? "ui.config.acefw_gen1"
                                         : eng === "ace2k"
@@ -3248,12 +3291,48 @@ createApp({
                             ? " · " + a.firmware : "")
                          + (a.connected ? "" : " " + t("ui.acefw.offline"))};
         }));
+    const deviceRows = computed(() => {
+      const rows = (state.devices || []).filter(dev => dev.key).map(dev => ({
+        dev, candidate: acefwCandidates.value.find(c =>
+          c.key ? c.key === dev.key : !state.units_restart_needed && c.value === dev.place)
+      }));
+      // Older engines can report flashable units without a device registry.
+      for (const candidate of acefwCandidates.value) {
+        if (!rows.some(row => row.candidate === candidate))
+          rows.push({dev: null, candidate});
+      }
+      return rows;
+    });
+    const freeSlots = computed(() => (state.devices || [])
+      .filter(dev => !dev.key && dev.place != null
+        && !state.aces.some(ace => ace.idx === dev.place))
+      .map(dev => "MMU " + dispIdx(dev.place)).join(", "));
+    const firmwareWorking = computed(() => acefw.inspecting || !!acefwDl.busy || acefw.busy);
+    const acefwActiveCandidate = computed(() => acefwCandidates.value.find(candidate =>
+      candidate.value === acefw.ace && (candidate.key || "") === acefw.unitKey));
+    const acefwStatusVisible = computed(() => !!acefw.status && acefw.status.state !== "idle");
+    const acefwProgressRow = computed(() => {
+      if (!acefwStatusVisible.value) return;
+      return deviceRows.value.find(({dev, candidate}) => acefw.unitKey
+        ? (dev?.key || candidate?.key) === acefw.unitKey
+        : candidate === acefwActiveCandidate.value && !!candidate);
+    });
+    watch([acefwStatusVisible, () => !!acefwProgressRow.value], ([visible]) => {
+      if (visible) nextTick(() => document.getElementById("acefw-progress-title")
+        ?.scrollIntoView({block: "nearest"}));
+    });
+    function toggleDeviceFirmware(candidate) {
+      if (firmwareWorking.value) return;
+      const closing = acefwActiveCandidate.value === candidate;
+      acefw.ace = closing ? "" : candidate.value;
+      acefw.unitKey = closing ? "" : candidate.key || "";
+    }
     const acefwIsV1 = computed(() => {
-      const c = acefwCandidates.value.find(o => o.value === acefw.ace);
+      const c = acefwActiveCandidate.value;
       return !!(c && c.v1);
     });
     const acefwIsAce2kUnit = computed(() => {
-      const c = acefwCandidates.value.find(o => o.value === acefw.ace);
+      const c = acefwActiveCandidate.value;
       return !!(c && c.ace2k);
     });
     // The ace2k flasher takes over: 'ace2k' = an ace2k image for an ACE 2
@@ -3269,70 +3348,113 @@ createApp({
       const img = acefw.ace2kImage;
       return !!(img && /^\d{4}-\d{2}-\d{2}/.test(img.tested || ""));
     });
-    // The version dropdown is an allowlist switchboard: Gen-2 entries are
-    // version keys, Gen-1 entries are image ids (the same 1.3.863 can be
-    // two different images). Options carry an `id` in both lists.
     const acefwVersionOptions = computed(() =>
       acefwIsV1.value ? acefwGen1Versions.value
         : acefwMode.value === "ace2k_back"
           ? acefwVersions.value.filter(v => v.version ===
               ((acefwAce2k.value.flasher || {}).factory || "1.1.31"))
           : acefwVersions.value);
-    // Switching the selected ACE switches allowlists - drop a pick the new
-    // list does not know (a Gen-2 version is not a Gen-1 image id).
-    watch(() => acefw.ace, () => {
-      if (!acefwVersionOptions.value.some(
-            v => (v.id || v.version) === acefw.version))
-        acefw.version = "";
-      acefwPreselect();
+    const acefwSupportedFiles = computed(() => {
+      const versions = acefwIsAce2kUnit.value
+        ? acefwVersions.value.filter(v => v.version === acefwAce2k.value.flasher?.factory)
+        : acefwVersionOptions.value;
+      return [...new Set(versions.flatMap(v => acefwIsV1.value ? [v.file] : [v.swu, v.source])
+        .filter(name => /\.(bin|swu)$/i.test(name || "")))];
+    });
+    function acefwClearFile() {
+      acefw.version = "";
+      acefw.fileName = "";
+      acefw.fileSize = 0;
+      acefw.fileMd5 = "";
+      acefw.uploadId = "";
+      acefw.password = "";
+      acefw.needsPassword = false;
+      acefw.patchToOpen = false;
+      acefw.patchTarget = acefwPatchTarget.value;
+      acefw.force = false;
+      acefw.ace2kImage = null;
+      acefw.openRelease = "";
+      acefw.uiError = "";
+      acefw.status = null;
+      acefw.flashTarget = "";
+      if (acefwInput.value) acefwInput.value.value = "";
+    }
+    watch(() => [acefw.ace, acefw.unitKey], () => {
+      acefwProjectId.value = "";
+      acefw.source = "stock";
+      acefwRelease.value = "";
+      acefwClearFile();
     });
     function acefwPickFile() { acefwInput.value && acefwInput.value.click(); }
     async function acefwUpload(files) {
       const f = files && files[0];
-      if (!f) return;
+      if (!f || acefw.inspecting || acefwDl.busy || acefw.busy) return;
+      acefwRelease.value = "";
+      acefwClearFile();
+      acefw.inspecting = true;
       const fd = new FormData();
       fd.append("file", f);
       try {
         const r = await fetch(`${API}/acefw/upload`, {method: "POST", body: fd});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
-        _acefwStaged(body);
+        acefw.source = body.ace2k_image ? "ace2k" : "stock";
+        await _acefwStaged(body);
       } catch (e) { acefw.uiError = `Upload: ${e.message || e}`; }
+      finally { acefw.inspecting = false; }
     }
-    // A staged file (upload or download) as the card shows it.
-    function _acefwStaged(body) {
+    async function _acefwStaged(body) {
       acefw.fileName = body.name;
       acefw.fileSize = body.size;
       acefw.fileMd5 = body.md5 || "";
-      acefw.versionGuess = body.version_guess || "";
+      acefw.uploadId = body.upload_id || "";
       acefw.ace2kImage = body.ace2k_image || null;
-      acefw.uiError = "";
-      acefwPreselect();
-    }
-    // Gen 1: the image is identified by its md5 (names lie - the tunnel
-    // build is called ACE_V1.3.863_*), so an md5 match always sets the
-    // entry and no match clears it. Gen 2: guess from the file name, only
-    // when it is a tested, unambiguous version and nothing is picked yet.
-    const acefwGen1Match = computed(() => !acefw.fileMd5 ? null :
-      acefwGen1Versions.value.find(v => v.md5 === acefw.fileMd5) || null);
-    const acefwGen1Unknown = computed(() =>
-      acefwIsV1.value && !!acefw.fileMd5 && !acefwGen1Match.value);
-    function acefwPreselect() {
+      acefw.openRelease = body.open_release || "";
       if (acefwIsV1.value) {
-        if (!acefw.fileMd5) return;
-        acefw.version = acefwGen1Match.value ? acefwGen1Match.value.id : "";
-        return;
+        const match = acefwGen1Versions.value.find(v => v.md5 === acefw.fileMd5);
+        acefw.version = match ? match.id : "";
+        if (!match) acefw.uiError = t("ui.config.acefw_gen1_unknown");
+      } else if ((acefw.source === "ace2k") !== !!acefw.ace2kImage) {
+        acefw.uiError = t("ui.config.acefw_source_mismatch");
+      } else if (!acefw.ace2kImage) {
+        await _acefwInspect();
       }
-      const matches = acefwVersionOptions.value.filter(
-        v => v.version === acefw.versionGuess);
-      if (!acefw.version.trim() && matches.length === 1)
-        acefw.version = matches[0].id || matches[0].version;
+    }
+    async function _acefwInspect() {
+      acefw.version = "";
+      acefw.force = false;
+      acefw.patchToOpen = false;
+      acefw.uiError = "";
+      try {
+        const r = await fetch(`${API}/acefw/inspect`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({upload_id: acefw.uploadId, md5: acefw.fileMd5,
+                                password: acefw.password || null}),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+        acefw.needsPassword = !!body.password_required;
+        if (acefw.needsPassword) {
+          if (acefw.password) acefw.uiError = body.error || "";
+          return;
+        }
+        const match = acefwVersionOptions.value.find(v => v.version === body.version);
+        acefw.version = match ? match.version : "";
+        if (!match)
+          acefw.uiError = t("ui.config.acefw_unknown_image");
+      } catch (e) { acefw.uiError = `${e.message || e}`; }
+    }
+    async function acefwInspectPassword() {
+      if (acefw.inspecting || acefw.busy || !acefw.password) return;
+      acefw.inspecting = true;
+      try { await _acefwInspect(); }
+      finally { acefw.inspecting = false; }
     }
     let _acefwTimer = null;
     async function _acefwPoll() {
       try {
         const r = await fetch(`${API}/acefw/status`);
-        acefw.status = await r.json();
+        if (r.ok) acefw.status = await r.json();
       } catch (e) { /* next poll */ }
       const st = acefw.status && acefw.status.state;
       if (st === "done" || st === "error" || st === "idle") {
@@ -3344,6 +3466,9 @@ createApp({
     }
     async function _acefwStart(dry) {
       acefw.busy = true;
+      acefw.flashTarget = acefw.openRelease ? "ACE2-Open " + acefw.openRelease
+        : acefwCanPatch.value && acefw.patchToOpen ? "ACE2-Open " + (acefw.patchTarget || acefwPatchTarget.value)
+        : acefwSelectedLabel() || acefw.fileName;
       acefw.uiError = "";
       acefw.status = {state: dry ? t("ui.acefw.dry_run") : t("ui.acefw.starting"),
                       pct: null, msg: t("ui.acefw.sending")};
@@ -3352,6 +3477,7 @@ createApp({
           method: "POST", headers: {"Content-Type": "application/json"},
           body: JSON.stringify({ace: Number(acefw.ace),
                                 version: acefw.version.trim(),
+                                upload_id: acefw.uploadId,
                                 password: acefw.password || null,
                                 dry_run: !!dry,
                                 // Force skips only the "already on this
@@ -3388,16 +3514,18 @@ createApp({
     // additionally needs the target version. Splitting the two is what
     // keeps the version field from silently disabling the dry run.
     function acefwCanTest() {
-      return acefw.ace !== "" && !!acefw.fileName && !acefw.busy;
+      return !!acefwActiveCandidate.value && !!acefw.uploadId && !acefw.busy
+        && !acefw.inspecting && !acefwDl.busy;
     }
     function acefwReady() {
-      if (acefwMode.value === "ace2k") {
+      if ((acefw.source === "ace2k") !== !!acefw.ace2kImage) return false;
+      if (acefw.ace2kImage) {
         const img = acefw.ace2kImage;
-        return acefwCanTest() && !!img && img.known && !img.error;
+        return acefwCanTest() && acefwMode.value === "ace2k" && img.known && !img.error;
       }
       return acefwCanTest() && !!acefw.version.trim();
     }
-    function acefwTest() { _acefwStart(true); }
+    function acefwTest() { if (acefwCanTest()) _acefwStart(true); }
     // What the confirm dialog names: the entry's label, not the raw key
     // (a Gen-1 key is an image id like '1.3.871-tunnel').
     function acefwSelectedLabel() {
@@ -3408,12 +3536,12 @@ createApp({
       return (v && (v.label || v.version)) || acefw.version.trim();
     }
     function acefwFlash() {
+      if (!acefwReady()) return;
       const patching = acefwCanPatch.value && !!acefw.patchToOpen;
       const tgt = patching
         ? (acefw.patchTarget || acefwPatchTarget.value)
         : acefwSelectedLabel();
-      // Patching adds a SECOND warning: it flashes a community-modified,
-      // NOT byte-tested image.
+      // Name the community firmware before confirming the write.
       const extra = (patching
         ? `<div class="acefw-danger">${tHtml("ui.config.acefw_patch_warn",
             {target: tgt})}</div>` : "")
@@ -3425,7 +3553,7 @@ createApp({
                   {ace: dispIdx(Number(acefw.ace)),
                    version: tgt})}</div>${extra}`,
         okLabel: t("ui.config.acefw_confirm_ok"),
-        onOk: () => _acefwStart(false),
+        onOk: () => { if (acefwReady()) _acefwStart(false); },
       });
     }
     // Red, not grey: an error, or a flash whose unit came up mute.
@@ -3436,6 +3564,24 @@ createApp({
       if (s.state === "error") return true;
       return !!(s.state === "done" && s.result &&
                 s.result.app_alive === false);
+    });
+    const acefwStatusActive = computed(() => acefwStatusVisible.value
+      && !["done", "error"].includes(acefw.status.state));
+    const acefwStatusComplete = computed(() => {
+      const result = acefw.status?.result;
+      return acefw.status?.state === "done" && !!result
+        && !result.dry_run && !result.skipped && result.app_alive !== false
+        && (result.verified !== false || !!result.proven);
+    });
+    const acefwProgressPercent = computed(() => {
+      const percent = acefw.status?.pct;
+      return Number.isFinite(percent) ? Math.round(Math.min(100, Math.max(0, percent))) : null;
+    });
+    const acefwStatusHeading = computed(() => {
+      if (acefw.status?.state === "error") return t("ui.config.acefw_status_failed");
+      if (acefwStatusComplete.value) return t("ui.config.acefw_status_complete");
+      if (acefwStatusActive.value) return t("ui.config.acefw_status_active");
+      return t("ui.config.acefw_status_result");
     });
     const acefwStatusText = computed(() => {
       if (acefw.uiError) return `${t("ui.common.error")}: ${acefw.uiError}`;
@@ -3476,9 +3622,7 @@ createApp({
         return t("ui.config.acefw_done",
                  {v: res.new || res.target || "?"});
       }
-      const pct = (s.pct === null || s.pct === undefined)
-        ? "" : ` ${Math.round(s.pct)}%`;
-      return `${s.state}${pct} - ${s.msg || ""}`;
+      return s.msg || s.state;
     });
     async function spoolmanSync(pull, push) {
       if (spoolmanBusy.value) return;
@@ -4492,6 +4636,9 @@ createApp({
     function orcaProfile() {
       window.open(`${API}/orca/profile`, "_blank");
     }
+    function orcaPlugin() {
+      window.open(`${API}/orca/plugin`, "_blank");
+    }
     // Virtual tools 4.. with their current ACE/slot target (tool_map entry
     // or the formula), for the Config-tab list. Display numbers 1-based.
     function virtualTools() {
@@ -5433,8 +5580,13 @@ createApp({
     // for the programmatic paths (spool adopt, tag adopt).
     let _pickerTouched = false;
     function pickerTouch() { _pickerTouched = true; }
+    // Slot opened without an identity of its own (no tag, no override, no
+    // bound spool): the picker shows defaults, so Save writes what is shown.
+    // The native colour wheel fires no input event when white is picked on a
+    // field that already shows white, so the touch flag alone missed that.
+    let _pickerUnset = false;
     function _pickerIdentityChanged() {
-      if (_pickerTouched) return true;
+      if (_pickerTouched || _pickerUnset) return true;
       const norm = (v) => String(v || "").trim().toLowerCase();
       return (norm(picker.material) !== norm(_pickerOrig.material)
               || norm(picker.subtype) !== norm(_pickerOrig.subtype)
@@ -5460,6 +5612,8 @@ createApp({
       // Which spool of the table sits in this slot ("" = none). Applied
       // together with the identity in savePicker.
       picker.spool = spoolIdForSlot(ace.idx, slot.idx) || "";
+      _pickerUnset = !picker.spool
+        && slot.source !== "rfid" && slot.source !== "override";
       picker.weight = _spoolWeightField((state.spools || {})[picker.spool]);
       picker.show = true;
       // Let the watchers' snap run again only after this open settles.
@@ -5487,6 +5641,7 @@ createApp({
       _pickerTouched = false;
       // Head binding ('h<n>') - the same init the slot picker does, so the
       // weight field and the generic picker.spool watcher work unchanged.
+      _pickerUnset = false;
       picker.spool = (state.spool_binding || {})[`h${th.idx}`] || "";
       picker.weight = _spoolWeightField((state.spools || {})[picker.spool]);
       picker.show = true;
@@ -6882,8 +7037,26 @@ createApp({
     let frameCount = 0;
     let lastFpsTs = performance.now();
     let pollScreenBusy = false;
+    // Camera tiles that show the printer's screen (a Moonraker camera
+    // pointing at /screen/): drawn here from the same snapshots as the
+    // pop-out instead of embedding the firmware's own page, which needs
+    // browser storage and stays dark where a host refuses it to frames.
+    const _screenTiles = {};
+    const screenTileCount = ref(0);
+    function setScreenTile(slot, el) {
+      if (el) { _screenTiles[slot] = el; screenEtag.value = ""; }
+      else delete _screenTiles[slot];
+      screenTileCount.value = Object.keys(_screenTiles).length;
+    }
+    function isScreenUrl(url) {
+      try {
+        const u = new URL(url, location.href);
+        return u.host === location.host && /^\/screen\/?$/.test(u.pathname);
+      } catch (_) { return false; }
+    }
     function _liveScreenCanvases() {
-      return [screenCanvas.value, floatScreenCanvas.value].filter(Boolean);
+      return [screenCanvas.value, floatScreenCanvas.value,
+              ...Object.values(_screenTiles)].filter(Boolean);
     }
     async function pollScreen() {
       if (pollScreenBusy) return;
@@ -6941,10 +7114,11 @@ createApp({
     }
     function toggleScreenPopout() {
       screenPopout.value = !screenPopout.value;
+      screenEtag.value = "";      // a fresh canvas needs a full frame
     }
     const popoutPos = reactive({
-      x: parseFloat(localStorage.getItem("multiace.popout.x")) || null,
-      y: parseFloat(localStorage.getItem("multiace.popout.y")) || null,
+      x: parseFloat(safeStore.getItem("multiace.popout.x")) || null,
+      y: parseFloat(safeStore.getItem("multiace.popout.y")) || null,
     });
     const popoutStyle = computed(() => {
       if (popoutPos.x == null || popoutPos.y == null) return {};
@@ -6982,8 +7156,8 @@ createApp({
       if (!_popoutDrag) return;
       _popoutDrag = null;
       ev.currentTarget?.releasePointerCapture?.(ev.pointerId);
-      if (popoutPos.x != null) localStorage.setItem("multiace.popout.x", String(popoutPos.x));
-      if (popoutPos.y != null) localStorage.setItem("multiace.popout.y", String(popoutPos.y));
+      if (popoutPos.x != null) safeStore.setItem("multiace.popout.x", String(popoutPos.x));
+      if (popoutPos.y != null) safeStore.setItem("multiace.popout.y", String(popoutPos.y));
     }
     let ws = null;
     let wsReconnectTimer = null;
@@ -7009,10 +7183,11 @@ createApp({
     let screenTimer = null;
     function _updateScreenTimer() {
       clearInterval(screenTimer);
-      const wantPoll = screenAvailable.value && screenPopout.value;
+      const wantPoll = (screenAvailable.value && screenPopout.value)
+                       || screenTileCount.value > 0;
       if (wantPoll) screenTimer = setInterval(pollScreen, 200);
     }
-    watch([screenPopout, screenAvailable], _updateScreenTimer, {immediate: true});
+    watch([screenPopout, screenAvailable, screenTileCount], _updateScreenTimer, {immediate: true});
     const uploading = ref(false);
     const uploadInput = ref(null);
     const preflight = reactive({
@@ -7635,7 +7810,9 @@ createApp({
         const tg = _headTargetById(assignment[tt]);
         if (!tg || tg.kind !== "ace") continue;
         const key = tg.ace + "-" + tg.slot;
-        if (cur[tg.head] !== key) { swaps++; cur[tg.head] = key; }
+        // the first load of a head is not a swap (the auto-load block)
+        if (!(tg.head in cur)) cur[tg.head] = key;
+        else if (cur[tg.head] !== key) { swaps++; cur[tg.head] = key; }
       }
       return swaps;
     }
@@ -7737,7 +7914,7 @@ createApp({
             if (bestKey === null || _keyLess(key, bestKey)) { bestKey = key; chosen = e; }
           });
           if (!chosen) { plan.push(null); return; }
-          swaps++;
+          if (cur[chosen.head]) swaps++;
           swapsBy[chosen.head] = (swapsBy[chosen.head] || 0) + 1;
           cur[chosen.head] = {key: chosen.ace + "-" + chosen.slot, tool: tt};
         }
@@ -7857,9 +8034,49 @@ createApp({
       }
       return out;
     }
+    // Scope of the optimize / layer / colour plans: "reorder" plans on the
+    // loaded spools, "all" proposes a loadout over every slot. Kept per
+    // browser; a report from an older backend has only "all".
+    const PF_SCOPE_KEY = "multiace.pfScope";
+    function _loadPfScope() {
+      try {
+        return localStorage.getItem(PF_SCOPE_KEY) === "all" ? "all" : "reorder";
+      } catch (_) { return "reorder"; }
+    }
+    const pfScope = ref(_loadPfScope());
+    function pfScopeAvailable() {
+      const r = preflight.report;
+      return !!(r && r.head_mode && r.plans && r.plans_reorder);
+    }
+    function pfScopeActive() {
+      return pfScopeAvailable() ? pfScope.value : "all";
+    }
+    function applyPfScope() {
+      const r = preflight.report;
+      if (!pfScopeAvailable()) return;
+      if (!r.plans_all) {
+        r.plans_all = {};
+        for (const k of ["optimize", "layer", "color"]) {
+          if (r.plans[k]) r.plans_all[k] = r.plans[k];
+        }
+      }
+      const set = pfScope.value === "reorder" ? r.plans_reorder : r.plans_all;
+      for (const k of ["optimize", "layer", "color"]) {
+        if (set[k]) r.plans[k] = set[k];
+      }
+    }
+    function setPfScope(v) {
+      pfScope.value = v === "all" ? "all" : "reorder";
+      try { localStorage.setItem(PF_SCOPE_KEY, pfScope.value); } catch (_) {}
+      applyPfScope();
+      pfPlanSel.value = null;
+      recalcCopies();
+    }
     function planProposalCopies(hp) {
       // Copies for a PROPOSED loadout: every slot of an ACE head the
       // proposal leaves free is a candidate (mirror of proposal_copies).
+      // A reorder plan stays on the loaded spools and plans none.
+      if (pfScopeActive() === "reorder") return null;
       const plan = preflight.report && preflight.report.plans && preflight.report.plans[hp];
       if (!plan || !plan.feasible || !plan.mapping) return null;
       const events = (preflight.report && preflight.report.events) || [];
@@ -8326,6 +8543,7 @@ createApp({
             stage:   String(msg.stage || ""), running: true};
         });
         preflight.report = Object.assign({local: true}, j.report || {});
+        applyPfScope();
         pfPlanSel.value = null;
         preflight.slicerOverrides = {};
         preflight.slicerSwaps = null;
@@ -8363,6 +8581,7 @@ createApp({
           throw new Error(msg);
         }
         preflight.report = await r.json();
+        applyPfScope();
         pfPlanSel.value = null;
         preflight.slicerOverrides = {};
         preflight.slicerSwaps = null;
@@ -8874,6 +9093,7 @@ createApp({
         } else if (mode === "head") {
           const hp = headPlan || "loadout";
           payload.headPlan = hp;
+          payload.headScope = pfScopeActive();
           if (hp === "loadout") {
             const asn = {};
             const eff = _headEffectiveAssignment();
@@ -9001,6 +9221,7 @@ createApp({
         } else if (mode === "head") {
           const hp = headPlan || "loadout";
           body.head_plan = hp;
+          body.head_scope = pfScopeActive();
           if (hp === "loadout") {
             // Send the (possibly user-edited) colour->target assignment verbatim
             // so the print matches the preview exactly. Keys are slicer-T strings.
@@ -9184,10 +9405,10 @@ createApp({
     const CAM_KEY = (slot) => `multiace.cam.${slot}`;
     const CAM2_KEY = "multiace.cam2";
     function camStored(key) {
-      try { return localStorage.getItem(key) || ""; } catch (_) { return ""; }
+      try { return safeStore.getItem(key) || ""; } catch (_) { return ""; }
     }
     function camStore(key, val) {
-      try { if (val) localStorage.setItem(key, val); else localStorage.removeItem(key); }
+      try { if (val) safeStore.setItem(key, val); else safeStore.removeItem(key); }
       catch (_) {}
     }
     const camSecond = ref(camStored(CAM2_KEY) === "1");
@@ -9205,7 +9426,7 @@ createApp({
       const st = reactive({
         slot, loaded: false, available: false, reason: "", name: "",
         kind: "mjpeg", webrtc: false, proxy: "", signal: "", iframe: "",
-        aspect: "16 / 9", connFailed: false,
+        aspect: "16 / 9", connFailed: false, screen: false,
         // The camera this tile asked for ("" = backend default).
         want: camStored(CAM_KEY(slot)),
         // Cache-buster: an MJPEG <img> that was torn down keeps its old
@@ -9323,6 +9544,7 @@ createApp({
           st.proxy = j.proxy_path || "";
           st.signal = j.signal_path || "";
           st.iframe = j.iframe_url || "";
+          st.screen = st.kind === "iframe" && isScreenUrl(st.iframe);
           st.available = !!(j.available && (st.proxy || st.signal || st.iframe));
           st.reason = j.reason || "";
           st.name = j.name || "";
@@ -9610,11 +9832,11 @@ createApp({
     // Console, read only. Polled incrementally while the tab is open.
     const CONSOLE_MAX = 400;
     const consoleLines = ref([]);
-    const consoleFollow = ref(localStorage.getItem("multiace.console.follow") !== "0");
+    const consoleFollow = ref(safeStore.getItem("multiace.console.follow") !== "0");
     const consoleEl = ref(null);
     let lastConsoleId = 0;
     watch(consoleFollow,
-          v => localStorage.setItem("multiace.console.follow", v ? "1" : "0"));
+          v => safeStore.setItem("multiace.console.follow", v ? "1" : "0"));
     async function loadConsole() {
       try {
         const r = await fetch(`${API}/console-logs?lines=200&since_id=${lastConsoleId}`);
@@ -9676,7 +9898,7 @@ createApp({
       // No explicit browser choice yet -> follow the printer's persisted
       // language (ace__language), so a fresh browser opens in the same
       // language as the printer instead of defaulting to English.
-      if (!localStorage.getItem("multiace.lang")) {
+      if (!safeStore.getItem("multiace.lang")) {
         try {
           const r = await fetch(`${API}/state`);
           if (r.ok) {
@@ -10201,9 +10423,9 @@ createApp({
       panelSlotHeadLoaded, panelSlotActive, panelSlotLabel, panelSlotOp,
       panelMini, fullUiHref, uiTheme, uiThemeChoice, uiLight, setUiTheme, spoolPct, gaugeColor, thSettingsOpen, slotGaugePct, slotGaugeLabel, headGaugePct, headGaugeText,
       slotTitle, switchAce, loadSlot, slotIsEmpty, aceFlashEngine, aceHasDryer, aceHasDecoder, loadFeederHead, slotLoadedInHead, loadAll, unloadHead, unloadAll, cancelUnloadAll, anyUnloading, setHeadManual, setHeadFeeder, setHeadAce, headToggle, headSelect, aceOptionsForHead, headAceOf, aceProtoTitle, unitDriverLabel, assignUnit, forgetUnit, renameUnit, locateUnit, devNameValue, devNameInput, devNameCommit, deviceStatus, deviceDriver, driverOnlyActive, driverToggle, driverNote, driversRestartNeeded, perAceCount, aceCfwTitle, visibleAces, unwiredAces, gridAces, openHeadPicker, isToolheadOccupied, slotHeadHasNoAce, needsReload, toolheadOps, bgEnabledFor, multiBgPossible, setBgHead, bgMode, setBgMode, setPickupCleaning, setConfirmCommands, setRememberFilament, setPaSync, setAutoDry, autoDryValue, autoDryInput, autoDryCommit, autoDryPairInvalid, autoDryFieldError, autoDryEnable, autoDrySetMaster, autoDryMasters, spoolmanUrl, spoolmanBusy, spoolmanStatusText, saveSpoolmanUrl, setSpoolmanAuto, spoolmanSync,
-      spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smBusy, smOpen, smSearchDebounced, smAdopt,
+      spoolmanConnected, spoolmanUrlSet, setSpoolMode, smQuery, smRows, smError, smBusy, smOpen, smSearchDebounced, smAdopt,
       smPing, smPingInfo, spoolmanPing, spoolQuery, smPick, smPickTarget, smAdoptStaged,
-      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, resetPurgeCustom, purgeResetBusy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
+      spoolBadgeCls, spoolBadgeLabel, headTileEmpty, orcaProfile, orcaPlugin, virtualTools, virtualToolGroups, toolTargetOptions, setToolMapTarget, colorName, setToolMap, resetToolMap, setAirprintDetection, setQuadReplenish, setQuadFirst, setPurgeMatrix, setPurgePolicy, resetPurgeCustom, purgeResetBusy, purgePolicyValue, purgePolicyInput, FILAMENT_SWATCHES, knownColors, knownColorChips, pickerHexInput, pickerGaugePct, pickerSubline, sameSwatch, pickerTouch, pickerRfidSku, pickerTagFormat, pickerCodeKind, pickerUidExtra, tagFormatLabel, pickerHeadTag, pickerHeadKind, spoolDdOpen, spoolDdPick, spoolDdCurrent, headRfidBusy, headRfidNote, readHeadRfid,
       addFluiddCamera, fluiddCamBusy, fluiddCamMsg,
       spoolForm, spoolImportMode, spoolFileInput,
       spoolMaterials, spoolVendors, spoolSubtypes,
@@ -10219,14 +10441,16 @@ createApp({
       paCalibrate, paCanCalibrate, paCalibrating, paLoading, paSpoolHead, paSpoolLoadPlan,
       paSave, paDirty, paKeyValid, paValueValid, paKeyOptions, pickerPaDialog,
       spoolCreating, spoolNewForm,
-      acefw, acefwInput, acefwCandidates, acefwPickFile, acefwUpload,
-      acefwDl, acefwDownloads, acefwDownload, acefwCalibs, acefwCalibUrl,
+      acefw, acefwInput, deviceRows, freeSlots, firmwareWorking, acefwActiveCandidate, acefwProgressRow, acefwStatusVisible, acefwStatusActive, acefwStatusComplete,
+      acefwStatusHeading, acefwProgressPercent, toggleDeviceFirmware, acefwPickFile, acefwUpload,
+      acefwDl, acefwProjects, acefwProjectId, acefwProject, acefwChooseSource, acefwDownload, acefwRelease, acefwCalibs, acefwCalibUrl,
       acefwCalibUnit, acefwCalibStamp,
       acefwCanTest, acefwReady, acefwTest, acefwFlash, acefwStatusText,
       acefwStatusBad,
       acefwPatchTarget, acefwPatchTargets, acefwTargetLabel, acefwCanPatch,
+      acefwSelectedLabel, acefwInspectPassword, acefwSupportedFiles,
       acefwVersions, acefwGen1Versions, acefwIsV1, acefwVersionOptions,
-      acefwGen1Unknown, acefwMode, acefwIsAce2kUnit, acefwAce2k,
+      acefwMode, acefwIsAce2kUnit, acefwAce2k,
       acefwAce2kTested,
       spoolCreateFromPicker,
       spoolExport, spoolImport, triggerSpoolImport,
@@ -10257,6 +10481,7 @@ createApp({
       headMaxCopies, headCopiesEffective, headCopyPlan, headCopyList, copySlotLabel, setPreflightCopies,
       headCopiesStrict, setPreflightCopiesStrict,
       headPlanMapping, multiTopology, slotHead, pinLabel,
+      pfScope, pfScopeAvailable, pfScopeActive, setPfScope,
       updateState, updateCheck, updateApply,
       debugState, debugEnable, debugDisable,
       navItems, topItems, subItems, topActive, openNav,
@@ -10272,7 +10497,7 @@ createApp({
       plugins, refreshPlugins, pluginIframeSrc,
       notifications, notifWarnOnly, notifTime, dismissNotification, dismissAllNotifications, browserNotify, browserNotifyMsg, browserNotifySupported, setBrowserNotify, notifyPush, saveNotifyPush, setNotifyPushOn, testNotifyPush,
       confirmDialog, okConfirm, altConfirm, cancelConfirm, confirmInputError,
-      screenCanvas, floatScreenCanvas, screenPopout, toggleScreenPopout,
+      screenCanvas, floatScreenCanvas, screenPopout, toggleScreenPopout, setScreenTile,
       popoutStyle, popoutDragStart, popoutDragMove, popoutDragEnd,
       screenFps, screenEtag,
       screenDown, screenMove, screenUp,

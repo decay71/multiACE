@@ -147,6 +147,24 @@ def unplug_v2_gone(**kw):
     return h.finish()
 
 
+def forget_unplugged_replug(**kw):
+    """ACE 2 pulled, forgotten in the running session, plugged in again:
+    it reconnects and the idle rescan lists it again as a new unit on the
+    first free place."""
+    h = _harness(_mixed, 2, **kw)
+    h.build()
+    h.ready()
+    h.at(5.0, h.unplug, 'v2a')
+    h.run(12.0)
+    key = [d['key'] for d in h.inst.get_status(h.clock.now)['devices']
+           if not d['present']][0]
+    h.gcode_line('ACE_UNIT_FORGET KEY=%s' % key)
+    h.at(14.0, h.replug, 'v2a')
+    h.run(30.0)
+    h.snapshot()
+    return h.finish()
+
+
 def unplug_v1_replug(**kw):
     """USB pull on the ACE Pro (reactor fd path), cable back 2 s later."""
     h = _harness(_mixed, 2, **kw)
@@ -1783,6 +1801,7 @@ SCENARIOS = {
     'unplug_v2_replug': unplug_v2_replug,
     'unplug_v2_gone': unplug_v2_gone,
     'unplug_v1_replug': unplug_v1_replug,
+    'forget_unplugged_replug': forget_unplugged_replug,
     'v1_read_eio_once': v1_read_eio_once,
     'silence_v2': silence_v2,
     'head_mode_connect': head_mode_connect,

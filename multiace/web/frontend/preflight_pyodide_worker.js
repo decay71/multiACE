@@ -17,7 +17,7 @@
  *   <- {type:"analyze", jobId, file, liveSlots, headCtx, costParams}
  *   -> {type:"analyze-done", jobId, report}             (+ {type:"progress"})
  *   <- {type:"rewrite", jobId, file, liveSlots, headCtx, mode, remapOverride,
- *                        headAssignment, headPlan, headCopies,
+ *                        headAssignment, headPlan, headScope, headCopies,
  *                        printPrefs:{bedMesh, camera, flowCal}}
  *   -> {type:"rewrite-done", jobId, blob, usedSlots}             (+ {type:"progress"})
  *   <- {type:"estimate", jobId, plan, mapping, targetIds, copyIds}
@@ -241,7 +241,9 @@ function memfsToBlob(path, slice = 8 << 20) {
 // Blob.
 async function doRewrite(jobId, msg) {
   const file = files.get(jobId) || msg.file;
-  const liveSlots = slotsByJob.get(jobId) || msg.liveSlots || [];
+  // The slots as they are loaded NOW (sent with the print) come first: the
+  // user may have moved spools since the analysis.
+  const liveSlots = msg.liveSlots || slotsByJob.get(jobId) || [];
   const headCtx = ctxByJob.get(jobId) || msg.headCtx || {mode: "multi"};
   const mode = msg.mode || "slicer";
   if (!file) throw new Error("missing file");
@@ -259,6 +261,7 @@ async function doRewrite(jobId, msg) {
   py.globals.set("_remap", JSON.stringify(msg.remapOverride || null));
   py.globals.set("_hassign", JSON.stringify(msg.headAssignment || null));
   py.globals.set("_hplan", msg.headPlan || "loadout");
+  py.globals.set("_hscope", msg.headScope || "all");
   py.globals.set("_hcopies", JSON.stringify(msg.headCopies || null));
   const prefs = msg.printPrefs || {};
   py.globals.set("_prefs", JSON.stringify({
@@ -291,7 +294,7 @@ _final = _core.rewrite_pipeline(
     slicer_colors=_colors, slicer_types=_types, num_aces=_naces,
     live_slots=_live_slots, head_ctx=_head_ctx, mode=_mode,
     remap_override=_remap_ov, head_assignment=_hassign_ov, head_plan=_hplan,
-    meta=_meta, head_copies=_hcopies_ov,
+    meta=_meta, head_copies=_hcopies_ov, head_scope=_hscope,
     set_stage=lambda s, p: _on_stage(s, p))
 _pf = json.loads(_prefs)
 if _pf["bed_mesh"] or _pf["camera"] or _pf["flow_cal"]:

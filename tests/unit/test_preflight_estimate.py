@@ -393,8 +393,10 @@ class TestColourCopies:
         swaps = lambda tl: [e for e in tl if e["kind"] != "head_change"]
         assert len(swaps(plain)) == 6
         assert len(swaps(with_copy)) < len(swaps(plain))
+        # the count leaves the first load of each head out
         assert (pp.head_mode_swap_count(self.EVENTS, self.ASSIGN, self.COPIES)
-                == len(swaps(with_copy)))
+                == len([e for e in swaps(with_copy)
+                        if e["kind"] != "first_load"]))
         # every toolchange is in the timeline, swap or not
         assert len(with_copy) == len(plain) == len(self.EVENTS)
 

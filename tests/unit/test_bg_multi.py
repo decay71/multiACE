@@ -481,7 +481,14 @@ def test_multi_bg_needs_two_concurrent_units():
 def test_multi_bg_routes_through_the_assignment_pipeline():
     C = _core()
     assert C.multi_assignment_shape(_ctx())
-    assert not C.multi_assignment_shape(_ctx(concurrent_aces=[]))
+    # every multi print takes the assignment pipeline now
+    assert C.multi_assignment_shape(_ctx(concurrent_aces=[]))
+    C.MULTI_CLASSIC_PIPELINE = True
+    try:
+        assert C.multi_assignment_shape(_ctx())
+        assert not C.multi_assignment_shape(_ctx(concurrent_aces=[]))
+    finally:
+        C.MULTI_CLASSIC_PIPELINE = False
 
 
 def test_head_mode_has_no_unit_limit():
