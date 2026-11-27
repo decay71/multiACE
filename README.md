@@ -20,7 +20,7 @@ multiACE won Tier 1 in the Hardware Mod category of the Snapmaker Innovation Fun
 
 ## What makes it multiACE+
 
-multiACE was built for exactly one device, the ACE Pro, and later the ACE 2.  multiACE+ puts a driver layer between the engine and the hardware: every changer is a driver that tells the engine what it can do (sensors, feed assist, drying, tag reading, moving lanes on their own), and loading, unloading, swaps, recovery, the preflight and the web UI work the same on top of it.
+multiACE was built for exactly one device, the ACE Pro, and later the ACE 2. multiACE+ puts a driver layer between the engine and the hardware: every changer is a driver that tells the engine what it can do (sensors, feed assist, drying, tag reading, moving lanes on their own), and loading, unloading, swaps, recovery, the preflight and the web UI work the same on top of it.
 
 - **One driver per changer.** Each one can be switched on or off. Want to bring another filament changer to multiACE+? The [driver guide](multiace/docs/DRIVER_GUIDE.md) shows how, using the CFS Nano as the example. New drivers are very welcome as pull requests.
 - **Devices tab.** Every unit gets a fixed place, MMU 1 to 4, and keeps it when you plug it into another USB port. Give your units names, take one out, or press *Locate* to see which one is which. A unit that is missing keeps its place and its spools.
@@ -30,6 +30,29 @@ multiACE was built for exactly one device, the ACE Pro, and later the ACE 2.  mu
 
 - **Creality CFS Nano** (opt-in). A cheap four-slot unit that connects through a USB adapter. It knows which slots hold filament, loads and unloads, and lets the filament run freely while printing. No feed assist and no tag reading.
 - **ace2k** (opt-in). [tobecwb's ace2k firmware](https://github.com/tobecwb/ace2k) turns an ACE 2 Pro into a Klipper-style controller. multiACE drives it with its own driver: feed assist that follows the extruder, tag reading when a spool is inserted, the dryer, and every lane can move on its own. That makes **background swaps in multi mode** possible for the first time: a parked head unloads and reloads while another head prints. Flash it from the Devices tab, with tobecwb's permission.
+
+### multiACE+ plugin for OrcaSlicer
+Send a sliced file from OrcaSlicer straight to the printer and assign it in the same window: the plugin runs the preflight itself, shows what is loaded on the printer, and offers the plans (as loaded, optimize, layer, color) in multi and head mode, either reordering the loaded spools only or using all slots with a load proposal. The preview takes the colours of the chosen spools, the plan shows its background swaps, and a weight check warns before a spool runs short. Install it from the OrcaSlicer plugin hub or from the Config tab.
+
+## What's new in 1.94 (pre-release)
+
+### multiACE+ plugin for OrcaSlicer
+New: send and assign straight from OrcaSlicer, see [What makes it multiACE+](#what-makes-it-multiace). Needs multiACE+ 1.94 or newer.
+
+For developers who want to build or update their own integration, the interface is documented here:
+- [LOADOUT_API.md](multiace/docs/LOADOUT_API.md) - reading the loadout, running the preflight in a plugin, the queue
+- [SEND_TO_MULTIACE.md](multiace/docs/SEND_TO_MULTIACE.md) - sending a file to the printer
+- [ENGINE_API.md](multiace/docs/ENGINE_API.md) - the gcode and runtime contract
+
+### Firmware flashing (thanks to @Tareku99)
+The ACE firmware flash in the Devices tab is simpler now: each unit flashes from its own card, shows the progress there, and an unplugged unit can be forgotten right next to its name.
+
+### Other improvements
+- Every multi print goes through the assignment pipeline; the optimised plans got a scope switch.
+- The filament picker offers materials the display knows but the firmware database lacks.
+- A Spoolman address works without http://.
+- RESUME after a strand broke above the MMU gate no longer needs the old slot refilled.
+- ace2k images 0.16.0 and 0.17.0-alpha.1 and stock ACE 2 firmware 1.1.34 in the flash list.
 
 ## What's new in multiACE+ 1.91 
 
