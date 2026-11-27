@@ -15,7 +15,7 @@
 multiACE won Tier 1 in the Hardware Mod category of the Snapmaker Innovation Fund. Thank you to everyone who voted, tested, reported bugs, sent logs, bought a cable or a coffee, and helped other users in the forum and on GitHub. Thank you also to **Snapmaker** for the Innovation Fund and for an open printer that makes a project like this possible. This release is the first one built after the win, and a lot of it comes from you.
 
 > [!NOTE]
-> To get the hotfixes through the update button, add `update_prerelease: true` under `[ace]` in ace.cfg and restart Klipper.
+> To get pre-releases through the update button, add `update_prerelease: true` under `[ace]` in ace.cfg and restart Klipper.
 
 
 ## What makes it multiACE+
