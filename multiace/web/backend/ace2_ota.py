@@ -77,7 +77,7 @@ KNOWN_FIRMWARE = {
         "tested": "2026-08-09 dry-run vs a live V1.1.31 unit",
     },
     # ACE2-Open (Simon-CR), patched onto the tested stock V1.1.31 base by
-    # apply_open_patch. 60O is the patch target. Earlier 61O patch builds failed,
+    # apply_open_patch. 60O is the Open build to run: 61O does not come up,
     # 62O/63O left the presence word hanging after an aborted insert, older
     # builds lack the ghost-tag read gate and the dual-grab NOPs. The gate key reports
     # V1.1.60O while the unit is told 1.1.31 ("announce"), the base the
@@ -92,14 +92,6 @@ KNOWN_FIRMWARE = {
         "md5": "0426c316ab6cac90bc2b334293c4bcba",
         "source": "ACE2-Open.bin (patch.json commit 9fb5dbe)",
         "tested": "2026-09-19 flashed and running",
-    },
-    "1.1.61O-baseline": {
-        "crc": 0xD67B, "size": 79660,
-        "announce": "1.1.31", "reports": "1.1.61O",
-        "swu": "ACE2-Open-V1.1.61O-baseline.bin",
-        "md5": "0165af91eab3c0b38768b78da8dc0974",
-        "source": "ACE2-Open-V1.1.61O-baseline.bin (Simon-CR release v1.1.61O-baseline)",
-        "tested": "2026-11-24 flashed and running",
     },
 }
 
