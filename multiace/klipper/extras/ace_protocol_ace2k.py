@@ -343,11 +343,16 @@ REPORT_PERIODS = (
     ('ace2k_lane_counters_query', 1.0),
     ('ace2k_dryer_query', 1.0),
 )
+# Seconds of a dryer cycle that are logged once a second (_dryer_trace).
+DRYER_TRACE_S = 120
 # The unit's dryer (protocol.md, "The dryer"): it runs and protects a cycle
 # on its own, the host starts and stops it.
 DRYER_STATES = {0: 'idle', 1: 'starting', 2: 'heating', 3: 'cooldown',
                 4: 'fault'}
 DRYER_RUNNING = (1, 2)
+DRYER_GAIN_SOURCES = {0: 'none', 1: 'learning', 2: 'learned', 3: 'stored'}
+# The unit learns its heater rate in the first 60 s of a cycle.
+DRYER_GAIN_ASK_S = 65.0
 DRYER_FAULTS = {1: 'not_heating', 2: 'response', 3: 'sides',
                 4: 'chamber_over', 5: 'chamber_stale', 6: 'ntc', 7: 'mains',
                 8: 'cutout', 9: 'heat', 10: 'fans', 11: 'flaps', 12: 'lid'}
@@ -419,7 +424,9 @@ FOLLOW_FULL_BURSTS = 4
 # lane idle this long after the start, or at its deadline (expected time
 # x 1.5 + DEADLINE_EXTRA_S).
 LOST_EVENT_S = 2.5
-# After a lost end event: wait this long for the lane encoder report.
+# Once the report shows the lane idle without an end event: wait this long
+# for the event (an image before 2026-11-12 can send the idle report first)
+# and for the lane encoder report.
 LOST_ENCODER_WAIT_S = 1.5
 DEADLINE_EXTRA_S = 10.0
 STOP_EVENT_WAIT_S = 0.3
@@ -873,6 +880,13 @@ class Ace2kLink(object):
         self._dryer_ack = None     # seq of the newest event to acknowledge
         self._dryer_ack_due = False
         self._dryer_minutes = 0    # length of the cycle the host started
+        self._dryer_trace_t0 = None   # start of the cycle being traced
+        # The heater rate the unit learned (ace2k_dryer_gain_query, images
+        # from v0.17): asked at connect, a minute into a cycle and at its
+        # end, logged when it changes.
+        self._gain_due = 0.0
+        self._gain_seen = None
+        self._dryer_trace_prev = 0    # dryer state of the last report
         self._rfid = None          # (time, list of 4 states)
         self._tag_uid = [b'', b'', b'', b'']
         self._events = []          # feed events not yet worked through
@@ -909,6 +923,8 @@ class Ace2kLink(object):
         # needs it: the load an insert starts assumes the tip still sits
         # at the insert sensor.
         self._moved_mm = [0.0, 0.0, 0.0, 0.0]
+        # lane -> seq of the last move ended without its end event
+        self._lost_seq = {}
         # Tags (M6d). One lock over every exchange: the writer thread runs
         # host requests, the reader thread serves tag sessions while idle.
         self._io = threading.RLock()
@@ -1199,6 +1215,7 @@ class Ace2kLink(object):
             self._env = (now, dict(vals))
         elif name == 'ace2k_dryer_state':
             self._dryer = (now, dict(vals))
+            self._dryer_trace(now, vals)
         elif name == 'ace2k_dryer_event':
             kind = int(vals.get('kind', -1))
             arg = int(vals.get('arg', 0))
@@ -1491,6 +1508,65 @@ class Ace2kLink(object):
         if self._dryer_ack_due:
             self._dryer_ack_due = False
             self._send('ace2k_dryer_event_ack', seq=int(self._dryer_ack))
+        if self._gain_due is not None and self._now() >= self._gain_due:
+            self._gain_due = None
+            ans = self._call('ace2k_dryer_gain_query',
+                             'ace2k_dryer_gain_state')
+            if ans is not None:
+                seen = (int(ans.get('gain', 0)), int(ans.get('source', 0)))
+                if seen != self._gain_seen:
+                    self._gain_seen = seen
+                    logging.info(
+                        self._lp + 'dryer heater rate: %s%s'
+                        % (DRYER_GAIN_SOURCES.get(seen[1], seen[1]),
+                           ' (gain %d)' % seen[0] if seen[1] >= 2 else ''))
+
+    def _dryer_trace(self, now, vals):
+        """One log line per dryer report for the first DRYER_TRACE_S of a
+        cycle, and one when the cycle ends in a fault: state, target, drive
+        target, duty, both outlet NTCs and the chamber. The numbers the
+        unit's rise protection judges, for a start that faults early.
+        """
+        try:
+            state = int(vals.get('state', 0))
+            prev, self._dryer_trace_prev = self._dryer_trace_prev, state
+            active = state in (1, 2)
+            if active and prev not in (1, 2):
+                self._dryer_trace_t0 = now
+                self._gain_due = now + DRYER_GAIN_ASK_S
+            elif not active and prev in (1, 2):
+                self._gain_due = now
+            t0 = self._dryer_trace_t0
+            if t0 is None:
+                return
+            faulted = state == 4 and prev != 4
+            if not active:
+                self._dryer_trace_t0 = None
+                if not faulted:
+                    return
+            elif now - t0 > DRYER_TRACE_S:
+                return
+            env = self._env[1] if self._env else {}
+            valid = int(env.get('valid', 0))
+
+            def _c(key, bit):
+                if not valid & bit:
+                    return 'n/a'
+                return '%.1f' % (int(env.get(key, 0)) / 1000.0)
+            fault = int(vals.get('fault', 0))
+            logging.info(
+                self._lp + 'dryer +%ds %s target=%d drive=%.1f duty=%d '
+                'ntc_l=%s ntc_r=%s chamber=%s fault=%s'
+                % (int(round(now - t0)),
+                   DRYER_STATES.get(state, 'state_%d' % state),
+                   int(vals.get('target_c', 0)),
+                   int(vals.get('drive_dc', 0)) / 10.0,
+                   int(vals.get('duty', 0)),
+                   _c('ptc_left_mc', 1), _c('ptc_right_mc', 2),
+                   _c('chamber_mc', 4),
+                   DRYER_FAULTS.get(fault, fault) if fault else 'none'))
+        except Exception:
+            logging.exception(self._lp + 'dryer trace failed')
 
     def _dryer_state(self):
         if not self._fresh(self._dryer):
@@ -1819,9 +1895,12 @@ class Ace2kLink(object):
             out['target'] = round(float(job['target']), 1)
             if not running:
                 short = max(0.0, job['target'] - job['done'])
-                if job.get('stopped') or short <= RETRACT_SHORT_TOL_MM:
+                if (job.get('stopped') or job.get('unmeasured')
+                        or short <= RETRACT_SHORT_TOL_MM):
                     short = 0.0
                 out['short'] = round(short, 1)
+            if job.get('unmeasured'):
+                out['unmeasured'] = True
         return out
 
     def _work_events(self):
@@ -1862,6 +1941,11 @@ class Ace2kLink(object):
             return
         job = self._jobs.get(lane)
         if job is None or job.get('seq') != seq or not seq:
+            if seq and self._lost_seq.get(lane) == seq:
+                self._lost_seq.pop(lane, None)
+                logging.info(self._lp + 'lane %d end event %s (%.0f mm) '
+                             'came after the move was taken as lost'
+                             % (lane, name, moved))
             return
         job['done'] += moved
         if name == 'done' and not job.get('stopping'):
@@ -1928,13 +2012,19 @@ class Ace2kLink(object):
                 # the piece ran. Without a reading nothing is booked, so
                 # a retract reads short instead of done.
                 ran = self._lost_piece_mm(lane, job) if idle else None
-                if (idle and ran is None and job.get('enc0') is not None
+                if (idle and ran is None
                         and now < job.setdefault('lost_t', now)
                         + LOST_ENCODER_WAIT_S):
-                    # The counters report after the idle one is still due.
+                    # The end event, or the counters report after the idle
+                    # one, can still follow.
                     continue
                 if ran is not None:
                     job['done'] += ran
+                else:
+                    # Nothing measured: the motion report must not claim
+                    # the move came back short.
+                    job['unmeasured'] = True
+                self._lost_seq[lane] = job.get('seq')
                 self._end_job(lane, 'no end event (%s%s)'
                               % ('lane idle' if idle else 'deadline',
                                  '' if ran is None else ', encoder'),

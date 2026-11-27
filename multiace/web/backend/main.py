@@ -50,6 +50,7 @@ import httpx
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 import preflight_core
@@ -928,7 +929,7 @@ def _parse_state(status: dict) -> dict:
         # Last feeder-reader code per non-ACE head (card UID hex / M1 SKU
         # int as string) - source of the tag sweep's head loop.
         "head_tag_seen": ace.get("head_tag_seen", {}) or {},
-        "spoolman_url": ace.get("spoolman_url", "") or "",
+        "spoolman_url": _spoolman_norm_url(ace.get("spoolman_url", "")),
         "spoolman_auto": bool(ace.get("spoolman_auto", False)),
         # The spool world switch (local|spoolman|spoollink). An older
         # ace.py has no field - derive its world the pre-switch way (URL
@@ -1631,7 +1632,9 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
                                   head_copies: dict | None = None,
                                   queue: bool = False,
                                   queue_snapshot: dict | None = None,
-                                  queue_replaces: str | None = None) -> None:
+                                  queue_replaces: str | None = None,
+                                  deliver: str = "print",
+                                  head_scope: str = "all") -> None:
     state = _PREFLIGHT_JOBS[job_id]
     pp = _load_post_processor()
     src = _PREFLIGHT_DIR / (token + ".gcode")
@@ -1687,6 +1690,7 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
             mode=mode, remap_override=remap_override,
             head_assignment=head_assignment, head_plan=head_plan,
             fuzzy=_PREFLIGHT_FUZZY, meta=meta, head_copies=head_copies,
+            head_scope=head_scope,
             set_stage=lambda s, p: _set_stage(state, s, p),
             stage_cb=lambda base, span: _stage_progress(state, base, span))
         cur = Path(final)
@@ -1701,6 +1705,28 @@ async def _run_preflight_pipeline(job_id: str, token: str, mode: str,
 
         prefs_line = (_print_prefs_line(bed_mesh, camera, flow_cal)
                       if (bed_mesh or camera or flow_cal) else None)
+
+        if deliver == "return":
+            # The caller starts the file itself, shortly after: the
+            # preferences go to Klipper now. A refusal (a print is running)
+            # is logged, the file is still handed out.
+            if prefs_line:
+                try:
+                    await _send_print_prefs(prefs_line)
+                except RuntimeError as e:
+                    _trace.info("print preferences for a returned file: %s", e)
+            # The caller (a slicer plugin) fetches the rewritten file and
+            # sends it itself: nothing goes to Moonraker. Kept under the job
+            # id until it is fetched or the job is pruned.
+            out = _PREFLIGHT_DIR / (job_id + ".out.gcode")
+            await asyncio.to_thread(os.replace, str(cur), str(out))
+            state["tmp_out"] = str(out)
+            state["size"] = out.stat().st_size
+            _set_stage(state, "done", 100.0)
+            state["filename"] = safe_name
+            state["mode"]     = mode
+            state["done"]     = True
+            return
 
         _set_stage(state, "upload", 85.0)
         upload_name = safe_name
@@ -1779,6 +1805,10 @@ class _PreflightPrint(BaseModel):
     # print - "loadout" (as loaded, uses head_assignment), "optimize" or "layer"
     # (proposed loadout, recomputed server-side; head_assignment ignored).
     head_plan: str = "loadout"
+    # optimize / layer / color only: "reorder" plans on the loaded spools,
+    # "all" (default, also for an older frontend) is the load proposal over
+    # every slot.
+    head_scope: str = "all"
     # Head-mode loadout only: the colour copies the preview used, as
     # {slicer-T: [target_id, ...]} - sent verbatim so the print's per-event
     # head choice matches the previewed swap count. None (older frontend)
@@ -1794,6 +1824,10 @@ class _PreflightPrint(BaseModel):
     # entry, its staged file and its stored original go once the new one is
     # in.
     replaces: str | None = None
+    # "print" (default): upload the rewritten file to Moonraker and start it.
+    # "return": keep it for one GET /api/preflight/result, nothing is
+    # uploaded or started. Not combinable with queue.
+    deliver: str = "print"
 
 @app.post("/api/preflight/print")
 async def preflight_print(req: _PreflightPrint) -> dict:
@@ -1801,6 +1835,11 @@ async def preflight_print(req: _PreflightPrint) -> dict:
         raise HTTPException(status_code=400, detail="invalid mode")
     if not re.fullmatch(r"[0-9a-f]{32}", req.token or ""):
         raise HTTPException(status_code=400, detail="invalid token")
+    if req.deliver not in ("print", "return"):
+        raise HTTPException(status_code=400, detail="invalid deliver")
+    if req.deliver == "return" and req.queue:
+        raise HTTPException(status_code=400,
+                            detail="deliver=return cannot be queued")
     gpath = _PREFLIGHT_DIR / (req.token + ".gcode")
     npath = _PREFLIGHT_DIR / (req.token + ".name")
     if not gpath.is_file():
@@ -1819,17 +1858,20 @@ async def preflight_print(req: _PreflightPrint) -> dict:
         "error":    None,
         "filename": safe_name,
         "mode":     req.mode,
+        "deliver":  req.deliver,
         "ts":       time.time(),
     }
     head_plan = req.head_plan if req.head_plan in (
-        "loadout", "optimize", "layer") else "loadout"
+        "loadout", "optimize", "layer", "color") else "loadout"
     asyncio.create_task(_run_preflight_pipeline(
         job_id, req.token, req.mode, safe_name, req.bed_mesh, req.camera,
         req.remap, req.head_assignment, head_plan, req.flow_cal,
         req.head_copies, req.queue,
         _queue_snapshot(req.estimate, req.swaps) if req.queue else None,
-        req.replaces if req.queue else None))
-    return {"job_id": job_id, "filename": safe_name, "mode": req.mode}
+        req.replaces if req.queue else None, req.deliver,
+        preflight_core.plan_scope(req.head_scope)))
+    return {"job_id": job_id, "filename": safe_name, "mode": req.mode,
+            "deliver": req.deliver}
 
 @app.get("/api/preflight/print/status")
 async def preflight_print_status(job_id: str) -> dict:
@@ -1845,7 +1887,39 @@ async def preflight_print_status(job_id: str) -> dict:
         "error":   state.get("error"),
         "filename": state.get("filename"),
         "mode":    state.get("mode"),
+        "deliver": state.get("deliver", "print"),
+        # deliver=return only: the rewritten file waits for one fetch.
+        "result":  bool(state.get("tmp_out")),
+        "size":    state.get("size"),
     }
+
+@app.get("/api/preflight/result")
+async def preflight_result(job_id: str) -> FileResponse:
+    """The rewritten file of a deliver=return job, served once: the file and
+    the job entry go after the response is sent."""
+    state = _PREFLIGHT_JOBS.get(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if state.get("deliver") != "return":
+        raise HTTPException(status_code=409,
+                            detail="job was not started with deliver=return")
+    if not state.get("done"):
+        raise HTTPException(status_code=409, detail="job not finished")
+    if state.get("error"):
+        raise HTTPException(status_code=409, detail=state["error"])
+    out = state.get("tmp_out")
+    if not out or not Path(out).is_file():
+        raise HTTPException(status_code=410, detail="result already fetched")
+    # Claimed before the response starts, so a second request cannot get it.
+    state["tmp_out"] = None
+
+    def _drop() -> None:
+        try: Path(out).unlink()
+        except Exception: pass
+
+    return FileResponse(out, media_type="text/plain; charset=utf-8",
+                        filename=state.get("filename") or "print.gcode",
+                        background=BackgroundTask(_drop))
 
 @app.get("/api/preflight/pysrc")
 async def preflight_pysrc() -> dict:
@@ -3278,6 +3352,180 @@ async def export_spools() -> Response:
         headers={"Content-Disposition":
                  'attachment; filename="multiace_spools.json"'})
 
+@app.get("/api/orca/plugin")
+async def orca_plugin_download() -> Response:
+    """The OrcaSlicer plugin (one Python file) that ships with this
+    version. Install it in OrcaSlicer via Plugins > Install plugin."""
+    p = Path(__file__).resolve().parent / "orca_plugin" / "multiace_orca.py"
+    if not p.is_file():
+        raise HTTPException(404, "plugin file not installed")
+    return Response(
+        content=p.read_text(encoding="utf-8"),
+        media_type="text/x-python",
+        headers={"Content-Disposition":
+                 'attachment; filename="multiace_orca.py"'})
+
+class _SendOptions(BaseModel):
+    """Printer settings a slicer plugin shows before sending. None = leave
+    as it is."""
+    airprint:  bool | None = None
+    quad:      bool | None = None
+    noodle:    bool | None = None
+    clean_bed: bool | None = None
+    led_off:   bool | None = None
+    replenish: bool | None = None
+
+
+async def _send_options_now() -> dict:
+    """Current value of every setting the send window offers. A key is
+    missing when the printer does not report it (older firmware, module
+    not loaded), so the window can leave that switch out."""
+    status = await _query_state_gated()
+    ace = status.get("ace") or {}
+    ptc = status.get("print_task_config") or {}
+    out: dict = {}
+    if "airprint_detection" in ace:
+        out["airprint"] = bool(ace.get("airprint_detection"))
+    if "quad_replenish" in ace:
+        out["quad"] = bool(ace.get("quad_replenish"))
+    if "end_led_turn_off" in ptc:
+        out["led_off"] = bool(ptc.get("end_led_turn_off"))
+    if "auto_replenish_filament" in ptc:
+        out["replenish"] = bool(ptc.get("auto_replenish_filament"))
+    try:
+        data = await _mr_get("/printer/objects/query?defect_detection")
+        dd = (data.get("result", {}).get("status", {})
+              .get("defect_detection") or {})
+    except Exception:
+        dd = {}
+    main_on = bool(dd.get("main_enable", True))
+    for key, name in (("noodle", "noodle"), ("clean_bed", "clean_bed")):
+        part = dd.get(name)
+        if isinstance(part, dict) and "enable" in part:
+            out[key] = main_on and bool(part.get("enable"))
+    out["_defect_main"] = main_on
+    return out
+
+
+def _send_option_commands(now: dict, want: dict) -> list[str]:
+    """The gcode lines that take the printer from `now` to `want`. Only
+    changed settings produce a line: the multiACE setters rewrite the
+    config file on every call."""
+    cmds: list[str] = []
+
+    def changed(key):
+        return (want.get(key) is not None and key in now
+                and bool(want[key]) != bool(now[key]))
+
+    if changed("airprint"):
+        cmds.append("ACE_SET_AIRPRINT_DETECTION ENABLE=%d"
+                    % int(bool(want["airprint"])))
+    if changed("quad"):
+        cmds.append("ACE_SET_QUAD_REPLENISH ENABLE=%d"
+                    % int(bool(want["quad"])))
+    parts = []
+    for key, arg in (("noodle", "NOODLE_ENABLE"),
+                     ("clean_bed", "CLEAN_BED_ENABLE")):
+        if changed(key):
+            parts.append("%s=%d" % (arg, int(bool(want[key]))))
+    if parts:
+        if (not now.get("_defect_main", True)
+                and any(p.endswith("=1") for p in parts)):
+            parts.insert(0, "MAIN_ENABLE=1")
+        cmds.append("DEFECT_DETECTION_CONFIG " + " ".join(parts))
+    prefs = []
+    for key, arg in (("led_off", "END_LED_TURN_OFF"),
+                     ("replenish", "AUTO_REPLENISH_FILAMENT")):
+        if changed(key):
+            prefs.append("%s=%d" % (arg, int(bool(want[key]))))
+    if prefs:
+        cmds.append("SET_PRINT_PREFERENCES " + " ".join(prefs))
+    return cmds
+
+
+@app.get("/api/orca/spools")
+async def orca_spools() -> dict:
+    """Per target of the send window, keyed like the preflight targets
+    ("slot-A-S", "feeder-N"): remaining weight and fill level of the bound
+    spool (weight_g, pct) and the filament's sub-type (sub). A key is left
+    out where it is not known; a target with neither is left out."""
+    try:
+        state = _parse_state(await _query_state_gated())
+    except Exception as e:
+        raise HTTPException(503, f"printer state unavailable: {e}")
+    spools = state.get("spools") or {}
+    out: dict = {}
+    for key, sid in (state.get("spool_binding") or {}).items():
+        sp = spools.get(str(sid)) or spools.get(sid)
+        if not isinstance(sp, dict) or sp.get("weight_g") is None:
+            continue
+        try:
+            grams = float(sp["weight_g"])
+        except (TypeError, ValueError):
+            continue
+        k = str(key)
+        if k.startswith("h") and k[1:].isdigit():
+            tid = "feeder-" + k[1:]
+        else:
+            parts = k.split("_")
+            if len(parts) != 2 or not all(p.isdigit() for p in parts):
+                continue
+            tid = "slot-%s-%s" % (parts[0], parts[1])
+        # fill level as on the dashboard: a 1 kg spool is full
+        row = {"weight_g": round(grams, 1),
+               "pct": max(4, min(100, int(round(grams / 10.0))))}
+        out[tid] = row
+    # sub-type of what sits in each target ("Support", "Silk", "Matte")
+
+    def _sub(value):
+        s = str(value or "").strip()
+        return "" if s.lower() == "none" else s
+    for a in state.get("aces") or []:
+        for sl in (a or {}).get("slots") or []:
+            sub = _sub((sl or {}).get("subtype"))
+            if sub:
+                out.setdefault("slot-%s-%s" % (a.get("idx"), sl.get("idx")),
+                               {})["sub"] = sub
+    for th in state.get("toolheads") or []:
+        sub = _sub((th or {}).get("subtype"))
+        if sub and (th.get("feeder") or th.get("manual")):
+            out.setdefault("feeder-%s" % th.get("idx"), {})["sub"] = sub
+    return {"spools": out}
+
+
+@app.get("/api/orca/options")
+async def orca_options() -> dict:
+    """Current printer settings for the send window of a slicer plugin."""
+    try:
+        now = await _send_options_now()
+    except Exception as e:
+        raise HTTPException(503, f"printer state unavailable: {e}")
+    return {k: v for k, v in now.items() if not k.startswith("_")}
+
+
+@app.post("/api/orca/options")
+async def orca_options_set(req: _SendOptions) -> dict:
+    """Apply the settings chosen in the send window. Only what differs
+    from the printer's current value is sent."""
+    try:
+        now = await _send_options_now()
+    except Exception as e:
+        raise HTTPException(503, f"printer state unavailable: {e}")
+    cmds = _send_option_commands(now, req.model_dump())
+    for line in cmds:
+        try:
+            await _mr_post("/printer/gcode/script", {"script": line},
+                           timeout=30.0)
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                409, "%s: %s" % (line.split(" ")[0],
+                                 (e.response.text or "").strip()[:300]))
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"moonraker: {e}")
+        _trace.info("send option: %s", line)
+    return {"ok": True, "sent": cmds}
+
+
 @app.get("/api/orca/profile")
 async def orca_profile_download(nozzle: str = "0.4") -> Response:
     """Snapmaker Orca printer profile with virtual multiACE tools (T4.. =
@@ -3792,15 +4040,32 @@ async def _spoolman_refresh_known(base: str, spools: dict,
 # rows go to the browser as a filtered top-50 and are forgotten.
 _spoolman_cache: dict = {"ts": 0.0, "base": "", "rows": []}
 
+def _spoolman_norm_url(url) -> str:
+    """The Spoolman address as the HTTP client needs it: an address typed
+    without a scheme ('10.0.0.5:7912') gets http://, a trailing slash
+    goes."""
+    url = str(url or "").strip().rstrip("/")
+    if url and not re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://", url):
+        url = "http://" + url
+    return url
+
+
 async def _spoolman_collection(base: str) -> list:
     now = time.time()
     if _spoolman_cache["base"] == base \
             and now - _spoolman_cache["ts"] < 10.0:
         return _spoolman_cache["rows"]
-    async with httpx.AsyncClient(timeout=_SPOOLMAN_TIMEOUT) as client:
-        r = await client.get(f"{base}/api/v1/spool")
-        r.raise_for_status()
-        rows = r.json()
+    try:
+        async with httpx.AsyncClient(timeout=_SPOOLMAN_TIMEOUT) as client:
+            r = await client.get(f"{base}/api/v1/spool")
+            r.raise_for_status()
+            rows = r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, "Spoolman at %s answered %s"
+                            % (base, e.response.status_code))
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as e:
+        raise HTTPException(502, "Spoolman not reachable at %s (%s)"
+                            % (base, str(e) or type(e).__name__))
     if not isinstance(rows, list):
         raise HTTPException(502, "Spoolman returned no spool list")
     _spoolman_cache.update({"ts": now, "base": base, "rows": rows})
@@ -4171,9 +4436,7 @@ def _acefw_running() -> bool:
 
 @app.post("/api/acefw/upload")
 async def acefw_upload(file: UploadFile = File(...)) -> dict:
-    """Stage the firmware file (.bin or .swu). One staging slot - a second
-    upload replaces the first; extraction/validation happens at flash
-    time so the .swu password does not need to travel twice."""
+    """Stage a firmware file (.bin or .swu) for inspection and flashing."""
     if _acefw_running():
         raise HTTPException(409, "a firmware update is running")
     data = await file.read()
@@ -4185,10 +4448,13 @@ async def acefw_upload(file: UploadFile = File(...)) -> dict:
 def _acefw_stage(filename: str, data: bytes) -> dict:
     """Put a firmware file into the one staging slot (upload or download)
     and answer what the card needs to show it."""
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is running")
+    upload_id = hashlib.sha256(data).hexdigest()
     _ACEFW_DIR.mkdir(parents=True, exist_ok=True)
     dest = _ACEFW_DIR / "upload.bin"
     dest.write_bytes(data)
-    _acefw.update({"file": filename,
+    _acefw.update({"file": filename, "upload_id": upload_id,
                    "size": len(data), "state": "idle", "calibration": "",
                    "msg": "", "error": "", "result": None, "pct": None})
     # Guess the version from the upload NAME (no password needed - the
@@ -4226,11 +4492,81 @@ def _acefw_stage(filename: str, data: bytes) -> dict:
     return {"ok": True, "name": _acefw["file"], "size": len(data),
             "version_guess": guess,
             "md5": hashlib.md5(data).hexdigest(),
-            "ace2k_image": ace2k_image}
+            "upload_id": upload_id, "ace2k_image": ace2k_image}
+
+
+@app.post("/api/acefw/inspect")
+async def acefw_inspect(payload: dict) -> dict:
+    """Identify a staged Gen 2 image without releasing the MMU port."""
+    upload_id = payload.get("upload_id")
+    if not upload_id or upload_id != _acefw.get("upload_id"):
+        raise HTTPException(409, "Choose the firmware file again")
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is running")
+
+    import ace2_ota
+
+    path = str(_ACEFW_DIR / "upload.bin")
+    try:
+        fw = await asyncio.to_thread(
+            ace2_ota.load_image, path, "", payload.get("md5"),
+            payload.get("password") or None)
+    except ace2_ota.FlashError as e:
+        detail = str(e)
+        if detail.startswith("cannot decrypt .swu:"):
+            return {"password_required": True, "error": detail}
+        raise HTTPException(400, detail) from e
+    if upload_id != _acefw.get("upload_id"):
+        raise HTTPException(409, "Choose the firmware file again")
+
+    for version, entry in ace2_ota.KNOWN_FIRMWARE.items():
+        if version in ace2_ota.PATCH_SPECS:
+            continue
+        if (entry.get("md5"), entry["size"], entry["crc"]) == (
+                fw.image_md5, len(fw.data), fw.image_crc):
+            return {"version": version}
+    return {"version": ""}
 
 
 class _Ace2kDownload(BaseModel):
     version: str
+
+
+# Published release assets pinned by size and SHA-256.
+_ACEFW_OPEN_RELEASES = {
+    "v1.1.61O-baseline": (
+        "ACE2-Open-V1.1.61O-baseline.bin",
+        79660,
+        "5286e6fe40a26815a48287d90c5626c192db280501bea9ab0b862e6898eb6c93",
+    ),
+}
+
+
+@app.post("/api/acefw/download_open")
+async def acefw_download_open(req: _Ace2kDownload) -> dict:
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is running")
+    release = _ACEFW_OPEN_RELEASES.get(req.version)
+    if release is None:
+        raise HTTPException(400, "This ACE2-Open release is not offered for download")
+    filename, size, digest = release
+    url = ("https://github.com/Simon-CR/ace2-pro-firmware-research/"
+           f"releases/download/{req.version}/{filename}")
+    data = bytearray()
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    data.extend(chunk)
+                    if len(data) > size:
+                        raise HTTPException(502, "Unexpected ACE2-Open release size")
+    except httpx.HTTPError as exc:
+        _trace.warning("acefw: ACE2-Open download failed: %s", exc)
+        raise HTTPException(502, "ACE2-Open download from GitHub failed") from exc
+    if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+        raise HTTPException(502, "ACE2-Open release integrity check failed")
+    return {**_acefw_stage(filename, bytes(data)), "open_release": req.version}
 
 
 @app.post("/api/acefw/download_ace2k")
@@ -4379,9 +4715,13 @@ async def _acefw_run(ace: int, port: str, version: str,
                     _acefw["state"], _acefw["result"], _acefw["error"])
 
 
-async def _acefw_release_confirmed(ace: int) -> None:
+async def _acefw_release_confirmed(ace: int, upload_id=None) -> None:
     """ACE_FW_RELEASE, then flash only against a CONFIRMED hold: if the
     state does not show it, hand the port back and stop."""
+    if _acefw_running():
+        raise HTTPException(409, "a firmware update is already running")
+    if upload_id and upload_id != _acefw.get("upload_id"):
+        raise HTTPException(409, "Choose the firmware file again")
     _acefw.update({"state": "releasing", "ace": ace, "pct": None,
                    "msg": "releasing serial port", "error": "",
                    "result": None, "calibration": ""})
@@ -4582,7 +4922,7 @@ async def _acefw_flash_ace2k(ace: int, p: dict, dry_run: bool):
             raise HTTPException(
                 400, "the unit runs ace2k: only the factory firmware %s "
                      "can be flashed back" % ace2k_flasher.FACTORY_VERSION)
-    await _acefw_release_confirmed(ace)
+    await _acefw_release_confirmed(ace, p.get("upload_id"))
     asyncio.create_task(_acefw_run_ace2k(
         ace, port, target, version, p.get("password") or None,
         p.get("md5") or None, dry_run, engine == "ace2k"))
@@ -4703,7 +5043,7 @@ async def acefw_flash(payload: dict | None = None) -> dict:
         if not version and not dry_run:
             raise HTTPException(400, "a Gen-1 image id is required")
     # Paranoia gate inside: flash only against a CONFIRMED hold.
-    await _acefw_release_confirmed(ace)
+    await _acefw_release_confirmed(ace, p.get("upload_id"))
     asyncio.create_task(_acefw_run(
         ace, port, version, p.get("password") or None,
         p.get("md5") or None, dry_run, bool(p.get("force")),
@@ -4781,7 +5121,7 @@ async def acefw_versions() -> dict:
     try:
         import ace2k_flasher
         out["ace2k_versions"] = [
-            {"version": v, "tested": e.get("tested", ""),
+            {"version": v, "tag": f"v{v}", "tested": e.get("tested", ""),
              "md5": e.get("md5", ""),
              "download": ace2k_flasher.downloadable(v)}
             for v, e in sorted(ace2k_flasher.KNOWN_ACE2K.items(),
@@ -4793,6 +5133,7 @@ async def acefw_versions() -> dict:
     except Exception as e:
         out["ace2k_versions"] = []
         out["ace2k_error"] = str(e)
+    out["open_releases"] = [{"version": tag, "tag": tag} for tag in _ACEFW_OPEN_RELEASES]
     return out
 
 # What this process last knew Spoolman's PA field to hold, per smid - the
@@ -6927,7 +7268,68 @@ async def head_ace_set(req: HeadAce) -> dict:
 
 _FIL_DB_CACHE: dict = {}
 
+# Filaments the touchscreen offers that the firmware DB has no row for.
+# Merged into whatever the DB provides (type -> vendor -> subtypes), so the
+# picker matches the display; a row the DB already carries is left alone.
+# The firmware accepts any type string and loads an unknown one at 250 C.
+FILAMENT_DB_EXTRA = {
+    "PLA": {"Generic": ["Silk", "Support"],
+            "Snapmaker": ["Starlight", "Support"]},
+    "TPU": {"Snapmaker": ["95A"]},
+    "PAHT-CF": {"Generic": [], "Snapmaker": []},
+    "PVA": {"Snapmaker": []},
+    "BVOH": {"Generic": []},
+    "EVA": {"Generic": []},
+    "HIPS": {"Generic": []},
+    "PCTG": {"Generic": []},
+    "PE": {"Generic": []},
+    "PE-CF": {"Generic": []},
+    "PHA": {"Generic": []},
+}
+_FIL_DB_MERGED: dict = {}
+
+
+def _with_extra_filaments(db: dict) -> dict:
+    """The DB hierarchy plus FILAMENT_DB_EXTRA. Types, vendors and
+    sub-types are matched case-insensitively and only added when missing;
+    DB order stays, new types go to the end."""
+    out = {t: {v: list(subs or []) for v, subs in (vendors or {}).items()}
+           for t, vendors in db.items()}
+    types = {str(t).strip().upper(): t for t in out}
+    for etype, evendors in FILAMENT_DB_EXTRA.items():
+        t = types.get(etype.upper())
+        if t is None:
+            t = etype
+            out[t] = {"Generic": []}
+            types[etype.upper()] = t
+        vendors = {str(v).strip().lower(): v for v in out[t]}
+        for evendor, esubs in evendors.items():
+            v = vendors.get(evendor.lower())
+            if v is None:
+                v = evendor
+                out[t][v] = []
+            have = {str(x).strip().lower() for x in out[t][v]}
+            for sub in esubs:
+                if sub.lower() not in have:
+                    out[t][v].append(sub)
+    return out
+
+
 def _load_filament_db() -> dict:
+    """The firmware filament DB plus the display-only filaments
+    (FILAMENT_DB_EXTRA). {} when no DB file is readable."""
+    raw = _read_filament_db()
+    if not raw:
+        return raw
+    hit = _FIL_DB_MERGED.get("v")
+    if hit and hit[0] is raw:
+        return hit[1]
+    merged = _with_extra_filaments(raw)
+    _FIL_DB_MERGED["v"] = (raw, merged)
+    return merged
+
+
+def _read_filament_db() -> dict:
     """Parse the Snapmaker firmware filament DB and return the full
     {type: {vendor: [subtype, ...]}} hierarchy (subtypes exclude the implicit
     'generic'; the 'generic' vendor is normalised to 'Generic' to match the
@@ -7037,8 +7439,8 @@ async def get_materials() -> dict:
     db = _load_filament_db()
     if db:
         return {"materials": list(db.keys()), "db": db}
-    return {"materials": DEFAULT_MATERIALS,
-            "db": {m: {"Generic": []} for m in DEFAULT_MATERIALS}}
+    db = _with_extra_filaments({m: {"Generic": []} for m in DEFAULT_MATERIALS})
+    return {"materials": list(db.keys()), "db": db}
 
 @app.websocket("/ws")
 async def ws(websocket: WebSocket) -> None:

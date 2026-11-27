@@ -2947,12 +2947,19 @@ class FilamentFeed:
                                     except Exception:
                                         logging.exception(
                                             '[feed][unload] gate_empty mark')
-                                self.ace.log_error(self.ace._t(
+                                _ge_msg = self.ace._t(
                                     'msg.unload_gate_empty' if _gate_empty
                                     else 'msg.unload_gate_empty_again',
                                     head=self.ace._disp(head_idx),
                                     ace=self.ace._disp(_gate_ace),
-                                    slot=self.ace._disp(_ace_slot)))
+                                    slot=self.ace._disp(_ace_slot))
+                                # In a swap the pause that follows carries the
+                                # instructions; this one only goes to the log.
+                                if getattr(self.ace, '_swap_in_progress',
+                                           False):
+                                    logging.info(_ge_msg)
+                                else:
+                                    self.ace.log_error(_ge_msg)
                             # Head mode, no head_source and no feed assist
                             # running on the unit: the slot would be a guess
                             # (first spool at a gate), and a wrong guess pulls
@@ -3235,6 +3242,8 @@ class FilamentFeed:
                                         head=self.ace._disp(self.filament_ch[ch])))
                                 except Exception:
                                     pass
+                            elif not unload_ok and unload_reason == 'bowden_stall':
+                                logging.info("[feed][unload] toolhead clear, but the bulk retract is not verified - the strand can still sit between head and MMU")
                             elif not unload_ok:
                                 logging.info("[feed][unload] filament genuinely stuck after %d unload attempts (sensor never cleared)", unload_max)
 
@@ -3468,12 +3477,19 @@ class FilamentFeed:
                                     except Exception:
                                         logging.exception(
                                             '[feed][unload] gate_empty mark')
-                                self.ace.log_error(self.ace._t(
+                                _ge_msg = self.ace._t(
                                     'msg.unload_gate_empty' if _gate_empty
                                     else 'msg.unload_gate_empty_again',
                                     head=self.ace._disp(head_idx),
                                     ace=self.ace._disp(_gate_ace),
-                                    slot=self.ace._disp(_ace_slot)))
+                                    slot=self.ace._disp(_ace_slot))
+                                # In a swap the pause that follows carries the
+                                # instructions; this one only goes to the log.
+                                if getattr(self.ace, '_swap_in_progress',
+                                           False):
+                                    logging.info(_ge_msg)
+                                else:
+                                    self.ace.log_error(_ge_msg)
                             # Head mode, no head_source and no feed assist
                             # running on the unit: the slot would be a guess
                             # (first spool at a gate), and a wrong guess pulls
@@ -3756,6 +3772,8 @@ class FilamentFeed:
                                         head=self.ace._disp(self.filament_ch[ch])))
                                 except Exception:
                                     pass
+                            elif not unload_ok and unload_reason == 'bowden_stall':
+                                logging.info("[feed][unload] toolhead clear, but the bulk retract is not verified - the strand can still sit between head and MMU")
                             elif not unload_ok:
                                 logging.info("[feed][unload] filament genuinely stuck after %d unload attempts (sensor never cleared)", unload_max)
                             if self.ace is not None:
@@ -4096,6 +4114,15 @@ class FilamentFeed:
             short = float(m.get('short') or 0.0)
         except Exception:
             return False
+        if m.get('unmeasured'):
+            # The unit's end event was lost and no encoder reading came:
+            # nothing measured, so nothing proves the retract short. The
+            # presence pin already decided the toolhead side.
+            logging.info(
+                '[multiACE] [feed][unload] head %d MMU slot %d: bulk retract '
+                'end not measured by the MMU - not counted as short'
+                % (head, slot))
+            return False
         if short <= 0.0:
             return False
         if m.get('stop') == 'runout':
@@ -4273,6 +4300,22 @@ class FilamentFeed:
             logging.info('[feed][load] classify failed, using flat message: %s' % e)
             return None, None
 
+    def _resume_past_gate_empty(self, head):
+        """True for an ACE head of a paused print whose head_source carries
+        the 'gate_empty' mark, when the print's gcode carries multiACE loads."""
+        _ace = getattr(self, 'ace', None)
+        if _ace is None or not getattr(_ace, '_print_has_gcode_loads', False):
+            return False
+        src = (getattr(_ace, '_head_source', None) or {}).get(head)
+        if not src or not src.get('gate_empty'):
+            return False
+        if not _ace.head_uses_ace(head):
+            return False
+        ps = self.printer.lookup_object('print_stats', None)
+        if ps is None:
+            return False
+        return ps.get_status(self.reactor.monotonic()).get('state') == 'paused'
+
     def get_status(self, eventtime=None):
         filament_detected = []
         filament_detected.append(self._port[FEED_CHANNEL_1].get_filament_detected())
@@ -4342,6 +4385,24 @@ class FilamentFeed:
                 try:
                     if _ace.head_uses_ace(self.filament_ch[_ch]):
                         filament_detected[_ch] = False
+                except Exception:
+                    pass
+
+        # Paused print, head emptied by hand after its strand broke above the
+        # MMU gate (head_source carries 'gate_empty'): stock INNER_RESUME
+        # checks filament_exist of the head before anything else, and with an
+        # empty toolhead that falls back to this field = the gate of the OLD,
+        # empty slot. RESUME then wanted that slot refilled although the
+        # replayed swap loads from its own target. Report present here so the
+        # RESUME goes through; a later swap onto the empty slot still pauses
+        # at its gate check. Only with multiACE loads in the gcode.
+        if not _replenish:
+            for _ch in (FEED_CHANNEL_1, FEED_CHANNEL_2):
+                if filament_detected[_ch] or _runout(_ch) is not False:
+                    continue
+                try:
+                    if self._resume_past_gate_empty(self.filament_ch[_ch]):
+                        filament_detected[_ch] = True
                 except Exception:
                     pass
 

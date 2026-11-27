@@ -40,10 +40,17 @@ PYZ = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # sha256 is the one in the release's SHA256SUMS; it gates the download
 # from GitHub (a version without one is upload-only).
 KNOWN_ACE2K = {
-    "0.15.0": {"md5": "086a678bc079efe8d610557aa35e6d64",
-               "sha256": "366c050a78aa09327ce4be5d134ebe237ef94bcd1d2ad5113e"
-                         "c3303358654d1b",
-               "tested": "2026-11-14 ace2k driver on hardware (two units)"},
+    "0.16.0": {"md5": "8861965c0e56c76a9e5d3a165f7aaa80",
+               "sha256": "fb94d890dfba34cdf7d5003f0800a3debcb9086d579190d952"
+                         "aa582d9882fedd",
+               "tested": ""},
+    # Pre-release of tobecwb: the dryer learns its heater's rate (for units
+    # whose dryer stopped with 'fault (response)' on 230 V). Flashing it
+    # erases the unit's config page.
+    "0.17.0-alpha.1": {"md5": "6d017f0ce98622b61a7724db7ef74f8c",
+                       "sha256": "f014b23f1f12a159c1107b74c7a54dd71f52ac07c0"
+                                 "19fe5c77b4b39d056caccc",
+                       "tested": ""},
 }
 
 # The release assets of tobecwb's repository: one image per version under

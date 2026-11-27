@@ -892,14 +892,19 @@ def manual_head_list(head_ctx) -> list:
     return out
 
 
+# True brings the classic synthetic-T pipeline back for multi prints without
+# colour copies, hand-fed heads or background swaps.
+MULTI_CLASSIC_PIPELINE = False
+
+
 def multi_assignment_shape(head_ctx) -> bool:
     """Multi mode uses the head-mode assignment pipeline (one target per
-    colour, copies, pins, background-swap stamps) once colour copies are
-    allowed, a hand-fed head exists or background swaps are possible;
-    otherwise the classic synthetic-T pipeline runs, byte-identical to
-    before."""
+    colour, copies, pins, background-swap stamps). The classic synthetic-T
+    pipeline only runs with MULTI_CLASSIC_PIPELINE."""
     if not is_multi_ctx(head_ctx):
         return False
+    if not MULTI_CLASSIC_PIPELINE:
+        return True
     return (max_copies(head_ctx) > 1 or bool(manual_head_list(head_ctx))
             or multi_bg_possible(head_ctx))
 
@@ -1003,10 +1008,12 @@ def head_maps(head_ctx: dict, pp=None) -> tuple:
                 "heads need a newer post_process_virtual_toolheads.py")
         manual = sorted({m["head"] for m in manual_head_list(head_ctx)})
         ace_heads = [h for h in range(4) if h not in manual]
+        # Every connected MMU counts, also one with no spool in it yet (a
+        # proposal may ask for spools there).
         num_aces = int(head_ctx.get("num_aces") or 4)
         conn = connected_aces(head_ctx)
         if conn:
-            num_aces = min(num_aces, max(conn) + 1)
+            num_aces = max(conn) + 1
         topo = topo_cls(ace_heads, num_aces)
         return ace_heads, topo, {h: 0 for h in ace_heads}, manual
     ace_heads = [int(h) for h in (head_ctx.get("ace_heads") or [])]
@@ -1336,35 +1343,242 @@ def _bg_stats_for(pp, events, assignment, event_times, bg_heads,
         return None
 
 
+def plan_scope(value) -> str:
+    """'reorder' (plan on the loaded spools) or 'all' (a load proposal over
+    every slot of the connected MMUs). Anything else reads as 'all', the
+    behaviour before the switch."""
+    return "reorder" if str(value or "").strip().lower() == "reorder" \
+        else "all"
+
+
+def _mat(value) -> str:
+    return (value or "").strip().lower()
+
+
+def reorder_inputs(pp, colours, slicer_types, feeders, ace_heads,
+                   ace_head_of_ace, live_slots, nozzle_groups=None):
+    """(allowed, capacity, accept) for compute_head_mode_optimize so a
+    proposal only uses the loaded spools: a colour may go to an MMU head
+    that has a loaded slot of its material, or to a hand-fed/feeder head
+    declared with it; a head holds as many colours as it has loaded slots,
+    material by material."""
+    slot_head = _slot_head_fn(pp, ace_head_of_ace)
+    mats = {int(h): [] for h in ace_heads}
+    for sl in live_slots or []:
+        try:
+            h = slot_head(int(sl["ace"]), int(sl["slot"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if h in mats:
+            mats[h].append(_mat(sl.get("material")))
+    feeder_mat = {}
+    for f in feeders or []:
+        try:
+            feeder_mat[int(f["head"])] = _mat(f.get("material"))
+        except (KeyError, TypeError, ValueError):
+            continue
+    allowed = {}
+    for t in colours:
+        m = _mat((slicer_types or {}).get(t))
+        heads = {h for h, ms in mats.items() if ms and (not m or m in ms)}
+        heads |= {h for h, fm in feeder_mat.items()
+                  if fm and (not m or fm == m)}
+        if nozzle_groups and t in nozzle_groups:
+            heads &= set(nozzle_groups[t])
+        allowed[t] = heads
+    capacity = {h: len(ms) for h, ms in mats.items()}
+
+    def accept(c2h):
+        need = {}
+        for t, h in c2h.items():
+            if h in mats:
+                need.setdefault(h, []).append(_mat((slicer_types or {}).get(t)))
+        for h, wants in need.items():
+            have = list(mats[h])
+            for m in sorted(wants, key=lambda x: not x):
+                if m:
+                    if m not in have:
+                        return False
+                    have.remove(m)
+                elif have:
+                    have.pop()
+                else:
+                    return False
+        return True
+
+    return allowed, capacity, accept
+
+
+def fit_to_loaded(pp, assignment, slicer_colors, slicer_types, live_slots,
+                  ace_head_of_ace):
+    """Give every MMU colour of a proposal a loaded slot of its head:
+    material-strict, closest colour first. None when the loaded spools
+    cannot carry it."""
+    from itertools import permutations
+    slot_head = _slot_head_fn(pp, ace_head_of_ace)
+    by_head = {}
+    for sl in live_slots or []:
+        try:
+            h = slot_head(int(sl["ace"]), int(sl["slot"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if h is not None:
+            by_head.setdefault(h, []).append(sl)
+    per_head = {}
+    for t, e in (assignment or {}).items():
+        if (e or {}).get("kind") == "ace":
+            per_head.setdefault(e["head"], []).append(t)
+    out = dict(assignment)
+    for h, cols in per_head.items():
+        cols = sorted(cols)
+        best = None
+        for perm in permutations(by_head.get(h, []), len(cols)):
+            cost = 0
+            for c, sl in zip(cols, perm):
+                m = _mat((slicer_types or {}).get(c))
+                if m and _mat(sl.get("material")) != m:
+                    cost = None
+                    break
+                a, b = _rgb((slicer_colors or {}).get(c)), _rgb(sl.get("color"))
+                cost += (sum((x - y) ** 2 for x, y in zip(a, b))
+                         if a and b else 3 * 255 ** 2)
+            if cost is not None and (best is None or cost < best[0]):
+                best = (cost, perm)
+        if best is None:
+            return None
+        for c, sl in zip(cols, best[1]):
+            same = ((_rgb((slicer_colors or {}).get(c)) or 0)
+                    == (_rgb(sl.get("color")) or 1))
+            out[c] = {"kind": "ace", "head": h, "ace": int(sl["ace"]),
+                      "slot": int(sl["slot"]),
+                      "tier": "exact_hex" if same else "fallback"}
+    return out
+
+
+NO_FIT_REASON = "loaded spools do not fit this layout"
+
+
+def proposal_assignment(pp, events, feeder_heads, ace_heads, ace_num_of_head,
+                        num_slots, layer_sets, *, event_times=None,
+                        bg_heads=None, flush_matrix=None, objective="time",
+                        topology=None, scope="all", feeders=None,
+                        live_slots=None, slicer_colors=None,
+                        slicer_types=None, nozzle_groups=None):
+    """The optimize / layer / colour plan as (assignment, swaps, reason).
+    scope 'all': the free load proposal. scope 'reorder': the same search
+    limited to the loaded spools, every colour on a real loaded slot.
+    Preview and print both call this, so they agree."""
+    args = (events, feeder_heads, ace_heads, ace_num_of_head, num_slots)
+    kw = dict(layer_color_sets=layer_sets, event_times=event_times,
+              bg_heads=bg_heads, flush_matrix=flush_matrix,
+              objective=objective, topology=topology)
+    if plan_scope(scope) == "reorder":
+        colours = set(slicer_colors or {}) | set(events or [])
+        allowed, capacity, accept = reorder_inputs(
+            pp, colours, slicer_types, feeders, ace_heads, topology,
+            live_slots, nozzle_groups)
+        try:
+            assignment, _swaps = pp.compute_head_mode_optimize(
+                *args, allowed=allowed, capacity=capacity, accept=accept,
+                **kw)
+        except TypeError:
+            return None, None, "post-processor outdated"
+        if assignment is not None:
+            assignment = fit_to_loaded(pp, assignment, slicer_colors,
+                                       slicer_types, live_slots, topology)
+        if assignment is None:
+            return None, None, (
+                "no layer-feasible loadout on the loaded spools"
+                if layer_sets else NO_FIT_REASON)
+        return assignment, pp.head_mode_swap_count(events, assignment), ""
+    try:
+        assignment, swaps = pp.compute_head_mode_optimize(*args, **kw)
+    except TypeError:
+        # older post-processor without the newer kwargs
+        assignment, swaps = pp.compute_head_mode_optimize(
+            *args, layer_color_sets=layer_sets)
+    if assignment is None:
+        return None, None, ("no layer-feasible loadout" if layer_sets
+                            else "too many colours for the loadout")
+    return assignment, swaps, ""
+
+
+def check_plan_loaded(assignment, copies, slicer_types, live_slots, feeders):
+    """Last check before a proposed plan prints: every slot it uses must
+    hold a declared spool of the colour's material, every pinned head its
+    material. Otherwise the print would load the wrong filament or stop at
+    the first swap."""
+    by_key = {}
+    for sl in live_slots or []:
+        try:
+            by_key[(int(sl["ace"]), int(sl["slot"]))] = _mat(sl.get("material"))
+        except (KeyError, TypeError, ValueError):
+            continue
+    feeder_mat = {}
+    for f in feeders or []:
+        try:
+            feeder_mat[int(f["head"])] = _mat(f.get("material"))
+        except (KeyError, TypeError, ValueError):
+            continue
+    rows = [(t, e) for t, e in sorted((assignment or {}).items())]
+    for t, lst in sorted((copies or {}).items()):
+        rows.extend((t, e) for e in lst)
+    bad = []
+    for t, e in rows:
+        want = _mat((slicer_types or {}).get(t))
+        kind = (e or {}).get("kind")
+        try:
+            if kind == "ace":
+                key = (int(e["ace"]), int(e["slot"]))
+                where = "MMU %d slot %d" % (key[0] + 1, key[1] + 1)
+                have = by_key.get(key)
+                if have is None:
+                    bad.append("T%d %s -> %s (no declared spool)"
+                               % (int(t) + 1, want.upper() or "?", where))
+                elif want and have and have != want:
+                    bad.append("T%d %s -> %s (%s)" % (
+                        int(t) + 1, want.upper(), where, have.upper()))
+            elif kind == "pin":
+                have = feeder_mat.get(int(e["head"]))
+                if want and have and have != want:
+                    bad.append("T%d %s -> head %d (%s)" % (
+                        int(t) + 1, want.upper(), int(e["head"]) + 1,
+                        have.upper()))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if bad:
+        raise PreflightRejected(
+            "the loaded spools do not match this plan, load them as shown "
+            "first: " + "; ".join(bad))
+
+
 def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
                         ace_num_of_head, num_slots, layer_sets,
                         event_times=None, bg_heads=None,
                         flush_matrix=None, objective="time",
                         head_ctx=None, ace_head_of_ace=None,
-                        nozzle_groups=None, estimate_ctx=None) -> dict:
+                        nozzle_groups=None, estimate_ctx=None,
+                        scope="all", feeders=None, live_slots=None,
+                        slicer_types=None) -> dict:
     """A head-mode PROPOSED-loadout plan (optimize / layer-Belady): the
     swap-minimal FREE assignment that ignores the current physical load. The
     user arranges spools to match before printing → read-only table. With
     event_times/bg_heads the optimizer prefers routing swap chains through
     bg-enabled heads (background unloads instead of inline stalls)."""
+    reorder = plan_scope(scope) == "reorder"
     try:
-        try:
-            assignment, swaps = pp.compute_head_mode_optimize(
-                events, feeder_heads, ace_heads, ace_num_of_head, num_slots,
-                layer_color_sets=layer_sets,
-                event_times=event_times, bg_heads=bg_heads,
-                flush_matrix=flush_matrix, objective=objective,
-                topology=ace_head_of_ace)
-        except TypeError:
-            # older post-processor without the newer kwargs
-            assignment, swaps = pp.compute_head_mode_optimize(
-                events, feeder_heads, ace_heads, ace_num_of_head, num_slots,
-                layer_color_sets=layer_sets)
+        assignment, swaps, reason = proposal_assignment(
+            pp, events, feeder_heads, ace_heads, ace_num_of_head, num_slots,
+            layer_sets, event_times=event_times, bg_heads=bg_heads,
+            flush_matrix=flush_matrix, objective=objective,
+            topology=ace_head_of_ace, scope=scope, feeders=feeders,
+            live_slots=live_slots, slicer_colors=slicer_colors,
+            slicer_types=slicer_types, nozzle_groups=nozzle_groups)
     except Exception:
         assignment, swaps = None, None
-    if assignment is None:
         reason = ("no layer-feasible loadout" if layer_sets
                   else "too many colours for the loadout")
+    if assignment is None:
         return {"feasible": False, "swaps": 0, "mapping": [], "reason": reason}
     mapping = []
     feasible = True
@@ -1380,9 +1594,10 @@ def _head_proposal_plan(pp, events, slicer_colors, feeder_heads, ace_heads,
     # Colour copies in the proposal: a second spool of a colour in a slot
     # the proposal leaves free (rows tagged tier 'copy'); the swap count is
     # the simulation with those copies, so the header matches the table.
-    copies = proposal_copies(pp, events, assignment, head_ctx,
-                             ace_head_of_ace, num_slots, bg_heads,
-                             nozzle_groups)
+    # A reorder plan stays on the loaded spools and plans no copies.
+    copies = {} if reorder else proposal_copies(
+        pp, events, assignment, head_ctx, ace_head_of_ace, num_slots,
+        bg_heads, nozzle_groups)
     if copies:
         for t, lst in copies.items():
             for e in lst:
@@ -1528,6 +1743,26 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
             ace_num_of_head, num_slots, None,
             event_times=event_times, bg_heads=bg_heads,
             flush_matrix=flush_matrix, objective="color", **_cp)
+    # The same three plans limited to the loaded spools (scope 'reorder'):
+    # printable as they lie, no spool has to be moved or added.
+    _rp = dict(_cp, scope="reorder", feeders=feeders, live_slots=ace_slots,
+               slicer_types=slicer_types)
+    plans_reorder = {
+        "optimize": _head_proposal_plan(
+            pp, events, slicer_colors, feeder_heads, ace_heads,
+            ace_num_of_head, num_slots, None, event_times=event_times,
+            bg_heads=bg_heads, flush_matrix=flush_matrix, **_rp),
+        "layer": _head_proposal_plan(
+            pp, events, slicer_colors, feeder_heads, ace_heads,
+            ace_num_of_head, num_slots, layer_sets, event_times=event_times,
+            bg_heads=bg_heads, flush_matrix=flush_matrix, **_rp),
+    }
+    if flush_matrix is not None:
+        plans_reorder["color"] = _head_proposal_plan(
+            pp, events, slicer_colors, feeder_heads, ace_heads,
+            ace_num_of_head, num_slots, None, event_times=event_times,
+            bg_heads=bg_heads, flush_matrix=flush_matrix, objective="color",
+            **_rp)
 
     if estimate_capture is not None:
         estimate_capture.update(ctx=estimate_ctx, events=events,
@@ -1585,6 +1820,9 @@ def head_mode_preview(pp, token, safe_name, upload_size, slicer_colors,
         "targets": targets,
         "events": events,
         "plans": plans,
+        # optimize / layer / color once more for scope 'reorder'; "plans"
+        # holds scope 'all'. The print names the scope it previewed.
+        "plans_reorder": plans_reorder,
         # Multifilament row: the copies in use (target ids per slicer T, all
         # loaded slots so the universe resolves them) + the suggestion.
         "copies": {str(t): [head_target_id(e) for e in lst]
@@ -1772,7 +2010,7 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
                      remap_override=None, head_assignment=None,
                      head_plan="loadout", fuzzy=DEFAULT_FUZZY,
                      set_stage=None, stage_cb=None, meta=None,
-                     head_copies=None) -> str:
+                     head_copies=None, head_scope="all") -> str:
     """Run the rewrite pipeline on src_path, ping-ponging between tmp_a/tmp_b,
     and return the path holding the final print-ready gcode.
 
@@ -1885,21 +2123,19 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
                         hm_matrix = _pfmf(str(src_path))
                     except Exception:
                         hm_matrix = None
-            try:
-                assignment, _hm_swaps = pp.compute_head_mode_optimize(
-                    hm_events, feeder_heads, ace_heads, ace_num_of_head,
-                    hm_slots, layer_color_sets=hm_layer_sets,
-                    event_times=hm_times, bg_heads=hm_bg_heads,
-                    flush_matrix=hm_matrix,
-                    objective=("color" if head_plan == "color" else "time"),
-                    topology=ace_head_of_ace)
-            except TypeError:
-                assignment, _hm_swaps = pp.compute_head_mode_optimize(
-                    hm_events, feeder_heads, ace_heads, ace_num_of_head,
-                    hm_slots, layer_color_sets=hm_layer_sets)
+            assignment, _hm_swaps, _hm_reason = proposal_assignment(
+                pp, hm_events, feeder_heads, ace_heads, ace_num_of_head,
+                hm_slots, hm_layer_sets, event_times=hm_times,
+                bg_heads=hm_bg_heads, flush_matrix=hm_matrix,
+                objective=("color" if head_plan == "color" else "time"),
+                topology=ace_head_of_ace, scope=head_scope, feeders=feeders,
+                live_slots=live_slots, slicer_colors=slicer_colors,
+                slicer_types=slicer_types,
+                nozzle_groups=nozzle_context(pp, meta, head_ctx)[0])
             if assignment is None:
                 raise RuntimeError(
-                    "no feasible head-mode loadout for %s plan" % head_plan)
+                    "no feasible head-mode loadout for %s plan (%s)"
+                    % (head_plan, _hm_reason))
         elif head_assignment:
             assignment = assignment_from_target_ids(head_assignment, targets)
         else:
@@ -1915,7 +2151,10 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
         # preview used verbatim; an older frontend sends none -> detect from
         # the loaded slots. max_copies 1 -> {} -> byte-identical rewrite.
         copies = {}
-        if head_plan in ("optimize", "layer", "color"):
+        if head_plan in ("optimize", "layer", "color") \
+                and plan_scope(head_scope) == "reorder":
+            pass
+        elif head_plan in ("optimize", "layer", "color"):
             if head_copies:
                 # The preview planned its copies live (max-copies setting
                 # of that moment); take them verbatim. Any slot of a wired
@@ -1948,6 +2187,10 @@ def rewrite_pipeline(pp, *, src_path, tmp_a, tmp_b, slicer_colors, slicer_types,
                     pp, assignment, slicer_colors, slicer_types, live_slots,
                     ace_head_of_ace, head_ctx,
                     nozzle_context(pp, meta, head_ctx)[0])
+
+        if head_plan in ("optimize", "layer", "color"):
+            check_plan_loaded(assignment, copies, slicer_types, live_slots,
+                              feeders)
 
         set_stage("rewrite", 10.0)
         _pc = bool((head_ctx or {}).get("pickup_cleaning"))

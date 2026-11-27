@@ -817,7 +817,8 @@ def head_mode_swap_count(events, assignment, copies=None, bg_heads=None):
     """Swaps the ACE heads perform for a head-mode `assignment` over the slicer
     toolchange sequence `events`. Pinned colours never swap (they print on their
     own feeder head); only (ace,slot) changes on ACE-assigned colours count, per
-    ACE head. The first load on each ACE head counts as a swap.
+    ACE head. The first load of a head is not a swap: the auto-load block
+    does it before the print.
 
     `copies` ({t: [extra 'ace' entries]}, see detect_color_copies): a colour
     that may print from several heads is counted by the per-event choice of
@@ -834,7 +835,9 @@ def head_mode_swap_count(events, assignment, copies=None, bg_heads=None):
             continue
         head = e.get('head')
         key = (e['ace'], e['slot'])
-        if cur.get(head) != key:
+        if head not in cur:
+            cur[head] = key
+        elif cur[head] != key:
             swaps += 1
             cur[head] = key
     return swaps
@@ -870,7 +873,7 @@ def simulate_dynamic_swaps(events, targets_of, bg_heads=None):
     the colour longest, i.e. whose next event that only this head can
     print lies furthest ahead, then the primary target; then a bg-enabled
     head, then the fewest swaps so far, then list order). Pinned targets never swap and
-    are never evicted. The first load of a head counts as a swap, like
+    are never evicted. The first load of a head is not a swap, like
     head_mode_swap_count. Returns (swaps, plan) with plan[k] = the entry
     chosen for events[k] (None when the colour has no target)."""
     import bisect
@@ -944,7 +947,8 @@ def simulate_dynamic_swaps(events, targets_of, bg_heads=None):
                 continue
             chosen = best
             h = chosen['head']
-            swaps += 1
+            if h in cur:
+                swaps += 1
             swaps_by_head[h] = swaps_by_head.get(h, 0) + 1
             cur[h] = ((chosen['ace'], chosen['slot']), t)
         plan.append(chosen)
@@ -1174,7 +1178,8 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                                num_slots, layer_color_sets=None, max_colors=12,
                                event_times=None, bg_heads=None,
                                flush_matrix=None, objective='time',
-                               topology=None):
+                               topology=None, allowed=None, capacity=None,
+                               accept=None):
     """Head-mode loadout OPTIMIZER - the swap-minimal PROPOSED loadout that
     IGNORES the current physical load (plan 'optimize' + plan 'layer'/Belady).
 
@@ -1204,6 +1209,12 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
       event_times:      per-event remaining minutes (parse_toolchanges_with_
                         times), for the bg-aware cost below. Optional.
       bg_heads:         bg-enabled (open-dock) head indices. Optional.
+      allowed:          {colour: set(heads)} a colour may go to. With it
+                        the feeder bins are the feeder heads in sorted
+                        order (a colour is pinned to exactly that head).
+      capacity:         {ace head: colours it can hold} instead of num_slots.
+      accept:           callable({colour: head}) -> bool, a last veto on a
+                        candidate (e.g. the loaded spools cannot carry it).
 
     Bg-aware cost (when event_times + bg_heads given): a swap whose unload
     can run in the BACKGROUND (released head, parked window >=
@@ -1239,11 +1250,26 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
     #       F..F+K-1 = ACE heads (capacity S each, swap on active-colour change).
     best_c2b = None
     best_key = None
+    bin_head = feeders_sorted + ace_sorted
+    cap = [S] * K
+    if capacity is not None:
+        cap = [int(capacity.get(h, 0)) for h in ace_sorted]
+    allowed_bins = None
+    if allowed is not None:
+        allowed_bins = [
+            frozenset(b for b in range(F + K)
+                      if bin_head[b] in (allowed.get(c) or ()))
+            for c in colors_list]
+        if any(not a for a in allowed_bins):
+            return None, None
     for combo in product(range(F + K), repeat=n):
         feeder_count = [0] * F
         ace_count = [0] * K
         ok = True
-        for b in combo:
+        for i, b in enumerate(combo):
+            if allowed_bins is not None and b not in allowed_bins[i]:
+                ok = False
+                break
             if b < F:
                 feeder_count[b] += 1
                 if feeder_count[b] > 1:        # a feeder pins exactly one colour
@@ -1251,13 +1277,16 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                     break
             else:
                 ace_count[b - F] += 1
-                if ace_count[b - F] > S:       # an ACE head holds <= S colours
+                if ace_count[b - F] > cap[b - F]:  # an ACE head's capacity
                     ok = False
                     break
         if not ok:
             continue
 
         c2b = {colors_list[i]: combo[i] for i in range(n)}
+        if accept is not None and not accept(
+                {c: bin_head[b] for c, b in c2b.items()}):
+            continue
 
         # Layer-only swap mode: at most ONE colour per ACE head active per layer
         # (feeders are capacity-1 so distinct colours never collide on a feeder).
@@ -1278,9 +1307,9 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                 continue
 
         # Swaps: per ACE head, count active-colour changes. The first load on
-        # each ACE head is charged too (matches head_mode_swap_count), so an
-        # all-pinned loadout correctly beats one that touches an ACE for one
-        # colour. With bg info, swaps whose unload fits the released head's
+        # each ACE head is charged here too (the displayed count leaves it
+        # out), so an all-pinned loadout correctly beats one that touches an
+        # ACE for one colour. With bg info, swaps whose unload fits the released head's
         # parked window (>= BG_UNLOAD_MIN_WINDOW_MIN, bg-enabled head) are
         # charged the cheaper background cost.
         have_t = bool(event_times) and len(event_times) == len(events)
@@ -1369,6 +1398,9 @@ def compute_head_mode_optimize(events, feeder_heads, ace_heads, ace_num_of_head,
                                  'slot': slot, 'tier': 'optimize'}
         else:
             head = feeder_bin_to_head.get(b)
+            if head is None and allowed is not None:
+                head = feeders_sorted[b]
+                feeder_bin_to_head[b] = head
             if head is None:
                 head = feeders_sorted[next_feeder]
                 feeder_bin_to_head[b] = head

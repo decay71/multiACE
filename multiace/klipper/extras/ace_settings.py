@@ -7,6 +7,7 @@ Mixin of MultiAce, imported by ace.py. ``self`` is the MultiAce instance;
 state is created in ace.py.__init__. Every definition here is byte-identical
 to its former place in ace.py (tests/units/tools/move_check.py).
 """
+import re
 import json
 import logging
 import os
@@ -414,6 +415,10 @@ class SettingsMixin:
             # arrive here anyway - strip a trailing slash so the backend can
             # concatenate paths without doubling it.
             self.spoolman_url = url.strip().rstrip('/')
+            # an address typed without a scheme would fail every request
+            if self.spoolman_url and not re.match(
+                    r'^[A-Za-z][A-Za-z0-9+.\-]*://', self.spoolman_url):
+                self.spoolman_url = 'http://' + self.spoolman_url
             if not self.spoolman_url and self.spool_mode != 'local' \
                     and mode is None:
                 # URL cleared: a Spoolman world without an address cannot

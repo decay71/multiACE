@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0b0d0e"/>
+  <g transform="translate(64 96)">
+    <rect x="0"   y="0" width="80" height="240" rx="12" fill="#ff5050"/>
+    <rect x="100" y="0" width="80" height="240" rx="12" fill="#50d050"/>
+    <rect x="200" y="0" width="80" height="240" rx="12" fill="#15bdc6"/>
+    <rect x="300" y="0" width="80" height="240" rx="12" fill="#ffd040"/>
+  </g>
+  <text x="256" y="436" font-family="Segoe UI,system-ui,sans-serif" font-size="72" font-weight="700"
+        fill="#e4e8e9" text-anchor="middle">m<tspan fill="#15bdc6">U</tspan>lt<tspan fill="#15bdc6">1</tspan>ACE<tspan fill="#15bdc6">+</tspan></text>
+</svg>

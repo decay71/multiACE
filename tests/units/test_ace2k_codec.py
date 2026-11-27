@@ -111,19 +111,46 @@ def test_closed_port_read_is_a_dead_link():
         raise AssertionError('no LinkDead')
 
 
-def test_lost_end_event_books_nothing():
-    """A piece whose end event never came (the lane idle in the report):
-    the distance is unknown, so none is booked and a retract reads short."""
-    C = _C()
-    link = C.Ace2kLink(_Raw(None), clock=lambda: 100.0)
+def _lost_rig(C, now):
+    link = C.Ace2kLink(_Raw(None), clock=lambda: now[0])
     link.dictionary = type('D', (), {'has': staticmethod(lambda n: False)})()
     link._feed = (99.0, {'mode': bytes(4)})
     link._jobs[1] = {'kind': 'retract', 'slot': 1, 'target': 500.0,
                      'done': 0.0, 'speed': 60.0, 'free_tip': False,
                      'mseq': 7, 'seq': 3, 'piece': 500.0, 't0': 90.0,
                      'deadline': 200.0}
+    return link
+
+
+def test_lost_end_event_books_nothing_and_is_not_short():
+    """A piece whose end event never came (the lane idle in the report):
+    the link waits a moment for the event, then ends the move. Nothing is
+    booked, and the motion report does not claim the retract came back
+    short (HW 2026-11-21: a false unload pause)."""
+    C = _C()
+    now = [100.0]
+    link = _lost_rig(C, now)
+    link._tick()
+    assert 1 in link._jobs                 # still waiting for the event
+    now[0] += C.LOST_ENCODER_WAIT_S + 0.1
     link._tick()
     assert 1 not in link._jobs
     m = link._lane_motion[1]
     assert m['mm'] == 0.0 and m['stop'] == 'lost_event'
-    assert m['short'] == 500.0
+    assert m['short'] == 0.0 and m['unmeasured'] is True
+
+
+def test_end_event_after_the_idle_report_still_counts():
+    """An image before 2026-11-12 can send the idle report before the
+    move's end event: an event inside the wait ends the move normally."""
+    C = _C()
+    now = [100.0]
+    link = _lost_rig(C, now)
+    link._tick()
+    kind = [k for k, v in C.KIND_NAMES.items() if v == 'done'][0]
+    link._on_event({'lane': 1, 'kind': kind, 'seq': 3,
+                    'filament_um': 500000})
+    assert 1 not in link._jobs
+    m = link._lane_motion[1]
+    assert m['mm'] == 500.0 and m['short'] == 0.0
+    assert 'unmeasured' not in m

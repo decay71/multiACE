@@ -586,6 +586,7 @@
     "FeedPort._ace_gate_value",
     "FilamentFeed._do_feed",
     "FilamentFeed._restore_print_fa_gate",
+    "FilamentFeed._resume_past_gate_empty",
     "FilamentFeed._virtual_preload",
     "FilamentFeed.cmd_FEED_AUTO",
     "FilamentFeed.get_status"
@@ -647,7 +648,8 @@
    ],
    "_head_source": [
     "FilamentFeed._emit_feed_pause",
-    "FilamentFeed._feed_load_fail_details"
+    "FilamentFeed._feed_load_fail_details",
+    "FilamentFeed._resume_past_gate_empty"
    ],
    "_inherit_prev_capture": [
     "FilamentFeed._do_feed"
@@ -665,6 +667,7 @@
     "FilamentFeed._do_feed"
    ],
    "_print_has_gcode_loads": [
+    "FilamentFeed._resume_past_gate_empty",
     "FilamentFeed.cmd_FEED_AUTO"
    ],
    "_print_virtual_raw": [
