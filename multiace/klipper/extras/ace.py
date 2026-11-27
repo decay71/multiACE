@@ -34,7 +34,7 @@ from .ace_spool import (SpoolMixin, SPOOLLINK_RESOLVE_METHOD,
                         SPOOLLINK_STARTUP_CHECK_DELAY)
 from .ace_resistance import ResistanceMixin, RESISTANCE_STRIKE_CLEAR_READS
 
-MULTIACE_VERSION = "1.90.2"
+MULTIACE_VERSION = "1.91"
 # Virtual slicer tools: T4..T31 (stock LOGICAL_EXTRUDER_NUM is 32). T0-T3
 # are the heads as loaded; tool n >= 4 = ACE (n-4)//4, slot (n-4)%4 (the
 # same numbering BMCU-Klipper uses on the U1).
@@ -87,7 +87,7 @@ THREAD_JOIN_TIMEOUT = 0.05
 # external host can detect engine capability. Additive changes do not bump it.
 ACE_API_VERSION = 1
 
-MULTIACE_BUILD_TAG = "e23884d0"
+MULTIACE_BUILD_TAG = "fcd843f6"
 MULTIACE_BUNDLE_SHA1 = "8816725"
 # The klipper modules OUTSIDE the bundle sha (ace.py and its helpers), the
 # fixed order the banner's core= value hashes them in. Computed on disk at
@@ -2920,13 +2920,6 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
 
     # -- D11 Devices: assignment by hand --------------------------------
 
-    def _unit_device_present(self, idx):
-        # The canonical index survives unplugging until restart. Once the
-        # serial connection drops, check whether its device path still exists.
-        return (self._unit_is_real(idx)
-                and (self._connected_per_ace.get(idx, False)
-                     or os.path.exists(self._ace_devices[idx])))
-
     def _unit_devices_status(self):
         """get_status.devices: every place of the table and every detected
         unit without a place (D11 Devices list). str keys, plain values."""
@@ -2939,21 +2932,20 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
                             'path': '', 'present': False, 'connected': False,
                             'removed': False})
                 continue
-            live = next((idx for idx in range(len(self._ace_devices))
-                         if self._unit_device_present(idx) and self._unit_key(idx) == key),
-                        None)
-            present = live is not None
+            present = (i < len(self._ace_devices)
+                       and self._unit_is_real(i)
+                       and self._unit_key(i) == key)
             kind = (ent or {}).get('kind') or ''
             if present:
-                kind = self._unit_kind_of_path(self._ace_devices[live]) or kind
+                kind = self._unit_kind_of_path(self._ace_devices[i]) or kind
             out.append({
                 'place': i, 'key': key, 'name': (ent or {}).get('name') or '',
                 'kind': kind,
-                'path': (os.path.basename(self._ace_devices[live])
+                'path': (os.path.basename(self._ace_devices[i])
                          if present else ''),
                 'present': bool(present),
                 'connected': bool(present
-                                  and self._connected_per_ace.get(live, False)),
+                                  and self._connected_per_ace.get(i, False)),
                 'removed': key in self._unit_excluded,
             })
         for key, info in sorted(self._unit_unassigned.items()):
@@ -2970,7 +2962,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
             # Removed in this session: still on its index until the
             # restart, so report it as present and connected.
             live = next((i for i in range(len(self._ace_devices))
-                         if self._unit_device_present(i) and self._unit_key(i) == key),
+                         if self._unit_is_real(i) and self._unit_key(i) == key),
                         None)
             out.append({
                 'place': None, 'key': key, 'name': '',
@@ -3085,7 +3077,7 @@ class MultiAce(DisplayMixin, SpoolMixin, SwapMixin, SettingsMixin,
         key = (gcmd.get('KEY', '') or '').strip()
         if not key or self._unit_places is None:
             raise self._ace_error(gcmd, '[multiACE] KEY= required', 200)
-        present = any(self._unit_device_present(i) and self._unit_key(i) == key
+        present = any(self._unit_is_real(i) and self._unit_key(i) == key
                       for i in range(len(self._ace_devices)))
         if present or key in self._unit_unassigned:
             raise self._ace_error(gcmd, self._t('msg.unit_forget_connected',
